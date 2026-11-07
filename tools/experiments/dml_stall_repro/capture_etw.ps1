@@ -29,6 +29,7 @@ $replay = Join-Path $PSScriptRoot "replay_business.py"
 $etl = Join-Path $env:TEMP ("maar_stall_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".etl")
 
 Write-Host "起 ETW 采集（CPU + GPU）..."
+wpr -cancel 2>$null | Out-Null   # 清幽灵会话：不清则 start 撞 already-running、stop 落空
 wpr -start CPU -start GPU -filemode
 if ($LASTEXITCODE -ne 0) { throw "wpr 启动失败（确认已提权）" }
 try {
