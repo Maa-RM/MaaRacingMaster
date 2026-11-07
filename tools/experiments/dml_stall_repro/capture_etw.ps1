@@ -32,9 +32,16 @@ Write-Host "起 ETW 采集（CPU + GPU）..."
 wpr -start CPU -start GPU -filemode
 if ($LASTEXITCODE -ne 0) { throw "wpr 启动失败（确认已提权）" }
 try {
-    Write-Host "跑可复现回放（抓到停顿即停）..."
-    & $py $replay --capture live --graph real --seconds 240 `
-        --background "ETW 包裹轮：游戏开在驾驶页自动巡航"
+    $capStart = Get-Date
+    for ($r = 1; $r -le 4; $r++) {
+        Write-Host "跑可复现回放轮 $r（抓到停顿即停本轮）..."
+        & $py $replay --capture live --graph real --seconds 240 `
+            --background "ETW 包裹轮 $r：游戏开在驾驶页自动巡航"
+        $new = Get-ChildItem (Join-Path $env:APPDATA "MaaRacingMaster\logs\*\trace\stall_*.txt") |
+            Where-Object { $_.LastWriteTime -gt $capStart }
+        if ($new) { Write-Host "轮 $r 抓到停顿，停采集"; break }
+        Write-Host "轮 $r 未复发，继续下一轮"
+    }
 } finally {
     Write-Host "停采集，落 $etl ..."
     wpr -stop $etl
