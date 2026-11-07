@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
 提权后跑：用 ETW（CPU + GPU）包裹一轮可复现回放，抓到的 .etl 用于区分
