@@ -30,7 +30,7 @@
   "title": "一句话标题（≤30 字）",
   "body": "正文第一行\n正文第二行（用 \\n 分段，纯文本）",
   "date": "2026-09-01",
-  "url": "https://github.com/d542Bb/MaaRacingMaster/releases",
+  "url": "https://github.com/Maa-RM/MaaRacingMaster/releases",
   "url_text": "查看发布说明 ↗",
   "effective_until": "2026-09-30"
 }
@@ -43,7 +43,7 @@
 | `title` | ✅ | 一句话 ≤30 字（风格建议，非硬拦）；空 title 或非字符串 → 整条无效 |
 | `body` | ❌ | 纯文本，`\n` 分段（CSS `white-space: pre-line` 生效）；禁止 HTML |
 | `date` | ✅ | 发布日 `YYYY-MM-DD`，必须是真实存在的日期 |
-| `url` | ❌ | 详情链接：**仅 https + 官方域**（`github.com/d542Bb/MaaRacingMaster`、`cnb.cool/MaaRacingMaster`）；不合规则不显示详情按钮 |
+| `url` | ❌ | 详情链接：**仅 https + 官方域**（`github.com/Maa-RM/MaaRacingMaster`、`cnb.cool/MaaRacingMaster`）；不合规则不显示详情按钮 |
 | `url_text` | ❌ | 链接按钮文案，缺省「查看详情」 |
 | `effective_until` | ✅ | 过期日 `YYYY-MM-DD`，必须是真实存在的日期 |
 

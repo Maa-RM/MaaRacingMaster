@@ -337,7 +337,7 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
 **怎么复用（机械化流程）**：四步——建 y_h 冻结基准 → 对象认证（逐轨身份图强制）→
 线位逐轨拟合 a(t)（窗口判据 = HUD stage，禁 VP 质量口径）→ 车道单位换算（冻结 `A_x_used`）。
 逐步命令与仪器 = 标定实验 README「A1 定档轮」（实验已于同日收杆归档，溯源
-[`db7a3fe`](https://github.com/d542Bb/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)，
+[`db7a3fe`](https://github.com/Maa-RM/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)，
 需复跑时从该 commit 检出其实验目录物化（目录名见该 commit 的文件清单）。
 
 **适用域（详表在「A1 定档轮」，此处只列纪律）**：
@@ -350,7 +350,7 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
 - 任一验收不满足 → 输出「无观测」并走保守态（CONSERVE 保持+禁变道），禁止带病数值下发。
 
 **配套纵向口径（同日裁定）**：车速锚 = 得分速度底值（使用前提与禁令见 RULES §4.8
-「得分速度」条；「0.83 对账轮」全文溯源 [`db7a3fe`](https://github.com/d542Bb/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)）；
+「得分速度」条；「0.83 对账轮」全文溯源 [`db7a3fe`](https://github.com/Maa-RM/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)）；
 左卡片周期里程**禁止**除以卡周期当车速。
 
 **锁**：标定未定档前不得把像素横向差当距离用；「全绿」= 本节定档。

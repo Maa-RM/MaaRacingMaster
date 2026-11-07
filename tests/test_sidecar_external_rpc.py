@@ -37,7 +37,7 @@ GOOD_ANNOUNCEMENT = {
     "title": "正常公告",
     "body": "正文",
     "date": "2026-09-01",
-    "url": "https://github.com/d542Bb/MaaRacingMaster/releases",
+    "url": "https://github.com/Maa-RM/MaaRacingMaster/releases",
     "url_text": "查看详情",
     "effective_until": "2099-12-31",
 }
