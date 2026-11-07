@@ -21,6 +21,8 @@ PowerShell 里跑。它先起 CPU+GPU 采集，再跑 replay_business.py（live 
 随后按回放会话墙钟窗口过滤 DxgKrnl 的提交/执行事件与停顿线程 tid 的调度事件。
 #>
 $ErrorActionPreference = "Stop"
+$log = Join-Path $env:TEMP "maar_etw_run.log"
+Start-Transcript -Path $log -Force | Out-Null
 $repo = (Get-Item $PSScriptRoot).Parent.Parent.Parent.FullName
 $py = Join-Path $repo ".venv\Scripts\python.exe"
 $replay = Join-Path $PSScriptRoot "replay_business.py"
@@ -43,3 +45,4 @@ Write-Host "解码: tracerpt `"$etl`" -o `"$etl.csv`" -of CSV -y"
 $stall = Get-ChildItem (Join-Path $env:APPDATA "MaaRacingMaster\logs\*\trace\stall_*.txt") |
     Sort-Object LastWriteTime | Select-Object -Last 1
 if ($stall) { Write-Host "最新现场: $($stall.FullName)" }
+Stop-Transcript | Out-Null
