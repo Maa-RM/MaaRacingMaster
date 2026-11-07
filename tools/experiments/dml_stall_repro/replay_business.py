@@ -289,6 +289,9 @@ def main() -> int:
                     help="live=真 WGC 采游戏窗口（默认）；disk=磁盘供帧")
     ap.add_argument("--graph", choices=("real", "stub"), default="real",
                     help="real=真跳转图只读 probe 提供模板识别负载（默认）；stub=锚点恒命中")
+    ap.add_argument("--priority", choices=("normal", "high"), default="normal",
+                    help="high=本进程优先级提 HIGH（单变量测 CPU 争抢假设；不需管理员，"
+                         "让我方线程赢过背景进程）")
     ap.add_argument("--seconds", type=float, default=180.0, help="回放时长上限")
     ap.add_argument("--stop-on-stall", action="store_true", default=True,
                     help="抓到现场即停（默认开）")
@@ -337,6 +340,9 @@ def main() -> int:
     perf_sampler.set_thread_labels(sr.SpeedRushModule.THREAD_LABELS)
     ensure_perf_sampler_started()
     stamp = time.strftime("%Y%m%d_%H%M%S")
+    if args.priority == "high":
+        import psutil
+        psutil.Process().nice(psutil.HIGH_PRIORITY_CLASS)
     mod = sr.SpeedRushModule(ctx)        # type: ignore[arg-type]
     mod._record_mode = True              # 录制模式：影子观察，不碰手柄
     mod._drive_mode = "depth"
@@ -394,6 +400,7 @@ def main() -> int:
     logger.set_file_logging(False)
 
     fidelity = {"素材局": args.session, "采集模式": args.capture,
+                "图模式": args.graph, "进程优先级": args.priority,
                 "回放秒数上限": args.seconds,
                 "操作者背景声明": args.background or "（未声明）",
                 "发布帧数": published(), "驾驶环正常返回": result,
