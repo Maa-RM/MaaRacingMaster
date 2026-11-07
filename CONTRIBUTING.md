@@ -17,7 +17,7 @@
 
 | 方向 | 说明 | 适合谁 |
 |------|------|--------|
-| 🐛 报 Bug | 使用中遇到异常，先查 [已知问题](https://github.com/d542Bb/MaaRacingMaster/issues) 是否已有报告 | 所有用户 |
+| 🐛 报 Bug | 使用中遇到异常，先查 [已知问题](https://github.com/Maa-RM/MaaRacingMaster/issues) 是否已有报告 | 所有用户 |
 | 💡 提需求 | 描述你想要的鉴宝 / 平台能力，说明使用场景 | 所有用户 |
 | 🧹 修 Bug | 认领 Issue，修复后提 PR | 初级贡献者 |
 | 🧩 新模块 | 复用能力接口（capability）开发新活动模块 | 进阶贡献者 |
@@ -40,7 +40,7 @@
 ### 开发环境搭建
 
 ```bash
-git clone https://github.com/d542Bb/MaaRacingMaster.git
+git clone https://github.com/Maa-RM/MaaRacingMaster.git
 cd MaaRacingMaster
 py -3.11 -m venv .venv
 .venv\Scripts\activate
@@ -83,7 +83,7 @@ pip install -r requirements.txt
 
 ### 1. 找任务 / 开 Issue
 
-- 先在 [Issues](https://github.com/d542Bb/MaaRacingMaster/issues) 搜索是否已有相关讨论，避免重复。
+- 先在 [Issues](https://github.com/Maa-RM/MaaRacingMaster/issues) 搜索是否已有相关讨论，避免重复。
 - 报 Bug 请使用 **Bug 模板**，尽量包含：复现步骤、期望行为、实际行为、日志 / 截图、环境信息（Python 版本、系统版本、分辨率）。
 - 提需求请使用 **Feature 模板**，说明使用场景与期望效果。
 

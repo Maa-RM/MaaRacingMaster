@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 #: 仓库 slug。官方地址表、远程链接白名单、更新源 URL 共用这一处定义（sidecar 引用它，
 #: 不再自留副本）——两处各写一遍，改一处漏一处就是白名单静默失效。
-GITHUB_REPO = "d542Bb/MaaRacingMaster"
+GITHUB_REPO = "Maa-RM/MaaRacingMaster"
 # CNB 是本仓库的镜像，项目名按构造等于仓库名——不另抄一个字面量。
 _CNB_PROJECT = GITHUB_REPO.split("/")[-1]
 
