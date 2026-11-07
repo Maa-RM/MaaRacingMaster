@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import NamedTuple
 
 LOCK = threading.Lock()
 
@@ -34,10 +35,20 @@ class Busy(RuntimeError):
     """DML 已被其他线程占用；调用方应放弃本次推理（让锁），不得等待。"""
 
 
+class InFlight(NamedTuple):
+    """一次在飞 DML 调用的取证身份（停顿哨据此取线程 CPU 时间）。"""
+
+    since: float                # 登记起点（perf_counter）
+    who: str                    # yolo / moge / lane
+    native_id: int              # 原生 TID：GetThreadTimes 只认它，不认 get_ident()
+    run_since: float | None     # 拿到锁的时刻；None = 仍在等锁
+
+
 class _RunWatch:
     """在飞 DML 调用记账：按线程登记，停顿哨（GpuProbe）取最久的一条。
 
-    覆盖范围 = 等锁 + run 本体——两者膨胀都是停顿现场的一部分。
+    覆盖范围 = 等锁 + run 本体——两者膨胀都是停顿现场的一部分，但取证时要分得开
+    （``run_since``）：等锁方卡住与持锁方卡住是两个不同的根因方向。
 
     必须按线程记账而非单槽：感知阻塞等锁时深度/车道仍在飞是生产常态，单槽下
     后来者覆盖前者、先结束者把仍在飞的那条一并清掉，停顿哨恰好在争抢最凶的拍
@@ -46,22 +57,42 @@ class _RunWatch:
 
     def __init__(self) -> None:
         self._lk = threading.Lock()
-        self._inflight: dict[int, tuple[float, str]] = {}
+        self._inflight: dict[int, InFlight] = {}
 
-    def enter(self, who: str) -> None:
+    def enter(self, who: str, *, waiting: bool = False) -> None:
+        """登记本次调用；``waiting=True`` 表示登记时还没拿到锁（随后调 acquired）。"""
+        now = time.perf_counter()
         with self._lk:
-            self._inflight[threading.get_ident()] = (time.perf_counter(), who)
+            self._inflight[threading.get_ident()] = InFlight(
+                now, who, threading.get_native_id(), None if waiting else now)
+
+    def acquired(self) -> None:
+        """等锁方拿到锁后打点，把「等锁」与「原生推理在飞」分开。"""
+        with self._lk:
+            key = threading.get_ident()
+            entry = self._inflight.get(key)
+            if entry is not None:
+                self._inflight[key] = entry._replace(run_since=time.perf_counter())
 
     def exit(self) -> None:
         with self._lk:
             self._inflight.pop(threading.get_ident(), None)
 
+    def _oldest(self) -> InFlight | None:
+        if not self._inflight:
+            return None
+        return min(self._inflight.values(), key=lambda entry: entry.since)
+
     def snapshot(self) -> tuple[float | None, str]:
         """最久在飞的 (perf_counter 起点, 调用方)；无在飞时 (None, "")。"""
         with self._lk:
-            if not self._inflight:
-                return None, ""
-            return min(self._inflight.values(), key=lambda entry: entry[0])
+            entry = self._oldest()
+            return (None, "") if entry is None else (entry.since, entry.who)
+
+    def detail(self) -> InFlight | None:
+        """最久在飞那条的完整取证身份；无在飞时 None。"""
+        with self._lk:
+            return self._oldest()
 
 
 RUN_WATCH = _RunWatch()

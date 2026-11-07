@@ -25,6 +25,7 @@ from pathlib import Path
 
 from maaracing_master.core import dml_lock
 from maaracing_master.core.logger import logger
+from maaracing_master.core.thread_probe import thread_times
 from maaracing_master.core.trace_sink import get_trace_sink
 
 _QUERY = ("utilization.gpu,memory.used,memory.total,temperature.gpu,"
@@ -42,11 +43,65 @@ _SCENE_QUERIES = (
 )
 
 
-def _inflight_desc() -> str:
-    since, who = dml_lock.RUN_WATCH.snapshot()
-    if since is None:
+def _inflight_desc(entry: dml_lock.InFlight | None = None) -> str:
+    if entry is None:
+        entry = dml_lock.RUN_WATCH.detail()
+    if entry is None:
         return "无（run 已结束）"
-    return f"{who} 已 {(time.perf_counter() - since) * 1000.0:.1f}ms"
+    return f"{entry.who} 已 {(time.perf_counter() - entry.since) * 1000.0:.1f}ms"
+
+
+# 两次线程 CPU 时间读数的间隔：够长才分得出「在跑」与「没跑」，又短到大概率
+# 仍落在同一次停顿里（生产停顿 0.8~1.2s，检出约在 0.2s）
+_CPU_PROBE_GAP_S = 0.15
+_CpuSample = tuple[float, int, float]   # (perf_counter 时刻, 线程创建时间, 累计 CPU 秒)
+
+
+def _cpu_sample(entry: dml_lock.InFlight | None) -> _CpuSample | None:
+    if entry is None:
+        return None
+    t = time.perf_counter()
+    times = thread_times(entry.native_id)
+    return None if times is None else (t, times[0], times[1])
+
+
+def _cpu_probe_report(entry: dml_lock.InFlight | None,
+                      first: _CpuSample | None, second: _CpuSample | None,
+                      after: dml_lock.InFlight | None) -> str:
+    """判读文本。守卫不满足就明说「不具判读条件」，不强行算结论。
+
+    分流只到「有没有占用 CPU」为止：不增长既可能是等 GPU/同步对象，也可能是
+    已就绪但调度器没给 CPU，两者根因不同，本探针分不出，须调度级取证。
+    """
+    if entry is None:
+        return "不具判读条件：抓拍时已无在飞 DML 调用\n"
+    if first is None or second is None:
+        return ("不具判读条件：线程 CPU 时间读不到"
+                "（非 Windows / 线程已退出 / 无权限）\n")
+    if first[1] != second[1]:
+        return "不具判读条件：两次读数的线程创建时间不同（TID 已被复用）\n"
+    if (after is None or after.since != entry.since
+            or after.native_id != entry.native_id):
+        return "不具判读条件：两次读数之间该次调用已结束（样本跨越恢复点）\n"
+    wall = second[0] - first[0]
+    cpu = second[2] - first[2]
+    pct = (cpu / wall * 100.0) if wall > 0 else 0.0
+    phase = ("等锁（尚未进入原生推理）" if entry.run_since is None
+             else "原生推理在飞（已持锁）")
+    if pct < 5.0:
+        verdict = ("该线程几乎没获得 CPU 执行时间。分不出是在等 GPU/同步对象，"
+                   "还是已就绪但调度器没给 CPU——需调度级取证（ETW）区分。")
+    elif pct > 50.0:
+        verdict = ("该线程在持续占用 CPU 执行，不支持「被阻塞」；但这不直接证明"
+                   "驱动自旋或提交链异常。")
+    else:
+        verdict = "部分占用，不足以分流；看原始增量。"
+    return (f"目标线程 tid={entry.native_id} who={entry.who} 阶段={phase}\n"
+            f"第一次 t={first[0]:.6f} 创建={first[1]} 累计CPU={first[2]:.6f}s\n"
+            f"第二次 t={second[0]:.6f} 创建={second[1]} 累计CPU={second[2]:.6f}s\n"
+            f"增量：墙钟 {wall * 1000.0:.1f}ms / CPU {cpu * 1000.0:.1f}ms"
+            f"（占 {pct:.1f}%）\n"
+            f"判读：{verdict}\n")
 
 
 def _cmd_output(cmd: list[str]) -> str:
@@ -160,13 +215,23 @@ class GpuProbe:
         path = self._trace_dir / f"stall_{stamp}_{who}.txt"
         try:
             with open(path, "w", encoding="utf-8") as f:
+                entry = dml_lock.RUN_WATCH.detail()
                 f.write(f"停顿现场 {stamp} who={who} 检出时在飞已 {elapsed_ms}ms\n")
                 # 我方线程栈先落：停摆期外部 nvidia-smi 自己会被卡住（生产实测
                 # 844ms），排在它后面等于拍恢复后的空栈，白丢「我方卡点」这一问。
-                f.write(f"栈抓拍时在飞: {_inflight_desc()}\n")
+                f.write(f"栈抓拍时在飞: {_inflight_desc(entry)}\n")
                 f.write("\n===== 我方全线程栈（faulthandler）=====\n")
                 f.flush()       # faulthandler 直写 fd，缓冲文本须先落地
                 faulthandler.dump_traceback(f, all_threads=True)
+                # 停顿窗口内的 CPU 时间增量：分「在占用 CPU」与「没占用」，同样
+                # 必须排在外部取证之前
+                first = _cpu_sample(entry)
+                time.sleep(_CPU_PROBE_GAP_S)
+                second = _cpu_sample(entry)
+                f.write("\n===== 停顿窗口内线程 CPU 时间双采样 =====\n")
+                f.write(_cpu_probe_report(entry, first, second,
+                                          dml_lock.RUN_WATCH.detail()))
+                f.flush()
                 for title, cmd in _SCENE_QUERIES:
                     t0 = time.monotonic()
                     out = _cmd_output(cmd)

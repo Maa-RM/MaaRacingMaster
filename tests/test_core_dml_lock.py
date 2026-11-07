@@ -94,3 +94,28 @@ def test_run_watch_other_thread_exit_keeps_mine():
         th.join(2.0)
         watch.exit()
     assert watch.snapshot() == (None, "")
+
+
+def test_run_watch_detail_carries_native_id_and_phase():
+    """取证要原生 TID（GetThreadTimes 只认它）与阶段（等锁 vs 原生推理在飞）。"""
+    watch = dml_lock._RunWatch()
+    watch.enter("yolo", waiting=True)
+    e = watch.detail()
+    assert e is not None
+    assert e.native_id == threading.get_native_id()
+    assert e.run_since is None                    # 还没拿到锁
+    assert watch.snapshot() == (e.since, "yolo")  # 原接口不变
+    watch.acquired()
+    e2 = watch.detail()
+    assert e2.run_since is not None
+    assert (e2.since, e2.native_id, e2.who) == (e.since, e.native_id, e.who)
+    watch.exit()
+    assert watch.detail() is None
+
+
+def test_run_watch_enter_after_lock_is_already_running():
+    """深度/车道拿锁后才登记：登记即在飞，不必再打 acquired。"""
+    watch = dml_lock._RunWatch()
+    watch.enter("moge")
+    assert watch.detail().run_since is not None
+    watch.exit()
