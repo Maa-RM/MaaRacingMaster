@@ -4,7 +4,7 @@
   "title": "极速狂飙上线，新版本已发布",
   "body": "极速狂飙模块正式上线，新增三种驾驶模式（全程直行 / 深度几何 / 宏录制）。深度几何需要单独下载模型包，主包不再内置权重。关于页「检查更新」现在可以直接选择 CNB 或 GitHub 更新源。",
   "date": "2026-11-04",
-  "url": "https://github.com/d542Bb/MaaRacingMaster/releases",
+  "url": "https://github.com/Maa-RM/MaaRacingMaster/releases",
   "url_text": "查看发布说明 ↗",
   "effective_until": "2026-12-31"
 }

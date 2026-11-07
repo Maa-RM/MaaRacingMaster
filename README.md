@@ -12,13 +12,13 @@
   <img src="https://img.shields.io/badge/python-3.11-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/MaaFramework-5.12.3-green" alt="MaaFramework">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License">
-  <img src="https://github.com/d542Bb/MaaRacingMaster/actions/workflows/test.yml/badge.svg" alt="Test">
+  <img src="https://github.com/Maa-RM/MaaRacingMaster/actions/workflows/test.yml/badge.svg" alt="Test">
   <img src="https://img.shields.io/badge/status-development-yellow" alt="Status">
   <a href="https://afdian.com/a/MaaRacingMaster">
     <img src="https://img.shields.io/badge/爱发电-赞助-blue?logo=afdian&logoColor=white" alt="爱发电 赞助">
   </a>
   <!-- 正式 v1.0.0 发版时换用 release badge：
-  <img src="https://github.com/d542Bb/MaaRacingMaster/actions/workflows/release.yml/badge.svg" alt="Release"> -->
+  <img src="https://github.com/Maa-RM/MaaRacingMaster/actions/workflows/release.yml/badge.svg" alt="Release"> -->
 </p>
 
 ***
@@ -30,7 +30,7 @@
 >
 > - **打 tag 即出正式 Release 包**；未打 tag 的改动在开发分支（`dev/d542Bb`）上，稳定收口后经 PR 合入 master——master 上每个提交都是一个已收口主题，可能尚未打包。
 >
-> - 遇到问题请优先提交 [Issue](https://github.com/d542Bb/MaaRacingMaster/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
+> - 遇到问题请优先提交 [Issue](https://github.com/Maa-RM/MaaRacingMaster/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
 >
 > - 源码完全开源，**欢迎任何人 fork / 提 PR / 参与维护**——项目的延续依靠社区而非单一开发者。
 
@@ -118,11 +118,11 @@
 
 - **要改代码 / 参与开发** → 继续往下，走「从源码构建」四步
 
-> 当前处于**开发阶段**：GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases) 上已提供 pre-release 打包，正式 v1.0.0 尚未发布。
+> 当前处于**开发阶段**：GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases) 上已提供 pre-release 打包，正式 v1.0.0 尚未发布。
 
 ### 下载即用包（普通用户，无需编译）
 
-1. 到 GitHub [Releases](https://github.com/d542Bb/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**（或 `.7z`）。
+1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**（或 `.7z`）。
 2. 用资源管理器把它**解压到任意本地目录**。
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
@@ -146,7 +146,7 @@
 ### 1. 拉取代码
 
 ```bash
-git clone https://github.com/d542Bb/MaaRacingMaster.git
+git clone https://github.com/Maa-RM/MaaRacingMaster.git
 cd MaaRacingMaster
 ```
 

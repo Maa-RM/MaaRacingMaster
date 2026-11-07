@@ -322,7 +322,7 @@ y 320–380、`vx` P5 −31 / P95 45 px/s。
    配中段 y」已证伪（`y_h=315` 落进观测带、给出 70 s 荒谬值），根因是 `vy` 沿轨迹加速。
    → **本条已由 speedrush 标定实验承接，该实验已于 2026-09-21 收杆终结**（结论迁
    home：RULES §3.8/§4.8、域 CODE_WIKI §6、control-route 状态块；过程与仪器溯源
-   [`db7a3fe`](https://github.com/d542Bb/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)）：
+   [`db7a3fe`](https://github.com/Maa-RM/MaaRacingMaster/commit/db7a3fe78973d9d155d350feac581d7530f5138a)）：
    失败根因定性为"几何参数↔目标运动耦合"，新方案改为**静态几何标定（车道线→VP）+
    动态量只进验收**（后裁定路面腿砍除、Gate 3 收窄为横向归一尺子——见 control-route
    裁定段），本实验的**静态几何目标已达成**。

@@ -40,7 +40,7 @@ VALID_ANNOUNCEMENT = {
     "title": "巅峰鉴宝全链路已上线",
     "body": "第一行\n第二行",
     "date": "2026-09-01",
-    "url": "https://github.com/d542Bb/MaaRacingMaster/releases",
+    "url": "https://github.com/Maa-RM/MaaRacingMaster/releases",
     "url_text": "查看发布说明",
     "effective_until": "2026-09-30",
 }
@@ -59,9 +59,9 @@ VALID_RELEASE = {
 
 
 @pytest.mark.parametrize("url", [
-    "https://github.com/d542Bb/MaaRacingMaster",
-    "https://github.com/d542Bb/MaaRacingMaster/releases",
-    "https://github.com/d542Bb/MaaRacingMaster/blob/master/docs/CODE_WIKI.md",
+    "https://github.com/Maa-RM/MaaRacingMaster",
+    "https://github.com/Maa-RM/MaaRacingMaster/releases",
+    "https://github.com/Maa-RM/MaaRacingMaster/blob/master/docs/CODE_WIKI.md",
     "https://cnb.cool/MaaRacingMaster/MAIN/-/releases",
 ])
 def test_official_url_accepts_project_pages(url):
@@ -70,17 +70,17 @@ def test_official_url_accepts_project_pages(url):
 
 @pytest.mark.parametrize("url", [
     "",                                                          # 空
-    "github.com/d542Bb/MaaRacingMaster",                          # 无 scheme
-    "http://github.com/d542Bb/MaaRacingMaster",                   # 非 https
+    "github.com/Maa-RM/MaaRacingMaster",                          # 无 scheme
+    "http://github.com/Maa-RM/MaaRacingMaster",                   # 非 https
     "javascript:alert(1)",
     "file:///C:/Windows/System32/calc.exe",
     "https://github.com/attacker/evil",                           # 同主机、非本项目路径
-    "https://github.com.evil.tld/d542Bb/MaaRacingMaster",         # 主机名后缀伪装
-    "https://github.com@evil.tld/d542Bb/MaaRacingMaster",         # userinfo 伪装
-    "https://github.com:8443/d542Bb/MaaRacingMaster",             # 非默认端口
+    "https://github.com.evil.tld/Maa-RM/MaaRacingMaster",         # 主机名后缀伪装
+    "https://github.com@evil.tld/Maa-RM/MaaRacingMaster",         # userinfo 伪装
+    "https://github.com:8443/Maa-RM/MaaRacingMaster",             # 非默认端口
     "https://cnb.cool/MaaRacingMaster-evil/x",                    # 同前缀异路径（段边界）
-    "https://raw.githubusercontent.com/d542Bb/MaaRacingMaster/master/x.json",  # 非白名单主机
-    "https://evil.tld/https://github.com/d542Bb/MaaRacingMaster",
+    "https://raw.githubusercontent.com/Maa-RM/MaaRacingMaster/master/x.json",  # 非白名单主机
+    "https://evil.tld/https://github.com/Maa-RM/MaaRacingMaster",
 ])
 def test_official_url_rejects_lookalikes(url):
     assert not is_official_url(url)
@@ -154,7 +154,7 @@ def test_announcement_bad_url_drops_link_keeps_notice():
 
 @pytest.mark.parametrize("bad_url", [
     "https://evil.tld/payload",
-    "http://github.com/d542Bb/MaaRacingMaster",   # 非 https
+    "http://github.com/Maa-RM/MaaRacingMaster",   # 非 https
     "https://github.com/attacker/evil",
 ])
 def test_announcement_off_allowlist_url_dropped(bad_url):
