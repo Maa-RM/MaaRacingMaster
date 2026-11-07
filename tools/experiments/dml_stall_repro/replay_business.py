@@ -71,12 +71,10 @@ UNCOVERED_DISK = (
     "真实游戏窗口画面与桌面合成呈现负载：disk 模式不采窗口",
     "物理手柄输入：采样线程照跑但读不到按键，pads.jsonl 为空（生产同阶段 6994 条），"
     "其 CPU 与落盘负载低于生产",
-    "导航图模板识别：锚点替身恒命中，省掉框架识别负载",
 )
 UNCOVERED_LIVE = (
     "物理手柄输入：采样线程照跑但读不到按键，pads.jsonl 为空（生产同阶段 6994 条），"
     "其 CPU 与落盘负载低于生产",
-    "导航图模板识别：锚点替身恒命中，省掉框架识别负载",
 )
 COVERED_LIVE_EXTRA = (
     "WGC 中心采集线程与真实帧到达/断流动力学（真 WgcCapture + 生产 CaptureAdapter）",
@@ -191,13 +189,17 @@ def _live_capture():
     from maaracing_master.core.capabilities import CaptureAdapter
     from maaracing_master.core.wgcap import WgcCapture
     from maaracing_master.core.window_utils import (ensure_window_restored,
-                                                   find_game_hwnd)
+                                                   find_game_hwnd,
+                                                   resize_game_window_720p)
     hwnd = find_game_hwnd(verbose=False)
     if not hwnd:
         raise SystemExit("live 采集找不到游戏窗口：先把游戏开在驾驶页")
     try:
         ensure_window_restored(hwnd)
-    except Exception:                              # 还原失败不阻断启动
+        # 生产 connect 时统一归一 720p：模板与 ROI 按 720p 客户区设计，不归一
+        # 则锚点识别恒 0 分、阶段秒退（真图冒烟实测踩到）
+        resize_game_window_720p(hwnd)
+    except Exception:                              # 还原/归一失败不阻断启动
         pass
     cap = WgcCapture(hwnd, max_fps=60)
     cap.start()
@@ -210,6 +212,42 @@ def _live_capture():
         cap.stop()
         raise SystemExit("WGC 启动后 2s 未收到首帧")
     return CaptureAdapter(SimpleNamespace(_wgc_capture=cap)), cap
+
+
+class RecognitionLoadGraph:
+    """真识别负载、退出判定解耦。
+
+    probe 真跑跳转图模板匹配（CPU 负载与调用节奏在场），但驾驶页锚点恒报 HIT、
+    商店横幅恒报 MISS——阶段寿命不取决于匹配成败，离线台才能长跑。识别/检测结果
+    本就不消费（操作者口径：不在乎返回结果），故解耦只影响导航逻辑、不影响负载。
+    真匹配对窗口几何/裁剪偏移敏感（实测齿轮偏约 10px 就 ROI 0 分），不该让复现台
+    的寿命押在这上面。
+    """
+
+    def __init__(self, real):
+        self._real = real
+
+    def probe(self, node: str, **kwargs):
+        self._real.probe(node, **kwargs)      # 真跑：负载在场，结果不消费
+        return (sr.ProbeOutcome.MISS if node == sr.STORE_BANNER_NODE
+                else sr.ProbeOutcome.HIT)
+
+    def run(self, entry=None, reached=None, *, save=None) -> bool:
+        return True
+
+    def shutdown(self) -> bool:
+        return self._real.shutdown()
+
+
+def _real_graph(ctx):
+    """真跳转图 + 退出解耦壳：只读 probe 提供模板识别负载（不点、不持手柄）。"""
+    from maaracing_master.core.nav_graph import NavGraph
+    from maaracing_master.plugins.speedrush import IMAGE_DIR, PIPELINE_DIR
+    graph = NavGraph(ctx)
+    graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
+    if not graph.load():
+        raise SystemExit("真跳转图加载失败")
+    return RecognitionLoadGraph(graph)
 
 
 def _find_session(name: str) -> Path:
@@ -249,6 +287,8 @@ def main() -> int:
     ap.add_argument("--session", default=DEFAULT_SESSION, help="素材局目录名（disk 模式）")
     ap.add_argument("--capture", choices=("live", "disk"), default="live",
                     help="live=真 WGC 采游戏窗口（默认）；disk=磁盘供帧")
+    ap.add_argument("--graph", choices=("real", "stub"), default="real",
+                    help="real=真跳转图只读 probe 提供模板识别负载（默认）；stub=锚点恒命中")
     ap.add_argument("--seconds", type=float, default=180.0, help="回放时长上限")
     ap.add_argument("--stop-on-stall", action="store_true", default=True,
                     help="抓到现场即停（默认开）")
@@ -275,10 +315,18 @@ def main() -> int:
 
         def published():
             return disk.published
+    from maaracing_master.core.nav_graph import WgcapController
     ctx = SimpleNamespace(lifecycle=RealLifecycle(stop), capture=capture,
-                          debug=SimpleNamespace(enabled=True))
+                          debug=SimpleNamespace(enabled=True),
+                          click_mode="real", intent_mode=False, hwnd=0,
+                          bind_tasker=lambda t, r: t.bind(r, WgcapController(capture)))
+    if args.graph == "real":
+        covered.append("真跳转图模板识别负载（NavGraph.probe 真跑、只读不点不持手柄；"
+                       "阶段退出判定与匹配结果解耦）")
+    else:
+        uncovered.append("导航图模板识别：锚点替身恒命中，省掉框架识别负载")
 
-    print(f"=== 变量集声明（capture={args.capture}）===")
+    print(f"=== 变量集声明（capture={args.capture}, graph={args.graph}）===")
     for item in covered:
         print("  [覆盖] " + item)
     for item in uncovered:
@@ -294,12 +342,15 @@ def main() -> int:
     mod._drive_mode = "depth"
     mod._control_mode = False
     mod._running = True
-    mod._graph = AnchorStub()            # type: ignore[assignment]
+    mod._graph = (_real_graph(ctx) if args.graph == "real"   # type: ignore[assignment]
+                  else AnchorStub())
 
     recorder = mod._begin_recording(1, 1, stamp)
     if recorder is None:
         print("录制器启动失败，终止")
         stop.set()
+        if args.graph == "real":
+            mod._graph.shutdown()
         if wgc is not None:
             wgc.stop()
         perf_sampler.stop()
@@ -335,6 +386,8 @@ def main() -> int:
     if hud is not None:
         hud.stop("stopped")
     recorder.stop("stopped")
+    if args.graph == "real":
+        mod._graph.shutdown()
     if wgc is not None:
         wgc.stop()
     perf_sampler.stop()
