@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import threading
 import time
@@ -292,6 +293,8 @@ def main() -> int:
     ap.add_argument("--priority", choices=("normal", "high"), default="normal",
                     help="high=本进程优先级提 HIGH（单变量测 CPU 争抢假设；不需管理员，"
                          "让我方线程赢过背景进程）")
+    ap.add_argument("--keep-frames", action="store_true",
+                    help="保留本轮录制帧目录（默认用完即清：证据在 logs/trace，帧是可再生产物）")
     ap.add_argument("--seconds", type=float, default=180.0, help="回放时长上限")
     ap.add_argument("--stop-on-stall", action="store_true", default=True,
                     help="抓到现场即停（默认开）")
@@ -408,10 +411,16 @@ def main() -> int:
                 "覆盖变量": covered, "未覆盖变量": uncovered,
                 "日志会话": str(out_dir), "录制产物": str(recorder.out_dir),
                 "现场文件": None if stall is None else str(stall)}
-    (recorder.out_dir / "replay_fidelity.json").write_text(
-        json.dumps(fidelity, ensure_ascii=False, indent=2), encoding="utf-8")
+    fidelity["录制帧已清理"] = not args.keep_frames
+    blob = json.dumps(fidelity, ensure_ascii=False, indent=2)
+    (recorder.out_dir / "replay_fidelity.json").write_text(blob, encoding="utf-8")
+    (out_dir / "replay_fidelity.json").write_text(blob, encoding="utf-8")  # 随日志会话留存
+    if not args.keep_frames:
+        # 录制帧是可再生产物（live 帧的再录一遍）；证据在 logs/trace，用完即清，
+        # 否则每轮约 1.4GB 累积填盘（首轮疏漏实测累积 8.9GB）
+        shutil.rmtree(recorder.out_dir, ignore_errors=True)
     print("=== 结果 ===")
-    print(json.dumps(fidelity, ensure_ascii=False, indent=2))
+    print(blob)
     if stall is not None:
         print(f"\n复现：现场已落 {stall}")
         return 0
