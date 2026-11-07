@@ -11,10 +11,12 @@
 **为什么选录制模式**：它不 acquire 手柄、不要求窗口独占（模块按配置放宽了这两条
 启动约束），是最省伪造的形态；而生产停顿恰恰是在人工录制局复现的。
 
-**接缝**：驾驶环只经注入的采集协议取帧（`ctx.capture.frame_with_age()` 四元组），
-故磁盘供帧替身即可让真模块离线跑。供帧做成「独立线程按录制时的真实间隔解码发布、
-消费者读最新帧」——与中心采集缓存同语义；若在消费者线程里按需解码，解码成本会落到
-控制环上，那就又少控了一个变量。
+**接缝**：驾驶环只经注入的采集协议取帧（`ctx.capture.frame_with_age()` 四元组）。
+两种采集形态：`--capture live`（默认）起生产同款 WGC 中心采集器采真实游戏窗口、
+套生产 CaptureAdapter——检测返回什么不重要，要的是采集线程、真实帧到达节奏与断流
+动力学在场；`--capture disk` 用磁盘供帧替身循环录制素材，供帧做成「独立线程按录制
+时的真实间隔解码发布、消费者读最新帧」，与中心缓存同语义（在消费者线程按需解码会
+把解码成本算到控制环头上，等于又少控一个变量）。
 
 **标尺独立于业务代码**（实验区 C 类硬约束）：复现判据不只看业务自己的计时，还要
 现场抓拍文件（含 Win32 线程 CPU 时间增量）与外部 nvidia-smi 调用时长同窗佐证。
@@ -64,13 +66,21 @@ COVERED = (
     "DML 全局锁与错峰节拍（生产同一份 core.dml_lock）",
     "OCR 进程级绑核（生产同一份 core.ocr，不改）",
 )
-UNCOVERED = (
+UNCOVERED_DISK = (
     "WGC 中心采集线程：帧由磁盘解码发布，没有真实采集回调与断流 dynamics",
-    "真实游戏窗口与模拟器进程：本台不提供，是否在场由操作者控制（见 background 声明）",
+    "真实游戏窗口画面与桌面合成呈现负载：disk 模式不采窗口",
     "物理手柄输入：采样线程照跑但读不到按键，pads.jsonl 为空（生产同阶段 6994 条），"
     "其 CPU 与落盘负载低于生产",
     "导航图模板识别：锚点替身恒命中，省掉框架识别负载",
-    "桌面合成器对游戏画面的呈现负载：随游戏窗口在场与否，见 background 声明",
+)
+UNCOVERED_LIVE = (
+    "物理手柄输入：采样线程照跑但读不到按键，pads.jsonl 为空（生产同阶段 6994 条），"
+    "其 CPU 与落盘负载低于生产",
+    "导航图模板识别：锚点替身恒命中，省掉框架识别负载",
+)
+COVERED_LIVE_EXTRA = (
+    "WGC 中心采集线程与真实帧到达/断流动力学（真 WgcCapture + 生产 CaptureAdapter）",
+    "真实游戏窗口画面与桌面合成呈现负载（采 live 窗口，需操作者把游戏开在驾驶页）",
 )
 
 
@@ -172,6 +182,36 @@ class AnchorStub:
         return entry != sr.STORE_BANNER_NODE
 
 
+def _live_capture():
+    """真采集：起生产同款 WGC 中心采集器，套生产 CaptureAdapter。
+
+    检测返回什么不重要——要的是采集线程、真实帧到达节奏与断流动力学在场。
+    启动口径照 controller：max_fps=60、还原最小化、等首帧 2s 兜底。
+    """
+    from maaracing_master.core.capabilities import CaptureAdapter
+    from maaracing_master.core.wgcap import WgcCapture
+    from maaracing_master.core.window_utils import (ensure_window_restored,
+                                                   find_game_hwnd)
+    hwnd = find_game_hwnd(verbose=False)
+    if not hwnd:
+        raise SystemExit("live 采集找不到游戏窗口：先把游戏开在驾驶页")
+    try:
+        ensure_window_restored(hwnd)
+    except Exception:                              # 还原失败不阻断启动
+        pass
+    cap = WgcCapture(hwnd, max_fps=60)
+    cap.start()
+    for _ in range(40):
+        frame, *_ = cap.get_latest()
+        if frame is not None:
+            break
+        time.sleep(0.05)
+    else:
+        cap.stop()
+        raise SystemExit("WGC 启动后 2s 未收到首帧")
+    return CaptureAdapter(SimpleNamespace(_wgc_capture=cap)), cap
+
+
 def _find_session(name: str) -> Path:
     from maaracing_master.core.paths import debug_dir
     path = debug_dir() / "speedrush" / name
@@ -206,7 +246,9 @@ def _tick_audit(trace_dir: Path, requested_s: float) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--session", default=DEFAULT_SESSION, help="素材局目录名")
+    ap.add_argument("--session", default=DEFAULT_SESSION, help="素材局目录名（disk 模式）")
+    ap.add_argument("--capture", choices=("live", "disk"), default="live",
+                    help="live=真 WGC 采游戏窗口（默认）；disk=磁盘供帧")
     ap.add_argument("--seconds", type=float, default=180.0, help="回放时长上限")
     ap.add_argument("--stop-on-stall", action="store_true", default=True,
                     help="抓到现场即停（默认开）")
@@ -215,16 +257,31 @@ def main() -> int:
                          "落进产物，供后人判读这轮阴性排除了哪一组变量")
     args = ap.parse_args()
 
-    session_dir = _find_session(args.session)
     stop = threading.Event()
-    capture = DiskCapture(session_dir, stop)
+    wgc = None
+    if args.capture == "live":
+        capture, wgc = _live_capture()
+        covered = list(COVERED) + list(COVERED_LIVE_EXTRA)
+        uncovered = list(UNCOVERED_LIVE)
+
+        def published():
+            return None
+    else:
+        disk = DiskCapture(_find_session(args.session), stop)
+        disk.start()
+        capture = disk
+        covered = list(COVERED)
+        uncovered = list(UNCOVERED_DISK)
+
+        def published():
+            return disk.published
     ctx = SimpleNamespace(lifecycle=RealLifecycle(stop), capture=capture,
                           debug=SimpleNamespace(enabled=True))
 
-    print("=== 变量集声明 ===")
-    for item in COVERED:
+    print(f"=== 变量集声明（capture={args.capture}）===")
+    for item in covered:
         print("  [覆盖] " + item)
-    for item in UNCOVERED:
+    for item in uncovered:
         print("  [未覆盖] " + item)
 
     logger.set_file_logging(True)      # 开日志会话：流水汇与显卡探针才绑得上
@@ -239,11 +296,12 @@ def main() -> int:
     mod._running = True
     mod._graph = AnchorStub()            # type: ignore[assignment]
 
-    capture.start()
     recorder = mod._begin_recording(1, 1, stamp)
     if recorder is None:
         print("录制器启动失败，终止")
         stop.set()
+        if wgc is not None:
+            wgc.stop()
         perf_sampler.stop()
         logger.set_file_logging(False)
         return 1
@@ -277,14 +335,17 @@ def main() -> int:
     if hud is not None:
         hud.stop("stopped")
     recorder.stop("stopped")
+    if wgc is not None:
+        wgc.stop()
     perf_sampler.stop()
     logger.set_file_logging(False)
 
-    fidelity = {"素材局": args.session, "回放秒数上限": args.seconds,
+    fidelity = {"素材局": args.session, "采集模式": args.capture,
+                "回放秒数上限": args.seconds,
                 "操作者背景声明": args.background or "（未声明）",
-                "发布帧数": capture.published, "驾驶环正常返回": result,
+                "发布帧数": published(), "驾驶环正常返回": result,
                 "产拍自审": _tick_audit(trace_dir, args.seconds),
-                "覆盖变量": list(COVERED), "未覆盖变量": list(UNCOVERED),
+                "覆盖变量": covered, "未覆盖变量": uncovered,
                 "日志会话": str(out_dir), "录制产物": str(recorder.out_dir),
                 "现场文件": None if stall is None else str(stall)}
     (recorder.out_dir / "replay_fidelity.json").write_text(
