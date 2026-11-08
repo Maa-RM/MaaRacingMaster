@@ -286,11 +286,25 @@ Wait=5，wait reason 31(WrPreempted)=494 → 就绪份是被抢占而非阻塞�
 
 **判读**：真实那一秒里 DML 原生调用绝大部分时间在 CPU 上跑（自旋或 CPU 密集提交），
 几乎不被动等 GPU fence（阻塞仅 5ms）→ 排除「被动睡等 fence」；与带载 MoGe 窗
-（19% 在跑 / 63% 阻塞）**签名相反**，坐实生产 ≠ 带载复现机制。剩余唯一分流：DxgKrnl
-GPU 队列/执行对齐，区分「GPU 空闲→CPU 自旋」与「CPU 密集提交链」。本次生产 ETL 的
-Dynamic 提供程序仅 MSNT_SystemTrace、**无 DxgKrnl**（自定义 profile 的用户态
-DxgKrnl 未采到内核队列事件），故该分流仍未决；需改采内核 DxgKrnl / WPR GPU profile
-或 GPUView 补 GPU 侧时间线。
+（19% 在跑 / 63% 阻塞）**签名相反**，坐实生产 ≠ 带载复现机制。
+
+**GPU 侧判别（不靠 DxgKrnl）**：TraceEvent 无 DxgKrnl 解析器、Dynamic 也不surface内核
+GPU 提供程序（具名关键字 Base/Profiler/GPUScheduler/DxgKrnl/Present/PerfData 仍无效），
+故 DxgKrnl 队列对齐在当前工具链是死胡同。改用 GpuProbe 的 gpu.jsonl（0.5s _nvidia-smi_
+采样）作 GPU 侧时间线：生产停顿秒（13:37:28.03~29.06）内采样返回 None / 该次 nvidia-smi
+**被卡 1172ms**，返回时 **clock=210MHz / power=7.86W（空闲档）**，而前后正常拍为
+2775MHz / ~50W。即 **CPU 83% 在跑的同时 GPU 处于空闲、未在执行** → 支持「GPU 不执行 →
+CPU 自旋/等待环」（提交未达 GPU 或 GPU 挂起），而非「CPU 密集提交有效 GPU 工作」
+（后者应维持 GPU 忙/高时钟）。util=80 为被卡查询的滞后计数，不作依据；以 clock/power
+瞬时值为准。
+
+**采样 IP 模块归属（定「自旋 vs 提交」）**：停顿秒 860 个 1kHz 采样中 **754 (88%) 落在
+`onnxruntime_pybind11_state.pyd`**（ORT 原生、DML EP 静态链接在内），其余零星
+D3D12Core(40)/ntdll(9)/nvwgf2umx(4)/DirectML(3)。即 CPU 旋在 **ORT/DML 原生内部**，
+叠加同窗 GPU 空闲 → 支持「GPU 不执行 → ORT/DML 内 CPU 自旋/等待环」（提交未 completing
+或 GPU 挂起），而非「CPU 密集提交有效 GPU 工作」。无符号故不到函数级，但模块级 +
+GPU 空闲 + 83% 在跑 + 0.5% 阻塞已足够分流。Image/DCStart 模块表（19969 条）做 IP→模块
+映射，不依赖 DxgKrnl。
 
 解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
 对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户
