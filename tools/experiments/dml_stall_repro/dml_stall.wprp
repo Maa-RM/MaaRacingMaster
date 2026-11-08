@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+DML 停顿判读专用采集：内存环形缓冲（不落盘直到 stop），只收判读必需的事件。
+内核侧：进程/线程/模块加载 + 上下文切换 + 就绪队列 + 采样 IP（不抓栈，控体量），
+用于回答停顿线程在窗口内是「在跑 / 就绪没排上 / 等待」。
+GPU 侧：DxgKrnl 全关键字 verbose，用于对齐提交与执行的时间线。
+缓冲共 2GB（24GB 内存机器实测余量充足）；事件率下保留数十秒窗口，
+配合「见停顿现场立即 stop」的包裹脚本，停顿窗口不会被环形覆盖。
+-->
+<WindowsPerformanceRecorder Version="1.0">
+  <Profiles>
+    <SystemCollector Id="DmlStallSystemCollector" Name="DML Stall System Collector">
+      <BufferSize Value="1024"/>
+      <Buffers Value="1024"/>
+    </SystemCollector>
+    <EventCollector Id="DmlStallEventCollector" Name="DML Stall Event Collector">
+      <BufferSize Value="1024"/>
+      <Buffers Value="1024"/>
+    </EventCollector>
+    <SystemProvider Id="DmlStallSystemProvider">
+      <Keywords>
+        <Keyword Value="PROCESS"/>
+        <Keyword Value="THREAD"/>
+        <Keyword Value="LOADER"/>
+        <Keyword Value="CSWITCH"/>
+        <Keyword Value="DISPATCHER"/>
+        <Keyword Value="PROFILE"/>
+        <Keyword Value="DPC"/>
+        <Keyword Value="ISR"/>
+      </Keywords>
+    </SystemProvider>
+    <EventProvider Id="DxgKrnlProvider" Name="Microsoft-Windows-DxgKrnl" Level="5">
+      <Keywords>
+        <Keyword Value="0xFFFFFFFFFFFFFFFF"/>
+      </Keywords>
+    </EventProvider>
+    <Profile Id="DmlStall.Verbose" Name="DmlStall" Description="DML stall submit-vs-execute discrimination"
+             LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="DmlStallSystemCollector">
+          <SystemProviderId Value="DmlStallSystemProvider"/>
+        </SystemCollectorId>
+        <EventCollectorId Value="DmlStallEventCollector">
+          <EventProviderId Value="DxgKrnlProvider"/>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

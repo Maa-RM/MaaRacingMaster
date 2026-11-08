@@ -153,11 +153,11 @@ GitHub issue #18。
 是 2026-08-13 A/B 验证过的修复，治 E-core 漂移造成的 1~2s OCR 尖峰，取消有已知回归
 代价）。显存平坦，离线复现的 churn 机制在生产再次排除。
 
-**取证缺口**：现有逐线程 CPU 时间是 1s 粒度、窗口跨在停顿前后，分不出「就绪队列
-排队」与「阻塞等待」。下一步需要在停顿窗口内对卡住那条线程取细粒度 CPU 时间增量
-（复用 `core/thread_probe.py::thread_times`，零新依赖）：推进且栈不变 → 原生调用内
-自旋/做 CPU 工作；不动且栈不变 → 阻塞，再上 ETW 区分 CPU 就绪与 GPU 队列。本机
-`wpr.exe` 自带 CPU 与 GPU profile，ETW 抓取零安装。
+**取证缺口与补位**：逐线程 CPU 时间原是 1s 粒度、窗口跨在停顿前后，分不出「就绪
+队列排队」与「阻塞等待」。现已在停顿现场内置窗口内双采样（复用
+`core/thread_probe.py::thread_times`，零新依赖）：推进且栈不变 → 原生调用内自旋/做
+CPU 工作；不动且栈不变 → 阻塞。再细的分流（CPU 就绪 vs GPU 队列、提交 vs 执行）走
+ETW 包裹采集，见下节。
 
 ## 真业务回放台（replay_business.py）
 
@@ -219,8 +219,24 @@ OS 就绪队列排队（那会 CPU 时间不增长）、被动睡等 GPU fence�
 Active。栈同窗还有车道与 OCR 两条 CPU 侧 ORT 推理在跑、深度调试在渲染。
 
 **判读边界**：CPU 时间增长只证明「在占用 CPU」，不证明是驱动自旋还是提交链 CPU
-工作；若后者被背景争抢拉长，与「GPU 不执行导致 CPU 自旋」仍须 ETW/GPUView 区分
-提交与执行。下一步在已可复现的台上做 real/stub 对照与背景 CPU 单变量实验。
+工作；若后者被背景争抢拉长，与「GPU 不执行导致 CPU 自旋」仍须 ETW 区分提交与执行。
+
+## ETW 包裹采集（capture_etw.ps1 + dml_stall.wprp）
+
+管理员 PowerShell 跑 `capture_etw.ps1`（本机 UAC 自动提权，可从普通 shell 经
+`Start-Process -Verb RunAs` 拉起）：自定义 profile 起 CPU 调度（进程/线程/模块加载、
+上下文切换、就绪队列、采样 IP，不抓栈控体量）+ DxgKrnl 全关键字采集，循环跑
+live+real 回放（每轮上限 240s、收尾挂死超 330s 即杀），**一发现新停顿现场立即
+`wpr -stop`**——不等回放收尾，防环形缓冲把停顿窗口覆盖掉；四轮未复发则 cancel 不落盘。
+
+采集走**内存环形缓冲**（两收集器各 1GB）：录制期间不落盘，stop 才写
+`%TEMP%\maar_stall_<时刻>.etl`。内置 profile 加 `-filemode` 实测约 2 分钟写 15GB，
+小余量磁盘扛不住；内存模式的代价是只保留最近数十秒，故停采集必须贴着停顿现场。
+
+解码零安装：`tracerpt "<etl>" -o "<etl>.csv" -of CSV -y`，或 PowerShell
+`Get-WinEvent -Path <etl> -Oldest` 按提供程序过滤。判读目标：停顿线程在窗口内的
+调度状态（在跑/就绪未排上/等待）与 DxgKrnl 提交—执行时间线对齐，分流「提交链 CPU
+工作被争抢拉长」与「GPU 不执行导致 CPU 自旋」。
 
 ## 退出路径
 
