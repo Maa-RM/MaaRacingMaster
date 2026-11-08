@@ -22,6 +22,7 @@ PowerShell 里跑。采集走自定义 profile 的内存环形缓冲（dml_stall
   tracerpt "<etl>" -o "<etl>.csv" -of CSV -y
 随后按回放会话墙钟窗口过滤 DxgKrnl 的提交/执行事件与停顿线程 tid 的调度事件。
 #>
+param([switch]$WithLoad)   # 补背景争抢变量：6 自旋 worker 绑 P-core（cpu_load.py）
 $ErrorActionPreference = "Stop"
 $log = Join-Path $env:TEMP "maar_etw_run.log"
 Start-Transcript -Path $log -Force | Out-Null
@@ -44,6 +45,15 @@ Write-Host $status
 if ($status -match "not recording") { throw "wpr start 返回 0 但并未在录制：$status" }
 
 $captured = $false
+$load = $null
+$bgDecl = "游戏漫游自动驾驶"
+if ($WithLoad) {
+    $loadlog = Join-Path $env:TEMP "maar_cpu_load.log"
+    $load = Start-Process -FilePath $py -ArgumentList @((Join-Path $PSScriptRoot "cpu_load.py"),
+        "--workers", "6") -NoNewWindow -PassThru -RedirectStandardOutput $loadlog
+    $bgDecl += "+背景争抢源6worker绑P-core"
+    Write-Host "背景争抢源已起（pid $($load.Id)）"
+}
 try {
     $capStart = Get-Date
     for ($r = 1; $r -le 4; $r++) {
@@ -51,7 +61,7 @@ try {
         $rlog = Join-Path $env:TEMP ("maar_replay_round_" + $r + ".log")
         $proc = Start-Process -FilePath $py -ArgumentList @($replay, "--capture", "live",
             "--graph", "real", "--seconds", "240",
-            "--background", "ETW包裹轮$r：游戏开在驾驶页自动巡航") `
+            "--background", "ETW包裹轮$r：$bgDecl") `
             -NoNewWindow -PassThru -RedirectStandardOutput $rlog -RedirectStandardError ($rlog + ".err")
         # 240s 回放 + 收尾宽限；超时就杀——实测收尾可能挂死，不能让它拖住整轮采集
         $deadline = (Get-Date).AddSeconds(330)
@@ -80,6 +90,10 @@ try {
         Write-Host "轮 $r 未复发（退出码 $($proc.ExitCode)），继续下一轮"
     }
 } finally {
+    if ($load) {
+        Stop-Process -Id $load.Id -Force -ErrorAction SilentlyContinue
+        # 子进程靠父 pid 存活自检退出（约 2s），不连带杀避免误伤
+    }
     if (-not $captured) {
         $ErrorActionPreference = "Continue"
         wpr -cancel 2>&1 | Out-Null
