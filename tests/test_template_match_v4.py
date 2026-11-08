@@ -96,6 +96,9 @@ def test_per_template_thresholds(tpl_dir):
     noisy = np.clip(noisy.astype(np.int16) + noise, 0, 255).astype(np.uint8)
     strict = tm.find_any_cs(noisy, ["red"], [tpl_dir], colorspace="rgb", threshold=0.97)
     assert strict[0] is None
+    # 未命中仍要回报真实最高分：日志里的「ROI 内最高分 0.000」曾把 0.78 的差一点
+    # 命中伪装成完全不沾边（2026-11-08 点继续 连续 20s 假失配的排查障碍）。
+    assert strict[1] > 0.5, "未命中时置信度被吞成 0，日志失去诊断价值"
     relaxed = tm.find_any_cs(noisy, ["red"], [tpl_dir], colorspace="rgb",
                              thresholds={"red": 0.6})
     assert relaxed[0] is not None

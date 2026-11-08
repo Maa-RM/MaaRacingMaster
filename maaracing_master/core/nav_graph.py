@@ -78,7 +78,7 @@ RUN_POLL_MIN_S = 0.001
 RUN_POLL_MAX_S = 0.02
 
 # 点击后「条件等待」的轮询间隔（秒）。只在 wait_after_ms 上限内生效，最多约
-# 800/50=16 次单 ROI 模板匹配；不是「等按钮出现」的地板，那是框架 rate_limit 的事。
+# 2000/50=40 次单 ROI 模板匹配；不是「等按钮出现」的地板，那是框架 rate_limit 的事。
 CLICK_SETTLE_POLL_S = 0.05
 
 # 停止后等框架收摊的上限：binding 的 Job.wait() 无超时参数，框架一旦卡住就是
@@ -382,6 +382,7 @@ class ClickAction(CustomAction):
         self._graph._log(f"[v4] 「{argv.node_name}」点击 rect=({rx},{ry},{rw},{rh}) "
                          f"帧 {W}x{H} 归一化=({cx:.3f},{cy:.3f})", "DEBUG")
 
+        self._graph.last_click_sent = True
         ok = self._graph.click(
             cx, cy, box_norm,
             timeout_s=float(p.get("timeout_s", 20.0)),
@@ -390,7 +391,7 @@ class ClickAction(CustomAction):
         )
         self._graph._publish_intent(argv.node_name, rx + rw / 2, ry + rh / 2,
                                     "ok" if ok else "failed")
-        self._wait_after_click(p, argv.node_name)
+        self._graph.last_click_landed = self._wait_after_click(p, argv.node_name)
         if not ok:
             reason = self._graph.last_click_error
             if reason == "gamepad_unbound":
@@ -402,7 +403,7 @@ class ClickAction(CustomAction):
                 self._graph._log(f"[跳转图] 节点「{argv.node_name}」点击失败原因: {reason}", "DEBUG")
         return ok
 
-    def _wait_after_click(self, p: dict, node_name: str) -> None:
+    def _wait_after_click(self, p: dict, node_name: str) -> bool | None:
         """点击后停顿：有 settle 规格则「画面切走即返回」，否则固定 sleep。
 
         2026-11-06 实机（会话 20261106_185832，nav 帧 894→895）：确认上阵按钮
@@ -410,13 +411,17 @@ class ClickAction(CustomAction):
         固定 800ms 让动作节点在画面已切走后仍挂着，节点标注比画面晚 0.75~0.85s。
         这里只把「固定睡」换成**有上限**的条件等待，不改步级重试的窗口、轮询与
         重发上限；条件不满足（点了没反应、按钮还在）时行为与旧版完全一致。
+
+        返回值 = 「源按钮是否已消失」这一点击生效信号，供步级机当 verdict：
+        True=按钮消失（点击生效）；False=兜底时限内按钮仍在（点击被吞）；
+        None=无 settle / 异常 / 停止，判不了，调用方回退落地页确认。
         """
         graph = self._graph
         budget_s = max(0.0, float(p.get("wait_after_ms", 800)) / 1000.0)
         settle = p.get("settle")
         if budget_s <= 0 or not isinstance(settle, dict) or not settle.get("templates"):
             graph.ctx.lifecycle.sleep(budget_s)
-            return
+            return None
 
         names = [strip_ext(n) for n in settle["templates"] if isinstance(n, str) and n]
         # 模板缺失会让「认不出来」恒真 → 等于静默删掉 800ms 兜底。先证实模板都在，
@@ -430,7 +435,7 @@ class ClickAction(CustomAction):
         if not tpls or any(t is None for t in tpls):
             graph._log(f"[v4] 「{node_name}」settle 模板不可用，退回固定停顿", "WARNING")
             graph.ctx.lifecycle.sleep(budget_s)
-            return
+            return None
 
         rect = settle.get("rect") or (0, 0, 1, 1)
         threshold = float(settle.get("threshold", 0.8))
@@ -442,7 +447,7 @@ class ClickAction(CustomAction):
             if remaining <= 0:
                 graph._log(f"[v4] 「{node_name}」点击后 {budget_s * 1000:.0f}ms 内"
                            "按钮仍在，按兜底收工", "DEBUG")
-                return
+                return False
             try:
                 frame = graph.frame()
             except Exception:  # noqa: BLE001 —— 取帧异常按「这一轮没帧」处理
@@ -466,15 +471,15 @@ class ClickAction(CustomAction):
                     graph._log(f"[v4] 「{node_name}」settle 匹配异常（{exc!r}），"
                                "退回固定停顿", "WARNING")
                     graph.ctx.lifecycle.sleep(max(0.0, deadline - time.monotonic()))
-                    return
+                    return None
                 if not visible:
                     graph._log(f"[v4] 「{node_name}」点击后 "
                                f"{(time.monotonic() - started) * 1000:.0f}ms 按钮已不可见"
                                f"（ROI 最高分 {best:.3f} < {threshold:.3f}），提前收工",
                                "DEBUG")
-                    return
+                    return True
             if not graph.ctx.lifecycle.sleep(min(CLICK_SETTLE_POLL_S, remaining)):
-                return  # 停止信号：不再等，也不影响已发出的点击结果
+                return None  # 停止信号：不再等，也不影响已发出的点击结果
 
 
 # 真源里可写的按钮名 → vgamepad 按钮位（一手核对：vgamepad/win/vigem_commons.py）。
@@ -668,6 +673,12 @@ class NavGraph:
         self._fatal_lock = threading.Lock()
         self._outcome: str | None = None  # 上次 run 的结局（见 run 的 docstring）
         self._last_click_error: str = ""  # 上一次 click 的失败原因（供动作桥分类）
+        # 上一次点击的「源按钮是否消失」settle 信号：True=生效 / False=被吞 / None=判不了。
+        # 步级机（module._run_step）优先用它当 verdict，见 ClickAction._wait_after_click。
+        self.last_click_landed: bool | None = None
+        # 本次跑图里动作节点是否真的执行了点击：识别未命中时动作桥根本不进，不会置位。
+        # 配合 last_click_landed 区分「点了但按钮没在预算内消失」与「按钮已不在、根本没点」。
+        self.last_click_sent: bool = False
         self._last_static_warn = 0.0  # 画面静止告警节流（不是故障）
         # 调试流：导航段的状态快照（节点/模板/分数/框/意图），由 core 自己的
         # 执行器提供给调试流；模块不需要为导航绘制写任何代码。

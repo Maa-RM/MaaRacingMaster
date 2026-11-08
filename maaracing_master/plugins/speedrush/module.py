@@ -153,10 +153,12 @@ DRIVE_TIMEOUT_S = 600.0
 DRIVE_MISS_TOLERANCE = 2
 
 # ---------- 步级重试（大阶段之间的一次 UI 点击） ----------
-# 现状：某个 UI 步 run(node, node) 的 True 只证明「按钮被识别并点了一次」，不含落地页
-# 后置确认；点了没生效只能靠下一步识别不到、白等框架默认 20s 后中止本轮。这里给每个
-# 点击步套 core StepMachine：点击 → 按时间窗轮询落地页确认锚点 → 未落地则有限重发同一
-# 点击（动作节点自带识别闸门，按钮已消失就空跑、不误点）→ 耗尽按现状终止本轮、停止即退。
+# 成功判据 = 画面确实切到落地页：① 源按钮 ROI 消失（ClickAction settle 信号）或 ② 落地锚点
+# 从无到有（进本步时不在、点后命中），二者取其一，且落地锚点此刻在位。
+# 只用①：常驻 tab 点完也不消失，该步恒判失败；只用②：锚点在点击前就可见时证明不了切换
+# （弹窗出现前的空商店页）。生效过就不再重发，只等页面到位。
+# 按钮消失得比 2s 观察窗还慢时，由「下一拍按钮已识别不到」反推为生效，
+# 否则会一直重发到按钮已不在、只剩空转识别。
 # 机器唯一持有计数与时间窗，speedrush 只供给「动作 + 每拍 verdict + 驱动时机」。
 # 剂量（max_retries / window_s / poll_s / 分步覆盖 by_stage）在数据面 decision.json 的
 # step_retry 段——_run_step 每步经 load_decision().step_retry.dose(stage) 取，可按阶段调。
@@ -995,15 +997,24 @@ class SpeedRushModule(ActivityModule):
             drive_ready_confirmed = False
 
     def _run_step(self, action_node: str, stage: str) -> bool:
-        """发一次 UI 点击并按「落地页确认锚点」做有限重发（步级重试）。
+        """发一次 UI 点击并做有限重发（步级重试）。
 
-        返回 True = 该步已落地（确认锚点命中）；False = 停止或重发耗尽（调用方中止本轮）。
+        返回 True = 该步已落地；False = 停止或重发耗尽（调用方中止本轮）。
 
-        speedrush 一步 = 一次尝试：点击是阻塞式完成、没有独立"送达"信号，故整步算一次
-        （点击发出即 `arm`，只重置时间窗）。确认后喂 SUCCESS、未落地喂 PENDING；停止由
-        循环守卫 `self._running / lifecycle.running` 直接退出，不喂 STOP（对应机器"停止能力
-        可选"，treasure 式逐帧自管与 speedrush 式阻塞自管共用同一转移表）。耗尽按现状终止
-        本轮，**不做回合级自动重开**（步失败不证明画面回到可重开处）。
+        **成功判据 = 画面确实切到了落地页**，两条证据取其一，外加落地锚点此刻在位：
+        ① 源按钮消失（settle 信号 `graph.last_click_landed`，观察窗 2s）；
+        ② 落地锚点从无到有（进本步时不在、点后命中）。
+        只用①：左侧模式列表这类常驻 tab 点完也不消失，该步会判成永远失败（页面其实换了）。
+        只用②：落地锚点在点击前就可见时（弹窗出现前的空商店页），命中证明不了画面切走。
+        「生效」还有一条反推：上一拍点过后，这一拍源按钮已识别不到（`last_click_sent` 为假）
+        = 那时点击确实生效，只是按钮消失慢过 2s 观察窗——否则会陷入
+        「只识别不点击」的空转（按钮已不在，重发永远点不到东西）。
+        窗口只决定「多久重发一次」；慢转场由窗口内的确认轮询吸收，总覆盖=(max_retries+1)×window_s。
+
+        speedrush 一步 = 一次尝试：点击发出即 `arm`，只重置时间窗。生效并到位喂 SUCCESS，
+        其余喂 PENDING；一旦生效过就不再重发（按钮多半已不在），只继续等落地页。停止由循环
+        守卫 `self._running / lifecycle.running` 直接退出，不喂 STOP。耗尽按现状终止本轮，
+        **不做回合级自动重开**。
         """
         assert self._graph is not None      # 调用方 _run_flow 已建图
         assert self.ctx is not None         # 运行期编排层总是注入实 ctx
@@ -1015,18 +1026,49 @@ class SpeedRushModule(ActivityModule):
         machine = StepMachine(max_retries=max_retries, window_s=window_s,
                               clock=time.monotonic)
         send_click = True
+        landed_ever = False      # 任一次点击的源按钮消失过（真·生效），跨重发保持
+        clicked_once = False     # 本步发过至少一次点击（按钮后来不在才可反推「上一拍已生效」）
+        # 进入本步时落地锚点在不在。不在 → 「点后命中」本身就是画面切走的证据：
+        # 左侧模式列表这类常驻 tab 点完也不消失，settle 对它恒为「被吞」，只能看落地页
+        # 从无到有；已在 → 命中证明不了切换，退回「源按钮消失」这条判据。
+        confirm_pre = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
         while self._running and self.ctx.lifecycle.running:
             if send_click:
                 machine.arm()                                   # 一次尝试发出：只重置窗口、不动计数
+                self._graph.last_click_landed = None            # 清上一拍信号；动作未执行则保持 None
+                self._graph.last_click_sent = False
                 self._graph.run(action_node, action_node, save=NAV_SAVE)  # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
                 send_click = False
+                landed = getattr(self._graph, "last_click_landed", None)
+                click_sent = bool(getattr(self._graph, "last_click_sent", False))
+                if landed is True:
+                    landed_ever = True
+                elif (landed is None and clicked_once and not click_sent):
+                    # 上一拍点过，这一拍按钮已认不出来（识别未命中→动作桥没进）= 那次点击
+                    # 生效了，只是按钮消失得比 2s 观察窗还慢（据此判不了，只能等下一拍）。
+                    # 没点过时不能这么反推：那也可能只是页面本来就没这个按钮。
+                    landed_ever = True
+                if click_sent:
+                    clicked_once = True
+            # 成功 = 画面确实切到落地页：源按钮消失（settle）**或**落地锚点从无到有，
+            # 但凡其中一条成立，再要求落地锚点此刻在位。只看按钮消失会把「点了不消失的
+            # 常驻 tab」判成永远失败；只看落地页会在弹窗出现前的空商店页上提前通过。
+            page_ok = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
+            page_changed = page_ok and not confirm_pre
+            confirm_pre = page_ok
             cmd = machine.observe(
-                Verdict.SUCCESS if self._graph.run(confirm_node, confirm_node, save=NAV_SAVE) else Verdict.PENDING
+                Verdict.SUCCESS if (page_ok and (landed_ever or page_changed)) else Verdict.PENDING
             )
             if cmd is Command.DONE:
                 return True
             if cmd is Command.RETRY:
-                send_click = True                               # 重发同一动作（下一次点击即新窗口）
+                if landed_ever:
+                    # 已生效过就不再重发（按钮多半已经不在，重发只会空跑）——用 arm() 折叠
+                    # 「重发在途」资格并重置窗口，继续等落地页；否则机器会一直返回 RETRY
+                    # （在途未送达）导致原地空转。
+                    machine.arm()
+                else:
+                    send_click = True
                 continue
             if cmd is Command.WAIT:
                 if not self.ctx.lifecycle.sleep(poll_s):        # 窗内轮询；睡眠兼作停止信号
@@ -1034,7 +1076,7 @@ class SpeedRushModule(ActivityModule):
                 continue
             if cmd is Command.FAIL:
                 _tlog(self, f"[极速狂飙] 步骤「{stage}」重发 {max_retries} 次仍未落地"
-                            f"（确认锚点「{confirm_node}」始终未命中），本轮中止", "WARNING")
+                            f"（源按钮未消失且落地锚点「{confirm_node}」未从无到有），本轮中止", "WARNING")
                 return False
             return False                                        # ABORT 或未知命令：保守退出
         return False                                            # 停止（_running / lifecycle 已假）

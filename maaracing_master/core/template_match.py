@@ -241,9 +241,14 @@ def find_any_cs(frame: np.ndarray, names: list[str], image_dirs: list[Path], *,
                 colorspace: str = "rgb", threshold: float = 0.7,
                 thresholds: dict[str, float] | None = None,
                 scales=DEFAULT_SCALES, roi: Box | None = None) -> tuple[Box | None, float, str]:
-    """v4 多候选匹配：逐模板独立阈值（arbitration.template_thresholds）+ colorspace。"""
+    """v4 多候选匹配：逐模板独立阈值（arbitration.template_thresholds）+ colorspace。
+
+    未命中时置信度仍是**真实最高分**（不是 0）：调用方靠它打「ROI 内最高分」，
+    恒返回 0 会把「差一点命中」和「完全不沾边」抹成同一行日志。
+    """
     thresholds = thresholds or {}
-    best_box, best_val, best_name = None, 0.0, ""
+    best_box, best_hit_val, best_name = None, 0.0, ""
+    best_miss_val = 0.0
     for name in names:
         tpl = load_template(name, image_dirs)
         if tpl is None:
@@ -251,9 +256,14 @@ def find_any_cs(frame: np.ndarray, names: list[str], image_dirs: list[Path], *,
         box, val = match_template_cs(frame, tpl, colorspace=colorspace,
                                      threshold=float(thresholds.get(name, threshold)),
                                      scales=scales, roi=roi)
-        if box is not None and val > best_val:
-            best_box, best_val, best_name = box, val, name
-    return best_box, best_val, best_name
+        if box is not None:
+            if val > best_hit_val:
+                best_box, best_hit_val, best_name = box, val, name
+        elif val > best_miss_val:
+            best_miss_val = val
+    if best_box is not None:
+        return best_box, best_hit_val, best_name
+    return None, best_miss_val, ""
 
 
 def color_assert_ok(frame: np.ndarray, box: Box, sub_rect_norm: list[float],

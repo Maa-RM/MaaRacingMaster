@@ -71,6 +71,13 @@ NODE_OVERRIDES: dict[str, dict] = {
         "timeout": 50,
         "threshold": 0.7,
     },
+    "speedrush_reward_hint": {
+        # 奖励弹窗有入场动画，动画期间游戏吞点击（2026-11-08 会话 20261108_145933：
+        # 「点击屏幕继续」提示一出现就点，两次首点都无效、800ms 后按钮仍在；而同一次
+        # 弹窗在 1.1s 后才完全铺开，重试点击 47~63ms 内消失）。留 1500ms 让入场走完，
+        # 否则首点必被吞、要靠步级窗重发兜底。
+        "pre_delay": 1500,
+    },
 }
 
 # 动作节点的节拍覆盖：框架默认 rate_limit=1000ms、pre/post_delay 各 200ms
@@ -78,17 +85,34 @@ NODE_OVERRIDES: dict[str, dict] = {
 # 「每轮识别最低消耗」与进出节点的隐式等待，不是「等按钮出现」的时间。原子动作
 # 节点识别命中即点一下收图，这层地板纯属固定开销：2026-11-06 实机日志里 p1→p2
 # 两次点击步分别耗 4s / 2s，按默认值推算其中约 2.4s 落在这三项上。
-# **timeout 没动**：官方协议里它约束的是「当前节点 next 列表识别的超时」，不是本
-# 节点 recognition 的等待时间；本项目动作节点零路由、next 为空，等按钮晚出现由
-# 入口识别循环与 Python 侧步级重试窗口承担，不靠这个字段。保留框架默认 20s，
-# 不引入未经实机校准的新数值。
-# **rate_limit 为什么是 100 而不是 0**：0 会把「按钮晚出现」场景变成框架在 20s
-# 超时里全速截图找图（不失败，但白烧 CPU 与日志）。100ms 既去掉 1s 地板，又给
-# 识别循环留出节流；相对游戏转场（实测 ≥1s）可忽略，不改变落地耗时或重发次数。
-# pre/post_delay 保持 0：它们是进出节点的纯固定开销，没有空转风险。
+# **timeout 取 1000ms**：入口节点自己那轮识别在按钮缺席时会吃满框架默认 20s
+# （2026-11-08 会话 20261108_145933：点继续 15:02:53→15:03:13 整 20s，期间步级
+# 重试窗口一次都没轮到）。等按钮晚出现由 Python 侧步级窗口负责，这里只留一帧级
+# 余量：命中即点，未命中约 1s 收尾。
+# **rate_limit 为什么是 100 而不是 0**：0 会让未命中的入口在 timeout 内全速截图
+# 找图（不失败，但白烧 CPU 与日志）。100ms 既去掉 1s 地板，又给识别循环留出节流；
+# 相对游戏转场（实测 ≥1s）可忽略，不改变落地耗时或重发次数。
+# pre/post_delay 保持 0：它们是进出节点的纯固定开销，没有空转风险（商店弹窗那一步
+# 的前摇在 NODE_OVERRIDES 里按模板单独开，不放这里）。
 # 就地赋、不进 NODE_OVERRIDES：那是按模板键生效的例外表，而这里是一整类节点的
 # 共同节拍；确认探针与动作节点复用同一批模板，按模板写会把两者绑在一起。
-ACTION_NODE_PACE = {"rate_limit": 100, "pre_delay": 0, "post_delay": 0}
+ACTION_NODE_PACE = {"rate_limit": 100, "pre_delay": 0, "post_delay": 0, "timeout": 1000}
+
+# 同一节点可挂多张候选模板：同一个按钮在不同页面上皮肤不同。只留一张时另一页整段
+# 失配——2026-11-08 会话 20261108_145933 里回合结果页的「继续」是实心灰圆，旧模板
+# 只对段位分结算页的细环成立（真实得分 0.78 < 阈值 0.8），整步白等 20s 后中止。
+# 键 = ACTIONS/CONFIRMS 里登记的主模板（搜索区与阈值都取主模板的），值 = 追加候选。
+# **只给动作节点加**：确认探针（`__confirm`）靠"这一页独有的标记"判落地，若也挂上
+# 另一页的皮肤，确认会在错误页面提前通过。
+EXTRA_TEMPLATES: dict[str, list[str]] = {
+    "speedrush_continue_btn": ["speedrush_result_continue_btn"],
+}
+
+# 点击后观察「源按钮是否消失」的上限（毫秒）。core 的 MaaRM_Click 在此上限内按
+# 50ms 轮询单 ROI，认不到按钮即判点击生效、提前收工。取 2000ms 与生态先例同量级
+# （MAA 的确认流程：点完每 500ms 认一次，连续约 2 秒还在才重点）；短于此值的转场
+# 一次就能判出，慢于它的由步级重发的「按钮已不在」反推兜底。
+SETTLE_BUDGET_MS = 2000
 
 # (节点名, 模板名, page, 标签)
 ACTIONS: list[tuple[str, str, str, str]] = [
@@ -152,8 +176,14 @@ CONFIRMS: list[tuple[str, str, str]] = [
 CONFIRM_PROBE_TIMEOUT_MS = 400
 
 
-def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
-    """MaaRM_Template 识别规格（v2 归一形）。"""
+def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD, *,
+          with_extras: bool = False) -> dict:
+    """MaaRM_Template 识别规格（v2 归一形）。
+
+    with_extras：动作节点传 True，把 EXTRA_TEMPLATES 里该主模板的候选皮肤一并挂上
+    （搜索区/阈值仍取主模板的）；确认探针保持单模板，见 EXTRA_TEMPLATES 的说明。
+    """
+    names = [tpl, *(EXTRA_TEMPLATES.get(tpl, []) if with_extras else [])]
     return {
         "type": "Custom",
         "param": {
@@ -162,7 +192,7 @@ def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
                 "mode": "template",
                 "colorspace": "rgb",
                 "rect": rect,
-                "templates": [f"{tpl}.png"],
+                "templates": [f"{n}.png" for n in names],
                 "threshold": threshold,
             },
         },
@@ -172,8 +202,8 @@ def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
 def settle_from(reco: dict) -> dict:
     """点击后条件等待的判据规格 = 本节点 recognition 规格的**同源副本**。
 
-    core 的 MaaRM_Click 拿它在 wait_after_ms 上限内轮询：「源按钮在它自己的 ROI 里
-    认不出来」= 画面已切走，立即收工；始终不超过 800ms 兜底。判据只答「当前页是否
+    core 的 MaaRM_Click 拿它在 wait_after_ms（`SETTLE_BUDGET_MS`=2s）上限内轮询：
+    「源按钮在它自己的 ROI 里认不出来」= 画面已切走，立即收工。判据只答「当前页是否
     已离开」，落地页是否到位仍由 __confirm 探针 + 步级重试窗口裁决。
 
     为什么不另写一张「动作节点 → 落地页标记」映射：那会和 module.py 的
@@ -218,6 +248,12 @@ def main() -> None:
     missing += [t for _, t, _ in CONFIRMS if t not in roi]
     if missing:
         raise SystemExit(f"以下模板缺少 ROI 数据：{missing}")
+    img_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "..", "resources", "image"))
+    missing_imgs = [n for extras in EXTRA_TEMPLATES.values() for n in extras
+                    if not os.path.exists(os.path.join(img_dir, f"{n}.png"))]
+    if missing_imgs:
+        raise SystemExit(f"以下候选模板缺少图片：{missing_imgs}")
 
     graph: dict[str, dict] = {}
 
@@ -230,7 +266,7 @@ def main() -> None:
     # 借此豁免机检的「无出口节点」告警——告警本身不 fail，但十个节点一起报会淹没
     # CI 输出。语义注释见 _label。
     for name, tpl, page, label in ACTIONS:
-        reco = recog(tpl, roi[tpl]["rect"], _threshold_for(tpl))
+        reco = recog(tpl, roi[tpl]["rect"], _threshold_for(tpl), with_extras=True)
         graph[name] = _with_overrides({
             "attach": {
                 "_page": page,
@@ -241,7 +277,8 @@ def main() -> None:
             "recognition": reco,
             "action": {"type": "Custom", "param": {
                 "custom_action": "MaaRM_Click",
-                "custom_action_param": {"settle": settle_from(reco)},
+                "custom_action_param": {"settle": settle_from(reco),
+                                        "wait_after_ms": SETTLE_BUDGET_MS},
             }},
             **ACTION_NODE_PACE,
         }, tpl)

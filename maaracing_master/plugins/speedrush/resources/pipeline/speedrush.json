@@ -43,13 +43,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点娱乐玩法": {
         "attach": {
@@ -95,13 +97,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点极速狂飙卡片": {
         "attach": {
@@ -147,13 +151,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点开始挑战": {
         "attach": {
@@ -199,13 +205,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点寻找对手": {
         "attach": {
@@ -251,13 +259,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点放弃本轮": {
         "attach": {
@@ -303,13 +313,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.关闭奖励弹窗": {
         "attach": {
@@ -355,13 +367,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
-        "pre_delay": 0,
-        "post_delay": 0
+        "pre_delay": 1500,
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点确认上阵": {
         "attach": {
@@ -407,13 +421,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点继续": {
         "attach": {
@@ -436,7 +452,8 @@
                         0.9806
                     ],
                     "templates": [
-                        "speedrush_continue_btn.png"
+                        "speedrush_continue_btn.png",
+                        "speedrush_result_continue_btn.png"
                     ],
                     "threshold": 0.8
                 }
@@ -455,17 +472,20 @@
                             0.9806
                         ],
                         "templates": [
-                            "speedrush_continue_btn.png"
+                            "speedrush_continue_btn.png",
+                            "speedrush_result_continue_btn.png"
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.点继续放弃": {
         "attach": {
@@ -511,13 +531,15 @@
                         ],
                         "threshold": 0.8,
                         "colorspace": "rgb"
-                    }
+                    },
+                    "wait_after_ms": 2000
                 }
             }
         },
         "rate_limit": 100,
         "pre_delay": 0,
-        "post_delay": 0
+        "post_delay": 0,
+        "timeout": 1000
     },
     "speedrush.驾驶页锚点": {
         "attach": {
