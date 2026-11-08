@@ -287,7 +287,10 @@ Wait=5，wait reason 31(WrPreempted)=494 → 就绪份是被抢占而非阻塞�
 **判读**：真实那一秒里 DML 原生调用绝大部分时间在 CPU 上跑（自旋或 CPU 密集提交），
 几乎不被动等 GPU fence（阻塞仅 5ms）→ 排除「被动睡等 fence」；与带载 MoGe 窗
 （19% 在跑 / 63% 阻塞）**签名相反**，坐实生产 ≠ 带载复现机制。剩余唯一分流：DxgKrnl
-GPU 队列/执行对齐，区分「GPU 空闲→CPU 自旋」与「CPU 密集提交链」。
+GPU 队列/执行对齐，区分「GPU 空闲→CPU 自旋」与「CPU 密集提交链」。本次生产 ETL 的
+Dynamic 提供程序仅 MSNT_SystemTrace、**无 DxgKrnl**（自定义 profile 的用户态
+DxgKrnl 未采到内核队列事件），故该分流仍未决；需改采内核 DxgKrnl / WPR GPU profile
+或 GPUView 补 GPU 侧时间线。
 
 解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
 对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户
