@@ -29,9 +29,16 @@ $replay = Join-Path $PSScriptRoot "replay_business.py"
 $etl = Join-Path $env:TEMP ("maar_stall_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".etl")
 
 Write-Host "起 ETW 采集（CPU + GPU）..."
-wpr -cancel 2>$null | Out-Null   # 清幽灵会话：不清则 start 撞 already-running、stop 落空
+# 清幽灵会话：不清则 start 撞 already-running、stop 落空。
+# 无会话时 cancel 走 stderr，EAP=Stop 下会把脚本当场终止，故这一段降为 Continue。
+$ErrorActionPreference = "Continue"
+wpr -cancel 2>&1 | Out-Null
+$ErrorActionPreference = "Stop"
 wpr -start CPU -start GPU -filemode
 if ($LASTEXITCODE -ne 0) { throw "wpr 启动失败（确认已提权）" }
+$status = (wpr -status 2>&1) -join "`n"
+Write-Host $status
+if ($status -match "not recording") { throw "wpr start 返回 0 但并未在录制：$status" }
 try {
     $capStart = Get-Date
     for ($r = 1; $r -le 4; $r++) {
