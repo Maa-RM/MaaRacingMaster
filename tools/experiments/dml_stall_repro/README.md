@@ -277,6 +277,18 @@ GPU fence / 内核对象；「yolo/lane 等 MoGe 释锁」的 convoy 是**传播
 整窗三分 + wait reason + DxgKrnl 队列对齐 + 丢事件/时间边界校验，离线台继续带载/无载
 交错重复以验争抢是否稳定提高复现概率（两者不可互替）。
 
+**生产 ETL 整窗三分（2026-11-08 13:37，capture_production_etw.ps1 命中）**：真实 yolo
+整秒停顿 `stall_133728_255_yolo.txt`（该拍 `yolo_run_ms=1021`），ETL
+`maar_prod_stall_20261108_133258.etl`，sidecar 记 **Dropped=0**、span 覆盖停顿。整窗
+1030ms（13:37:28.030~29.060，tid 13184）三分：**在跑 854.3ms(83%) / 就绪 170.4ms(17%)
+/ 阻塞 5.3ms(0.5%)**；独立互证 1kHz 采样命中 860 次 ≈ 854ms 在跑。切出 Ready=508 /
+Wait=5，wait reason 31(WrPreempted)=494 → 就绪份是被抢占而非阻塞。
+
+**判读**：真实那一秒里 DML 原生调用绝大部分时间在 CPU 上跑（自旋或 CPU 密集提交），
+几乎不被动等 GPU fence（阻塞仅 5ms）→ 排除「被动睡等 fence」；与带载 MoGe 窗
+（19% 在跑 / 63% 阻塞）**签名相反**，坐实生产 ≠ 带载复现机制。剩余唯一分流：DxgKrnl
+GPU 队列/执行对齐，区分「GPU 空闲→CPU 自旋」与「CPU 密集提交链」。
+
 解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
 对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户
 批准引于 TEMP 临时 dotnet 工程，不进仓库依赖），内核事件名带前缀
