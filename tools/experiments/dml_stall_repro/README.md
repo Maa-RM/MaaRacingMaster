@@ -312,8 +312,15 @@ EventProvider 未启用它，hex 掩码亦无效）；而 **WPR 内置 GPU / GPU
 等）→ 解码层无问题，「TraceEvent 无法解析 DxgKrnl」是采集配置误判，收回。另纠正：
 `b3e675d7` 是 **ImageID**（映像/符号身份）事件类 GUID，**不是 DxgKrnl**（此前误认）。
 **HAGS HwSchMode=2 开启** → 传统 DMA 包不完整，GPU 忙闲判读须防「把实际执行误判空闲」
-陷阱（Nsight 文档警告）。修采集：抓取脚本改组合 `-start GPU.light`（内置）+ 自定义调度
-profile；GPU 队列时间线待下一次含 DxgKrnl 的捕获补齐。
+陷阱（Nsight 文档警告）。修采集：自定义 profile 移除无效 DxgKrnl EventProvider（它撑出
+空 Event session 致组合报 0xc5580612），只留内核调度；GPU 由组合 `-start GPU.light` 提供。
+
+**组合 profile 带载验证 + GPU 队列对齐（2026-11-08 14:16）**：组合采集 DxgKrnl=114万
+（验证通过）。该带载 moge 窗 348ms（tid 8136）三分：在跑 172.2(50%)/就绪 175.8(50%)/
+阻塞 0；采样 165/177 在 ORT；切出 Ready=773(reason31=WrPreempted)。**GPU 队列时间线
+（100ms 桶 DmaPacket=执行）每桶均非零（34/54/347/218）** → 带载停顿期间 **GPU 在忙**，
+机制 = 争抢下 CPU 就绪饥饿 + GPU 活跃，**非 GPU 空闲自旋**。与生产窗（83% 在跑 + GPU
+点状低频）签名仍不同；生产 GPU 时间线待组合 profile 生产布防补齐。
 
 解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
 对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户
