@@ -233,10 +233,10 @@ live+real 回放（每轮上限 240s、收尾挂死超 330s 即杀），**一发
 `%TEMP%\maar_stall_<时刻>.etl`。内置 profile 加 `-filemode` 实测约 2 分钟写 15GB，
 小余量磁盘扛不住；内存模式的代价是只保留最近数十秒，故停采集必须贴着停顿现场。
 
-解码零安装：`tracerpt "<etl>" -o "<etl>.csv" -of CSV -y`，或 PowerShell
-`Get-WinEvent -Path <etl> -Oldest` 按提供程序过滤。判读目标：停顿线程在窗口内的
-调度状态（在跑/就绪未排上/等待）与 DxgKrnl 提交—执行时间线对齐，分流「提交链 CPU
-工作被争抢拉长」与「GPU 不执行导致 CPU 自旋」。
+解码：tracerpt CSV 与 Get-WinEvent 对本 ETL 均丢调度载荷（见下「解码工具事实」），
+可用路径为 TraceEvent 临时工程。判读目标：停顿线程在窗口内的调度状态（在跑/就绪
+未排上/等待）三分，与 GPU forward 是否拉伸对照，分流「提交链 CPU 工作被争抢拉长」
+与「GPU 不执行导致 CPU 自旋」。
 
 **背景争抢变量补位（2026-11-08）**：11-08 上午四轮有效阴性（16Hz 满覆盖）与复发窗
 负载画像有一处显著差：复发窗系统 CPU 98% 而本进程仅 312% → 背景约 8.6 核；四轮
@@ -254,8 +254,24 @@ who=moge 而昨日复发 who=yolo → 现象不限于单模型单线程。该次
 **带载前后阶段拉伸对照**（深度链 completed seg，无载轮 n=1580 / 带载轮 n=342）：
 CPU 阶段 p50 拉伸 3~5 倍（edges 23.1→64.7ms、grid 11.8→58.2ms、plane 12.1→20.1ms、
 pre p90 8.3→8.8 但 max 13.6→96.4），GPU forward p50 几乎不动（55.4→59.3ms）。
-争抢拉长的是 CPU 侧工作而非 GPU 执行——与「提交链 CPU 工作被争抢拉长」一族吻合；
-原生调用窗口内该线程的调度状态（在跑/就绪未排上）待 ETL CSwitch 判读收尾。
+争抢拉长的是 CPU 侧工作而非 GPU 执行——与「提交链 CPU 工作被争抢拉长」一族吻合。
+
+**调度级判读收尾（TraceEvent 解 CSwitch）**：336ms 窗口被完整三分——在跑 63.3ms
+(19%) / 就绪未排上 59.4ms (18%) / 阻塞等待 213.3ms (63%)，三者之和恰等于窗口；独立
+互证：窗口内 1kHz 采样命中该线程 67 次 ≈ 63ms 在跑。切出状态直方图 Ready=230 /
+Wait=147 / Standby=44 → 既有被抢核后的就绪排队（争抢直接证据），也有大量自愿阻塞
+（与全局 DML 锁 convoy / fence 等待相容）。**该带载停顿不是「CPU 自旋」**（自旋应
+接近 100% 在跑，如昨日生产 yolo 窗的 81.9%），而是「争抢下的就绪饥饿 + 阻塞 convoy」
+混合签名。故争抢臂复现的是停顿现象、但机制签名与生产 yolo 窗不同，二者不可互替；
+生产 yolo 窗的「在跑自旋/提交链 CPU」解释仍由其自身双采样支撑。
+
+解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
+对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户
+批准引于 TEMP 临时 dotnet 工程，不进仓库依赖），内核事件名带前缀
+（`Thread/CSwitch`、`Dispatcher/ReadyThread`、`PerfInfo/Sample`），CSwitch 载荷按
+索引取（0=OldThreadID、3=NewThreadID、13=OldThreadState、15=NewThreadWaitTime）。
+计数与 tracerpt CSV 窗口直方图逐条对齐（CSwitch 264877 / Sample 27169 /
+ReadyThread(T) 885）作解码可信度校验。
 
 ## 退出路径
 

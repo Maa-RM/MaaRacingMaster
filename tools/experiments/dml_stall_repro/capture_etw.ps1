@@ -18,9 +18,9 @@ PowerShell 里跑。采集走自定义 profile 的内存环形缓冲（dml_stall
   %TEMP%\maar_stall_<时刻>.etl   （CPU 调度 + DxgKrnl GPU 提交/执行事件）
   回放自己的 logs/<会话>/trace/stall_*.txt （含线程 CPU 时间双采样与栈）
 
-解码（无需 ADK，系统自带 tracerpt）：
-  tracerpt "<etl>" -o "<etl>.csv" -of CSV -y
-随后按回放会话墙钟窗口过滤 DxgKrnl 的提交/执行事件与停顿线程 tid 的调度事件。
+解码：tracerpt CSV / Get-WinEvent 对本 ETL 丢 CSwitch 载荷（仅 DataSize / raw Id=0），
+调度级判读用 TraceEvent（PerfView 同源）临时 dotnet 工程，内核事件名带前缀
+（Thread/CSwitch 等）。详见 README「解码工具事实」。
 #>
 param([switch]$WithLoad)   # 补背景争抢变量：6 自旋 worker 绑 P-core（cpu_load.py）
 $ErrorActionPreference = "Stop"
@@ -104,7 +104,7 @@ try {
 if ($captured) {
     Write-Host ""
     Write-Host "ETL: $etl"
-    Write-Host "解码: tracerpt `"$etl`" -o `"$etl.csv`" -of CSV -y"
+    Write-Host "解码: TraceEvent 临时工程（tracerpt/Get-WinEvent 丢 CSwitch 载荷，见 README）"
     $stall = Get-ChildItem (Join-Path $env:APPDATA "MaaRacingMaster\logs\*\trace\stall_*.txt") |
         Sort-Object LastWriteTime | Select-Object -Last 1
     if ($stall) { Write-Host "最新现场: $($stall.FullName)" }
