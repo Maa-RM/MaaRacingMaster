@@ -31,12 +31,7 @@ GPU 侧：DxgKrnl 具名关键字（Base/Profiler/GPUScheduler/DxgKrnl/Present/P
     </SystemProvider>
     <EventProvider Id="DxgKrnlProvider" Name="Microsoft-Windows-DxgKrnl" Level="5">
       <Keywords>
-        <Keyword Value="Base"/>
-        <Keyword Value="Profiler"/>
-        <Keyword Value="GPUScheduler"/>
-        <Keyword Value="DxgKrnl"/>
-        <Keyword Value="Present"/>
-        <Keyword Value="PerfData"/>
+        <Keyword Value="0x28018003"/>
       </Keywords>
     </EventProvider>
     <Profile Id="DmlStall.Verbose.Memory" Name="DmlStall" Description="DML stall submit-vs-execute discrimination"

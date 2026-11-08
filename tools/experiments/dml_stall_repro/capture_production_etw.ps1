@@ -29,7 +29,7 @@ Write-Host "起生产 ETW（内存环形缓冲，守候上限 $MaxMinutes 分钟
 $ErrorActionPreference = "Continue"
 wpr -cancel 2>&1 | Out-Null
 $ErrorActionPreference = "Stop"
-wpr -start "$wprp!DmlStall.Verbose"
+wpr -start "$wprp!DmlStall.Verbose" -start GPU.light
 if ($LASTEXITCODE -ne 0) { throw "wpr 启动失败（确认已提权）" }
 $status = (wpr -status 2>&1) -join "`n"
 if ($status -match "not recording") { throw "wpr start 返回 0 但并未在录制：$status" }

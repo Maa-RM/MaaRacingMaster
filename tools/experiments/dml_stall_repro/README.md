@@ -283,28 +283,37 @@ GPU fence / 内核对象；「yolo/lane 等 MoGe 释锁」的 convoy 是**传播
 1030ms（13:37:28.030~29.060，tid 13184）三分：**在跑 854.3ms(83%) / 就绪 170.4ms(17%)
 / 阻塞 5.3ms(0.5%)**；独立互证 1kHz 采样命中 860 次 ≈ 854ms 在跑。切出 Ready=508 /
 Wait=5，wait reason 31(WrPreempted)=494 → 就绪份是被抢占而非阻塞。
+**溯源衔接**：该 ETL 由 capture_production_etw.ps1（生产监视、非回放）于 13:32:59 起采、
+13:38:09 命中停采；sidecar.stallFile 指向 `logs/20261108_133626/trace/stall_133728_255_yolo.txt`，
+现场目标 tid=13184 与三分所用 T 一致；ETL span 覆盖整窗 13:37:28.030~29.060（边界取该拍
+`yolo_run_ms=1021` 回推）。非混用其它回放/采样段。
 
-**判读**：真实那一秒里 DML 原生调用绝大部分时间在 CPU 上跑（自旋或 CPU 密集提交），
-几乎不被动等 GPU fence（阻塞仅 5ms）→ 排除「被动睡等 fence」；与带载 MoGe 窗
-（19% 在跑 / 63% 阻塞）**签名相反**，坐实生产 ≠ 带载复现机制。
+**判读（校准后）**：真实那一秒里目标线程绝大部分时间在 CPU 上跑（83%）、几乎不被动
+阻塞（0.5%）→ 排除「被动睡等 fence」；与带载 MoGe 窗（19% 在跑 / 63% 阻塞）签名相反
+→ 生产与带载复现的**观测窗口**状态不同（整段是否同一机制仍未证）。CPU 忙执行发生在
+ORT 原生路径（见下），但**忙执行 ≠ 已证自旋**（也可能是图调度/命令构造/资源同步等
+实际 CPU 工作），需函数级栈 / 反复命中同 IP / GPU 命令时间对应才能定性。
 
-**GPU 侧判别（不靠 DxgKrnl）**：TraceEvent 无 DxgKrnl 解析器、Dynamic 也不surface内核
-GPU 提供程序（具名关键字 Base/Profiler/GPUScheduler/DxgKrnl/Present/PerfData 仍无效），
-故 DxgKrnl 队列对齐在当前工具链是死胡同。改用 GpuProbe 的 gpu.jsonl（0.5s _nvidia-smi_
-采样）作 GPU 侧时间线：生产停顿秒（13:37:28.03~29.06）内采样返回 None / 该次 nvidia-smi
-**被卡 1172ms**，返回时 **clock=210MHz / power=7.86W（空闲档）**，而前后正常拍为
-2775MHz / ~50W。即 **CPU 83% 在跑的同时 GPU 处于空闲、未在执行** → 支持「GPU 不执行 →
-CPU 自旋/等待环」（提交未达 GPU 或 GPU 挂起），而非「CPU 密集提交有效 GPU 工作」
-（后者应维持 GPU 忙/高时钟）。util=80 为被卡查询的滞后计数，不作依据；以 clock/power
-瞬时值为准。
+**GPU 侧信号（点状，非整窗）**：gpu.jsonl 停顿秒内 nvidia-smi 采样返回 None / 该次查询
+**被卡 1172ms**，返回时 clock=210MHz / power=7.86W（空闲档），前后正常拍 2775MHz/~50W。
+该查询跨过停顿与恢复边界，返回的频率/功耗是**取数时刻**状态，**不能回填整窗**；故仅
+支持「GPU 状态采样异常低频低功耗 + 管理查询显著延迟」，**不升级为「整秒 GPU 完全
+空闲」**。util 为采样窗口计数， likewise 不作整窗依据。
 
-**采样 IP 模块归属（定「自旋 vs 提交」）**：停顿秒 860 个 1kHz 采样中 **754 (88%) 落在
-`onnxruntime_pybind11_state.pyd`**（ORT 原生、DML EP 静态链接在内），其余零星
-D3D12Core(40)/ntdll(9)/nvwgf2umx(4)/DirectML(3)。即 CPU 旋在 **ORT/DML 原生内部**，
-叠加同窗 GPU 空闲 → 支持「GPU 不执行 → ORT/DML 内 CPU 自旋/等待环」（提交未 completing
-或 GPU 挂起），而非「CPU 密集提交有效 GPU 工作」。无符号故不到函数级，但模块级 +
-GPU 空闲 + 83% 在跑 + 0.5% 阻塞已足够分流。Image/DCStart 模块表（19969 条）做 IP→模块
-映射，不依赖 DxgKrnl。
+**采样 IP 模块归属**：停顿秒 860 个 1kHz 采样中 **754 (88%) 落在
+`onnxruntime_pybind11_state.pyd`**（ORT 原生、DML EP 在内），其余零星
+D3D12Core(40)/ntdll(9)/nvwgf2umx(4)/DirectML(3) → 加强「CPU 侧瓶颈在 ORT 原生路径」，
+但是否空转轮询未证（见上）。Image/DCStart 模块表（19969 条）做 IP→模块映射。
+
+**DxgKrnl 分层核查（纠正「死胡同」误判）**：对已采 ETL 做 `source.AllEvents` 原始 GUID
+计数：生产/带载/具名验证三份 **DxgKrnl(802ec45a)=0** → **采集层**没采到（自定义
+EventProvider 未启用它，hex 掩码亦无效）；而 **WPR 内置 GPU / GPU.light 能采到**
+（10s 内 107.8万 / 97.0万 原始事件）且 **Dynamic 可解**（QueuePacket/DmaPacket/Profiler
+等）→ 解码层无问题，「TraceEvent 无法解析 DxgKrnl」是采集配置误判，收回。另纠正：
+`b3e675d7` 是 **ImageID**（映像/符号身份）事件类 GUID，**不是 DxgKrnl**（此前误认）。
+**HAGS HwSchMode=2 开启** → 传统 DMA 包不完整，GPU 忙闲判读须防「把实际执行误判空闲」
+陷阱（Nsight 文档警告）。修采集：抓取脚本改组合 `-start GPU.light`（内置）+ 自定义调度
+profile；GPU 队列时间线待下一次含 DxgKrnl 的捕获补齐。
 
 解码工具事实：tracerpt CSV 丢 CSwitch/DxgKrnl 原始载荷（仅 DataSize），Get-WinEvent
 对本 ETL 全返回 raw（Id=0）；可用解码为 TraceEvent（微软开源、PerfView 同源，经用户

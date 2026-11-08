@@ -38,7 +38,7 @@ Write-Host "起 ETW 采集（内存环形缓冲：CPU 调度 + DxgKrnl）..."
 $ErrorActionPreference = "Continue"
 wpr -cancel 2>&1 | Out-Null
 $ErrorActionPreference = "Stop"
-wpr -start "$wprp!DmlStall.Verbose"
+wpr -start "$wprp!DmlStall.Verbose" -start GPU.light
 if ($LASTEXITCODE -ne 0) { throw "wpr 启动失败（确认已提权）" }
 $status = (wpr -status 2>&1) -join "`n"
 Write-Host $status
