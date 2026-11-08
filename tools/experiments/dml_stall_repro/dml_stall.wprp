@@ -19,14 +19,13 @@ GPU 侧：DxgKrnl 全关键字 verbose，用于对齐提交与执行的时间线
     </EventCollector>
     <SystemProvider Id="DmlStallSystemProvider">
       <Keywords>
-        <Keyword Value="PROCESS"/>
-        <Keyword Value="THREAD"/>
-        <Keyword Value="LOADER"/>
-        <Keyword Value="CSWITCH"/>
-        <Keyword Value="DISPATCHER"/>
-        <Keyword Value="PROFILE"/>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="CSwitch"/>
+        <Keyword Value="ReadyThread"/>
+        <Keyword Value="SampledProfile"/>
         <Keyword Value="DPC"/>
-        <Keyword Value="ISR"/>
+        <Keyword Value="Interrupt"/>
       </Keywords>
     </SystemProvider>
     <EventProvider Id="DxgKrnlProvider" Name="Microsoft-Windows-DxgKrnl" Level="5">
@@ -34,14 +33,16 @@ GPU 侧：DxgKrnl 全关键字 verbose，用于对齐提交与执行的时间线
         <Keyword Value="0xFFFFFFFFFFFFFFFF"/>
       </Keywords>
     </EventProvider>
-    <Profile Id="DmlStall.Verbose" Name="DmlStall" Description="DML stall submit-vs-execute discrimination"
+    <Profile Id="DmlStall.Verbose.Memory" Name="DmlStall" Description="DML stall submit-vs-execute discrimination"
              LoggingMode="Memory" DetailLevel="Verbose">
       <Collectors>
         <SystemCollectorId Value="DmlStallSystemCollector">
           <SystemProviderId Value="DmlStallSystemProvider"/>
         </SystemCollectorId>
         <EventCollectorId Value="DmlStallEventCollector">
-          <EventProviderId Value="DxgKrnlProvider"/>
+          <EventProviders>
+            <EventProviderId Value="DxgKrnlProvider"/>
+          </EventProviders>
         </EventCollectorId>
       </Collectors>
     </Profile>

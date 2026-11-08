@@ -51,7 +51,7 @@ try {
         $rlog = Join-Path $env:TEMP ("maar_replay_round_" + $r + ".log")
         $proc = Start-Process -FilePath $py -ArgumentList @($replay, "--capture", "live",
             "--graph", "real", "--seconds", "240",
-            "--background", "ETW 包裹轮 $r：游戏开在驾驶页自动巡航") `
+            "--background", "ETW包裹轮$r：游戏开在驾驶页自动巡航") `
             -NoNewWindow -PassThru -RedirectStandardOutput $rlog -RedirectStandardError ($rlog + ".err")
         # 240s 回放 + 收尾宽限；超时就杀——实测收尾可能挂死，不能让它拖住整轮采集
         $deadline = (Get-Date).AddSeconds(330)
