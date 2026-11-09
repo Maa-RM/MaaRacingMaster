@@ -472,8 +472,7 @@ def test_panel_noise_lines_are_file_only():
     for tpl in ("运行任务列表已更新: 启用 {}",
                 "ONNX 缓存: {}",
                 "YOLO 使用 GPU (DirectML)",
-                "YOLO 使用 GPU (CUDA)",
-                "YOLO 使用 CPU (GPU 不可用)"):
+                "YOLO 使用 CPU (DirectML 不可用)"):
         site = calls.get(tpl)
         assert site is not None, f"降噪站点必须存在: {tpl}"
         assert site.level == "DEBUG", f"必须降为 DEBUG（只写文件）: {tpl} [{site.level}]"

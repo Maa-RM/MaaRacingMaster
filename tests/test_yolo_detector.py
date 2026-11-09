@@ -20,6 +20,11 @@ import numpy as np
 import pytest
 
 try:
+    import cv2
+except Exception:  # noqa: BLE001 —— 与 yolo_detector 同一依赖集
+    cv2 = None
+
+try:
     from maaracing_master.core.yolo_detector import YOLODetector
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001 —— 缺 onnxruntime 的机器上整文件 SKIP
@@ -29,9 +34,13 @@ pytestmark = pytest.mark.skipif(not _OK, reason=f"yolo_detector 导入失败: {_
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "archive" / "racing" / "resources" / "onnx" / "model.onnx"
+PLUGIN_MODEL = (ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources"
+                / "models" / "perception" / "model.onnx")
 
 needs_model = pytest.mark.skipif(
     not MODEL.exists(), reason="racing 归档模型不在树内（或资源目录未部署）")
+needs_plugin_model = pytest.mark.skipif(
+    not PLUGIN_MODEL.exists(), reason="speedrush 感知模型不在树内")
 
 
 def _bare_detector(classes: dict[int, str]) -> YOLODetector:
@@ -180,3 +189,116 @@ class TestDmlLock:
         det.input_name = "images"
         by_class, dets, raw = det(np.zeros((720, 1280, 3), dtype=np.uint8))
         assert by_class == {"coin": []} and dets == [] and raw == []
+
+
+class TestLetterbox:
+    """预处理缓冲复用：输出必须与旧实现逐位一致（省时间不能改数值）。"""
+
+    @staticmethod
+    def _reference(img: np.ndarray, size: int = 640):
+        height, width = img.shape[:2]
+        scale = min(size / height, size / width)
+        new_h, new_w = int(height * scale), int(width * scale)
+        pad_y, pad_x = (size - new_h) // 2, (size - new_w) // 2
+        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = cv2.resize(
+            img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        return canvas.transpose(2, 0, 1)[None].astype(np.float32) / 255.0, scale, pad_x, pad_y
+
+    def test_bit_identical_to_reference(self):
+        det = _bare_detector({0: "car"})
+        det.input_size = 640
+        rng = np.random.default_rng(0)
+        for shape in ((720, 1280, 3), (1080, 1920, 3), (360, 640, 3), (64, 64, 3)):
+            img = rng.integers(0, 256, shape, dtype=np.uint8)
+            expected, scale, pad_x, pad_y = self._reference(img)
+            got, got_scale, got_x, got_y = det._letterbox(img)
+            assert (got_scale, got_x, got_y) == (scale, pad_x, pad_y)
+            np.testing.assert_array_equal(got, expected)
+
+    def test_reuses_buffer_and_resets_on_geometry_change(self):
+        det = _bare_detector({0: "car"})
+        det.input_size = 640
+        rng = np.random.default_rng(1)
+        big = rng.integers(0, 256, (720, 1280, 3), dtype=np.uint8)
+        small = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
+        first, _s, _x, _y = det._letterbox(big)
+        second, _s, _x, _y = det._letterbox(big)
+        assert second is first                      # 同几何复用同一块缓冲
+        third, _s, _x, _y = det._letterbox(small)
+        expected, _s, _x, _y = self._reference(small)
+        np.testing.assert_array_equal(third, expected)   # 几何变化后不残留旧内容
+
+
+class TestSessionOptions:
+    """DirectML 会话配置锁（2026-11-09）。
+
+    DML 官方要求顺序执行且关闭内存模式；**不能设 optimized_model_filepath**——
+    设了之后运行期图融合失效，整图从 1 个融合节点退化为 239 个独立节点，
+    前向实测 3.5→6.0 ms。融合是否生效由 tools/probe_infer.py 诊断，生产路径不跑
+    profiler。
+    """
+
+    def test_dml_requirements_explicit(self):
+        ort = pytest.importorskip("onnxruntime")
+        from maaracing_master.core.yolo_detector import build_session_options
+
+        opts = build_session_options()
+        assert opts.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
+        assert opts.enable_mem_pattern is False
+        assert opts.optimized_model_filepath == ""
+
+    def test_fallback_order_is_dml_then_cpu(self, monkeypatch):
+        """DML 创建失败时回退 CPU，且保留原始原因；不再尝试 CUDA。"""
+        from types import SimpleNamespace
+
+        import maaracing_master.core.yolo_detector as mod
+
+        calls: list[list[str]] = []
+
+        class _FakeSession:
+            def __init__(self, _path, sess_options=None, providers=None):
+                calls.append(list(providers or []))
+                if providers == ["DmlExecutionProvider"]:
+                    raise RuntimeError("DML init failed")
+
+            def get_providers(self):
+                return ["CPUExecutionProvider"]
+
+            def get_inputs(self):
+                return [SimpleNamespace(name="images")]
+
+        monkeypatch.setattr(mod.ort, "InferenceSession", _FakeSession)
+        det = mod.YOLODetector("dummy.onnx", classes=["car"])
+        assert calls == [["DmlExecutionProvider"], ["CPUExecutionProvider"]]
+        assert det.provider == "cpu"
+        assert det.session_error and "DirectML" in det.session_error
+        assert all("CUDA" not in name for call in calls for name in call)
+
+
+@pytest.mark.local_asset
+@needs_plugin_model
+class TestSerializedCacheEquivalence:
+    """写盘缓存选项的图与生产图数值一致：修复只改会话选项，不改推理结果。"""
+
+    def test_outputs_identical(self, tmp_path):
+        ort = pytest.importorskip("onnxruntime")
+        from maaracing_master.core.yolo_detector import build_session_options
+
+        plain = ort.InferenceSession(
+            str(PLUGIN_MODEL), build_session_options(),
+            providers=["DmlExecutionProvider", "CPUExecutionProvider"])
+        _KEEP_ALIVE.append(plain)
+
+        legacy_opts = build_session_options()
+        legacy_opts.optimized_model_filepath = str(tmp_path / "legacy.onnx")
+        legacy = ort.InferenceSession(
+            str(PLUGIN_MODEL), legacy_opts,
+            providers=["DmlExecutionProvider", "CPUExecutionProvider"])
+        _KEEP_ALIVE.append(legacy)
+
+        rng = np.random.default_rng(0)
+        feed = {plain.get_inputs()[0].name: rng.random((1, 3, 640, 640), dtype=np.float32)}
+        fused = plain.run(None, feed)[0]
+        serialized = legacy.run(None, feed)[0]
+        np.testing.assert_allclose(fused, serialized, rtol=1e-5, atol=1e-6)

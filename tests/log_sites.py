@@ -382,6 +382,7 @@ SITES: list[LogSite] = [
 
     # ---- core/yolo_detector.py ----
     # __init__ 的设备/缓存加载判定已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。
+    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'DirectML 会话创建失败，回退 CPU：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；回退原因必须与设备不可用区分，发生在加载期、无业务组。'),
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- plugins/speedrush/gpu_probe.py ----

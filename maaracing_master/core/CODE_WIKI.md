@@ -70,13 +70,15 @@
 
 **职责**：
 
-- ONNX Runtime 会话初始化（DirectML优先 → CUDA → CPU）
+- ONNX Runtime 会话初始化（DirectML 优先 → CPU 回退，不再尝试 CUDA；两种失败原因分开留痕）
 
-- 图优化 + DirectML 内核缓存
+- 会话选项按 DirectML 官方要求显式配置：顺序执行、关闭内存模式。**不设 `optimized_model_filepath`**——要求序列化优化图会禁用 DML 的运行期图融合，整图从 1 个融合节点退化为数百个独立节点（本机实测前向 3.5 ms → 6.0 ms）。融合是否生效用 `plugins/speedrush/tools/probe_infer.py` 查
+
+- DirectML 内核缓存
 
 - 640×640 letterbox 预处理
 
-- YOLOv8 输出解析（xywh → xyxy）
+- YOLO 输出解析（xywh → xyxy；YOLOv8/11/26 默认导出的张量布局一致）
 
 - **per-class NMS**：按类别分别做非极大值抑制，避免高置信类别压掉相邻类别
 
@@ -95,7 +97,7 @@
 存活 session `run()` 即段错误（CPU provider 无此问题）；多 detector 测试须全部保活至
 进程结束（见 `tests/test_yolo_detector.py` 的 `_KEEP_ALIVE`）。生产单实例常驻不触发。
 
-**模型训练 / 导出**：`maaracing_master/plugins/speedrush/tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX），`dataset.yaml` 配类别、`auto_label.py` 自动标注。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
+**模型训练 / 导出**：`maaracing_master/plugins/speedrush/tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX 候选产物，**默认不覆盖生产权重**，`--promote` 才复制并打印新的尺寸与 SHA256；`model_assets.py` 的清单必须同步改），数据划分与评测见该目录的 `build_dataset_index.py` / `eval_detector.py` / `audit_labels.py`。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
 
 ***
 
