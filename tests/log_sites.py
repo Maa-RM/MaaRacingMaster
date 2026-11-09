@@ -300,6 +300,7 @@ SITES: list[LogSite] = [
     _s('core/controller.py', 'MaaRacingMasterController.start_module', '模块执行异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/controller.py', 'MaaRacingMasterController.stop', '停止模块异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/controller.py', 'MaaRacingMasterController._emergency_stop_loop', '紧急停止：检测到同时按下 ≥2 个按键，立即停止逻辑', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/controller.py', 'MaaRacingMasterController.begin_run', '切到游戏前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台', 'WARNING', 'state', 'cross', '运行边界的前台准备被系统拒绝：可恢复降级，不阻断本轮；日志发生在生命周期组开启之前，无业务组可挂。'),
 
     # ---- core/gamepad_cursor.py ----
     _s('core/gamepad_cursor.py', 'GamepadClicker.watchdog', '[手柄导航] 任务槽已占用 {}s（{}，导航仍在推进：{}s 前更新过进度）——期间点击与避让都会被跳过', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),

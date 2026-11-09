@@ -216,7 +216,7 @@ class MaaRacingMasterController:
     # ---------- 运行边界：全局性质按轮获取与释放 ----------
 
     def begin_run(self) -> None:
-        """队列一轮开始：清运行级请求，并在边界获取全局性质（静音）。
+        """队列一轮开始：清运行级请求，并在边界获取全局性质（静音、前台准备）。
 
         运行项入口不再各自清手动停止/退出请求——两项之间的停止必须保留到整轮结束。
         """
@@ -229,6 +229,19 @@ class MaaRacingMasterController:
         # 不冒充正常结束路径的「本轮结束」（措辞即归属：两处都会以裸行进「其他日志」）
         self._restore_run_mute(context="上一轮遗留")
         self._start_run_mute()
+        # 按下「开始」是用户明确意图：前台(鼠标)模式每轮都把游戏切到前台。
+        # 这件事不能只挂在 connect() 上——那是幂等的资源连接，第二轮起短路返回，
+        # 整段窗口准备会被跳过（真机反馈：只有第一次启动会自动切前台）。这里兑现
+        # 「窗口已连着」的常规重启；本轮才首次连接（含「启动游戏」步骤刚拉起游戏）
+        # 由 connect() 在拿到句柄后补做，两条路径合起来每轮恰好一次。
+        # 后台(手柄)模式一律不动窗口；轮内后续项也不会重复激活——用户中途切走
+        # 不该被拉回来（防呆）。失败只告警不阻断，与 connect() 的处置一致。
+        if self._click_mode == "real" and is_window_valid(self._hwnd):
+            if not activate_window(self._hwnd):
+                logger.log(
+                    "切到游戏前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台",
+                    "WARNING",
+                )
 
     def end_run(self) -> None:
         """队列一轮结束：释放运行级全局性质（恢复用户原音量）。"""
@@ -880,15 +893,17 @@ class MaaRacingMasterController:
         self._hwnd = hwnd
         _clog(grp, f"已连接窗口 (hWnd={hwnd})")
 
-        # 按下开始后的窗口准备：仅「前台(鼠标)」模式切前台（用户明确操作）。
+        # 首次拿到窗口句柄时的前置准备：仅「前台(鼠标)」模式切前台（用户明确操作）。
         # 「后台(手柄)」模式保留游戏在后台——后台点击的意义就是游戏留在后台，
         # 前台校验也只在 real 模式生效（见 treasure 模块 _execute_click）。
+        # 本分支只在真正建连时走到：connect() 幂等，第二轮起的短路返回由
+        # begin_run() 在运行边界补上「每次按开始都切前台」（见 begin_run）。
         if self._click_mode == "real":
             if not activate_window(hwnd):
                 _clog(grp, "切换到游戏窗口前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台", "WARNING")
 
         # 注：运行时静音不再放这里——connect 幂等，第二次启动会短路返回导致不再静音；
-        # 静音统一在 start_module 每次启动时执行（见 start_module）。
+        # 静音统一在 begin_run() 运行边界按轮获取（见 begin_run）。
 
         # 统一把所有模块的游戏窗口客户区调整为 720p（截图/模板/ROI 均按 720p 归一化）。
         # 调整失败不阻断：退化到原尺寸并交由后续 16:9 / 屏幕内校验兜底告警。
