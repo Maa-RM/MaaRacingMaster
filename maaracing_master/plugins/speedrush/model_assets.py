@@ -27,8 +27,8 @@ PACK_PREFIX = "resources/models/"
 # 深度档必需：缺任一项就不允许启动深度模式
 DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
     PERCEPTION_MODEL_REL: (
-        10605615,
-        "f12b5958637932f3a01f413c93a8a5ceba86693a8133a52fa32224ec8f5e3fe4",
+        10665412,
+        "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
     ),
     DEPTH_MODEL_REL: (
         71913448,

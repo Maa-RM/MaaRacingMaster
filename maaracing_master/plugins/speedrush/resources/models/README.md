@@ -27,8 +27,8 @@ models/
 
 校验值（代码 `model_assets.MODEL_MANIFEST` 同源）：
 
-- `perception/model.onnx`：10,605,615 字节，SHA256
-  `f12b5958637932f3a01f413c93a8a5ceba86693a8133a52fa32224ec8f5e3fe4`
+- `perception/model.onnx`：10,665,412 字节，SHA256
+  `0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af`
 - `depth/moge2_vits_static_336x598_t1032_q4f16.onnx`：71,913,448 字节，SHA256
   `2e5c58b4bd6367593a8ed6039ef729a89c4b19f3a64e5954713f10a36ec0f116`
 - `lane/plus_small_384x640.onnx`：543,153 字节，SHA256
