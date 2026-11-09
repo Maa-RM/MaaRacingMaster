@@ -759,8 +759,12 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 生命周期 ----------
 
-    def start(self, start_from: str | None = None) -> None:
-        """启动流程（阻塞；由外层 worker 线程调用）。"""
+    def start(self, start_from: str | None = None) -> bool:
+        """启动流程（阻塞；由外层 worker 线程调用）。
+
+        返回 True = 自然结束（到限自动停止 / 响应停止信号）；False = 启动校验或
+        流程失败——编排层据此判该项 fail，不得把失败的一局记成完成。
+        """
         assert self.ctx is not None, "离线模式（ctx=None）不可调用 start()"
         # 深度模式先过模型包校验：缺失/损坏在连窗口之前就明确终止，
         # 不把用户带进一局没有几何供数的驾驶。
@@ -768,10 +772,10 @@ class SpeedRushModule(ActivityModule):
             pack_error = model_assets.check_pack()
             if pack_error:
                 _tlog(self, f"[极速狂飙] 深度模式无法启动：{pack_error}", "ERROR")
-                return
+                return False
         if not self.ctx.connect():
             logger.log("[极速狂飙] 窗口连接失败，模块终止", "ERROR")
-            return
+            return False
         # 模板与 ROI 均按 720p(16:9) 归一化，其他比例会识别错位
         if not self.ctx.check_window_aspect():
             logger.log(
@@ -779,7 +783,7 @@ class SpeedRushModule(ActivityModule):
                 "其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止",
                 "ERROR",
             )
-            return
+            return False
 
         # 录制模式的输入前提：点击方式为「前台鼠标」时全程不创建虚拟手柄；选了「后台手柄」
         # 的话，导航步骤会创建并常驻一个虚拟手柄（见 nav_graph 的 gamepad 分支），可能与其
@@ -810,7 +814,7 @@ class SpeedRushModule(ActivityModule):
             if not graph.load():
                 _tlog(self, "[极速狂飙] 导航图加载失败，模块终止", "ERROR")
                 self._graph = None   # 未加载成功不留给 cleanup 当已装配图处理
-                return
+                return False
 
             index = resolve_start_index(start_from)
             if start_from and index == 0:
@@ -823,7 +827,7 @@ class SpeedRushModule(ActivityModule):
                 except MacroError as exc:
                     _tlog(self, f"[极速狂飙] 宏不可用：{exc}。"
                                 f"请先录制宏，或切回其他驾驶模式", "ERROR")
-                    return
+                    return False
                 missing = [ph for ph in (1, 2)
                            if not (group_dir / f"p{ph}.jsonl").is_file()]
                 _tlog(self,
@@ -833,7 +837,7 @@ class SpeedRushModule(ActivityModule):
                       "WARNING" if missing else "INFO")
 
             flow_ok = True
-            self._run_flow(index)
+            return self._run_flow(index)
         finally:
             # 契约 §2：进入主流程后无"自然完成"出口（循环至停止），一律落 incomplete；
             # 启动段失败（图加载/断点解析）落 failure——卡片的终态要如实反映失败阶段。
@@ -851,8 +855,8 @@ class SpeedRushModule(ActivityModule):
         if self._graph is not None:
             self._graph.request_stop()
 
-    def cleanup(self) -> None:
-        """幂等释放模块资源。"""
+    def cleanup(self) -> bool:
+        """幂等释放模块资源。返回 False = 框架未收摊，图引用保留不销毁。"""
         # 预加载线程：置停止位并短等一次；模型加载本身不可中断，超时就放手
         # （daemon 线程会自行结束，_preload_started 保证不会再起第二个）。
         self._preload_stop.set()
@@ -875,9 +879,11 @@ class SpeedRushModule(ActivityModule):
             self._recorder.stop("cleanup")
             self._recorder = None
         if self._graph is not None:
-            self._graph.shutdown()
+            if not self._graph.shutdown():
+                return False   # 未收摊：保留图引用，由调用方隔离持有
             self._graph = None
         self._stage_name = None
+        return True
 
     # ---------- 结构化日志组归属（类上薄包装，与模块级函数同源，treasure 同形态） ----------
 
@@ -942,8 +948,17 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 流程推进 ----------
 
-    def _run_flow(self, index: int) -> None:
-        """按 FLOW 推进；走完一轮回到循环体起点继续，直到收到停止信号。"""
+    def _stop_signal_received(self) -> bool:
+        """停止有两个来源：模块 stop() 落 _running；到限/手动停止置 stop_event
+        （经 lifecycle.running 可见）。任一落下即停止，流程出口据此区分停止与失败。
+        """
+        return not (self._running and self.ctx.lifecycle.running)
+
+    def _run_flow(self, index: int) -> bool:
+        """按 FLOW 推进；走完一轮回到循环体起点继续，直到收到停止信号。
+
+        返回 True = 停止收场；False = 流程失败（驾驶异常结束 / 步骤重发耗尽）。
+        """
         assert self._graph is not None
         # 模型预加载：UI 导航阶段有数十秒空档，后台先把深度/感知模型加载好，
         # 驾驶页出现时不再付冷启动时间（失败由驾驶阶段懒加载重试）。
@@ -977,7 +992,7 @@ class SpeedRushModule(ActivityModule):
             _open_grp(self, f"[极速狂飙] 第 {round_no} 场开始", "session")
             while index < len(FLOW):
                 if not self._running:
-                    return
+                    return True
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if node is None:
@@ -986,15 +1001,16 @@ class SpeedRushModule(ActivityModule):
                     drive_ready_confirmed = False   # 一次性证据，消费即清
                     if not ok:
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
-                        return
+                        return self._stop_signal_received()
                 else:
                     if not self._run_step(node, stage):
-                        return
+                        return self._stop_signal_received()
                     drive_ready_confirmed = (
                         STEP_CONFIRM.get(stage) == DRIVE_STAGE_NODE)
                 index += 1
             index = LOOP_START_INDEX
             drive_ready_confirmed = False
+        return True
 
     def _run_step(self, action_node: str, stage: str) -> bool:
         """发一次 UI 点击并做有限重发（步级重试）。

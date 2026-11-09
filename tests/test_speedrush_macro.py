@@ -174,6 +174,49 @@ def test_recorder_writes_rows_and_meta(tmp_path, monkeypatch):
     assert "C:\\" not in json.dumps(meta) and "/Users/" not in json.dumps(meta)
 
 
+class _StuckThread:
+    """join 立即返回但线程未死：把 stop() 的超时分支变成确定时序。"""
+
+    def join(self, timeout=None):
+        pass
+
+    def is_alive(self):
+        return True
+
+
+def test_recorder_stop_timeout_leaves_file_to_thread(tmp_path, monkeypatch):
+    """join 超时线程还活着：不抢关文件、不抢写 meta、保留线程引用，降级告警。"""
+    rec = macro.MacroRecorder(tmp_path / "g", phase=1)
+    logs = []
+    monkeypatch.setattr(rec, "_log", lambda msg, level="INFO": logs.append((level, msg)))
+    rec._running = True
+    rec._file = (tmp_path / "p1.jsonl").open("w", encoding="utf-8", buffering=1)
+    stuck = _StuckThread()
+    rec._thread = stuck
+    try:
+        rec.stop()
+        assert not rec._file.closed, "活线程还在写，stop 不得关文件"
+        assert rec._thread is stuck, "线程引用保留（后续可再 join 排查）"
+        assert not (tmp_path / "g" / "meta.json").exists(), "统计仍归线程，不抢写 meta"
+        assert any(level == "WARNING" for level, _ in logs)
+    finally:
+        rec._file.close()
+
+
+def test_recorder_thread_closes_file_on_exit(tmp_path, monkeypatch):
+    """文件关闭权归线程：不经 stop()，线程退出时自己关文件。"""
+    monkeypatch.setattr(macro.xinput, "read_state", lambda i: _pad())
+    rec = macro.MacroRecorder(tmp_path / "g", phase=1, poll_hz=100,
+                              foreground=lambda: True)
+    rec.start()
+    time.sleep(0.03)
+    f = rec._file
+    rec._stop.set()
+    rec._thread.join(timeout=2.0)
+    assert not rec._thread.is_alive()
+    assert f.closed, "线程退出必须自己关文件（stop 超时放手时这是唯一关闭点）"
+
+
 # ---------- 回放器 ----------
 
 class _StubPad:
@@ -240,6 +283,22 @@ def test_player_without_g0_starts_immediately():
     now = time.perf_counter_ns()
     assert player._align((None, 0), now, time.monotonic() + 5.0) is True
     assert player._t0_ns == now
+
+
+def test_player_stop_timeout_keeps_thread_ref(monkeypatch):
+    """join 超时线程还活着：保留引用、降级告警，手柄租约由线程自己释放。"""
+    player = macro.MacroPlayer(_samples(), None,
+                               pad_cm=lambda: contextlib.nullcontext(_StubPad()),
+                               phase=1)
+    logs = []
+    monkeypatch.setattr(player, "_log",
+                        lambda msg, level="INFO": logs.append((level, msg)))
+    player._running = True
+    stuck = _StuckThread()
+    player._thread = stuck
+    player.stop()
+    assert player._thread is stuck
+    assert any(level == "WARNING" for level, _ in logs)
 
 
 # ---------- 插件接线 ----------

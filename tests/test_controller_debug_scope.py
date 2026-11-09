@@ -43,10 +43,10 @@ class _FakeModule:
         pass
 
     def start(self, start_from):
-        pass
+        return True
 
     def cleanup(self):
-        pass
+        return True
 
 
 def _controller(monkeypatch, tmp_path, order):

@@ -923,10 +923,6 @@ class SidecarService:
           看得见）；enabled 只收已知 id 的布尔值；
         - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝。
         """
-        with self._lock:
-            busy = self._worker is not None
-        if busy:
-            return (False, None, "运行中不允许修改任务列表，请先停止")
         order = params.get("order")
         enabled = params.get("enabled")
         if not isinstance(order, list) or not all(isinstance(m, str) for m in order):
@@ -952,6 +948,9 @@ class SidecarService:
         if expired_on and not force:
             return (False, None, f"模块已过期，需确认后才能加入: {', '.join(expired_on)}")
         with self._lock:
+            # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
+            if self._worker is not None:
+                return (False, None, "运行中不允许修改任务列表，请先停止")
             self._queue_order = list(order)
             # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
             # profile 里不残留悬空键（再入列时由前端显式给值）
@@ -968,10 +967,6 @@ class SidecarService:
         stage 传 None/缺省 = 清除断点（回到从头跑）。运行中拒绝：断点属「下一次
         启动」的编排，运行中的轮次已经成型。
         """
-        with self._lock:
-            busy = self._worker is not None
-        if busy:
-            return (False, None, "运行中不允许设置断点，请先停止")
         module_id = params.get("module_id")
         if module_id in BUILTIN_STEPS:
             return (False, None, "内置步骤没有细分阶段，不能设断点")
@@ -986,6 +981,9 @@ class SidecarService:
             if stage not in stages:
                 return (False, None, f"断点 {stage} 不属于模块 {module_id} 的阶段")
         with self._lock:
+            # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
+            if self._worker is not None:
+                return (False, None, "运行中不允许设置断点，请先停止")
             if stage is None:
                 self._start_from.pop(module_id, None)
             else:
@@ -1274,6 +1272,9 @@ class SidecarService:
             # 运行身份的唯一生成点：日志/调试/流水/性能/壳事件都消费它
             logger.set_run_id(run_id)
             logger.set_round(self._round_seq)
+            # 受理即清停止信号（与 worker 创建同一锁区间）：worker 启动后再清
+            # 会吞掉受理与执行之间到达的停止
+            self._controller.clear_run_requests()
             worker = threading.Thread(
                 target=self._worker_main,
                 args=(plan, run_id),

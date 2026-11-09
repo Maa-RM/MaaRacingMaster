@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -217,15 +218,26 @@ def test_release_closes_context_before_gpad_and_capture():
     assert c._ctx is None, "Context 关闭后必须置空，否则下次复用已关闭的实例"
 
 
-def test_begin_run_resets_run_requests():
-    """运行边界清手动停止/停止信号/退出请求；项入口不再各自清。"""
+def test_clear_run_requests_resets_run_requests():
+    """受理新一轮时清手动停止/停止信号/退出请求；项入口不再各自清。"""
+    c = _ctl()
+    c.stop()
+    c.request_exit()
+    c.clear_run_requests()
+    assert c._manual_stop is False
+    assert c.stop_event.is_set() is False
+    assert c._exit_requested is False
+
+
+def test_begin_run_preserves_stop_requests():
+    """worker 启动后到达的停止不得被运行边界清掉（受理与 worker 执行间的竞态窗口）。"""
     c = _ctl()
     c.stop()
     c.request_exit()
     c.begin_run()
-    assert c._manual_stop is False
-    assert c.stop_event.is_set() is False
-    assert c._exit_requested is False
+    assert c._manual_stop is True
+    assert c.stop_event.is_set() is True
+    assert c._exit_requested is True
 
 
 def test_manual_stop_is_not_cleared_by_item_entry(wired):
@@ -300,3 +312,82 @@ def test_mute_toggle_mid_run_restores_and_restarts(monkeypatch):
     assert started == ["运行中开启"]
     c.set_mute_game(False)
     assert restored == ["运行中关闭"]
+
+
+def test_late_mute_cannot_land_after_restore(monkeypatch):
+    """静音线程读到原值后、设 0 前，运行结束发起恢复：恢复必须是最后一次音量写入。
+
+    修复前读+设在锁外，恢复插进中间后静音才落 0，且线程发现代际不符直接退出
+    不补偿——游戏被永远留在静音。修复后读+设+记账同一临界区，恢复只能排在后面。
+    """
+    c = _ctl()
+    c.set_mute_game(True)
+    captured = threading.Event()
+    release = threading.Event()
+    applied: list[float] = []
+
+    def fake_capture():
+        captured.set()
+        assert release.wait(2.0)
+        return [0.35]
+
+    monkeypatch.setattr(c, "_try_capture_volume", fake_capture)
+    monkeypatch.setattr(c, "_try_game_volume",
+                        lambda level: (applied.append(level), 1)[1])
+    monkeypatch.setattr(c, "_apply_game_volume",
+                        lambda level, label, **kw: applied.append(level))
+
+    c._start_run_mute()
+    assert captured.wait(2.0)
+    restorer = threading.Thread(target=c._restore_run_mute, daemon=True)
+    restorer.start()
+    # 给恢复线程进入的机会：修复前它能立刻走完（代际已 bump）；修复后被锁挡在门外
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and c._mute_gen == 0:
+        time.sleep(0.01)
+    release.set()
+    restorer.join(2.0)
+    c._mute_thread.join(2.0)
+    assert not restorer.is_alive() and not c._mute_thread.is_alive()
+    assert applied[-1] == 0.35, "恢复必须是最后一次音量写入（游戏不能留在静音）"
+    assert c._run_muted is False
+
+
+def test_restore_write_and_new_mute_serialize(monkeypatch):
+    """恢复写入期间新一轮静音不得读音量：否则会把静音中的 0 当成用户原值记走。"""
+    c = _ctl()
+    c.set_mute_game(True)
+    c._run_muted = True
+    c._mute_original = [0.35]
+    order: list = []
+    restoring = threading.Event()
+    release = threading.Event()
+
+    def fake_apply(level, label, **kw):
+        order.append(("restore", level))
+        restoring.set()
+        assert release.wait(2.0)
+
+    monkeypatch.setattr(c, "_apply_game_volume", fake_apply)
+    monkeypatch.setattr(c, "_try_capture_volume",
+                        lambda: (order.append("capture"), [0.35])[1])
+    monkeypatch.setattr(c, "_try_game_volume",
+                        lambda level: (order.append(("mute", level)), 1)[1])
+
+    restorer = threading.Thread(target=c._restore_run_mute, daemon=True)
+    restorer.start()
+    assert restoring.wait(2.0)
+    # 新一轮的静音获取也在锁上排队（与生产一致：worker 调用），另线程发起
+    starter = threading.Thread(target=c._start_run_mute, daemon=True)
+    starter.start()
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and "capture" not in order:
+        time.sleep(0.01)
+    capture_before_release = "capture" in order
+    release.set()
+    restorer.join(2.0)
+    starter.join(2.0)
+    c._mute_thread.join(2.0)
+    assert not restorer.is_alive() and not c._mute_thread.is_alive()
+    assert not capture_before_release, "恢复写入完成前，新静音线程不得读音量"
+    assert order[0] == ("restore", 0.35)

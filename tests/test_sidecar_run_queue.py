@@ -45,8 +45,10 @@ class _FakeController:
         self.last_step_outcome = None
         self._manual_stop = False
 
+    def clear_run_requests(self):
+        self._manual_stop = False  # 对齐真实现：受理新一轮时在 start 锁内复位
+
     def start_module(self, module_id, start_from=None, module_config=None):
-        self._manual_stop = False  # 对齐真实现：复位发生在下一次 start_module 开头
         self.last_run_natural = False
         self.calls.append((module_id, start_from, module_config))
         outcome = self.outcomes.get(module_id, "ok")
@@ -62,7 +64,6 @@ class _FakeController:
     def run_builtin_step(self, step_id, step_config=None):
         """内置步骤：按脚本回放 ok / raise / swallowed / exit 四种结局。"""
         self.builtin_calls.append((step_id, step_config))
-        self._manual_stop = False
         self.last_run_natural = False
         outcome = self.outcomes.get(step_id, "ok")
         if outcome == "raise":
@@ -333,6 +334,43 @@ def test_step_skipped_continues_round_and_is_not_reported_ok():
     assert svc._round_result == {"launch_game": "skipped", "a": "ok"}
     assert controller.calls == [("a", None, None)]   # 跳过后仍继续下一项
     assert not any(m.get("event") == "auto_exit" for m in sent)
+
+
+def test_set_run_queue_rejects_when_worker_starts_mid_validation(monkeypatch):
+    """检查与写入之间的间隙里 start 受理了 worker：写入时必须重新检查并拒绝。"""
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "_save_profile", lambda snapshot: None)
+
+    def spawn_mid_validation():
+        svc._worker = object()   # 校验间隙另一请求受理了 start
+        return ["a"]
+
+    monkeypatch.setattr(sc, "_step_ids", spawn_mid_validation)
+    ok, _, err = svc.set_run_queue({"order": ["a"], "enabled": {"a": False}})
+    assert not ok and "运行中" in err
+    assert svc._queue_enabled == {"a": True}, "拒绝后编排状态不得被写入"
+
+
+def test_set_start_from_rejects_when_worker_starts_mid_validation(monkeypatch):
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {"a": object()})
+
+    def spawn_mid_validation(mid):
+        svc._worker = object()
+        return {"stages": ["s1"]}
+
+    monkeypatch.setattr(sc, "get_module_info", spawn_mid_validation)
+    ok, _, err = svc.set_start_from({"module_id": "a", "stage": "s1"})
+    assert not ok and "运行中" in err
+    assert svc._start_from == {}, "拒绝后断点表不得被写入"
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

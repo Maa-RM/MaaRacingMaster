@@ -371,6 +371,11 @@ class MacroRecorder:
         th = self._thread
         if th is not None:
             th.join(timeout=10.0)
+            if th.is_alive():
+                # 超时未退：文件与统计仍归线程所有，不抢关不抢写，降级可见
+                self._log("[极速狂飙] 宏录制线程未按时退出，文件交由线程自行收尾",
+                          "WARNING")
+                return
         self._thread = None
         try:
             if self._file is not None:
@@ -390,6 +395,16 @@ class MacroRecorder:
         interval = 1.0 / self.poll_hz
         probe_deadline = time.monotonic() + PAD_SLOT_PROBE_TIMEOUT_S
         assert self._file is not None   # start() 建线程前已打开文件
+        try:
+            self._loop(interval, probe_deadline)
+        finally:
+            # 文件归线程收尾：stop() 超时放手时，这里是唯一关闭点
+            try:
+                self._file.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _loop(self, interval: float, probe_deadline: float) -> None:
         while not self._stop.is_set():
             t0 = time.perf_counter()
             st, _countable = self._pad.poll(probe_deadline)
@@ -524,6 +539,11 @@ class MacroPlayer:
         th = self._thread
         if th is not None:
             th.join(timeout=3.0)
+            if th.is_alive():
+                # 超时未退：手柄租约由线程的上下文管理自己释放，引用保留可再 join
+                self._log("[极速狂飙] 宏回放线程未按时退出，手柄租约由线程释放",
+                          "WARNING")
+                return
         self._thread = None
 
     # ---------- 回放线程 ----------

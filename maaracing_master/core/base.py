@@ -371,16 +371,25 @@ class ActivityModule(ABC):
         """当前阶段名，None 表示尚未开始"""
 
     @abstractmethod
-    def start(self, start_from: str | None = None) -> None:
-        """启动模块，start_from 为可选起始阶段名"""
+    def start(self, start_from: str | None = None) -> bool:
+        """启动模块，start_from 为可选起始阶段名。
+
+        返回 True = 自然结束（跑完 / 到限自动停止 / 响应停止信号）；
+        返回 False = 启动校验或流程失败（编排层据此判该项 fail 并中止整轮）。
+        """
 
     @abstractmethod
     def stop(self) -> None:
         """停止模块"""
 
     @abstractmethod
-    def cleanup(self) -> None:
-        """释放模块自身拥有的资源并归还共享资源"""
+    def cleanup(self) -> bool:
+        """释放模块自身拥有的资源并归还共享资源。
+
+        返回 False = 框架 worker 未在期限内收摊：调用方必须保留宿主资源、
+        隔离持有本模块（防 GC 析构仍被使用的原生句柄）并拒绝下一轮启动
+        （ADR-0018 决策 6）。
+        """
 
 
 def overrides_classmethod(cls: type, name: str) -> bool:

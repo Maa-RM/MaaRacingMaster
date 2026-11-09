@@ -75,9 +75,11 @@ class _FakeModule:
         self.calls.append(("start", start_from))
         if self.on_start:
             self.on_start()
+        return True
 
     def cleanup(self):
         self.calls.append(("cleanup",))
+        return True
 
 
 @pytest.fixture
