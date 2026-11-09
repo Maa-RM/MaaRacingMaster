@@ -956,7 +956,9 @@ class SidecarService:
             # profile 里不残留悬空键（再入列时由前端显式给值）
             self._queue_enabled = {k: bool(v) for k, v in enabled.items() if k in self._queue_order}
             snapshot = self._queue_snapshot()
-        _save_profile({"run_queue": snapshot})
+            # 落盘与更新同锁：写盘顺序必须等于内存更新顺序，否则并发两笔可能
+            # 按相反顺序落盘，重启恢复到旧配置
+            _save_profile({"run_queue": snapshot})
         # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
         logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
         return (True, snapshot, None)
@@ -1197,11 +1199,12 @@ class SidecarService:
                 self._module_config_cache[module_id] = target
                 self._module_config_rev[module_id] = self._module_config_rev.get(module_id, 0) + 1
                 snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
+                # 写盘持久化（按模块分槽）与更新同锁，保证写盘顺序=内存更新顺序；
+                # 下次启动由 _restore_profile 回填；失败仅记警告。
+                # **只写缓存、不做运行中热更新**：运行中的模块以实例为准，配置下次「开始」才注入。
+                _save_profile({"module_config": snapshot})
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"写模块配置失败: {exc!r}")
-        # 写盘持久化（按模块分槽），下次启动由 _restore_profile 回填；失败仅记警告。
-        # **只写缓存、不做运行中热更新**：运行中的模块以实例为准，配置下次「开始」才注入。
-        _save_profile({"module_config": snapshot})
         result = self._module_config_view(module_id)
         result.setdefault("module_id", module_id)
         return (True, result, None)

@@ -18,6 +18,7 @@ clear 位置），事后查永远看不到上一轮的停止；实现必须在�
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -371,6 +372,89 @@ def test_set_start_from_rejects_when_worker_starts_mid_validation(monkeypatch):
     ok, _, err = svc.set_start_from({"module_id": "a", "stage": "s1"})
     assert not ok and "运行中" in err
     assert svc._start_from == {}, "拒绝后断点表不得被写入"
+
+
+def test_run_queue_save_serialized_with_update(monkeypatch):
+    """落盘与内存更新同锁：前一笔写完前下一笔不得改内存（写盘顺序=更新顺序）。"""
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "_step_ids", lambda: ["a"])
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_save(partial):
+        calls.append(partial)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(2.0)
+
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(
+        target=svc.set_run_queue,
+        args=({"order": ["a"], "enabled": {"a": True}},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_run_queue({"order": ["a"], "enabled": {"a": False}})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    time.sleep(0.1)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "落盘期间下一笔更新必须被锁挡住（否则写盘顺序可与内存顺序相反）"
+    assert svc._queue_enabled == {"a": False}
+
+
+def test_module_config_save_serialized_with_update(monkeypatch):
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._module_config_cache = {}
+    svc._module_config_rev = {}
+    monkeypatch.setattr(sc, "_step_ids", lambda: ["a"])
+    monkeypatch.setattr(sc, "_normalize_module_config", lambda mid, cfg: cfg)
+    monkeypatch.setattr(sc, "_module_config_defaults", lambda mid: {"k"})
+    monkeypatch.setattr(svc, "_module_config_view", lambda mid: {})
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_save(partial):
+        calls.append(partial)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(2.0)
+
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(
+        target=svc.set_module_config,
+        args=({"module_id": "a", "config": {"k": 1}},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_module_config({"module_id": "a", "config": {"k": 2}})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    time.sleep(0.1)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "落盘期间下一笔配置更新必须被锁挡住"
+    assert svc._module_config_cache["a"] == {"k": 2}
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

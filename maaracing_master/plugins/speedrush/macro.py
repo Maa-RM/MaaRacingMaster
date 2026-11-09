@@ -533,7 +533,9 @@ class MacroPlayer:
             target=self._run, name="speedrush-macro-play", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """请求停止并等回放线程退出。返回 False = 超时未退（手柄租约仍被持有，
+        调用方不得销毁设备，须把失败上报到收尾判定）。"""
         self._running = False
         self._stop.set()
         th = self._thread
@@ -543,8 +545,9 @@ class MacroPlayer:
                 # 超时未退：手柄租约由线程的上下文管理自己释放，引用保留可再 join
                 self._log("[极速狂飙] 宏回放线程未按时退出，手柄租约由线程释放",
                           "WARNING")
-                return
+                return False
         self._thread = None
+        return True
 
     # ---------- 回放线程 ----------
 

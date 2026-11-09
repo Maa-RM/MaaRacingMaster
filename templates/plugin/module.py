@@ -51,12 +51,16 @@ class SampleModule(ActivityModule):
         """当前阶段名；GUI 运行状态展示与断点定位都读它"""
         return self._current_stage
 
-    def start(self, start_from: str | None = None) -> None:
-        """启动模块：连接窗口 → 断点解析 → 主循环"""
+    def start(self, start_from: str | None = None) -> bool:
+        """启动模块：连接窗口 → 断点解析 → 主循环。
+
+        返回 True = 自然结束（响应停止信号）；False = 启动校验失败。
+        编排层按返回值判定该项成败，不得返回 None。
+        """
         # 1. 连接游戏窗口（幂等；失败即终止，由 GUI 展示错误）
         if not self.ctx.connect():
             logger.log(f"[{self.NAME}] 窗口连接失败，模块终止", "ERROR")
-            return
+            return False
 
         # 2. 断点解析：start_from 为 None 从头跑；非法值显式抛错。controller 启动前会按
         #    STAGE_ORDER 拦一道，这里仍不静默忽略——模块被别的路径直接调用时错误要看得见
@@ -88,14 +92,20 @@ class SampleModule(ActivityModule):
             self.ctx.lifecycle.sleep(0.5)
 
         logger.log(f"[{self.NAME}] 模块停止")
+        return True
 
     def stop(self) -> None:
         """请求停止：置停止信号，主循环在下一个 100ms 检查点退出"""
         self.ctx.lifecycle.request_stop()
 
-    def cleanup(self) -> None:
-        """释放模块自有资源；经 enter_context 登记的资源由 Context 统一释放，无需重复归还"""
+    def cleanup(self) -> bool:
+        """释放模块自有资源；经 enter_context 登记的资源由 Context 统一释放，无需重复归还。
+
+        返回 True = 收尾完成；持有原生线程/句柄的模块若未能确认其退出，必须返回 False
+        （编排层据此保留资源并拒绝下一轮），不得返回 None。
+        """
         self._current_stage = None
+        return True
 
     # ------------------------------------------------------------------
     #  内部实现

@@ -856,7 +856,8 @@ class SpeedRushModule(ActivityModule):
             self._graph.request_stop()
 
     def cleanup(self) -> bool:
-        """幂等释放模块资源。返回 False = 框架未收摊，图引用保留不销毁。"""
+        """幂等释放模块资源。返回 False = 框架未收摊或回放线程未退出，
+        对应引用保留不销毁，由调用方隔离持有并拒绝下一轮。"""
         # 预加载线程：置停止位并短等一次；模型加载本身不可中断，超时就放手
         # （daemon 线程会自行结束，_preload_started 保证不会再起第二个）。
         self._preload_stop.set()
@@ -868,9 +869,12 @@ class SpeedRushModule(ActivityModule):
             self._hud.stop("cleanup")
             self._hud = None
         # 宏回放先停（它持有自己的手柄租约）；宏录制次之
+        player_ok = True
         if self._macro_player is not None:
-            self._macro_player.stop()
-            self._macro_player = None
+            player_ok = self._macro_player.stop()
+            if player_ok:
+                self._macro_player = None
+            # 超时未退：租约仍被回放线程持有，上报失败让控制器保留手柄设备
         if self._macro_rec is not None:
             self._macro_rec.stop("cleanup")
             self._macro_rec = None
@@ -883,7 +887,7 @@ class SpeedRushModule(ActivityModule):
                 return False   # 未收摊：保留图引用，由调用方隔离持有
             self._graph = None
         self._stage_name = None
-        return True
+        return player_ok
 
     # ---------- 结构化日志组归属（类上薄包装，与模块级函数同源，treasure 同形态） ----------
 

@@ -97,6 +97,18 @@ def test_teardown_failure_parks_module_and_keeps_host_resources(env):
         c.start_module("fake")
 
 
+def test_teardown_failure_revokes_natural_result(env):
+    """执行成功但收尾失败：自然完成必须撤销（侧车据此判 fail，与内置步骤同口径）。"""
+    c, mod, _ = env
+    mod.start_result = True
+    mod.cleanup_result = False
+
+    c.start_module("fake")
+
+    assert c._teardown_failed is True
+    assert c.last_run_natural is False, "收尾失败不得仍报自然完成"
+
+
 def test_teardown_exception_treated_as_failure(env):
     c, mod, released = env
     mod.cleanup_result = RuntimeError("收尾炸了")

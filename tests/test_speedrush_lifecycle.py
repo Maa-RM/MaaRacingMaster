@@ -38,6 +38,25 @@ def test_cleanup_without_graph_succeeds():
     assert mod.cleanup() is True
 
 
+def test_cleanup_returns_false_when_player_stuck():
+    """回放线程超时未退仍持有手柄租约：cleanup 必须上报失败，控制器据此不销毁设备。"""
+    mod = SpeedRushModule(None)
+    player = types.SimpleNamespace(stop=lambda: False)
+    mod._macro_player = player
+    mod._graph = types.SimpleNamespace(shutdown=lambda: True)
+
+    assert mod.cleanup() is False
+    assert mod._macro_player is player, "未退出的回放器引用保留（租约仍被持有）"
+
+
+def test_cleanup_success_releases_player():
+    mod = SpeedRushModule(None)
+    mod._macro_player = types.SimpleNamespace(stop=lambda: True)
+
+    assert mod.cleanup() is True
+    assert mod._macro_player is None
+
+
 # ---------------------------------------------------------------------------
 #  start() 终态：失败出口返回 False；停止/自然结束返回 True
 # ---------------------------------------------------------------------------

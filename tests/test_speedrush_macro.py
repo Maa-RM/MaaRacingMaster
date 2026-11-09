@@ -296,9 +296,18 @@ def test_player_stop_timeout_keeps_thread_ref(monkeypatch):
     player._running = True
     stuck = _StuckThread()
     player._thread = stuck
-    player.stop()
+    assert player.stop() is False, "超时未退必须上报失败（调用方据此保留手柄设备）"
     assert player._thread is stuck
     assert any(level == "WARNING" for level, _ in logs)
+
+
+def test_player_stop_returns_true_when_thread_exits():
+    player = macro.MacroPlayer(_samples(), None,
+                               pad_cm=lambda: contextlib.nullcontext(_StubPad()),
+                               phase=1)
+    player.start()
+    assert player.stop() is True
+    assert player._thread is None
 
 
 # ---------- 插件接线 ----------

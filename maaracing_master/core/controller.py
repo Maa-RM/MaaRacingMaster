@@ -442,6 +442,9 @@ class MaaRacingMasterController:
                         # 宿主资源（Context/手柄/采集）一并保留，下一轮启动被污染态拒绝。
                         self._teardown_quarantine.append(module)
                         self._teardown_failed = True
+                        # 收尾失败撤销自然完成（与内置步骤 ok=step_ok and teardown_ok 同口径）：
+                        # 执行跑完但收尾没完成，侧车仍判该项 fail
+                        self._last_run_natural = False
                         cg.log(TEARDOWN_FAILED_MSG, "ERROR")
                     # 断开栈帧引用：module 局部变量钉住 模块→点击器→手柄对象 整条链，
                     # 不置 None 的话 _destroy_gpad 里的 gc.collect() 回收不到它们。
@@ -450,8 +453,7 @@ class MaaRacingMasterController:
                     self._close_debug_scope(
                         scope,
                         "stopped" if self._manual_stop
-                        else ("completed" if self._last_run_natural and teardown_ok
-                              else "failed"))
+                        else ("completed" if self._last_run_natural else "failed"))
                     if teardown_ok and self._ctx is not None:
                         try:
                             self._ctx.close()

@@ -619,7 +619,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `connect()`                                    | 幂等窗口连接：短路前先校验句柄仍有效（手动关游戏后旧句柄失效则重连）；仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验；前台(鼠标)模式在**首次建连**时切游戏前台 |
 | `clear_run_requests()`                         | 受理新一轮时清手动停止/停止信号/退出请求（侧车 `start` 锁内、worker 创建前调用）；worker 启动后不得再清 |
 | `begin_run()` / `end_run()`                    | 运行边界：获取/释放全局性质（静音按轮获取/恢复）；前台(鼠标)模式**每轮开始**把游戏切到前台——按下「开始」是用户明确意图，`connect()` 幂等短路时由这里兑现，后台(手柄)模式不动窗口；侧车按队列轮次调用 |
-| `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）；`start()` 返回 True 才记自然完成；启动段与执行段同一清理边界；收尾失败隔离模块并置污染态 |
+| `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）；`start()` 返回 True 才记自然完成；启动段与执行段同一清理边界；收尾失败撤销自然完成、隔离模块并置污染态 |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
 | `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
 | `run_builtin_step(step_id, config)`            | 跑一个内置步骤；按 `required_resources(config)` 建会话（窗口连接 / 截图 / 手柄），`finally` 统一回收                         |
