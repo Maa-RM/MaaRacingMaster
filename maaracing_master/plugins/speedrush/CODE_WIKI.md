@@ -372,10 +372,13 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
   到场轮素材同口径成立；近/中距跨天况 conf 中位 0.87–0.89、自车区零误检。
 - **全帧推理、不设 ROI**：框 92–99% 自然落在路面带；"按 y 排距离、按 x 排横向"是
   世界模型层职责（§6 尺子），感知层不越层。
-- 远距小目标（<50px）置信偏低（0.67–0.77）是已知弱点，前瞻需求已由 τ 实测定档
-  （τ=0.130s，帧预算充裕），暂不重训。
+- **训练数据含两种相机视角**（第三人称旧帧 + 保险杠视角新帧），划分按录制会话切
+  （`tools/training/build_dataset_index.py`），避免连续帧跨集合泄漏；近场大目标的
+  召回与定位是这一轮训练的主要目标，评测口径见 `tools/training/eval_detector.py`。
+- 远距小目标（<50px）仍是已知弱点；前瞻需求由 τ 实测定档（τ=0.130s，帧预算充裕）。
 
-**预算**（真模型 120 帧实测，DML）：P50 9.9ms / P95 12.8ms，帧预算 33ms（30Hz）✓。
+**预算**（真模型，DML，含预处理与解码）：完整 detect 实测 P50 约 5~6ms、
+P95 约 8ms，帧预算 33ms（30Hz）✓；复测入口 `tools/probe_infer.py`。
 首帧 ~115ms 是 DML kernel 预热，进驾驶页的倒计时窗口吸收。`_log_loop_pace` 每阶段
 出口报感知 P50/P95（验收判据 §二.3 的记账要求，已内置）。
 
@@ -390,6 +393,19 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
 配置键 `perception_mode`（默认 False，profile 白名单已加）：开启后驾驶阶段逐帧检测、
 结果存 `_last_perception` 并经 `get_module_config._state.perception_last` 透出 GUI；
 初始化失败自动禁用、不阻断对局（与录制器同一姿态）。
+
+**训练与评测工具**（`tools/training/`）：`train.py` 训练并导出 ONNX **候选**（默认不覆盖
+生产权重，`--promote` 才复制并打印新的尺寸/SHA256，清单需同步）；`eval_detector.py`
+走**生产检测器**评测（每类 AP、近场召回、误检/千帧、真实链路延迟），训练日志里的
+mAP 不能替代它；`build_dataset_index.py` 生成统一索引与**会话级** train/val/test
+划分（含 dHash 跨集合近重复自检），评测用 `--manifest` 消费；`audit_labels.py` 查格式/
+重复/疑似漏标/类别冲突，并可导出候选标签；`apply_suggestions.py` 把候选并进**待复核
+副本**（不动原标签）。会话选项与适配器诊断见 `tools/probe_infer.py`。
+
+**数据布局**（本机数据，不入库、不进发布包）：标注工作区 `data/annotations/`（图片与
+标签同名平铺，是唯一图片真源），训练索引 `data/index/`（`dataset_index.json` 与
+`exclude.txt`，只引用标注图、不复制）。`.gitignore` 忽略整个 `data/`；
+`scripts/release/assemble.ps1` 的 robocopy 显式排除并有 stage 守卫。
 
 **下游**：世界模型层（候选横向目标列表）接线在下一步；在那之前，perception_mode
 的用途是"感知在场"验证与预算记账。

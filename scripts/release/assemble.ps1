@@ -612,7 +612,7 @@ foreach ($rel in @(
 # 归档区（maaracing_master/plugins/_archive/）整体不进发布包：归档模块已退役，
 # 目录位置即判据，不参与下方按 VALID_UNTIL 的剔除判定（那套只覆盖 plugins/ 顶层现役插件）。
 # 下方 §3.5 末尾有反向守卫：stage 里若出现该目录即报错，防静默带出。
-robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa data /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 
 # 前端用 Copy-Item 复制，不认 .gitignore：本机 harness 状态目录显式清掉（下方守卫仍兜底）
 Get-ChildItem $StageRoot -Recurse -Directory -Force -Filter '.mimosa' -EA SilentlyContinue |
@@ -693,6 +693,11 @@ if ($keptDirs.Count -eq 0) {
 # 归档区守卫：robocopy 的 /XD _archive 一旦失效（改名、路径变化），退役代码会静默进包
 if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\_archive')) {
     $errors.Add('SHIP-ARCHIVE-FAIL: 归档区 plugins\_archive 出现在 stage，拒绝发布')
+}
+# 标注数据守卫：speedrush 的 data/（标注图 + 训练索引）是本机数据，robocopy 的 /XD data
+# 一旦失效会把几百 MB 图片带进发布包——stage 里出现即报错。
+if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\speedrush\data')) {
+    $errors.Add('SHIP-DATA-FAIL: 标注数据 plugins\speedrush\data 出现在 stage，拒绝发布')
 }
 
 # ---------- 4. _version.py ----------

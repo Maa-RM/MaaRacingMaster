@@ -25,7 +25,7 @@ from maaracing_master.core.yolo_detector import YOLODetector  # noqa: E402
 
 def main():
     # ── 配置 ──
-    img_dir = repo_root / "training"
+    img_dir = repo_root / "maaracing_master" / "plugins" / "speedrush" / "data" / "annotations"
     model_path = (repo_root / "maaracing_master" / "plugins" / "speedrush"
                   / "resources" / "models" / "perception" / "model.onnx")
 
@@ -99,7 +99,7 @@ def main():
     print("\n下一步:")
     print("  1. 用 labelImg 打开检查/补标:")
     print(f"     labelImg {img_dir} --labels {','.join(sorted(detector.classes.values()))}")
-    print("  2. 补标完后复制到 dataset/images/train/ 和 dataset/labels/train/")
+    print("  2. 标注与图片同目录平铺，直接重跑 build_dataset_index.py 生成训练索引即可")
 
 
 if __name__ == "__main__":

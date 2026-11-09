@@ -11,13 +11,11 @@ env/
 venv/
 
 # 数据集（大文件）
-dataset/images/
-dataset/labels/
 runs/
 tools/*.pt
 
-# 训练数据暂存（仅项目根）
-/training/
+# 标注工作区与训练索引（本机数据，不进发布包；打包侧另有 robocopy 排除）
+/maaracing_master/plugins/speedrush/data/
 
 # 日志
 logs/
