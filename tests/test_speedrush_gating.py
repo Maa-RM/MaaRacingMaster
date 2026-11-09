@@ -850,6 +850,53 @@ def test_step_confirm_hit_without_click_effect_is_not_success(env, monkeypatch) 
     assert sink.texts("仍未落地")
 
 
+def test_step_self_appeared_landing_page_without_click_is_not_success(env, monkeypatch) -> None:
+    """落地锚点自己从无到有、但本步一次点击都没发出 → 不算成功。
+
+    锁 2026-11-09 实机竞态：阶段结束游戏自动切进商店，「售卖区」锚点先于奖励弹窗
+    到位；没点过弹窗就凭锚点出现放行，弹窗随后盖住商店，下一步永远点不到确认上阵。
+    """
+    mod = _tight_step(env, monkeypatch, retry_max=1)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [False, True], landed=None)  # 首探不在、随后自己到位；闸门从未命中
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 2          # 不因页面自己出现而提前推进，仍走重发
+    assert sink.texts("仍未落地")
+
+
+def test_step_late_popup_clicked_on_retry_after_store_self_appeared(env, monkeypatch) -> None:
+    """商店先于弹窗到位的竞态：首拍没点、页面自己出现时不放行；重试窗弹窗可见后点到即成功。"""
+    mod = _tight_step(env, monkeypatch, retry_max=2)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+
+    class _LatePopup(_StepGraph):
+        def __init__(self) -> None:
+            super().__init__(_ACT, [False, True])
+            self.clicks = 0
+
+        def run(self, entry=None, reached=None, *, save=None):
+            if entry == self.action_node:
+                self.action_calls += 1
+                if self.action_calls == 1:      # 弹窗还没到：闸门未命中，没发出点击
+                    self.last_click_sent = False
+                    self.last_click_landed = None
+                    return False
+                self.clicks += 1                # 重试窗弹窗已可见：点到且生效
+                self.last_click_sent = True
+                self.last_click_landed = True
+                return True
+            return super().run(entry, reached, save=save)
+
+    mod._graph = _LatePopup()
+    g = mod._graph
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.action_calls == 2 and g.clicks == 1   # 首拍页面自己出现没放行，第二拍才真点
+    assert not sink.texts("仍未落地")
+
+
 def test_step_slow_vanish_counts_as_landed_without_reclick(env, monkeypatch) -> None:
     """按钮消失慢过 settle 兜底（实机约 2s）→ 下一拍认不到按钮即反推上次点击生效。
 
