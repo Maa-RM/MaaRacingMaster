@@ -57,6 +57,28 @@ def test_cleanup_success_releases_player():
     assert mod._macro_player is None
 
 
+def test_stop_macro_player_records_stuck_flag():
+    mod = SpeedRushModule(None)
+    assert mod._stop_macro_player(types.SimpleNamespace(stop=lambda: False)) is False
+    assert mod._macro_player_stuck is True
+
+
+def test_stop_macro_player_success_keeps_flag_clear():
+    mod = SpeedRushModule(None)
+    assert mod._stop_macro_player(types.SimpleNamespace(stop=lambda: True)) is True
+    assert mod._macro_player_stuck is False
+
+
+def test_cleanup_false_when_earlier_phase_player_stuck():
+    """前一阶段回放线程卡死、字段已被后续阶段覆盖：收尾仍须判失败。"""
+    mod = SpeedRushModule(None)
+    mod._macro_player_stuck = True
+    mod._macro_player = types.SimpleNamespace(stop=lambda: True)   # 当前阶段健康
+    mod._graph = types.SimpleNamespace(shutdown=lambda: True)
+
+    assert mod.cleanup() is False
+
+
 # ---------------------------------------------------------------------------
 #  start() 终态：失败出口返回 False；停止/自然结束返回 True
 # ---------------------------------------------------------------------------

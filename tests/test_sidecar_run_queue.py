@@ -457,6 +457,75 @@ def test_module_config_save_serialized_with_update(monkeypatch):
     assert svc._module_config_cache["a"] == {"k": 2}
 
 
+def test_persist_debug_flag_serializes_read_modify_write(monkeypatch):
+    """debug 段读改写同锁：前一笔完成前下一笔不得读旧值（防并发覆盖丢键）。"""
+    svc = object.__new__(SidecarService)
+    svc._lock = threading.RLock()
+    store = {}
+    entered = threading.Event()
+    release = threading.Event()
+    reads = []
+
+    def fake_load():
+        reads.append(1)
+        if len(reads) == 1:
+            entered.set()
+            assert release.wait(2.0)
+        return dict(store)
+
+    def fake_save(partial):
+        store.update(partial)
+
+    monkeypatch.setattr(sc, "_load_profile", fake_load)
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(target=svc._persist_debug_flag, args=("k1", True), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc._persist_debug_flag("k2", True)
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and not b_done.is_set():
+        time.sleep(0.01)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "读改写须同锁：前一笔完成前下一笔不得读取旧值"
+    assert store["debug"] == {"k1": True, "k2": True}
+
+
+def test_rejected_start_preserves_breakpoint(monkeypatch):
+    """启动校验失败不得消耗断点：下次开始仍从断点跑。"""
+    monkeypatch.setattr(sc, "has_physical_controller", lambda: False)
+    monkeypatch.setattr(sc, "check_required_assets", lambda mid: ["resources/missing.bin"])
+    monkeypatch.setattr(sc, "get_module_info",
+                        lambda mid: {"id": mid, "name": mid, "stages": ["a-1"],
+                                     "expired": False})
+    cls = type("A", (), {
+        "ID": "a",
+        "required_capabilities": classmethod(lambda cls, cfg=None: frozenset()),
+        "requires_exclusive_gamepad": classmethod(lambda cls, cfg=None: False),
+    })
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {"a": cls})
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._closed = False
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {"a": "a-1"}
+    svc._module_config_cache = {}
+
+    ok, _, err = svc.start({})
+    assert not ok and "资源缺失" in err
+    assert svc._start_from == {"a": "a-1"}, "被拒的启动不得吞掉断点"
+
+
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):
     """start 按启用顺序组计划、断点消费即清；空实现模块让真线程立即跑完。"""
     monkeypatch.setattr(sc, "has_physical_controller", lambda: False)

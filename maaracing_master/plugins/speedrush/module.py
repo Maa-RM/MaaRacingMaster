@@ -640,6 +640,9 @@ class SpeedRushModule(ActivityModule):
         self._macro_group = self.DEFAULT_MACRO_GROUP
         self._macro_rec: MacroRecorder | None = None
         self._macro_player: MacroPlayer | None = None
+        # 回放线程超时未退出标志：驾驶阶段可能覆盖 _macro_player 引用，但卡死的线程
+        # 仍持有手柄租约——收尾必须据标志判失败，控制器据此保留设备（不销毁）
+        self._macro_player_stuck = False
         # 人工驾驶期标记（紧急停止作用域）：录制阶段按键是正常操作，不能当急停
         self._manual_drive = False
         # road_offset 证据源=深度几何区读数（v4 几何主人，供数门优先级链见
@@ -871,10 +874,9 @@ class SpeedRushModule(ActivityModule):
         # 宏回放先停（它持有自己的手柄租约）；宏录制次之
         player_ok = True
         if self._macro_player is not None:
-            player_ok = self._macro_player.stop()
+            player_ok = self._stop_macro_player(self._macro_player)
             if player_ok:
                 self._macro_player = None
-            # 超时未退：租约仍被回放线程持有，上报失败让控制器保留手柄设备
         if self._macro_rec is not None:
             self._macro_rec.stop("cleanup")
             self._macro_rec = None
@@ -887,7 +889,16 @@ class SpeedRushModule(ActivityModule):
                 return False   # 未收摊：保留图引用，由调用方隔离持有
             self._graph = None
         self._stage_name = None
-        return player_ok
+        return player_ok and not self._macro_player_stuck
+
+    def _stop_macro_player(self, player) -> bool:
+        """停回放器并记录退出结果。超时未退置 _macro_player_stuck：后续阶段可能
+        覆盖 _macro_player 引用，但卡死线程仍持有手柄租约，收尾须据标志判失败。
+        """
+        ok = player.stop()
+        if not ok:
+            self._macro_player_stuck = True
+        return ok
 
     # ---------- 结构化日志组归属（类上薄包装，与模块级函数同源，treasure 同形态） ----------
 
@@ -1213,8 +1224,8 @@ class SpeedRushModule(ActivityModule):
                     macro_group=group_name)
             finally:
                 if macro_player is not None:
-                    macro_player.stop()
-                    self._macro_player = None
+                    if self._stop_macro_player(macro_player):
+                        self._macro_player = None
                 if macro_rec is not None:
                     macro_rec.stop("phase_end" if self._running else "stopped")
                     self._macro_rec = None

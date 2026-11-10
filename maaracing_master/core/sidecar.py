@@ -1239,8 +1239,8 @@ class SidecarService:
                     plan.append({"kind": "builtin", "id": module_id,
                                  "start_from": None, "config": cfg})
                     continue
-                # 断点消费即清：本计划用掉后即回到从头跑（断点不跨轮记忆）
-                start_from = self._start_from.pop(module_id, None)
+                # 断点先读不消费：整批校验通过后才统一消费（任一模块被拒都不吞断点）
+                start_from = self._start_from.get(module_id)
                 try:
                     stages = get_module_info(module_id)["stages"]
                 except KeyError:
@@ -1267,6 +1267,10 @@ class SidecarService:
                     ))
                 plan.append({"kind": "module", "id": module_id,
                              "start_from": start_from, "config": cfg})
+            # 计划整体通过校验后统一消费断点（消费即清，不跨轮记忆）
+            for item in plan:
+                if item["start_from"] is not None:
+                    self._start_from.pop(item["id"], None)
             self._round_result = None
             self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
             self._round_seq = getattr(self, "_round_seq", 0) + 1
@@ -2004,13 +2008,18 @@ class SidecarService:
             "debug_counters": status.get("counters") or {},
         }, None)
 
+    def _persist_debug_flag(self, key: str, value) -> None:
+        """debug 分段单键持久化：读—改—写与服务锁同临界区，防并发读改写互相覆盖。"""
+        with self._lock:
+            cur = _load_profile().get("debug")
+            cur = dict(cur) if isinstance(cur, dict) else {}
+            cur[key] = value
+            _save_profile({"debug": cur})
+
     def set_debug_mode(self, params):
         enabled = bool(params.get("enabled", False))
         self._controller.set_debug_mode(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["debug_mode"] = bool(enabled)
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("debug_mode", bool(enabled))
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled,
                        "effective_seq": getattr(self._controller.debug,
@@ -2020,10 +2029,7 @@ class SidecarService:
         """日志记录开关：开启后才把日志写入磁盘（user_data_dir/logs，每次开启新建文件）。"""
         enabled = bool(params.get("enabled", False))
         logger.set_file_logging(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["file_logging"] = bool(enabled)
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("file_logging", bool(enabled))
         logger.log(f"日志记录(写盘): {'开启' if enabled else '关闭'}")
         return (True, {"file_logging": enabled}, None)
 
@@ -2074,10 +2080,7 @@ class SidecarService:
             self._controller.set_click_mode(mode)
         except ValueError as e:
             return (False, None, str(e))
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["click_mode"] = mode
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("click_mode", mode)
         logger.log(f"点击方式: {mode}")
         return (True, {"click_mode": mode}, None)
 
@@ -2088,10 +2091,7 @@ class SidecarService:
         """
         enabled = bool(params.get("enabled", False))
         self._controller.set_intent_mode(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["intent_mode"] = enabled
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("intent_mode", enabled)
         logger.log(f"仅显示意图: {'开启' if enabled else '关闭'}")
         return (True, {"intent_mode": enabled}, None)
 
@@ -2111,10 +2111,7 @@ class SidecarService:
         """
         enabled = bool(params.get("enabled", False))
         self._controller.set_mute_game(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["mute_game"] = enabled
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("mute_game", enabled)
         logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
         return (True, {"mute_game": enabled}, None)
 
@@ -2126,10 +2123,7 @@ class SidecarService:
         enabled = bool(params.get("enabled", False))
         applied = process_priority.apply_boost() if enabled else process_priority.revert()
         self._boost_priority_enabled = enabled
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["boost_priority"] = enabled
-        _save_profile({"debug": cur})
+        self._persist_debug_flag("boost_priority", enabled)
         action = "提级" if enabled else "恢复"
         logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
                    "INFO" if enabled else "DEBUG")
