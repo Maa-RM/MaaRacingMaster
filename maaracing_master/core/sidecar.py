@@ -2252,8 +2252,11 @@ class SidecarService:
     def get_achievements(self, params):
         """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。
 
-        `state` 告诉前端能不能读写：`ready` 正常；`frozen` 存档由更高版本写入，成就
-        只读（不累计、不解锁、不能导入/重置，可以导出）；`unavailable` 引擎初始化失败。
+        `state` 告诉前端能不能读写：`ready` 正常；`frozen` 只读（不累计、不解锁、不能
+        导入/重置，可以导出），具体原因看 `frozen_reason`——`version` 是存档由更高版本
+        写入（升级程序后恢复），`corrupt` 是存档损坏且无法留备份（原文件保持不动）；
+        `unavailable` 是引擎初始化失败。`repaired_backup` 非空表示本次启动修复过存档，
+        值是原文件备份名，用于告知恢复路径。
         冻结后引擎返回的是空进度，原样渲染等于谎报「进度没了」。
         """
         engine = self._achievement_engine
@@ -2264,6 +2267,8 @@ class SidecarService:
             "achievements": engine.get_view(),
             "notify": self._achievement_notify,
             "state": "frozen" if engine.frozen else "ready",
+            "frozen_reason": engine.frozen_reason,
+            "repaired_backup": engine.repaired_backup,
             "store_version": engine.store_version,
             "supported_version": engine.supported_store_version,
         }, None)
@@ -2352,16 +2357,20 @@ class SidecarService:
         return (True, {"count": count}, None)
 
     def reset_achievements(self, params):
-        """重置成就进度：`scope=all` 全清（含去重键集），否则为单个 global_id。"""
+        """重置成就进度：仅支持 `scope="all"`（全清，含去重键集）。
+
+        单项重置尚未开放：撤销单项会牵连依赖它的元成就，级联语义定案前不保留这条
+        可达路径。非法/缺失/空值一律拒绝——绝不把看不懂的参数兜底成"全清"。
+        """
         engine, err = self._achievement_engine_or_error()
         if err:
             return (False, None, err)
         refuse = self._refuse_achievement_write()
         if refuse:
             return (False, None, refuse)
-        scope = (params or {}).get("scope") or "all"
-        if not isinstance(scope, str):
-            return (False, None, "scope 必须是 'all' 或成就 global_id")
+        scope = (params or {}).get("scope")
+        if scope != "all":
+            return (False, None, "仅支持全量重置（scope='all'），单项重置暂未开放")
         try:
             cleared = engine.reset(scope)
         except achievement.AchievementStoreError as exc:

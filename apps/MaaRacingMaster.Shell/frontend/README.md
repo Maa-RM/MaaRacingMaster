@@ -369,7 +369,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 **提示条**只消费壳侧推送 `{ type: 'achievement', data }`，载荷自足——`title` / `description` / `tier` / `hint` / `unlocked_ts` 都在里面，不回查 `get_achievements`（解锁瞬间的查询会与推送竞争）。形态是圆点入场 → 胶囊 → 详情卡，多条堆叠、队首 5 秒串行推进，点空白处或闲置 9 秒收回。四档视觉由 `data-tier` 驱动（`normal` / `rare` / `precious` / `hidden`），第四档的彩色环与彩虹标题复用页首的 `.maarm-text-scan--rave`；隐藏档解锁时额外放礼花，`prefers-reduced-motion` 下不放。
 
-**管理页**是 `#ach-sheet` 整页覆盖层，入口在设置页快捷工具（`data-tool="achievements"`）。数据只来自 `get_achievements`（隐藏项后端已遮蔽）与 `get_initial_state`（只取模块显示名），按「核心 / 各模块」分组，卡片三态是已解锁日期 / 进度条 / 隐藏遮蔽。冻结态（`state === 'frozen'`，存档来自更高版本）显示警示条并把进度写成「进度暂不可用」、导入与重置置灰——不把 0/1 画出来当真实进度。
+**管理页**是 `#ach-sheet` 整页覆盖层，入口在设置页快捷工具（`data-tool="achievements"`）。数据只来自 `get_achievements`（隐藏项后端已遮蔽标题/描述/提示与 `agg` / `target` / `progress`，锁定态不画进度条）与 `get_initial_state`（只取模块显示名），按「核心 / 各模块」分组，卡片三态是已解锁日期 / 进度条 / 隐藏遮蔽。只读态（`state === 'frozen'`）显示警示条并把进度写成「进度暂不可用」、导入与重置置灰——不把 0/1 画出来当真实进度；`frozen_reason === 'corrupt'` 是损坏且无法留备份（原文件未动），其余按版本过高说明。`repaired_backup` 非空时用同一条警示条告知「已自动修复，原文件备份为 X」，页面保持可读写。
 
 **层级**：`#ach-fx`（礼花画布，全窗、`pointer-events: none`）8400、`#ach-island` 8500、覆盖层 9000，都在模态（9999）之下；岛底距 100px，避开 `#error-toast` 的 56px。
 

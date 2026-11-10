@@ -51,6 +51,23 @@ def test_illegal_agg_dropped_with_warning():
     assert any("agg" in w for w in warnings)
 
 
+def test_unhashable_agg_dropped_not_fatal():
+    """不可哈希的 agg 只丢该条：冒成 TypeError 会把整份目录拖下水。"""
+    norm, warnings = a.validate_catalog(
+        _catalog(_entry(rule={"fact": "x", "agg": [], "target": 1}), _entry("ok")), "demo")
+    assert [e["id"] for e in norm["achievements"]] == ["ok"]
+    assert any("agg" in w for w in warnings)
+
+
+def test_huge_int_target_dropped_not_fatal():
+    """超出 float 范围的大整数同一性质：只丢该条，不让整份目录失败。"""
+    norm, warnings = a.validate_catalog(
+        _catalog(_entry(rule={"fact": "x", "agg": "count", "target": 10 ** 400}),
+                 _entry("ok")), "demo")
+    assert [e["id"] for e in norm["achievements"]] == ["ok"]
+    assert any("target" in w for w in warnings)
+
+
 @pytest.mark.parametrize("target", [0, -1, float("nan"), float("inf"), "1", None])
 def test_invalid_target_dropped(target):
     norm, warnings = a.validate_catalog(

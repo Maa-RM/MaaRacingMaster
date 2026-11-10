@@ -12,7 +12,12 @@
 2. **校验**：catalog 按 schema 版本与规则白名单过滤，非法条目丢弃并 warning，不猜。
 3. **引擎**：消费事实信封 → 规则匹配 → 进度累计 → 有界去重 → 原子持久化 → 解锁判定。
    事务顺序：锁内算出一致新状态 → 持久化成功才置为已提交 → 提交后锁外发解锁回调。
-4. **门面**：``report_fact`` 尽力而为、永不抛；未绑定引擎即无操作。
+4. **存档**：读盘与导入共用值规范化（进度只收有限数值、解锁时间戳收非负数值、去重键
+   只收非空字符串）；导入遇到非法值整份拒绝。损坏档先复制留证再修复为规范档，留证
+   失败转只读，原文件不动。导入与启动共用补偿路径：只补「进度达标但缺解锁记录」的
+   条目，不撤销既有解锁，恢复出的解锁不弹通知。
+5. **门面**：``report_fact`` 尽力而为、永不抛；未绑定引擎即无操作。
+6. **重置**：仅支持全量；单项重置会牵连依赖它的元成就，级联语义定案后再开放。
 
 分层：本模块不 import 任何插件（红线 ADR 0001）；全局成就 ID 命名空间由注册到的
 mod_id 派生，不硬编码插件名。
@@ -99,12 +104,27 @@ def _clean_text(value: Any, field: str, limit: int,
 
 
 def _finite_number(value: Any) -> float | None:
-    """有限数值（拒绝 bool / NaN / inf / 非数）；合法返回 float，否则 None。"""
+    """有限数值（拒绝 bool / NaN / inf / 非数 / 超出 float 范围的大整数）；否则 None。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if not math.isfinite(value):
+    try:
+        if not math.isfinite(value):
+            return None
+        return float(value)
+    except OverflowError:  # 大整数转 float 越界：按非法值处理，别让它把调用方炸掉
         return None
-    return float(value)
+
+
+def _finite_or_int(value: Any) -> bool:
+    """可安全参与累加/落盘的数值：int 视为有限，float 须有限。
+
+    不能直接用 ``math.isfinite``：超出 float 范围的大整数会让它抛 OverflowError。
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _validate_condition(cond: Any, field: str, warnings: list[str]) -> dict | None:
@@ -140,7 +160,9 @@ def _validate_rule(rule: Any, warnings: list[str]) -> dict | None:
         warnings.append("rule 不是对象")
         return None
     agg = rule.get("agg")
-    if agg not in AGG_TYPES:
+    # 先验类型再判白名单：不可哈希值（如数组）会让集合成员判断抛 TypeError，
+    # 冒到 registry 会把整份目录一起丢掉。
+    if not isinstance(agg, str) or agg not in AGG_TYPES:
         warnings.append(f"rule.agg 非法: {agg!r}")
         return None
     if agg == "all_unlocked":
@@ -301,6 +323,58 @@ def _empty_state() -> dict:
     }
 
 
+def _normalize_store(raw: dict) -> tuple[dict, list[str]]:
+    """把存档/备份里的值收敛成引擎可安全运算的类型；返回 (规范态, 问题清单)。
+
+    保守原则：能无损保留的值一律保留（int 保持 int、`max` 的 null 初值保留），
+    只剔除无法参与运算或无法落盘的值。不认领未知 global_id——版本回退后进度还要保留。
+    """
+    issues: list[str] = []
+    state = _empty_state()
+
+    progress = raw.get("progress")
+    if progress is None:
+        state["progress"] = {}
+    elif not isinstance(progress, dict):
+        issues.append("progress 不是对象")
+    else:
+        for key, value in progress.items():
+            if not isinstance(key, str):
+                issues.append(f"progress 键非字符串: {key!r}")
+            elif value is None or _finite_number(value) is not None:
+                state["progress"][key] = value
+            else:
+                issues.append(f"progress[{key}] 非有限数值: {value!r}")
+
+    unlocked = raw.get("unlocked")
+    if unlocked is None:
+        state["unlocked"] = {}
+    elif not isinstance(unlocked, dict):
+        issues.append("unlocked 不是对象")
+    else:
+        for key, value in unlocked.items():
+            if not isinstance(key, str):
+                issues.append(f"unlocked 键非字符串: {key!r}")
+            elif _finite_number(value) is not None and value >= 0:
+                state["unlocked"][key] = int(value)
+            else:
+                issues.append(f"unlocked[{key}] 不是非负时间戳: {value!r}")
+
+    consumed = raw.get("consumed_keys")
+    if consumed is None:
+        state["consumed_keys"] = []
+    elif not isinstance(consumed, list):
+        issues.append("consumed_keys 不是列表")
+    else:
+        for value in consumed:
+            if isinstance(value, str) and value:
+                state["consumed_keys"].append(value)
+            else:
+                issues.append(f"consumed_keys 含非法键: {value!r}")
+
+    return state, issues
+
+
 def _match_condition(value: Any, cond: dict) -> bool:
     if value is None:
         return False
@@ -338,6 +412,11 @@ class AchievementEngine:
         self._on_unlock = on_unlock
         self._lock = Lock()
         self._frozen = False
+        # None | "version"（更高版本写入）| "corrupt"（损坏且无法留备份）：停写原因，
+        # 供 UI 区分展示——把两种只读都说成"版本过高"是在撒谎。
+        self._frozen_reason: str | None = None
+        # 本次加载修复时留下的原文件备份文件名（不含目录），供 UI 告知恢复路径。
+        self._repair_backup: str | None = None
         # 磁盘存档的版本（缺失/非法按本程序支持版本计），供 UI 展示降级原因。
         self._store_version: int = ACHIEVEMENT_STORE_SCHEMA_VERSION
         reg = registry if registry is not None else ACHIEVEMENT_REGISTRY
@@ -360,50 +439,105 @@ class AchievementEngine:
         self._unlocked: dict[str, int] = state["unlocked"]
         self._consumed: OrderedDict[str, bool] = OrderedDict(
             (k, True) for k in state["consumed_keys"][-DEDUP_WINDOW:])
-        # 加载时求值元成就：依赖项此前已全解锁的新装元成就也能触发（不止靠后续解锁事件）。
-        # 候选态落盘成功才提交；任何异常都不留半提交态、不上抛（不阻断 sidecar 启动）。
+        # 加载期还原：补齐「进度达标但缺解锁记录」的条目并求值元成就；落盘成功才提交。
+        # 普通成就的补偿静默（属于恢复，不是实时解锁）；元成就维持既有通知行为。
+        # 任何异常都不留半提交态、不上抛（不阻断 sidecar 启动）。
         if not self._frozen:
+            new_progress = dict(self._progress)
             new_unlocked = dict(self._unlocked)
-            newly = self._eval_meta_locked(set(), new_unlocked)
-            if newly:
+            recovered, newly = self._reconcile_locked(new_progress, new_unlocked)
+            if recovered or newly:
                 try:
-                    self._save_state_locked(self._progress, new_unlocked, self._consumed)
+                    self._save_state_locked(new_progress, new_unlocked, self._consumed)
+                    self._progress = new_progress
                     self._unlocked = new_unlocked
                 except Exception as exc:  # noqa: BLE001 —— 初始化失败降级，不阻断启动
-                    logger.log(f"[achievement] 元成就初始存档失败（未提交）: {exc!r}", "WARNING")
+                    logger.log(f"[achievement] 加载期补偿存档失败（未提交）: {exc!r}", "WARNING")
                     newly = []
             self._notify(newly)
 
     # ---------- 存档 ----------
 
     def _load_state(self) -> dict:
+        """读盘并把值收敛成规范态；损坏档先留证再修复，留证失败则转只读。
+
+        返回的进度/解锁态保证可直接参与运算与 JSON 序列化（不含 NaN/Infinity/错类型）。
+        """
+        self._repair_backup = None
         if not self._path.is_file():
             return _empty_state()
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.log(f"[achievement] 存档损坏，重建为空: {exc!r}", "WARNING")
+            if self._preserve_corrupt_store("解析失败"):
+                self._rewrite_repaired(_empty_state())
             return _empty_state()
         if not isinstance(raw, dict):
             logger.log("[achievement] 存档形状非法，重建为空", "WARNING")
+            if self._preserve_corrupt_store("顶层非对象"):
+                self._rewrite_repaired(_empty_state())
             return _empty_state()
+
         version = raw.get("store_schema_version")
-        if isinstance(version, int):
+        version_ok = isinstance(version, int) and not isinstance(version, bool)
+        if version_ok:
             self._store_version = version
-        if isinstance(version, int) and version > ACHIEVEMENT_STORE_SCHEMA_VERSION:
-            # 用户降级：保留原文件、停写，防降级清档毁进度。
-            logger.log(f"[achievement] 存档版本 {version} 高于支持 "
-                       f"{ACHIEVEMENT_STORE_SCHEMA_VERSION}，保留原文件停写", "WARNING")
-            self._frozen = True
-            return _empty_state()
-        state = _empty_state()
-        if isinstance(raw.get("progress"), dict):
-            state["progress"] = dict(raw["progress"])
-        if isinstance(raw.get("unlocked"), dict):
-            state["unlocked"] = dict(raw["unlocked"])
-        if isinstance(raw.get("consumed_keys"), list):
-            state["consumed_keys"] = [k for k in raw["consumed_keys"] if isinstance(k, str)]
+            if version > ACHIEVEMENT_STORE_SCHEMA_VERSION:
+                # 用户降级：保留原文件、停写，防降级清档毁进度。
+                logger.log(f"[achievement] 存档版本 {version} 高于支持 "
+                           f"{ACHIEVEMENT_STORE_SCHEMA_VERSION}，保留原文件停写", "WARNING")
+                self._frozen = True
+                self._frozen_reason = "version"
+                return _empty_state()
+
+        state, issues = _normalize_store(raw)
+        if version is not None and not version_ok:
+            # 版本字段读不懂按损坏处理：先留证再修复，不猜它是不是更高版本。
+            issues.insert(0, f"store_schema_version 非法: {version!r}")
+        if issues:
+            if not self._preserve_corrupt_store(f"{len(issues)} 处非法值"):
+                return _empty_state()
+            self._rewrite_repaired(state)
         return state
+
+    def _preserve_corrupt_store(self, reason: str) -> bool:
+        """修复前把原文件复制一份留证；成功返回 True，失败转只读并返回 False。
+
+        只新建副本、不动原文件：留证失败时宁可不写盘，也不让后续保存覆盖唯一原件。
+        """
+        for attempt in range(10):
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            suffix = f"-{attempt}" if attempt else ""
+            dest = self._path.with_name(f"{self._path.stem}.corrupt-{stamp}{suffix}.json")
+            try:
+                with dest.open("xb") as fh:
+                    fh.write(self._path.read_bytes())
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                logger.log(f"[achievement] 存档损坏（{reason}）但无法留备份，转只读: {exc!r}",
+                           "WARNING")
+                self._frozen = True
+                self._frozen_reason = "corrupt"
+                return False
+            self._repair_backup = dest.name
+            logger.log(f"[achievement] 存档损坏（{reason}），原文件已备份为 {dest.name}，随后修复",
+                       "WARNING")
+            return True
+        logger.log("[achievement] 存档备份命名冲突，转只读（原文件未动）", "WARNING")
+        self._frozen = True
+        self._frozen_reason = "corrupt"
+        return False
+
+    def _rewrite_repaired(self, state: dict) -> None:
+        """把修复后的规范态立即落盘，避免每次启动重复修复；写失败只告警。"""
+        try:
+            self._save_state_locked(
+                state["progress"], state["unlocked"],
+                OrderedDict((k, True) for k in state["consumed_keys"]))
+        except Exception as exc:  # noqa: BLE001 —— 修复是旁路，写失败不阻断启动
+            logger.log(f"[achievement] 修复后的存档写回失败（保持内存态）: {exc!r}", "WARNING")
 
     def _save_state_locked(self, progress: dict, unlocked: dict,
                            consumed: OrderedDict) -> None:
@@ -417,7 +551,9 @@ class AchievementEngine:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_name(f".{self._path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            # allow_nan=False：非有限数漏网时落盘失败并回滚，绝不写成非标准 JSON。
+            tmp.write_text(json.dumps(state, ensure_ascii=False, allow_nan=False),
+                           encoding="utf-8")
             os.replace(tmp, self._path)
         finally:
             tmp.unlink(missing_ok=True)
@@ -426,8 +562,18 @@ class AchievementEngine:
 
     @property
     def frozen(self) -> bool:
-        """存档版本高于本程序：只读冻结（不累计、不解锁、不写盘）。"""
+        """只读停写：高版本存档（保护降级）或损坏档无法留备份。"""
         return self._frozen
+
+    @property
+    def frozen_reason(self) -> str | None:
+        """停写原因：`version`（更高版本写入）｜`corrupt`（损坏且无法留备份）｜None。"""
+        return self._frozen_reason
+
+    @property
+    def repaired_backup(self) -> str | None:
+        """本次加载修复时留下的原文件备份文件名；未发生修复为 None。"""
+        return self._repair_backup
 
     @property
     def store_version(self) -> int:
@@ -439,18 +585,29 @@ class AchievementEngine:
         return ACHIEVEMENT_STORE_SCHEMA_VERSION
 
     def reload_from_disk(self) -> bool:
-        """重新从磁盘载入状态（导入后使用），并按文件重算冻结态。
+        """重新从磁盘载入状态，并按文件重算冻结态；返回载入后是否可写。
 
-        `_frozen` 是单向开关：不重算的话，降级用户导入合法档后仍会停在冻结态、进度永不生效。
-        返回载入后是否可用（False = 文件仍是更高版本写入的，继续冻结）。
+        与启动加载走同一条路径（规范化 + 损坏修复 + 补偿），避免出现第二套加载语义。
         """
         with self._lock:
             self._frozen = False
+            self._frozen_reason = None
             state = self._load_state()
             self._progress = state["progress"]
             self._unlocked = state["unlocked"]
             self._consumed = OrderedDict(
                 (k, True) for k in state["consumed_keys"][-DEDUP_WINDOW:])
+            if not self._frozen:
+                new_progress = dict(self._progress)
+                new_unlocked = dict(self._unlocked)
+                recovered, newly = self._reconcile_locked(new_progress, new_unlocked)
+                if recovered or newly:
+                    try:
+                        self._save_state_locked(new_progress, new_unlocked, self._consumed)
+                        self._progress = new_progress
+                        self._unlocked = new_unlocked
+                    except Exception as exc:  # noqa: BLE001 —— 载入期补偿失败不阻断
+                        logger.log(f"[achievement] 重载补偿存档失败（未提交）: {exc!r}", "WARNING")
             return not self._frozen
 
     def _read_json(self, path: Path) -> dict:
@@ -470,10 +627,14 @@ class AchievementEngine:
             raise AchievementStoreError(f"目录不可写（{path.parent}）: {exc!r}") from exc
         tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False),
+                           encoding="utf-8")
             os.replace(tmp, path)
         except OSError as exc:
             raise AchievementStoreError(f"写入失败（{path.name}）: {exc!r}") from exc
+        except ValueError as exc:
+            raise AchievementStoreError(
+                f"数据含非法数值，无法写成合法备份（{path.name}）: {exc!r}") from exc
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -494,13 +655,18 @@ class AchievementEngine:
 
         导出的是**存档文件本身**，不另设格式，少一层转换就少一类 bug。文件不存在时
         （从没产生过进度）导出空态：合法备份比一句无差别错误有用。
+        损坏且无法留备份时改导出内存态（规范后的空档）：原文件含非法值，照抄只会
+        产出导入端必然拒绝的备份。
         """
         dest = Path(dest)
         with self._lock:
-            if self._path.is_file():
+            if self._path.is_file() and self._frozen_reason != "corrupt":
                 payload = dict(self._read_json(self._path))
             else:
                 payload = _empty_state()
+                payload["progress"] = dict(self._progress)
+                payload["unlocked"] = dict(self._unlocked)
+                payload["consumed_keys"] = list(self._consumed.keys())
             from maaracing_master import __version__  # 延迟导入：避免模块级循环
             payload["exported_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             payload["app_version"] = __version__
@@ -510,8 +676,10 @@ class AchievementEngine:
     def import_store(self, src: Path) -> int:
         """用备份覆盖当前存档，并把内存态同步到新档；返回条目数。
 
-        保护顺序：校验版本与形状 → 备份现档 → 原子写入 → 提交内存态。任一步失败，
-        原存档与内存态都不变。不清洗未知 global_id（版本回退后进度还在）。
+        保护顺序：校验版本与数值 → 备份现档 → 补偿解锁/元成就 → 原子写入 → 提交内存。
+        任一步失败，原存档与内存态都不变。备份含非法数值时整份拒绝（不静默清洗）。
+        不清洗未知 global_id（版本回退后进度还在）；补偿只增不减，不撤销历史解锁，
+        且不触发解锁通知（恢复备份不该刷一屏提示）。
         """
         src = Path(src)
         with self._lock:
@@ -520,18 +688,22 @@ class AchievementEngine:
                     f"存档由更高版本（v{self._store_version}）写入，请先升级程序")
             raw = self._read_json(src)
             version = raw.get("store_schema_version")
-            if not isinstance(version, int) or version > ACHIEVEMENT_STORE_SCHEMA_VERSION:
+            if not isinstance(version, int) or isinstance(version, bool) \
+                    or version > ACHIEVEMENT_STORE_SCHEMA_VERSION:
                 raise AchievementStoreError(f"备份版本不支持: {version!r}")
-            progress = raw.get("progress")
-            unlocked = raw.get("unlocked")
-            consumed = raw.get("consumed_keys")
-            if not isinstance(progress, dict) or not isinstance(unlocked, dict) \
-                    or not isinstance(consumed, list):
-                raise AchievementStoreError("备份形状非法（progress/unlocked/consumed_keys）")
-            new_progress = {str(k): v for k, v in progress.items()}
-            new_unlocked = {str(k): v for k, v in unlocked.items() if isinstance(v, int)}
-            keys = [k for k in consumed if isinstance(k, str)][-DEDUP_WINDOW:]
-            new_consumed = OrderedDict((k, True) for k in keys)
+            for key in ("progress", "unlocked", "consumed_keys"):
+                if key not in raw:
+                    raise AchievementStoreError("备份形状非法（progress/unlocked/consumed_keys）")
+            state, issues = _normalize_store(raw)
+            if issues:
+                raise AchievementStoreError(
+                    f"备份含非法数值（{len(issues)} 处），已取消导入：{issues[0]}")
+            new_progress = state["progress"]
+            new_unlocked = state["unlocked"]
+            new_consumed = OrderedDict(
+                (k, True) for k in state["consumed_keys"][-DEDUP_WINDOW:])
+            # 先补偿再落盘：补齐「进度达标但缺解锁记录」的条目与元成就，一次提交。
+            self._reconcile_locked(new_progress, new_unlocked)
 
             # 先备份现档再覆盖：顺序反了备份的就是新档，等于没备份。
             self._backup_locked("pre-import")
@@ -543,27 +715,21 @@ class AchievementEngine:
             return len(self._progress)
 
     def reset(self, scope: str) -> int:
-        """重置进度：`all` 全清（含 consumed_keys），否则按 global_id 清单条。
+        """重置进度：仅支持 `all`（全清进度、解锁记录与去重键）。
 
-        用户显式重置允许撤销已解锁态——与 I6「不补发不重复」不冲突（那是自动路径的约束）。
-        冻结态一律拒绝：保护高版本存档不被降级程序覆盖。
+        单项重置暂不开放：撤销本项会牵连依赖它的元成就，级联语义定案前保留该路径
+        只会制造已解锁态不一致。冻结态一律拒绝：保护高版本存档不被降级程序覆盖。
         """
+        if scope != "all":
+            raise AchievementStoreError(f"不支持的重置范围: {scope!r}（仅支持 all）")
         with self._lock:
             if self._frozen:
                 raise AchievementFrozenError(
                     f"存档由更高版本（v{self._store_version}）写入，请先升级程序")
-            if scope == "all":
-                new_progress: dict = {}
-                new_unlocked: dict = {}
-                new_consumed: OrderedDict = OrderedDict()
-                cleared = len(set(self._progress) | set(self._unlocked))
-            else:
-                if scope not in self._entries:
-                    raise AchievementStoreError(f"未知成就: {scope}")
-                new_progress = {k: v for k, v in self._progress.items() if k != scope}
-                new_unlocked = {k: v for k, v in self._unlocked.items() if k != scope}
-                new_consumed = OrderedDict(self._consumed)
-                cleared = 1 if (scope in self._progress or scope in self._unlocked) else 0
+            new_progress: dict = {}
+            new_unlocked: dict = {}
+            new_consumed: OrderedDict = OrderedDict()
+            cleared = len(set(self._progress) | set(self._unlocked))
             self._save_state_locked(new_progress, new_unlocked, new_consumed)
             self._progress = new_progress
             self._unlocked = new_unlocked
@@ -598,6 +764,24 @@ class AchievementEngine:
                     unlocked_set.add(gid)
                     newly.append(gid)
         return newly
+
+    def _reconcile_locked(self, progress: dict, unlocked: dict) -> tuple[list[str], list[str]]:
+        """补齐「进度已达标但缺解锁记录」的普通成就，再求值元成就。
+
+        只增不减：已有解锁记录一律不动——规则目标提高不得撤销历史解锁。
+        返回 (补回的普通成就, 新解锁的元成就)；调用方负责落盘与是否通知。
+        """
+        recovered: list[str] = []
+        for gid, entry in self._entries.items():
+            rule = entry["rule"]
+            if rule["agg"] == "all_unlocked" or gid in unlocked:
+                continue
+            current = progress.get(gid)
+            if current is None or not self._is_unlocked(entry, current):
+                continue
+            unlocked[gid] = time.time_ns()
+            recovered.append(gid)
+        return recovered, self._eval_meta_locked(set(recovered), unlocked)
 
     def _notify(self, global_ids: list[str]) -> None:
         if self._on_unlock is None:
@@ -641,6 +825,10 @@ class AchievementEngine:
                 elif agg == "sum":
                     val = _finite_number(payload.get(rule["field"]))
                     nxt = (cur or 0) + (val if val is not None else 0)
+                    if not _finite_or_int(nxt):
+                        # 溢出拒绝本次更新（不做饱和：饱和会悄悄改写真实累计值）。
+                        _warn_throttled(f"[achievement] sum 聚合溢出，本次不累计: {gid}")
+                        continue
                 elif agg == "max":
                     val = _finite_number(payload.get(rule["field"]))
                     if val is None:
@@ -669,34 +857,39 @@ class AchievementEngine:
         return True
 
     def get_view(self) -> list[dict]:
-        """注册目录 + 进度合并视图（RPC 用）；隐藏成就未解锁时后端遮蔽标题/描述。"""
+        """注册目录 + 进度合并视图（RPC 用）。
+
+        隐藏成就未解锁时遮蔽标题/描述/提示，也不下发聚合方式、目标与进度——只遮蔽
+        文案等于把条件写在进度条上。数值再做一次输出兜底，保证 RPC 永远是标准 JSON。
+        """
         with self._lock:
             view = []
             for gid, entry in self._entries.items():
                 unlocked = gid in self._unlocked
                 hidden = entry["hidden"]
+                masked = hidden and not unlocked
                 rule = entry["rule"]
+                progress = self._progress.get(gid, self._init_progress(entry))
+                if not (progress is None or _finite_or_int(progress)):
+                    progress = None
+                ts = self._unlocked.get(gid)
+                if ts is not None and not _finite_or_int(ts):
+                    ts = None
                 item = {
                     "global_id": gid,
                     "mod_id": entry["global_id"].split(".", 1)[0],
                     "category": entry["category"],
                     "hidden": hidden,
                     "unlocked": unlocked,
-                    "unlocked_ts": self._unlocked.get(gid),
-                    "agg": rule["agg"],
-                    "target": rule.get("target"),
-                    "progress": self._progress.get(gid, self._init_progress(entry)),
+                    "unlocked_ts": ts,
+                    "agg": None if masked else rule["agg"],
+                    "target": None if masked else rule.get("target"),
+                    "progress": None if masked else progress,
+                    "title": "" if masked else entry["title"],
+                    "description": "" if masked else entry["description"],
+                    "hint": "" if masked else entry.get("hint", ""),
+                    "tier": "hidden" if hidden else entry.get("tier", "normal"),
                 }
-                if hidden and not unlocked:
-                    item["title"] = ""
-                    item["description"] = ""
-                    item["hint"] = ""
-                    item["tier"] = "hidden"
-                else:
-                    item["title"] = entry["title"]
-                    item["description"] = entry["description"]
-                    item["hint"] = entry.get("hint", "")
-                    item["tier"] = "hidden" if hidden else entry.get("tier", "normal")
                 view.append(item)
             return view
 

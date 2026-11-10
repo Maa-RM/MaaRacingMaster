@@ -548,11 +548,18 @@ core 自带一份 `resources/achievements.json`，`mod_id` 固定为 `core`（�
 
 **catalog 字段**：`id` / `title` / `description` / `category`（插件自定义分组，core 不解释）/ `tier`（`normal`｜`rare`｜`precious`，缺省 `normal`）/ `hint`（触发条件文案）/ `hidden` / `rule`。`tier` 与 `hint` 只供展示、不参与判定；**第四档视觉（隐藏）由 `hidden` 承担**，不占 `tier` 枚举。`schema_version`（定义版本）与存档的 `store_schema_version` 是两个独立字段。
 
-**规则**：`count` / `count_if` / `sum` / `max` / `all_unlocked`，字段、初值与边界见模块 docstring。`all_unlocked` 只在本插件范围内求值，空依赖集在 catalog 校验时拒绝。
+**规则**：`count` / `count_if` / `sum` / `max` / `all_unlocked`，字段、初值与边界见模块 docstring。`all_unlocked` 只在本插件范围内求值，空依赖集在 catalog 校验时拒绝。`sum` 的累加结果非有限时拒绝该条本次更新（不饱和——饱和会改写真实累计值），保证内存与存档里永远不会出现 `NaN` / `Infinity`。
 
-**提交语义**：锁内算出候选状态 → 原子落盘成功才提交 → 提交后锁外发解锁回调。落盘失败整体回滚、事实记未提交。`consumed_keys` 是有界 FIFO（`DEDUP_WINDOW`），去重保证只在保留窗口内成立。
+**提交语义**：锁内算出候选状态 → 原子落盘成功才提交 → 提交后锁外发解锁回调。落盘失败整体回滚、事实记未提交。`consumed_keys` 是有界 FIFO（`DEDUP_WINDOW`），去重保证只在保留窗口内成立。落盘用 `allow_nan=False`，非有限数漏网时写盘失败而不是写出非标准 JSON。
 
-**存档与三种写操作**：`%APPDATA%/MaaRacingMaster/data/achievements.json`。`export_store` 导出存档本体加 `exported_at`/`app_version` 两个元信息键（文件不存在时导空态）；`import_store` 走「校验 → 备份 `<stem>.pre-import-<时间戳>` → 原子写 → 同步内存」，不清洗未知 `global_id`；`reset(scope)` 的 `all` 连带清 `consumed_keys`，按 `global_id` 只清该条。**存档版本高于本程序时进只读冻结**：不累计、不解锁、不写盘，import / reset 一律拒绝，`reload_from_disk()` 会按文件重算冻结态。
+**存档与三种写操作**：`%APPDATA%/MaaRacingMaster/data/achievements.json`。
+
+- **规范化**：读盘与导入共用同一套值收敛——`progress` 只收 `null` 或有限数值（保持原类型），`unlocked` 收非负有限数值并转 `int`，`consumed_keys` 只收非空字符串；未知 `global_id` 不清洗。
+- **损坏修复**：解析失败、数值非法或版本字段读不懂时，先把原文件复制为 `<stem>.corrupt-<时间戳到微秒>`（独占创建），再写回规范档；复制失败转只读（`frozen_reason=corrupt`），原文件一个字节不动。修复后的档立即落盘，避免每次启动重复修复。
+- **导出**：`export_store` 导出存档本体加 `exported_at` / `app_version` 两个元信息键（文件不存在时导空态）；损坏且无法留备份时改导出内存态（规范后的空档），不照抄必然被导入端拒绝的非法原文件。
+- **导入**：`import_store` 走「校验版本与数值（非法整份拒绝）→ 备份现档 `<stem>.pre-import-<时间戳>` → 补偿解锁与元成就 → 原子写 → 同步内存」。补偿只补「进度达标但缺解锁记录」的条目，不撤销既有解锁（规则目标提高不影响历史解锁），且全程不弹通知。
+- **重置**：`reset(scope)` 只接受 `all`（全清进度、解锁记录与去重键）；单项重置会牵连依赖它的元成就，级联语义定案后再开放，RPC 同样只放行 `all`。
+- **冻结**：存档版本高于本程序时只读（`frozen_reason=version`）：不累计、不解锁、不写盘，import / reset 一律拒绝；`reload_from_disk()` 与启动加载走同一条路径（规范化 + 修复 + 补偿）。
 
 **事实门面**：`report_fact(kind, dedup_key, payload)` 尽力而为、永不抛；未绑定引擎即无操作。`kind` 由定义侧声明，`dedup_key` 的唯一性由上报方保证（UI 事实用每条一个 uuid）。
 
@@ -560,7 +567,8 @@ core 自带一份 `resources/achievements.json`，`mod_id` 固定为 `core`（�
 
 - core 的四条成就依赖前端上报的 UI 事实（`note_ui_event`：开始/取消倒计时），**可伪造**；成就不带实物奖励，接受该风险。
 - 事实种别名不含任何可调参数（窗口、阈值留在 sidecar 常量里）：写进名字就等于把参数焊进 ID，调参就要换 ID、旧进度变孤儿。
-- 隐藏成就未解锁时后端遮蔽 `title` / `description` / `hint` / `tier`，前端不能只靠自己隐藏。
+- 隐藏成就未解锁时后端遮蔽 `title` / `description` / `hint`，同时不下发 `agg` / `target` / `progress`——只藏文案而留着进度条，等于把条件写在脸上；`tier` 固定为 `hidden` 供前端走隐藏视觉。前端不能只靠自己隐藏。
+- 存档修复优先留证：宁可转只读也不覆盖唯一原件；`get_achievements` 透出 `frozen_reason` 与 `repaired_backup`，页面据此区分"版本过高"与"损坏只读"，并告知备份文件名。
 - 引擎会保留插件移除后残留的 `global_id` 进度（**不清洗**）：插件临时不可用与真删除没法区分，清掉就等于误伤。
 
 ## 2. 模块依赖与持有关系

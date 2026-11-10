@@ -213,7 +213,7 @@ def test_management_rpcs_roundtrip(tmp_path, monkeypatch):
     ok, data, err = svc.export_achievements({})
     assert ok and err is None and data["count"] == 1 and data["path"] == str(backup)
 
-    ok, data, _ = svc.reset_achievements({"scope": "core.first_start"})
+    ok, data, _ = svc.reset_achievements({"scope": "all"})
     assert ok and data["cleared"] == 1
     assert svc._achievement_engine.get_view()[0]["unlocked"] is False
 
@@ -251,11 +251,43 @@ def test_get_achievements_reports_frozen(tmp_path):
     svc = _service(tmp_path, [], registry=_core_registry())
     ok, data, _ = svc.get_achievements({})
     assert ok and data["state"] == "frozen"
+    assert data["frozen_reason"] == "version"
     assert data["store_version"] == 99
     assert data["supported_version"] == a.ACHIEVEMENT_STORE_SCHEMA_VERSION
 
-    ok, _, err = svc.reset_achievements({})
+    ok, _, err = svc.reset_achievements({"scope": "all"})
     assert ok is False and "升级" in err
+
+
+@pytest.mark.parametrize("params", [
+    {}, {"scope": None}, {"scope": ""}, {"scope": 0}, {"scope": False},
+    {"scope": "core.first_start"},
+])
+def test_reset_rejects_illegal_scope(tmp_path, params):
+    """非法/缺失 scope 一律拒绝：绝不能兜底成"全清"。"""
+    svc = _service(tmp_path, [], registry=_core_registry())
+    store = tmp_path / "ach.json"
+    svc._achievement_engine.process_fact("core.ui.start_click", "core::c::1", {})
+    before = store.read_text(encoding="utf-8")
+    ok, data, err = svc.reset_achievements(params)
+    assert ok is False and err
+    assert store.read_text(encoding="utf-8") == before
+    assert svc._achievement_engine.get_view()[0]["unlocked"] is True
+
+
+def test_get_achievements_survives_poisoned_store(tmp_path):
+    """污染存档修复后，RPC 载荷必须是标准 JSON（壳侧解析器不接受 NaN/Infinity）。"""
+    store = tmp_path / "ach.json"
+    store.write_text('{"store_schema_version": 1,'
+                     ' "progress": {"core.first_start": NaN},'
+                     ' "unlocked": {"core.first_start": Infinity},'
+                     ' "consumed_keys": []}', encoding="utf-8")
+    svc = _service(tmp_path, [], registry=_core_registry())
+    ok, data, err = svc.get_achievements({})
+    assert ok and err is None and data["state"] == "ready"
+    assert data["frozen_reason"] is None
+    assert data["repaired_backup"]
+    json.dumps(data, ensure_ascii=False, allow_nan=False)  # 不抛即合法
 
 
 # ---------- UI 事实：发射点、时间窗、前端字面量 ----------

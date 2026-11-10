@@ -26,6 +26,8 @@
   let items = [];          // get_achievements 合并视图
   let moduleNames = {};    // mod_id → 模块显示名
   let pageState = 'ready'; // ready | frozen | unavailable
+  let frozenReason = null; // version | corrupt | null
+  let repairedBackup = null; // 本次启动修复存档时留下的原文件备份名
   let storeVersion = 0;
   let supportedVersion = 0;
   let notifyOn = true;
@@ -57,6 +59,8 @@
     const box = await maarm.call('get_achievements');
     items = (box && box.achievements) || [];
     pageState = (box && box.state) || 'ready';
+    frozenReason = (box && box.frozen_reason) || null;
+    repairedBackup = (box && box.repaired_backup) || null;
     notifyOn = !!(box && box.notify);
     storeVersion = (box && box.store_version) || 0;
     supportedVersion = (box && box.supported_version) || 0;
@@ -99,26 +103,29 @@
     node.appendChild(el('div', 'maarm-ach-card__desc',
       hiddenLocked ? '隐藏成就 · 解锁后揭晓' : it.description));
 
-    const foot = el('div', 'maarm-ach-card__foot');
-    if (it.unlocked) {
-      foot.appendChild(el('span', null, fmtDate(it.unlocked_ts) + ' 解锁'));
-    } else if (frozen) {
-      foot.appendChild(el('span', null, '进度暂不可用'));
-    } else {
-      const target = Number(it.target) || 0;
-      const progress = Number(it.progress) || 0;
-      if (target > 1 && progress < target) {
-        const bar = el('div', 'maarm-ach-card__bar');
-        const fill = el('i');
-        fill.style.width = Math.max(2, Math.min(100, (progress / target) * 100)) + '%';
-        bar.appendChild(fill);
-        foot.appendChild(bar);
-        foot.appendChild(el('span', null, `${progress} / ${target}`));
+    // 锁定隐藏态不渲染页脚：目标值本身就是条件的一部分（后端也不下发）。
+    if (!hiddenLocked) {
+      const foot = el('div', 'maarm-ach-card__foot');
+      if (it.unlocked) {
+        foot.appendChild(el('span', null, fmtDate(it.unlocked_ts) + ' 解锁'));
+      } else if (frozen) {
+        foot.appendChild(el('span', null, '进度暂不可用'));
       } else {
-        foot.appendChild(el('span', null, '尚未解锁'));
+        const target = Number(it.target) || 0;
+        const progress = Number(it.progress) || 0;
+        if (target > 1 && progress < target) {
+          const bar = el('div', 'maarm-ach-card__bar');
+          const fill = el('i');
+          fill.style.width = Math.max(2, Math.min(100, (progress / target) * 100)) + '%';
+          bar.appendChild(fill);
+          foot.appendChild(bar);
+          foot.appendChild(el('span', null, `${progress} / ${target}`));
+        } else {
+          foot.appendChild(el('span', null, '尚未解锁'));
+        }
       }
+      node.appendChild(foot);
     }
-    node.appendChild(foot);
     return node;
   }
 
@@ -207,13 +214,20 @@
     sheet.classList.toggle('is-frozen', pageState === 'frozen');
 
     const banner = $('ach-banner');
-    if (pageState === 'frozen') {
+    if (pageState === 'frozen' && frozenReason === 'corrupt') {
+      banner.hidden = false;
+      banner.textContent = '成就存档含无法识别的内容，且本地无法留备份：本次已停止读写，'
+        + '原文件保持不变。可在数据目录手动备份该文件后反馈问题。';
+    } else if (pageState === 'frozen') {
       banner.hidden = false;
       banner.textContent = `成就存档由更高版本（v${storeVersion}）写入，本程序支持到 v${supportedVersion}：`
         + '本次不读写成就进度。升级程序后会自动恢复；在此之前可以先导出备份。';
     } else if (pageState === 'unavailable') {
       banner.hidden = false;
       banner.textContent = '成就功能暂不可用（引擎未初始化）：本次运行的成就不会被记录，其他功能不受影响。';
+    } else if (repairedBackup) {
+      banner.hidden = false;
+      banner.textContent = `成就存档含非法数值，已自动修复；原文件已备份为「${repairedBackup}」。`;
     } else {
       banner.hidden = true;
       banner.textContent = '';

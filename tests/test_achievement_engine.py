@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 import pytest
 
@@ -165,13 +166,22 @@ def test_a2_meta_evaluated_at_load(tmp_path):
 
 
 def test_a2_hidden_masked_until_unlocked(tmp_path):
-    reg = _registry(_entry("h", {"fact": "k", "agg": "count", "target": 1}, hidden=True))
+    reg = _registry(_entry("h", {"fact": "k", "agg": "count", "target": 3}, hidden=True))
     eng = _engine(tmp_path, reg)
     v0 = eng.get_view()[0]
-    assert v0["title"] == "" and v0["description"] == ""
+    assert v0["title"] == "" and v0["description"] == "" and v0["hint"] == ""
+    # 规则字段同样遮蔽：只藏文案，进度条会把条件写在脸上
+    assert v0["agg"] is None and v0["target"] is None and v0["progress"] is None
     eng.process_fact("k", "1", {})
     v1 = eng.get_view()[0]
-    assert v1["title"] == "标题h"
+    # 有进度但未解锁：仍然整条遮蔽（进度值本身会暴露条件）
+    assert v1["agg"] is None and v1["target"] is None and v1["progress"] is None
+    assert v1["title"] == ""
+    eng.process_fact("k", "2", {})
+    eng.process_fact("k", "3", {})
+    v2 = eng.get_view()[0]
+    assert v2["title"] == "标题h"
+    assert v2["unlocked"] is True and v2["progress"] == 3
 
 
 def test_a2_unmatched_kind_noop(tmp_path):
@@ -450,21 +460,18 @@ def test_reset_all_clears_consumed_keys(tmp_path):
     assert state["consumed_keys"] == [] and state["progress"] == {} and state["unlocked"] == {}
 
 
-def test_reset_single_keeps_other_entries(tmp_path):
-    reg = _registry(_entry("a1", {"fact": "k", "agg": "count", "target": 1}),
-                    _entry("b1", {"fact": "k", "agg": "count", "target": 1}))
-    eng = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg)
-    eng.process_fact("k", "k::1", {})
-    assert eng.reset("demo.a1") == 1
-    view = {v["global_id"]: v for v in eng.get_view()}
-    assert view["demo.a1"]["unlocked"] is False
-    assert view["demo.b1"]["unlocked"] is True
-
-
-def test_reset_unknown_id_rejected(tmp_path):
+def test_reset_single_rejected(tmp_path):
+    """单项重置暂不开放：级联语义定案前不保留这条不一致路径。"""
     eng = _one(tmp_path)
     with pytest.raises(a.AchievementStoreError):
-        eng.reset("demo.nope")
+        eng.reset("demo.first")
+
+
+@pytest.mark.parametrize("scope", ["", "ALL", "all ", "demo.nope"])
+def test_reset_illegal_scope_rejected(tmp_path, scope):
+    eng = _one(tmp_path)
+    with pytest.raises(a.AchievementStoreError):
+        eng.reset(scope)
 
 
 def test_frozen_store_rejects_writes_and_keeps_file(tmp_path):
@@ -499,3 +506,173 @@ def test_reload_recomputes_frozen_state(tmp_path):
     assert eng.reload_from_disk() is True
     assert eng.frozen is False and eng.store_version == 1
     assert eng.get_view()[0]["unlocked"] is True
+
+
+# ---------- 存档规范化 / 损坏修复 ----------
+
+def test_poisoned_store_repaired_with_backup(tmp_path):
+    """NaN / Infinity / 错类型：原文件留证后修复，视图可安全序列化，补偿不弹通知。"""
+    store = tmp_path / "ach.json"
+    original = ('{"store_schema_version": 1,'
+                ' "progress": {"demo.ok": 2, "demo.nan": NaN, "demo.str": "oops"},'
+                ' "unlocked": {"demo.ok": Infinity},'
+                ' "consumed_keys": [1, "k::1"]}')
+    store.write_text(original, encoding="utf-8")
+    reg = _registry(_entry("ok", {"fact": "k", "agg": "count", "target": 2}))
+    events = []
+    eng = a.AchievementEngine(store_path=store, registry=reg,
+                              on_unlock=lambda gid, en, ts: events.append(gid))
+
+    assert eng.frozen is False
+    backup = tmp_path / eng.repaired_backup
+    assert backup.is_file() and backup.read_text(encoding="utf-8") == original
+    text = store.read_text(encoding="utf-8")
+    assert "NaN" not in text and "Infinity" not in text
+    json.dumps(eng.get_view(), ensure_ascii=False, allow_nan=False)  # RPC 输出必须合法
+    view = {v["global_id"]: v for v in eng.get_view()}
+    assert view["demo.ok"]["unlocked"] is True    # 进度达标且缺解锁记录 → 补齐
+    assert events == []                           # 修复与补偿都静默
+
+
+def test_poisoned_store_without_backup_turns_readonly(tmp_path, monkeypatch):
+    """留证失败时宁可不写盘：原文件一个字节都不能动。"""
+    store = tmp_path / "ach.json"
+    original = ('{"store_schema_version":1,"progress":{"demo.first":"oops"},'
+                '"unlocked":{},"consumed_keys":[]}')
+    store.write_text(original, encoding="utf-8")
+    real_open = Path.open
+
+    def fail_exclusive(self, mode="r", *args, **kwargs):
+        if mode == "xb":
+            raise OSError("备份目录不可写")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_exclusive)
+    eng = _one(tmp_path)
+    assert eng.frozen is True and eng.frozen_reason == "corrupt"
+    assert eng.process_fact("k", "1", {}) is False
+    assert store.read_text(encoding="utf-8") == original
+
+    # 只读也要留一条恢复路径：导出内存态（规范后的空档），不照抄非法原文件
+    dest = tmp_path / "export.json"
+    assert eng.export_store(dest) == 0
+    assert json.loads(dest.read_text(encoding="utf-8"))["progress"] == {}
+
+
+def test_load_compensates_achieved_without_unlock(tmp_path):
+    """启动加载与导入同一条补偿路径：补解锁但不发通知。"""
+    store = tmp_path / "ach.json"
+    store.write_text(json.dumps({"store_schema_version": 1,
+                                 "progress": {"demo.first": 5},
+                                 "unlocked": {}, "consumed_keys": []}), encoding="utf-8")
+    events = []
+    eng = _engine(tmp_path, _registry(_entry("first", {"fact": "k", "agg": "count",
+                                                      "target": 1})), events)
+    assert eng.get_view()[0]["unlocked"] is True
+    assert events == []
+    assert "demo.first" in json.loads(store.read_text(encoding="utf-8"))["unlocked"]
+
+
+# ---------- 聚合溢出 ----------
+
+def test_sum_overflow_rejected_without_pollution(tmp_path):
+    store = tmp_path / "ach.json"
+    reg = _registry(_entry("s", {"fact": "k", "agg": "sum", "field": "v", "target": 1}))
+    eng = _engine(tmp_path, reg)
+    assert eng.process_fact("k", "1", {"v": 1e308}) is True
+    assert eng.process_fact("k", "2", {"v": 1e308}) is True   # 提交去重键，但不累计
+    assert eng.get_view()[0]["progress"] == 1e308
+    text = store.read_text(encoding="utf-8")
+    assert "Infinity" not in text
+    assert eng.process_fact("k", "2", {"v": 1.0}) is False     # 去重键已消费
+
+
+# ---------- 导入：拒绝非法值 / 补偿 / 原子性 ----------
+
+@pytest.mark.parametrize("bad", [
+    {"progress": {"demo.first": "invalid"}},
+    {"progress": {"demo.first": float("nan")}},
+    {"progress": {"demo.first": float("inf")}},
+    {"unlocked": {"demo.first": "yesterday"}},
+    {"consumed_keys": [1]},
+])
+def test_import_rejects_invalid_values(tmp_path, bad):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    store = tmp_path / "ach.json"
+    before = store.read_text(encoding="utf-8")
+    payload = {"store_schema_version": 1, "progress": {}, "unlocked": {},
+               "consumed_keys": []}
+    payload.update(bad)
+    src = tmp_path / "bad.json"
+    src.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(a.AchievementStoreError):
+        eng.import_store(src)
+    assert store.read_text(encoding="utf-8") == before
+    view = eng.get_view()[0]
+    assert view["unlocked"] is True and view["progress"] == 1
+
+
+def test_import_compensates_achieved_and_meta_without_notify(tmp_path):
+    events = []
+    reg = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}),
+                    _entry("meta", {"agg": "all_unlocked", "scope": "plugin"}))
+    eng = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg,
+                              on_unlock=lambda gid, en, ts: events.append(gid))
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1,
+                                  "progress": {"demo.dep": 5}, "unlocked": {},
+                                  "consumed_keys": []}), encoding="utf-8")
+    assert eng.import_store(backup) == 1
+    view = {v["global_id"]: v for v in eng.get_view()}
+    assert view["demo.dep"]["unlocked"] is True
+    assert view["demo.meta"]["unlocked"] is True
+    assert events == []                       # 恢复备份不弹提示
+    state = json.loads((tmp_path / "ach.json").read_text(encoding="utf-8"))
+    assert set(state["unlocked"]) == {"demo.dep", "demo.meta"}   # 补偿一次落盘
+
+
+def test_import_keeps_historical_unlock_below_target(tmp_path):
+    """规则目标提高不得撤销历史解锁：只补缺，不改已有。"""
+    reg = _registry(_entry("x", {"fact": "k", "agg": "count", "target": 10}))
+    eng = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg)
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1,
+                                  "progress": {"demo.x": 3},
+                                  "unlocked": {"demo.x": 1700000000000000000},
+                                  "consumed_keys": []}), encoding="utf-8")
+    eng.import_store(backup)
+    view = eng.get_view()[0]
+    assert view["unlocked"] is True and view["progress"] == 3
+
+
+def test_import_coerces_numeric_unlock_ts(tmp_path):
+    eng = _one(tmp_path)
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1,
+                                  "progress": {"demo.first": 1},
+                                  "unlocked": {"demo.first": 1.7e18},
+                                  "consumed_keys": []}), encoding="utf-8")
+    eng.import_store(backup)
+    assert isinstance(eng.get_view()[0]["unlocked_ts"], int)
+
+
+def test_import_write_failure_keeps_disk_and_memory(tmp_path, monkeypatch):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    store = tmp_path / "ach.json"
+    before = store.read_text(encoding="utf-8")
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1, "progress": {},
+                                  "unlocked": {}, "consumed_keys": []}),
+                      encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(eng, "_save_state_locked", _boom)
+    with pytest.raises(OSError):
+        eng.import_store(backup)
+    assert store.read_text(encoding="utf-8") == before
+    view = eng.get_view()[0]
+    assert view["unlocked"] is True and view["progress"] == 1
