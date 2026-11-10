@@ -539,6 +539,30 @@
 
 **测试**：`tests/test_gpu_counters.py`（只锁解析与聚合；PDH 调用依赖本机硬件，不进单测）。
 
+### 1.23 [achievement.py](./achievement.py) — 成就机制（注册索引 / 追踪引擎 / 进度存档 / 事实门面）
+
+**定义与状态分离**：成就定义是纯数据，进度与解锁态是存档。定义有两个来源、同一条注册路径——
+插件在自己的文件夹放 `achievements.json` 并在 `manifest.py` 声明可选 `ACHIEVEMENTS` 相对路径指针；
+core 自带一份 `resources/achievements.json`，`mod_id` 固定为 `core`（保留命名空间，插件声明同名即被 registry 拒绝）。
+两者都经 `register_catalog` 进 `ACHIEVEMENT_REGISTRY`（无运行态的声明索引），引擎由 sidecar 持有并在构造时读取。
+
+**catalog 字段**：`id` / `title` / `description` / `category`（插件自定义分组，core 不解释）/ `tier`（`normal`｜`rare`｜`precious`，缺省 `normal`）/ `hint`（触发条件文案）/ `hidden` / `rule`。`tier` 与 `hint` 只供展示、不参与判定；**第四档视觉（隐藏）由 `hidden` 承担**，不占 `tier` 枚举。`schema_version`（定义版本）与存档的 `store_schema_version` 是两个独立字段。
+
+**规则**：`count` / `count_if` / `sum` / `max` / `all_unlocked`，字段、初值与边界见模块 docstring。`all_unlocked` 只在本插件范围内求值，空依赖集在 catalog 校验时拒绝。
+
+**提交语义**：锁内算出候选状态 → 原子落盘成功才提交 → 提交后锁外发解锁回调。落盘失败整体回滚、事实记未提交。`consumed_keys` 是有界 FIFO（`DEDUP_WINDOW`），去重保证只在保留窗口内成立。
+
+**存档与三种写操作**：`%APPDATA%/MaaRacingMaster/data/achievements.json`。`export_store` 导出存档本体加 `exported_at`/`app_version` 两个元信息键（文件不存在时导空态）；`import_store` 走「校验 → 备份 `<stem>.pre-import-<时间戳>` → 原子写 → 同步内存」，不清洗未知 `global_id`；`reset(scope)` 的 `all` 连带清 `consumed_keys`，按 `global_id` 只清该条。**存档版本高于本程序时进只读冻结**：不累计、不解锁、不写盘，import / reset 一律拒绝，`reload_from_disk()` 会按文件重算冻结态。
+
+**事实门面**：`report_fact(kind, dedup_key, payload)` 尽力而为、永不抛；未绑定引擎即无操作。`kind` 由定义侧声明，`dedup_key` 的唯一性由上报方保证（UI 事实用每条一个 uuid）。
+
+**坑点**：
+
+- core 的四条成就依赖前端上报的 UI 事实（`note_ui_event`：开始/取消倒计时），**可伪造**；成就不带实物奖励，接受该风险。
+- 事实种别名不含任何可调参数（窗口、阈值留在 sidecar 常量里）：写进名字就等于把参数焊进 ID，调参就要换 ID、旧进度变孤儿。
+- 隐藏成就未解锁时后端遮蔽 `title` / `description` / `hint` / `tier`，前端不能只靠自己隐藏。
+- 引擎会保留插件移除后残留的 `global_id` 进度（**不清洗**）：插件临时不可用与真删除没法区分，清掉就等于误伤。
+
 ## 2. 模块依赖与持有关系
 
 ### 2.1 导入关系图
@@ -553,6 +577,7 @@ core/sidecar.py（JSONL RPC handler）
   ├── core.thread_probe（线程段：时间/身份/心跳，§1.16）
   ├── core.covers（封面声明 → URL 解析，§1.18）
   ├── core.registry（插件自动扫描注册）
+  ├── core.achievement（成就声明索引/引擎/进度存档/事实门面，§1.23）
   └── core.dashboard_contract（看板 block 校验与兼容桥，§1.20）
 
 MaaRacingMaster.Shell（C#，不导入 Python）
@@ -682,6 +707,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `NavigationDebugger`                 | core/debug.py                                                                             | 运行级调试流（帧+控制事件 FIFO、单 IO 线程、PEEP 与索引）与旧视图     |
 | `Logger`                             | core/logger.py                                                                            | 内存+文件双写日志；会话目录 `logs/<ts>/`（日志 + 伴随产物同放）    |
 | `RapidOcrEngine` / `OcrText`         | core/ocr.py                                                                               | 单 ROI 文字识别（懒加载 + 失败降级）；逐块/合并两种文本取法（§1.11） |
+| `AchievementEngine`                  | core/achievement.py                                                                       | 成就追踪：事实 → 规则累计 → 原子落盘提交 → 锁外发解锁回调；导入/导出/重置与冻结态（§1.23） |
 
 > 活动域类（`SpeedRushModule` 等）见对应 `plugins/<id>/CODE_WIKI.md`；GUI 壳类见 [apps/MaaRacingMaster.Shell/README.md](../../apps/MaaRacingMaster.Shell/README.md)。
 

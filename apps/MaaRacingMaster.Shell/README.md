@@ -97,6 +97,10 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 
 通知文案由 Python 组装（结局 + 步骤名 + 固定文案），壳不认识业务；取不到步骤名时退回标识，不阻断收尾。通知初始化或显示失败只记 stderr 诊断，不阻塞启动与轮次状态。
 
+### 成就解锁的单通道显示
+
+成就解锁与轮次共用事件通道，但**显示走单通道**：窗口激活且未最小化 → 只推 WebView 提示条（`{type:'achievement'}`）；否则只走 `AppNotifications.Show`（标题 + 描述），不再推 WebView。判据是 `Window.Activated` / `Deactivated` 维护的激活态加 `Presenter.State == Minimized`——只看最小化会把「窗口在后台被别的窗口遮住」误判为前台，提示条会推到看不见的地方。`Closing` 期间不弹。
+
 ## 构建坑
 
 | 坑点 | 解决 |
