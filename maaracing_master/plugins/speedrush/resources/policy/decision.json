@@ -244,7 +244,7 @@
     "pass_hold_s": 0.5,
     "pass_latch_enabled": true,
     "pass_side_pin_enabled": true,
-    "pass_target_hold_enabled": true,
+    "pass_target_hold_enabled": false,
     "pass_min_gap_lane": 0.6,
     "pass_in_commit_enabled": true,
     "pass_horizon_s": 4.5,
