@@ -66,6 +66,7 @@ from maaracing_master.core.dashboard_contract import (
     normalize_dashboard,
 )
 from maaracing_master.core import maa_option
+from maaracing_master.core import achievement
 from maaracing_master.core.paths import (
     config_dir,
     data_dir,
@@ -539,6 +540,8 @@ HANDLERS = frozenset({
     "check_update", "fetch_announcement",
     # 观测
     "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
+    # 成就
+    "get_achievements", "set_achievement_notify",
     # 调试与显示开关
     "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
     # 行为开关
@@ -649,6 +652,12 @@ class SidecarService:
         self._config_meta_notes: dict[tuple[str, str], str] = {}
         # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
         self._boost_priority_enabled = False
+        # 成就机制：引擎由 sidecar 持有生命周期（registry 只产无运行态声明索引）；绑定
+        # 门面后插件可上报事实。解锁回调读通知开关（_restore_profile 回填），尽力发壳侧事件。
+        self._achievement_notify = True
+        self._achievement_engine = achievement.AchievementEngine(
+            on_unlock=self._on_achievement_unlock)
+        achievement.bind_engine(self._achievement_engine)
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
         self._restore_profile()
 
@@ -755,6 +764,9 @@ class SidecarService:
                 self._boost_priority_enabled = bp
                 logger.log(f"性能优先({'提级' if bp else '恢复'}): "
                            f"{process_priority.describe(applied)}", "DEBUG")
+            an = dbg.get("achievement_notify")
+            if isinstance(an, bool):
+                self._achievement_notify = an
         # 2) 模块配置 → 按模块分槽回填；键白名单由各模块的 DEFAULT_MODULE_CONFIG 声明
         slots: dict[str, dict] = {}
         for mid, flat in _parse_module_config_slots(data.get("module_config")).items():
@@ -2134,6 +2146,33 @@ class SidecarService:
         logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
                    "INFO" if enabled else "DEBUG")
         return (True, {"boost_priority": enabled}, None)
+
+    def _on_achievement_unlock(self, global_id: str, entry: dict) -> None:
+        """引擎解锁回调（锁外调用）：通知开关开启时尽力发壳侧事件。
+
+        事件送达尽力而为；壳侧负责前台/后台单通道显示与 Closing 闸门（阶段 4）。
+        """
+        if not self._achievement_notify:
+            return
+        self._send_event_best_effort({
+            "type": "event", "event": "achievement_unlocked",
+            "data": {"global_id": global_id, "title": entry.get("title", ""),
+                     "category": entry.get("category", ""),
+                     "mod_id": global_id.split(".", 1)[0]},
+        })
+
+    def get_achievements(self, params):
+        """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。"""
+        return (True, {"achievements": self._achievement_engine.get_view(),
+                       "notify": self._achievement_notify}, None)
+
+    def set_achievement_notify(self, params):
+        """成就解锁通知开关：关闭后仅写进度不弹通知；持久化到 profile（debug.achievement_notify）。"""
+        enabled = bool(params.get("enabled", True))
+        with self._lock:
+            self._achievement_notify = enabled
+            self._persist_debug_flag("achievement_notify", enabled)
+        return (True, {"achievement_notify": enabled}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。

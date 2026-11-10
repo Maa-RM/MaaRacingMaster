@@ -38,6 +38,7 @@ internal static class RpcBridge
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
         "set_mute_game", "pick_game_exe",
         "set_boost_priority",
+        "get_achievements", "set_achievement_notify",
     };
 
     private static PythonSidecar? s_sidecar;
