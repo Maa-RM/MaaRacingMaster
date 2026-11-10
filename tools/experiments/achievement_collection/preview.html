@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>成就收集页 · 按钮打开的分组页</title>
+<style>
+/* ============================================================
+   成就收集页原型
+   入口：标题栏按钮（不占一级 tab），点击打开整页覆盖层
+   页面：概览 + 筛选 + 按「核心 / 各模块」分组
+   ============================================================ */
+
+:root {
+  --maarm-background: #F5F6FA;
+  --maarm-surface: #FFFFFF;
+  --maarm-foreground: #1F2328;
+  --maarm-foreground-secondary: #4A5160;
+  --maarm-foreground-muted: #8B93A7;
+  --maarm-border: #E5E7EB;
+  --maarm-border-light: #EEF0F4;
+  --maarm-primary: #E5484D;
+  --maarm-success: #10B981;
+  --maarm-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; padding: 20px 16px 24px;
+  background: #E9EBF1; font-family: var(--maarm-font-sans);
+  color: var(--maarm-foreground);
+  display: flex; flex-direction: column; align-items: center;
+}
+.fit { width: 100%; display: flex; justify-content: center; }
+.stage { width: min(1180px, 100%); display: flex; flex-direction: column; gap: 14px; }
+
+/* ---------- 窗口外壳 ---------- */
+.shell {
+  position: relative; width: 100%; height: 760px;
+  background: var(--maarm-background); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(16,18,24,.18), 0 0 0 1px rgba(16,18,24,.06);
+  display: flex; flex-direction: column;
+}
+.titlebar {
+  flex: 0 0 48px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  background: var(--maarm-surface); border-bottom: 1px solid var(--maarm-border-light);
+  font-size: 12px; position: relative; z-index: 3;
+}
+.brand { font-weight: 600; font-size: 13px; }
+.ver { color: var(--maarm-foreground-muted); }
+.tabs { display: flex; gap: 26px; margin-left: 26px; }
+.tab {
+  background: none; border: 0; padding: 14px 0; font: inherit; font-size: 13px;
+  color: var(--maarm-foreground-secondary); cursor: default; position: relative;
+}
+.tab--active { color: var(--maarm-foreground); font-weight: 600; }
+.tab--active::after {
+  content: ""; position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+  width: 28px; height: 2px; border-radius: 2px; background: var(--maarm-primary);
+}
+
+/* ---------- 入口按钮 ---------- */
+.head-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+.ach-entry {
+  display: inline-flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 12.5px; padding: 6px 12px 6px 10px;
+  border: 1px solid var(--maarm-border); border-radius: 8px;
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  cursor: pointer; transition: background .16s ease, box-shadow .16s ease;
+}
+.ach-entry:hover { background: #FBFBFC; box-shadow: 0 2px 8px rgba(16,18,24,.06); }
+.ach-entry svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ach-entry__count {
+  font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: #F1F3F7; color: var(--maarm-foreground-secondary);
+}
+.winbtns { display: flex; gap: 16px; color: var(--maarm-foreground-muted); }
+
+main { flex: 1 1 auto; padding: 14px 16px; min-height: 0; display: flex; gap: 12px; }
+.card {
+  background: var(--maarm-surface); border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04); padding: 14px 16px;
+}
+.col-left { flex: 0 0 55%; display: flex; flex-direction: column; gap: 12px; }
+.col-right { flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; }
+.card__head { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.skeleton { height: 12px; border-radius: 6px; background: #F0F2F6; margin-bottom: 9px; }
+.skeleton--w60 { width: 60%; } .skeleton--w80 { width: 80%; } .skeleton--w40 { width: 40%; }
+
+/* 快捷工具格（与 settings.js 的 .tool-grid 一致） */
+.tool-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.maarm-tool-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+  padding: 16px 10px; border: 1px solid var(--maarm-border); border-radius: 10px;
+  background: var(--maarm-surface); color: var(--maarm-foreground-secondary);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, transform .12s ease;
+}
+.maarm-tool-btn:hover { background: #FBFBFC; border-color: #D5D9E2; transform: translateY(-1px); }
+.maarm-tool-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ============================================================
+   覆盖层页面
+   ============================================================ */
+.sheet {
+  position: absolute; inset: 48px 0 0 0;      /* 盖住标题栏以下 */
+  background: var(--maarm-background);
+  z-index: 2;
+  display: flex; flex-direction: column;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .2s ease, transform .24s cubic-bezier(.2,.9,.25,1);
+  pointer-events: none;
+}
+.sheet.is-open { opacity: 1; transform: none; pointer-events: auto; }
+
+.sheet__head {
+  flex: 0 0 56px; display: flex; align-items: center; gap: 12px;
+  padding: 0 20px; background: var(--maarm-surface);
+  border-bottom: 1px solid var(--maarm-border-light);
+}
+.sheet__title { font-size: 15px; font-weight: 600; }
+.sheet__meta { font-size: 12px; color: var(--maarm-foreground-muted); }
+.sheet__close {
+  margin-left: auto; width: 28px; height: 28px; border-radius: 8px;
+  border: 1px solid transparent; background: none; color: var(--maarm-foreground-muted);
+  cursor: pointer; display: grid; place-items: center; font-size: 14px;
+}
+.sheet__close:hover { background: #F1F3F7; color: var(--maarm-foreground); }
+.sheet__actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ghost-btn {
+  font: inherit; font-size: 12px; padding: 5px 11px; border-radius: 7px;
+  border: 1px solid var(--maarm-border); background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.ghost-btn:hover { background: #FBFBFC; color: var(--maarm-foreground); }
+.ghost-btn--danger:hover { border-color: #F3C9CA; color: var(--maarm-primary); background: #FFF7F7; }
+.mini-switch { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--maarm-foreground-secondary); margin-left: 4px; }
+.mini-switch i { width: 28px; height: 16px; border-radius: 999px; background: var(--maarm-success); position: relative; display: inline-block; }
+.mini-switch i::after { content: ""; position: absolute; right: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
+
+.sheet__body { flex: 1 1 auto; overflow-y: auto; padding: 14px 20px 24px; }
+
+/* 概览条 */
+.summary {
+  display: flex; align-items: center; gap: 22px;
+  background: var(--maarm-surface); border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  padding: 16px 20px; margin-bottom: 12px;
+}
+.summary__num { display: flex; align-items: baseline; gap: 3px; }
+.summary__num b { font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
+.summary__num span { font-size: 14px; color: var(--maarm-foreground-muted); }
+.summary__main { flex: 1 1 auto; min-width: 0; }
+.summary__label { font-size: 12px; color: var(--maarm-foreground-muted); margin-bottom: 7px; }
+.summary__track { height: 6px; border-radius: 3px; background: #EDEFF4; overflow: hidden; }
+.summary__fill { height: 100%; border-radius: 3px; background: var(--maarm-foreground); transition: width .4s ease; }
+.summary__tiers { display: flex; gap: 18px; padding-left: 20px; border-left: 1px solid var(--maarm-border-light); }
+.tier-stat { display: flex; flex-direction: column; gap: 4px; }
+.tier-stat__name { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--maarm-foreground-muted); }
+.tier-stat__name::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tier-color, #1F2328); }
+.tier-stat__val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tier-stat__val em { font-style: normal; font-size: 12px; color: var(--maarm-foreground-muted); font-weight: 400; }
+
+/* 筛选行 */
+.filters { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.filter-btn {
+  font: inherit; font-size: 12.5px; padding: 6px 13px; border-radius: 8px;
+  border: 1px solid var(--maarm-border); background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.filter-btn.is-active { background: var(--maarm-foreground); border-color: var(--maarm-foreground); color: #fff; font-weight: 600; }
+.filters__meta { margin-left: auto; font-size: 12px; color: var(--maarm-foreground-muted); }
+
+/* 分组 */
+.group { margin-bottom: 22px; }
+.group__head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 10px; }
+.group__title { font-size: 13.5px; font-weight: 600; }
+.group__count { font-size: 12px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums; }
+.group__bar { flex: 0 0 90px; height: 4px; border-radius: 2px; background: #E8EAF0; overflow: hidden; align-self: center; }
+.group__bar i { display: block; height: 100%; background: var(--maarm-foreground-secondary); border-radius: 2px; }
+
+/* 网格 */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 12px; }
+
+.ach-card {
+  --ring: var(--maarm-border);
+  position: relative;
+  display: flex; flex-direction: column;
+  min-height: 142px; padding: 14px 15px;
+  border: 2px solid transparent; border-radius: 12px;
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--ring) border-box;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  transition: transform .16s ease, box-shadow .16s ease;
+}
+.ach-card:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(16,18,24,.08); }
+.ach-card[data-tier="rare"] { --ring: #38BDF8; }
+.ach-card[data-tier="precious"] { --ring: var(--maarm-primary); }
+.ach-card[data-tier="hidden"] { --ring: #D9DCE4; }
+.ach-card.is-locked { background: linear-gradient(#FCFCFD, #FCFCFD) padding-box, var(--ring) border-box; }
+.ach-card.is-locked[data-tier="rare"] { --ring: #CFE9F8; }
+.ach-card.is-locked[data-tier="precious"] { --ring: #F6D3D4; }
+.ach-card.is-locked[data-tier="hidden"] { --ring: #E4E0EF; }
+
+.ach-card__head { display: flex; align-items: center; gap: 9px; }
+.ach-card__badge {
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; background: #F4F5F8; color: var(--maarm-foreground);
+}
+.ach-card.is-locked .ach-card__badge { background: #F1F3F7; color: #B9C0CE; }
+.ach-card__badge svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.ach-card__tier { margin-left: auto; font-size: 11px; color: var(--maarm-foreground-muted); }
+
+.ach-card__title { font-size: 14px; font-weight: 600; margin-top: 11px; line-height: 1.3; }
+.ach-card.is-locked .ach-card__title { color: var(--maarm-foreground-secondary); font-weight: 500; }
+.ach-card__desc {
+  font-size: 12px; line-height: 1.45; color: var(--maarm-foreground-muted); margin-top: 5px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ach-card__foot {
+  margin-top: auto; padding-top: 10px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums;
+}
+.ach-card__bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: #EDEFF4; overflow: hidden; }
+.ach-card__bar i { display: block; height: 100%; background: var(--maarm-foreground-secondary); border-radius: 2px; }
+.ach-card.is-unlocked .ach-card__foot { color: #0F7A55; }
+.ach-card.is-unlocked .ach-card__foot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #10B981; }
+
+.ach-card[data-tier="hidden"] .ach-card__badge { background: #F5F3FA; }
+.ach-card[data-tier="hidden"].is-unlocked { --ring: #C9B6F2; }
+.ach-card__title.is-rainbow {
+  background-image: linear-gradient(90deg in oklch longer hue,
+    oklch(.62 .17 var(--hue)), oklch(.62 .17 var(--hue)));
+  background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  animation: hue 6s linear infinite;
+}
+@property --hue { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes hue { from { --hue: 0deg; } to { --hue: 360deg; } }
+.ach-card__masked { letter-spacing: .18em; }
+</style>
+</head>
+<body>
+
+<div class="fit">
+<div class="stage">
+<div class="shell" id="shell">
+  <header class="titlebar">
+    <span class="brand">MaaRM</span>
+    <span class="ver">v0.31.0-dev.1+113（源码模式）</span>
+    <nav class="tabs">
+      <button class="tab tab--active">主控</button>
+      <button class="tab">数据</button>
+      <button class="tab">设置</button>
+      <button class="tab">关于</button>
+    </nav>
+    <div class="head-right">
+      <div class="winbtns"><span>—</span><span>▢</span><span>✕</span></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="col-left">
+      <div class="card"><div class="card__head">调试选项</div>
+        <div class="skeleton skeleton--w80"></div><div class="skeleton skeleton--w60"></div><div class="skeleton skeleton--w40"></div>
+      </div>
+      <div class="card"><div class="card__head">行为开关</div>
+        <div class="skeleton skeleton--w60"></div><div class="skeleton skeleton--w80"></div>
+      </div>
+    </div>
+    <div class="col-right">
+      <!-- 入口：设置 → 快捷工具 -->
+      <div class="card">
+        <div class="card__head">快捷工具</div>
+        <div class="tool-grid">
+          <button class="maarm-tool-btn" type="button">
+            <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+            <span>调试文件夹</span>
+          </button>
+          <button class="maarm-tool-btn" type="button">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+            <span>运行环境</span>
+          </button>
+          <button class="maarm-tool-btn" type="button" id="btn-open">
+            <svg viewBox="0 0 24 24"><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z"/>
+              <path d="M7 5H4.5v1.5A3.5 3.5 0 0 0 8 10"/><path d="M17 5h2.5v1.5A3.5 3.5 0 0 1 16 10"/>
+              <path d="M12 14v3"/><path d="M9 20h6"/></svg>
+            <span>成就管理</span>
+          </button>
+        </div>
+      </div>
+      <div class="card"><div class="card__head">通知设置</div>
+        <div class="skeleton skeleton--w60"></div><div class="skeleton skeleton--w40"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== 成就页（覆盖层） ===== -->
+  <section class="sheet" id="sheet" aria-hidden="true">
+    <div class="sheet__head">
+      <span class="sheet__title">成就管理</span>
+      <span class="sheet__meta" id="sheet-meta"></span>
+      <div class="sheet__actions">
+        <button class="ghost-btn" type="button">导出备份</button>
+        <button class="ghost-btn" type="button">导入备份</button>
+        <button class="ghost-btn ghost-btn--danger" type="button">重置…</button>
+        <span class="mini-switch" title="解锁时弹提示"><i></i><span>解锁提示</span></span>
+      </div>
+      <button class="sheet__close" id="btn-close" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="sheet__body">
+      <div class="summary">
+        <div class="summary__num"><b id="sum-done">0</b><span>/ <span id="sum-all">0</span></span></div>
+        <div class="summary__main">
+          <div class="summary__label">已解锁 <span id="sum-pct">0%</span></div>
+          <div class="summary__track"><div class="summary__fill" id="sum-fill" style="width:0%"></div></div>
+        </div>
+        <div class="summary__tiers" id="summary-tiers"></div>
+      </div>
+
+      <div class="filters">
+        <button class="filter-btn is-active" data-filter="all">全部</button>
+        <button class="filter-btn" data-filter="locked">未解锁</button>
+        <button class="filter-btn" data-filter="unlocked">已解锁</button>
+        <span class="filters__meta">解锁后永久保留，不随模块移出或重装丢失</span>
+      </div>
+
+      <div id="groups"></div>
+    </div>
+  </section>
+</div>
+
+<div class="controls" style="font-size:12.5px;color:#4A5160;">
+  入口：设置 → 快捷工具 →「成就管理」，点开整页；页内按「核心 / 各模块」分组，右上角是备份与重置。
+</div>
+</div>
+</div>
+
+<script>
+(() => {
+  const TIERS = { normal: '普通', rare: '稀有', precious: '珍贵', hidden: '隐藏' };
+  const TIER_COLORS = { normal: '#1F2328', rare: '#38BDF8', precious: '#E5484D', hidden: '#C9B6F2' };
+
+  /* 分组来源：核心自称一组，其余按 mod_id 归组 */
+  const GROUPS = [
+    { id: 'core', name: '核心', items: [
+      { tier: 'normal',   title: '哦，对的对的',    desc: '欢迎您使用MaaRM！',        unlocked: true,  ts: '2026-11-10' },
+      { tier: 'rare',     title: '嗯，不对不对',    desc: '是不是哪里没调整好？',      unlocked: true,  ts: '2026-11-10' },
+      { tier: 'precious', title: '哎呀，对的对的！', desc: '刚刚是我看岔眼了！',        unlocked: false, progress: 0, target: 1 },
+      { tier: 'hidden',   title: '对...对吗？',     desc: '真是纠纠又结结啊...',       unlocked: false, progress: 0, target: 1 },
+    ]},
+    { id: 'speedrush', name: '极速狂飙', items: [
+      { tier: 'normal',   title: '初次上路',  desc: '完成第一场极速狂飙比赛',     unlocked: true,  ts: '2026-11-08' },
+      { tier: 'normal',   title: '十场老手',  desc: '累计完成 10 场极速狂飙比赛', unlocked: false, progress: 7, target: 10 },
+      { tier: 'rare',     title: '一骑绝尘',  desc: '单场以 5 秒以上优势夺冠',    unlocked: false, progress: 2, target: 5 },
+      { tier: 'precious', title: '满速传说',  desc: '累计行驶 100 公里',          unlocked: false, progress: 64.8, target: 100 },
+      { tier: 'hidden',   title: '夜行客',    desc: '在深夜完成一场比赛',        unlocked: true,  ts: '2026-11-09' },
+    ]},
+    { id: 'treasure', name: '鉴宝', items: [
+      { tier: 'normal',   title: '第一件藏品', desc: '成功拍下第一件藏品',       unlocked: false, progress: 0, target: 1 },
+      { tier: 'rare',     title: '捡漏专家',   desc: '以低于估价 30% 的价格成交', unlocked: false, progress: 1, target: 3 },
+      { tier: 'precious', title: '满仓',       desc: '同时持有 50 件藏品',       unlocked: false, progress: 12, target: 50 },
+    ]},
+  ];
+
+  const TROPHY = '<svg viewBox="0 0 24 24"><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z"/>'
+    + '<path d="M7 5H4.5v1.5A3.5 3.5 0 0 0 8 10"/><path d="M17 5h2.5v1.5A3.5 3.5 0 0 1 16 10"/>'
+    + '<path d="M12 14v3"/><path d="M9 20h6"/></svg>';
+  const LOCK = '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/>'
+    + '<path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>';
+
+  const ALL = GROUPS.flatMap((g) => g.items);
+  let filter = 'all';
+
+  function cardHtml(it) {
+    const hiddenLocked = it.tier === 'hidden' && !it.unlocked;
+    const cls = 'ach-card ' + (it.unlocked ? 'is-unlocked' : 'is-locked');
+    const title = hiddenLocked
+      ? '<div class="ach-card__title ach-card__masked">？？？</div>'
+      : `<div class="ach-card__title${it.tier === 'hidden' ? ' is-rainbow' : ''}">${it.title}</div>`;
+    let foot;
+    if (it.unlocked) foot = `<span>${it.ts} 解锁</span>`;
+    else if (it.target > 1 && it.progress < it.target) {
+      const pct = Math.max(2, Math.min(100, (it.progress / it.target) * 100));
+      foot = `<div class="ach-card__bar"><i style="width:${pct}%"></i></div><span>${it.progress} / ${it.target}</span>`;
+    } else foot = '<span>尚未解锁</span>';
+
+    return `<article class="${cls}" data-tier="${it.tier}">
+      <div class="ach-card__head">
+        <div class="ach-card__badge">${hiddenLocked ? LOCK : TROPHY}</div>
+        <span class="ach-card__tier">${TIERS[it.tier]}</span>
+      </div>
+      ${title}
+      <div class="ach-card__desc">${hiddenLocked ? '隐藏成就 · 解锁后揭晓' : it.desc}</div>
+      <div class="ach-card__foot">${foot}</div>
+    </article>`;
+  }
+
+  function render() {
+    const host = document.getElementById('groups');
+    host.innerHTML = GROUPS.map((g) => {
+      const shown = g.items.filter((it) => filter === 'all'
+        ? true : filter === 'unlocked' ? it.unlocked : !it.unlocked);
+      if (!shown.length) return '';
+      const got = g.items.filter((it) => it.unlocked).length;
+      const pct = Math.round((got / g.items.length) * 100);
+      return `<section class="group">
+        <div class="group__head">
+          <span class="group__title">${g.name}</span>
+          <span class="group__count">${got} / ${g.items.length}</span>
+          <span class="group__bar"><i style="width:${pct}%"></i></span>
+        </div>
+        <div class="grid">${shown.map(cardHtml).join('')}</div>
+      </section>`;
+    }).join('');
+  }
+
+  function renderSummary() {
+    const done = ALL.filter((it) => it.unlocked).length;
+    const pct = Math.round((done / ALL.length) * 100);
+    document.getElementById('sum-done').textContent = done;
+    document.getElementById('sum-all').textContent = ALL.length;
+    document.getElementById('sum-pct').textContent = pct + '%';
+    document.getElementById('sum-fill').style.width = pct + '%';
+    document.getElementById('sheet-meta').textContent = `已解锁 ${done} / ${ALL.length}`;
+
+    document.getElementById('summary-tiers').innerHTML = Object.keys(TIERS).map((k) => {
+      const all = ALL.filter((it) => it.tier === k).length;
+      const got = ALL.filter((it) => it.tier === k && it.unlocked).length;
+      return `<div class="tier-stat" style="--tier-color:${TIER_COLORS[k]}">
+        <span class="tier-stat__name">${TIERS[k]}</span>
+        <span class="tier-stat__val">${got}<em> / ${all}</em></span>
+      </div>`;
+    }).join('');
+  }
+
+  document.querySelectorAll('.filter-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('is-active'));
+      btn.classList.add('is-active');
+      filter = btn.dataset.filter;
+      render();
+    });
+  });
+
+  const sheet = document.getElementById('sheet');
+  function open() {
+    sheet.classList.add('is-open');
+    sheet.setAttribute('aria-hidden', 'false');
+  }
+  function close() {
+    sheet.classList.remove('is-open');
+    sheet.setAttribute('aria-hidden', 'true');
+  }
+  document.getElementById('btn-open').addEventListener('click', open);
+  document.getElementById('btn-close').addEventListener('click', close);
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  renderSummary();
+  render();
+})();
+</script>
+</body>
+</html>
