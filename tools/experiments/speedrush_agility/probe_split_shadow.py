@@ -282,6 +282,95 @@ def _print_scale_report(rs):
               f"  序列簇数 P50 {r['frag_p50']} max {r['frag_max']}")
 
 
+def _fid2file(frame_dir):
+    fid2file = {}
+    fj = os.path.join(frame_dir, "frames.jsonl")
+    if os.path.isfile(fj):
+        with open(fj, encoding="utf-8") as fh:
+            for line in fh:
+                rr = json.loads(line)
+                if rr.get("frame_id") is not None:
+                    fid2file.setdefault(rr["frame_id"], rr.get("file"))
+    return fid2file
+
+
+def _render_boundary(b, ticks, cars_cache, frame_dir, out_path):
+    """伪跳拆点前后帧对照：拆点前 1 拍 / 拆点 / 后 2 拍，2×2 拼图。
+
+    链 oid 红色、其余米制车白色；框底/框顶全宽横线（横向像素反推在近场
+    发散，只有框底行可靠——真值小集口径）。裁决问题：跳变前后框底行对
+    的是不是同一辆物理车。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+    oid_chain = b["seg_oid"]
+    ks = [k for k in range(max(b["i_prev"] - 1, 0),
+                           min(b["i"] + 3, len(ticks)))]
+    fid2file = _fid2file(frame_dir)
+    cell_w, cell_h = 640, 360
+    sheet = Image.new("RGB", (cell_w * 2, cell_h * 2), (16, 16, 16))
+    try:
+        font = ImageFont.load_default(size=18)
+    except TypeError:
+        font = ImageFont.load_default()
+    n = 0
+    for k in ks:
+        rec = ticks[k]
+        rel = fid2file.get(rec["fid"])
+        if not rel or not os.path.isfile(os.path.join(frame_dir, rel)):
+            continue
+        img = Image.open(os.path.join(frame_dir, rel))
+        d = ImageDraw.Draw(img)
+        shown = sorted(cars_cache[k].items(),
+                       key=lambda kv: (kv[1].get("cy") or 0, kv[0]))
+        line_y = 30
+        for oid, ent in shown:
+            if oid == oid_chain:
+                color, width = (255, 60, 40), 4
+            elif k == b["i"] and abs(ent["x"] - b["x_new"]) <= COLOC:
+                color, width = (80, 200, 255), 4   # 拆点拍与新位置重合的车
+            else:
+                color, width = (240, 240, 240), 2
+            zg = f" zg{ent['zg']:.1f}" if ent.get("zg") is not None else ""
+            t_s = ent.get("t")
+            t_part = f" t{t_s:.2f}" if t_s is not None else " t--"
+            txt = (f"id{oid}{'*' if not ent.get('seen') else ''}"
+                   f" x{ent['x']:.2f}" + t_part + zg)
+            pit._draw_box(d, ent, color, width, (txt, line_y))
+            line_y += 24
+        tag = "BEFORE" if k < b["i"] else ("JUMP" if k == b["i"] else "AFTER")
+        d.text((10, 6), f"fid={rec['fid']} {tag}", fill=(255, 255, 80),
+               font=font)
+        sheet.paste(img.resize((cell_w, cell_h)),
+                    ((n % 2) * cell_w, (n // 2) * cell_h))
+        n += 1
+        if n >= 4:
+            break
+    sheet.save(out_path, quality=88)
+
+
+def make_figs(evs, res_by_session, debug_root, out_dir):
+    """脏事件窗内 artifact 拆点出图（目视裁决真并号/纯伪跳）。"""
+    os.makedirs(out_dir, exist_ok=True)
+    windows = pit._manual_windows(debug_root)
+    win_dir = {(s, w): d for s, w, _s, _e, d in windows}
+    n = 0
+    for e in evs:
+        arts = e.get("artifacts") or []
+        if not arts:
+            continue
+        wdir = win_dir.get((e["session"], e["win"]))
+        if wdir is None:
+            print(f"[skip] {e['win']}: 找不到帧目录")
+            continue
+        ticks, _ts, cache, _seqs = res_by_session[e["session"]]
+        for m, b in enumerate(arts):
+            out_p = os.path.join(
+                out_dir, f"{e['win']}_judge{e['judge_fid']}_a{b['i']}.jpg")
+            _render_boundary(b, ticks, cache, wdir, out_p)
+            n += 1
+    print(f"[figs] artifact 拆点出图 {n} 个 → {out_dir}")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--trace", action="append", required=True)
@@ -289,6 +378,7 @@ if __name__ == "__main__":
     ap.add_argument("--debug-root",
                     default=os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug"))
     ap.add_argument("--json")
+    ap.add_argument("--figs")
     a = ap.parse_args()
     scale = [scale_pass(tp) for tp in a.trace]
     _print_scale_report(scale)
@@ -305,6 +395,8 @@ if __name__ == "__main__":
         evs = analyze_events(rows, res)
         print()
         _print_event_report(evs, res)
+        if a.figs:
+            make_figs(evs, res, a.debug_root, a.figs)
     else:
         print("\n[未传 --log] 只跑 scale 触发率，事件分析跳过")
     if a.json:
