@@ -478,6 +478,10 @@ class DecisionEngine:
             pass_hold_s=s.pass_hold_s,
             pass_latch_enabled=s.pass_latch_enabled,
             pass_side_pin_enabled=s.pass_side_pin_enabled,
+            pass_target_hold_enabled=s.pass_target_hold_enabled,
+            pass_target_hold_lane=s.pass_target_hold_lane,
+            pass_target_hold_z_jump_m=s.pass_target_hold_z_jump_m,
+            pass_target_hold_miss_ticks=s.pass_target_hold_miss_ticks,
             pass_min_gap_lane=s.pass_min_gap_lane,
             pass_in_commit_enabled=s.pass_in_commit_enabled,
             pass_horizon_s=s.pass_horizon_s,
@@ -1735,7 +1739,8 @@ class DecisionEngine:
                     safe=c.safety_ok,
                     v_close=c.v_close_mps,
                     near=c.near,
-                    src=c.src)
+                    src=c.src,
+                    z=c.z_m)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,

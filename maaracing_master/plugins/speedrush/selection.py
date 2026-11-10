@@ -119,6 +119,9 @@ class Obj:
     # reach_slack(x, ego, t_ev) 等于平滑 slack。None=未平滑（第 6 期行为，
     # 证据位与动作位同源）。只进请求发出/证据累计；目标与起意仍看 t。
     t_ev: float | None = None
+    # 纵深（米，对象表 z_m）：只用于贴边目标保持的读数有效性判定
+    # （相邻拍横位/纵深跳变＝身份或锚点错挂）。None=无纵深读数。
+    z: float | None = None
 
 
 @dataclass(frozen=True)
@@ -284,6 +287,18 @@ class SelectionParams:
     # （贴身逃生走短侧）时让位。默认关。
     pass_side_pin_enabled: bool = False
     pass_min_gap_lane: float = 0.6
+    # 贴边目标保持（2026-11-10）：命中车本拍读数不可信（横位相邻拍跳 >lane、
+    # 纵深断供/跳 >z_jump）时，不按坏读数重算贴边目标，沿用上一次有效目标。
+    # 依据：三局 trace 里贴边目标相邻拍翻 >0.5 道 72 次，其中 28 次发生在
+    # 车到站 <1 s；逐链核对是车横位/纵深同时跳（身份或锚点错挂），自车按
+    # 坏读数重算目标等于追噪声。影子复算（不改车横位）：翻面 72→33，
+    # t<1 s 内生效 53 拍。闸关=逐位回今天。
+    pass_target_hold_enabled: bool = False
+    pass_target_hold_lane: float = 0.5
+    pass_target_hold_z_jump_m: float = 5.0
+    # 读数间隔超过该拍数视为重新出现（不做相邻拍有效性比较，避免旧读数
+    # 把复现判定成错挂）。
+    pass_target_hold_miss_ticks: int = 5
     # 并线承诺期擦边放行（闸，2026-11-02）：承诺期安全动作不被并线锁死。
     pass_in_commit_enabled: bool = False
     # 擦边候选视界（0=用 horizon_s；>0 放宽）：刹车主车到站爆缩前的窗口。
@@ -1114,6 +1129,9 @@ class LayeredSelector:
         self._hold_why = "graze"         # 保持闩续住的是 pass 还是 graze
         self._hold_side: float | None = None  # pass 保持原选侧（+1 右 / −1 左）
         self._side_oid: int | None = None  # 侧别锁定的对象身份（换车才重选侧）
+        self._tgt_hold: dict[int, float] = {}     # 贴边目标保持：车 id → 目标
+        self._read_prev: dict[int, tuple] = {}    # 车 id → (x, z) 上一有效读数
+        self._read_miss: dict[int, int] = {}      # 车 id → 连续缺席拍数
         self.last: SelectionReport | None = None
 
     @property
@@ -1176,6 +1194,64 @@ class LayeredSelector:
             x, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,
             req_live=raw.req_live, req_oid=raw.req_oid,
             req_action=raw.req_action, hit_oid=raw.hit_oid)
+
+    def _hold_target(self, raw: SelectionReport, road: RoadFrame,
+                     cars: Sequence[Obj], coins: Sequence[Obj],
+                     ego: float, p: SelectionParams) -> SelectionReport:
+        """贴边目标保持：命中车读数不可信时沿用上一次有效目标。
+
+        有效性按同一台车的相邻拍读数判定：横位跳 >pass_target_hold_lane 道、
+        纵深断供、纵深跳 >pass_target_hold_z_jump_m。无效读数不覆盖上一份
+        有效读数，所以连续坏读数会一直保持到出现稳定读数。命中车缺席超过
+        miss_ticks 拍视为重新出现（清掉旧读数与保持值，避免把复现判成错挂）。
+        闸关或本拍不是贴边时逐位回今天。
+        """
+        if not p.pass_target_hold_enabled:
+            return raw
+        seen: set[int] = set()
+        hit_invalid = False
+        for c in cars:
+            if c.kind != "car" or c.oid < 0:
+                continue
+            seen.add(c.oid)
+            self._read_miss[c.oid] = 0
+            prev = self._read_prev.get(c.oid)
+            invalid = False
+            if prev is not None:
+                invalid = (
+                    (prev[0] is not None
+                     and abs(c.x - prev[0])
+                     > p.pass_target_hold_lane * p.lane_w_m)
+                    or (prev[1] is not None and c.z is None)
+                    or (prev[1] is not None and c.z is not None
+                        and abs(c.z - prev[1])
+                        > p.pass_target_hold_z_jump_m))
+            if c.oid == raw.hit_oid:
+                hit_invalid = invalid
+            if not invalid:
+                self._read_prev[c.oid] = (c.x, c.z)
+        for oid in list(self._read_miss):
+            if oid in seen:
+                continue
+            self._read_miss[oid] += 1
+            if self._read_miss[oid] > p.pass_target_hold_miss_ticks:
+                self._read_prev.pop(oid, None)
+                self._tgt_hold.pop(oid, None)
+                self._read_miss.pop(oid, None)
+        if raw.why not in ("pass", "graze") or raw.hit_oid is None:
+            return raw
+        hold = self._tgt_hold.get(raw.hit_oid)
+        if hit_invalid and hold is not None:
+            t_wp = raw.waypoints[-1].t if raw.waypoints else 0.0
+            return SelectionReport(
+                raw.layer,
+                _waypoints(2, hold, t_wp, cars, coins, road, ego, p),
+                hold, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,
+                req_live=raw.req_live, req_oid=raw.req_oid,
+                req_action=raw.req_action, hit_oid=raw.hit_oid)
+        if not hit_invalid:
+            self._tgt_hold[raw.hit_oid] = raw.target_x_m
+        return raw
 
     def _graze_hold(self, raw: SelectionReport, prev: SelectionReport | None,
                     road: RoadFrame,
@@ -1310,6 +1386,7 @@ class LayeredSelector:
         # 换侧，同车贴边期内这里把原生翻过去的目标按回锁定侧。
         raw = self._pin_pass_side(raw, road, cars, coins, ego, p,
                                   commit_x_m=commit_x_m, committed=committed)
+        raw = self._hold_target(raw, road, cars, coins, ego, p)
         self.last = raw
         # 贴边保持闩（2026-11-03）：新贴边先武装（承诺期/非承诺期同源），
         # 之后纵向时间读数闪断不再打断（车51 帧证：余量 −0.44/0.48/None/

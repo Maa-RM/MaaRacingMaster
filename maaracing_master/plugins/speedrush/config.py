@@ -93,6 +93,14 @@ class Selection:
     # 三批 trace 复算 56 次同车换边里 46 次原侧可行且无占用。policy 口径见
     # decision.json；代码缺省关（隔离 A/B 可回退）。
     pass_side_pin_enabled: bool = False
+    # 贴边目标保持（2026-11-10）：命中车读数不可信（横位相邻拍跳 >lane、
+    # 纵深断供/跳 >z_jump）时沿用上一次有效目标，不按坏读数重算。三局
+    # 影子复算：贴边目标翻面 72→33，t<1 s 内生效 53 拍。policy 已开；
+    # 代码缺省关（隔离 A/B 可回退）。
+    pass_target_hold_enabled: bool = False
+    pass_target_hold_lane: float = 0.5
+    pass_target_hold_z_jump_m: float = 5.0
+    pass_target_hold_miss_ticks: int = 5
     pass_min_gap_lane: float = 0.6
     # 并线承诺期擦边放行 + 擦边候选视界放宽（2026-11-02，帧级证据见
     # selection.py 同名注释）。闸关=逐位回今天。
@@ -1059,6 +1067,14 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_latch_enabled", default=False),
             pass_side_pin_enabled=_bool(
                 d, "selection", "pass_side_pin_enabled", default=False),
+            pass_target_hold_enabled=_bool(
+                d, "selection", "pass_target_hold_enabled", default=False),
+            pass_target_hold_lane=_num_def(
+                d, "selection", "pass_target_hold_lane", 0.5, lo=0),
+            pass_target_hold_z_jump_m=_num_def(
+                d, "selection", "pass_target_hold_z_jump_m", 5.0, lo=0),
+            pass_target_hold_miss_ticks=int(_num_def(
+                d, "selection", "pass_target_hold_miss_ticks", 5, lo=1)),
             pass_min_gap_lane=_num_def(
                 d, "selection", "pass_min_gap_lane", 0.6, lo=0),
             pass_in_commit_enabled=_bool(

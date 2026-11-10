@@ -459,6 +459,59 @@ def test_side_pin_escape_when_car_imminent():
     assert out.target_x_m < -0.5
 
 
+def test_target_hold_keeps_line_on_lateral_jump():
+    """闸开：命中车横位跳 >0.5 道时沿用上一有效贴边目标，不追坏读数。"""
+    sel = LayeredSelector(_p(pass_target_hold_enabled=True))
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7, z=20.0)],
+                         [], 0.0, 0.05)
+    held = rep.target_x_m
+    assert rep.why == "pass"
+    # 相邻拍跳 1.9 m（>0.5 道 = 1.69 m，仍在邻道贴边可达带内）：目标保持
+    rep = sel.update(_road(), [], [Obj("car", -1.7, 2.0, oid=7, z=20.0)],
+                     [], 0.0, 0.05)
+    assert rep.why == "pass"
+    assert rep.target_x_m == pytest.approx(held)
+
+
+def test_target_hold_default_off_follows_jump():
+    """闸关：同一组读数下目标跟着车走（逐位回今天）。"""
+    sel = LayeredSelector(_p())
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7, z=20.0)],
+                         [], 0.0, 0.05)
+    held = rep.target_x_m
+    rep = sel.update(_road(), [], [Obj("car", -1.7, 2.0, oid=7, z=20.0)],
+                     [], 0.0, 0.05)
+    assert abs(rep.target_x_m - held) > 0.5 * LW
+
+
+def test_target_hold_keeps_line_when_depth_lost():
+    """纵深断供（z→None）按不可信处理：保持上一有效目标。"""
+    sel = LayeredSelector(_p(pass_target_hold_enabled=True))
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7, z=20.0)],
+                         [], 0.0, 0.05)
+    held = rep.target_x_m
+    rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7, z=None)],
+                     [], 0.0, 0.05)
+    assert rep.target_x_m == pytest.approx(held)
+
+
+def test_target_hold_released_after_long_absence():
+    """命中车缺席超过 miss_ticks 拍：清保持值，重新出现按新读数走。"""
+    sel = LayeredSelector(_p(pass_target_hold_enabled=True))
+    for _ in range(3):
+        sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7, z=20.0)],
+                   [], 0.0, 0.05)
+    for _ in range(6):
+        sel.update(_road(), [], [], [], 0.0, 0.05)
+    rep = sel.update(_road(), [], [Obj("car", -1.7, 2.0, oid=7, z=20.0)],
+                     [], 0.0, 0.05)
+    assert rep.why == "pass"
+    assert rep.target_x_m > -1.7          # 新读数生效（压在车右侧）
+
+
 def test_committed_ignores_opportunities_and_preposition():
     """并线承诺期：奖励车/擦边/金币/预置都不许改道，只按承诺道回中。"""
     rep = select(_road(), [Obj("reward", 2.0, 2.0)],
