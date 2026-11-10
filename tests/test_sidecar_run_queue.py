@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import threading
 import time
+import types
 
 import pytest
 
@@ -524,6 +525,51 @@ def test_rejected_start_preserves_breakpoint(monkeypatch):
     ok, _, err = svc.start({})
     assert not ok and "资源缺失" in err
     assert svc._start_from == {"a": "a-1"}, "被拒的启动不得吞掉断点"
+
+
+def test_debug_option_runtime_and_persist_atomic(monkeypatch):
+    """同一开关的运行时生效与落盘须同锁：另一请求不得插队致运行时态与落盘态背离。"""
+    svc = object.__new__(SidecarService)
+    svc._lock = threading.RLock()
+    runtime = {}
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class _Ctl:
+        debug = types.SimpleNamespace(last_toggle_seq=0)
+
+        def set_debug_mode(self, v):
+            calls.append(v)
+            runtime["debug_mode"] = v
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(2.0)
+
+    svc._controller = _Ctl()
+    store = {}
+    monkeypatch.setattr(sc, "_load_profile", lambda: dict(store))
+    monkeypatch.setattr(sc, "_save_profile", lambda p: store.update(p))
+    a = threading.Thread(target=svc.set_debug_mode, args=({"enabled": True},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_debug_mode({"enabled": False})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and not b_done.is_set():
+        time.sleep(0.01)
+    b_completed_while_a_blocked = b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert not b_completed_while_a_blocked, "同一开关运行时生效与落盘须同锁，另一请求不得插队"
+    assert runtime["debug_mode"] == store["debug"]["debug_mode"], "运行时态与落盘态必须一致"
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):

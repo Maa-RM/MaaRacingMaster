@@ -209,3 +209,23 @@ def test_flow_returns_true_when_step_stopped_by_signal(mod, monkeypatch):
     mod._run_step = lambda node, stage: False
 
     assert mod._run_flow(0) is True
+
+
+def test_flow_aborts_when_player_stuck_after_drive(mod, monkeypatch):
+    """驾驶阶段执行成功但回放线程卡死：中止本轮，不得进入下一阶段争用手柄。"""
+    monkeypatch.setattr(sr, "FLOW", [("驾驶1", None, 1), ("驾驶2", None, 2)])
+    mod._graph = object()
+    mod._running = True
+    calls = []
+
+    def fake_drive(phase, *a, **k):
+        calls.append(phase)
+        if phase == 1:
+            mod._macro_player_stuck = True   # 阶段收尾发现回放线程未退出
+            return True
+        return False   # 兜底：即便误入第二阶段也立即终止，避免测试空转
+
+    mod._drive = fake_drive
+
+    assert mod._run_flow(0) is False
+    assert calls == [1], "回放线程卡死后不得进入第二驾驶阶段"

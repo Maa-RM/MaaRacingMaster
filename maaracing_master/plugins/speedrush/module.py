@@ -1014,6 +1014,12 @@ class SpeedRushModule(ActivityModule):
                     ok = self._drive(phase, round_no, round_stamp,
                                      ready_confirmed=drive_ready_confirmed)
                     drive_ready_confirmed = False   # 一次性证据，消费即清
+                    if self._macro_player_stuck:
+                        # 回放线程卡死仍持有手柄租约：中止本轮，不进下一阶段——
+                        # 否则新回放器会与残留线程争用同一虚拟手柄
+                        _tlog(self, f"[极速狂飙] 「{stage}」回放线程未按时退出，"
+                                    f"中止本轮（避免与残留线程争用手柄）", "ERROR")
+                        return False
                     if not ok:
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return self._stop_signal_received()

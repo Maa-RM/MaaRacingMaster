@@ -2018,8 +2018,9 @@ class SidecarService:
 
     def set_debug_mode(self, params):
         enabled = bool(params.get("enabled", False))
-        self._controller.set_debug_mode(enabled)
-        self._persist_debug_flag("debug_mode", bool(enabled))
+        with self._lock:
+            self._controller.set_debug_mode(enabled)
+            self._persist_debug_flag("debug_mode", bool(enabled))
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled,
                        "effective_seq": getattr(self._controller.debug,
@@ -2028,8 +2029,9 @@ class SidecarService:
     def set_file_logging(self, params):
         """日志记录开关：开启后才把日志写入磁盘（user_data_dir/logs，每次开启新建文件）。"""
         enabled = bool(params.get("enabled", False))
-        logger.set_file_logging(enabled)
-        self._persist_debug_flag("file_logging", bool(enabled))
+        with self._lock:
+            logger.set_file_logging(enabled)
+            self._persist_debug_flag("file_logging", bool(enabled))
         logger.log(f"日志记录(写盘): {'开启' if enabled else '关闭'}")
         return (True, {"file_logging": enabled}, None)
 
@@ -2077,10 +2079,11 @@ class SidecarService:
         """
         mode = params.get("mode", "real")
         try:
-            self._controller.set_click_mode(mode)
+            with self._lock:
+                self._controller.set_click_mode(mode)
+                self._persist_debug_flag("click_mode", mode)
         except ValueError as e:
             return (False, None, str(e))
-        self._persist_debug_flag("click_mode", mode)
         logger.log(f"点击方式: {mode}")
         return (True, {"click_mode": mode}, None)
 
@@ -2090,8 +2093,9 @@ class SidecarService:
         持久化到 profile（debug.intent_mode），下次启动由 _restore_profile 回填。
         """
         enabled = bool(params.get("enabled", False))
-        self._controller.set_intent_mode(enabled)
-        self._persist_debug_flag("intent_mode", enabled)
+        with self._lock:
+            self._controller.set_intent_mode(enabled)
+            self._persist_debug_flag("intent_mode", enabled)
         logger.log(f"仅显示意图: {'开启' if enabled else '关闭'}")
         return (True, {"intent_mode": enabled}, None)
 
@@ -2110,8 +2114,9 @@ class SidecarService:
         此处只改开关并持久化到 profile（debug.mute_game）。
         """
         enabled = bool(params.get("enabled", False))
-        self._controller.set_mute_game(enabled)
-        self._persist_debug_flag("mute_game", enabled)
+        with self._lock:
+            self._controller.set_mute_game(enabled)
+            self._persist_debug_flag("mute_game", enabled)
         logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
         return (True, {"mute_game": enabled}, None)
 
@@ -2121,9 +2126,10 @@ class SidecarService:
         立即生效（进程常驻，与运行时序解耦）；GPU 无公开优先级旋钮，显存争用
         由推理侧缓冲固定另行解决（见 core/process_priority.py 模块注）。"""
         enabled = bool(params.get("enabled", False))
-        applied = process_priority.apply_boost() if enabled else process_priority.revert()
-        self._boost_priority_enabled = enabled
-        self._persist_debug_flag("boost_priority", enabled)
+        with self._lock:
+            applied = process_priority.apply_boost() if enabled else process_priority.revert()
+            self._boost_priority_enabled = enabled
+            self._persist_debug_flag("boost_priority", enabled)
         action = "提级" if enabled else "恢复"
         logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
                    "INFO" if enabled else "DEBUG")
