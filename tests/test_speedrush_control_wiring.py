@@ -343,7 +343,6 @@ def test_selection_shadow_mirrors_production(_stub_depth):
             seen += 1
     assert seen > 0
     assert eng.selection_shadow_first_mismatch is None
-    assert "c_evidence" not in chain      # 正常局不触发证据冻结
 
 
 def test_selection_shadow_diverges_when_shadow_route_stays_merging(
@@ -385,74 +384,6 @@ def test_selection_shadow_diverges_when_shadow_route_stays_merging(
     assert first["in"]["shadow"]["commit"] is True
     assert first["route"]["shadow"]["ph"] == "merging"
     assert first["prod"]["why"] != first["shadow"]["why"]
-    kinds = chain["c_evidence"]["kinds"]
-    assert kinds.get("route_div", 0) >= 1 and kinds.get("sel_div", 0) >= 1
-
-
-def test_note_c_event_keeps_first_and_counts():
-    chain = {}
-    smod._note_c_event(chain, "route_div", 3, 100, prod="keep")
-    smod._note_c_event(chain, "route_div", 4, 200, prod="finish")
-    smod._note_c_event(chain, "c_finish", 4, 200, target=-1.0)
-    ev = chain["c_evidence"]
-    assert ev["first"] == {"kind": "route_div", "fid": 3, "ts_ns": 100,
-                           "prod": "keep"}
-    assert ev["kinds"] == {"route_div": 2, "c_finish": 1}
-
-
-def test_c_events_detects_divergence_and_bug():
-    def _eng(route=None, shadow=None, sel=None):
-        return SimpleNamespace(route_verdict=route,
-                               route_shadow_verdict=shadow,
-                               selection_shadow_trace=sel)
-
-    def _v(**kw):
-        base = {"phase": "keep", "verdict": "keep", "lane_ref": 0.0}
-        base.update(kw)
-        return SimpleNamespace(**base)
-
-    assert smod._c_events(_eng(_v(), _v()), None) == []
-    ev = smod._c_events(_eng(_v(), _v(phase="merging")), None)
-    assert [k for k, _ in ev] == ["route_div"]
-    ev = smod._c_events(_eng(sel={"bug": 1, "l": 4, "req": None}), None)
-    assert [k for k, _ in ev] == ["sel_bug"]
-    ev = smod._c_events(
-        _eng(_v(verdict="finish", lane_ref=-1.0), _v(),
-             sel={"div": 1, "l": 4, "req": 1.0}),
-        SimpleNamespace(kind="SHIFT_HELD"))
-    assert [k for k, _ in ev] == ["route_div", "sel_div", "c_finish"]
-
-
-def test_module_archives_c_evidence(tmp_path, monkeypatch):
-    m = _module()
-    chain = m._build_control_chain()
-    chain["c_evidence"] = {"first": {"kind": "route_div", "fid": 1},
-                           "kinds": {"route_div": 1}}
-    sess = tmp_path / "logs" / "sess_1"
-    (sess / "trace").mkdir(parents=True)
-    (sess / "trace" / "speedrush.jsonl").write_text('{"fid":1}\n',
-                                                    encoding="utf-8")
-    logs = []
-    monkeypatch.setattr(smod, "logger", SimpleNamespace(
-        session_dir=sess, log=lambda msg, *a, **k: logs.append(msg)))
-    m._archive_c_evidence(chain, 1)
-    assert (tmp_path / "evidence" / "c_gate"
-            / "sess_1_p1.trace.jsonl").is_file()
-    assert any("已冻结" in s for s in logs)
-
-
-def test_module_archive_failure_warns(tmp_path, monkeypatch):
-    m = _module()
-    chain = m._build_control_chain()
-    chain["c_evidence"] = {"first": {"kind": "sel_bug"},
-                           "kinds": {"sel_bug": 1}}
-    sess = tmp_path / "logs" / "sess_2"
-    sess.mkdir(parents=True)          # 没有 trace 文件
-    logs = []
-    monkeypatch.setattr(smod, "logger", SimpleNamespace(
-        session_dir=sess, log=lambda msg, *a, **k: logs.append(msg)))
-    m._archive_c_evidence(chain, 2)
-    assert any("冻结失败" in s for s in logs)
 
 
 def test_attribution_wiring_reads_hop_scalar(_stub_depth, monkeypatch):

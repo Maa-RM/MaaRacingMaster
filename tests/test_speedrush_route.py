@@ -24,7 +24,7 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.route import (
     ATTR_NORMAL, ATTR_OTHER, ATTR_SHIFT_HELD, ATTR_UNKNOWN,
     ArrivalAttribution, PHASE_KEEP, PHASE_MERGING, PositionLineage,
-    RouteParams, init_state, tick_route)
+    RouteParams, init_state, overtake_need_s, tick_route, urgent_need_s)
 from maaracing_master.plugins.speedrush.tracking import (
     PerceptionHealth, WorldObservation)
 
@@ -144,18 +144,65 @@ def test_escape_requires_a_wider_lane():
 def test_urgent_requires_time_evidence():
     """紧急逃生要有时间证据：粗层「24m 窗内有车」按代理速度折算永远紧急，
     车还在 3s 外就换道是画龙的主发动机（2026-10-30 90s 局 21 次并线里
-    11 次如此）。到站时间 >urgent_ttc_s 时保持本道。"""
+    11 次如此）。到站时间超出运动学门（横移一道+反应+余量≈1.9s、超车门
+    ≈3.4s）时保持本道。"""
     spec = {0.0: (12.0, "car", False), -1.0: (0.0, "space", False)}
     s = _first(_rep(0.0, 0.0, spec))[0]
     for _ in range(URGENT_TICKS):
         s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
-                          lane_ttc={0: 3.0})
+                          lane_ttc={0: 5.0})
     assert v.verdict == "keep" and v.why == "not_urgent"
     assert v.lane_ref == 0.0
-    # 车真的要到线上（≤urgent_ttc_s）才起意
+    # 车真的要到线上了（≤ 横移一道+反应+余量）才起紧急逃生：
+    # 1.5s 在旧固定门（1.0）下算「提前超车」，新门（≈1.9）下归紧急
     s, v = tick_route(s, _rep(0.0, 0.0, spec), P, dt_s=DT, epoch=0,
-                      lane_ttc={0: 0.5})
+                      lane_ttc={0: 1.5})
     assert v.verdict == "merge_start" and v.why == "urgent"
+
+
+def test_time_gates_follow_lane_move_time():
+    """两个时间门由执行层横移时间换算，不是固定秒数（2026-11-09）：紧急门
+    = 横移一道 + 反应 + 余量，超车门再多一道横移的提前量。旧固定门有两个
+    毛病：紧急门（1.0s）比一道横移本身（≈1.6s）还短，起意时已来不及；
+    超车门（2.5s）与横移尺度无关。"""
+    move1 = 1.58                      # planner 闭环律：一道 ≈1.58s
+    assert urgent_need_s(P) == pytest.approx(move1 + 0.13 + 0.15, abs=0.02)
+    assert overtake_need_s(P) == pytest.approx(urgent_need_s(P) + move1,
+                                               abs=0.03)
+    assert overtake_need_s(replace(P, overtake=False)) == 0.0
+
+
+def test_time_evidence_acts_beyond_coarse_window():
+    """粗层观察窗只有 24m：本道在窗内确认空闲，但时间表里有 40~80m 外的
+    接近车——超车/逃生仍要起意。旧口径只看粗层占用（blocked_s=0），永远
+    等到车进窗（≈24m、只剩 1s），起意就已经晚了。"""
+    clear = {0.0: CLEAR, -1.0: CLEAR, 1.0: (0.0, "space", False),
+             2.0: (0.0, "space", False), -2.0: (0.0, "space", False)}
+    # 超车门（3.0s）：邻道确认空闲 → 现在就并
+    s = _first(_rep(0.0, 0.0, clear))[0]
+    seen = []
+    for _ in range(URGENT_TICKS + 1):
+        s, v = tick_route(s, _rep(0.0, 0.0, clear), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 3.0})
+        seen.append((v.verdict, v.why))
+    assert ("merge_start", "overtake") in seen
+    # 紧急门（1.5s）：粗层窗内仍空闲，但时间表到线 → 紧急逃生
+    s = _first(_rep(0.0, 0.0, clear))[0]
+    seen = []
+    for _ in range(URGENT_TICKS + 1):
+        s, v = tick_route(s, _rep(0.0, 0.0, clear), P, dt_s=DT, epoch=0,
+                          lane_ttc={0: 1.5})
+        seen.append((v.verdict, v.why))
+    assert ("merge_start", "urgent") in seen
+    # 单拍时间证据不成型（与粗层占用同一族连续确认）；单拍缺样走宽限保留，
+    # 超过 ttc_hold_s 才清零（见 test_ttc_evidence_survives_single_missing_sample）
+    s = _first(_rep(0.0, 0.0, clear))[0]
+    s, v = tick_route(s, _rep(0.0, 0.0, clear), P, dt_s=DT, epoch=0,
+                      lane_ttc={0: 3.0})
+    assert v.verdict == "keep" and s.ttc_s == pytest.approx(DT)
+    s, v = tick_route(s, _rep(0.0, 0.0, clear), P, dt_s=DT, epoch=0,
+                      lane_ttc={})
+    assert v.verdict == "keep" and s.ttc_s == pytest.approx(DT)
 
 
 def test_urgent_blind_zone_without_time_evidence():
@@ -993,6 +1040,53 @@ def test_overtake_merges_early_into_a_clear_lane():
     assert v3.verdict == "keep" and v3.why == "pass_hold"
 
 
+def test_ttc_evidence_survives_single_missing_sample():
+    """时间表证据的丢样宽限：单拍缺样不清零，确认能跨过闪检。
+
+    实测 10~40 m 内 20~40% 车拍的 z 为 None，原实现一次缺样就把 0.15 s
+    连续确认清零，提前带 116 拍里 43 拍落不成段（2026-11-10 三局复核）。
+    宽限期内保留计时；新鲜读数明确出带仍立即归零。
+    """
+    spec = {-1.0: (0.0, "space", False), 2.0: (0.0, "space", False),
+            -2.0: (0.0, "space", False)}
+    rep = _rep(0.0, 0.0, spec)
+    s, v = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(2):                       # 0.10 s 证据
+        s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    assert (v.verdict, v.why) == ("keep", "no_request")
+    for _ in range(2):                       # 两拍缺样（0.10 s ≤ 宽限）
+        s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={})
+    assert s.ttc_s == pytest.approx(0.10)
+    s, v = tick_route(s, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    assert (v.verdict, v.why) == ("merge_start", "overtake")
+
+    # 无宽限（ttc_hold_s=0）：缺样即清零，同一序列起不了意
+    tight = replace(P, ttc_hold_s=0.0)
+    s2, _ = tick_route(None, rep, tight, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(2):
+        s2, _ = tick_route(s2, rep, tight, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(2):
+        s2, v2 = tick_route(s2, rep, tight, dt_s=DT, epoch=0, lane_ttc={})
+    assert s2.ttc_s == 0.0
+    assert v2.verdict == "keep"
+
+    # 新鲜读数明确出带：证据立即作废，不等宽限
+    s3, _ = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(2):
+        s3, _ = tick_route(s3, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    assert s3.ttc_s > 0.0
+    s3, _ = tick_route(s3, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 10.0})
+    assert s3.ttc_s == 0.0
+
+    # 缺样超过宽限：计时归零
+    s4, _ = tick_route(None, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(2):
+        s4, _ = tick_route(s4, rep, P, dt_s=DT, epoch=0, lane_ttc={0: 2.0})
+    for _ in range(round(P.ttc_hold_s / DT) + 2):
+        s4, _ = tick_route(s4, rep, P, dt_s=DT, epoch=0, lane_ttc={})
+    assert s4.ttc_s == 0.0
+
+
 # ---------- 窗口按秒（第 6 期 6a） ----------
 
 def test_seconds_windows_are_tick_equivalent_at_50ms():
@@ -1334,3 +1428,35 @@ def test_far_veto_default_off_and_loader():
         raw["route"]["far_veto_enabled"] = False
         p.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
         assert _read_decision(p).route.far_veto_enabled is False
+
+
+def test_overtake_reject_reasons_trace_only():
+    """提前超车没收下候选时，失败原因按与生产同序落到 trace（只写观测面）。
+
+    生产该分支只查「邻道 24 m 内确认空闲 / 横穿路径空 / 清障时间够」，
+    **不查到站时间表**（`_target_time_ok` 只属于紧急分支）——观测面必须
+    照实记录，不能补一道生产没有的门，否则 rj 分布会把「目标道来得太快」
+    误报成主因。
+    """
+    from types import SimpleNamespace
+    from maaracing_master.plugins.speedrush.route import _overtake_reject
+    s = SimpleNamespace(v_ref=0.0, lane_ref=0.0)
+    cur = CoarseLane(0.0, 10.0, 1.0, "car", False, 0.0)
+    blocked = CoarseLane(-1.0, 12.0, 1.0, "car", False, None)
+    clear = CoarseLane(1.0, 24.0, 1.0, None, False, None)
+    by = {c.lane: c for c in (cur, blocked, clear)}
+    # 最近的一侧被占、另一侧干净 → 生产会选另一侧，观测面不该报原因
+    assert _overtake_reject(s, [blocked, clear], cur, 2.0, by, P) is None
+    # 两侧都干净 → 生产会起意（观测面返回 None），哪怕目标道时间表很紧
+    by2 = {c.lane: c for c in (cur, replace(blocked, free_m=24.0, blocker=None),
+                               clear)}
+    assert _overtake_reject(s, [by2[-1.0], by2[1.0]], cur, 2.0, by2, P) is None
+    # 两侧都不干净 → 记最接近那条道的 not_clear
+    far = CoarseLane(1.0, 12.0, 1.0, "car", False, None)
+    by4 = {c.lane: c for c in (cur, blocked, far)}
+    assert _overtake_reject(s, [blocked, far], cur, 2.0, by4, P) == "not_clear"
+    # 当前道堵车贴在并道路径上、清障时间不够 → cross_not_clear
+    tight = replace(cur, blocker_x_lanes=0.0)
+    by3 = {c.lane: c for c in (tight, by2[-1.0], by2[1.0])}
+    assert _overtake_reject(s, [by3[-1.0], by3[1.0]], tight, 0.2, by3, P) == \
+        "cross_not_clear"

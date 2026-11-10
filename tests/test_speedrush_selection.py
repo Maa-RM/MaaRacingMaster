@@ -50,6 +50,51 @@ def test_pass_picks_roomier_side():
     assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
 
 
+def test_blocking_car_without_t_enters_pass():
+    """挡道即候选（2026-11-07）：同道纵近车算不出到站时间也进擦边层。"""
+    rep = select(_road(), [], [Obj("car", 0.0, None, near=True)], [], 0.0, _p())
+    assert rep.layer == 2 and rep.why == "pass"
+    assert abs(rep.target_x_m) == pytest.approx(0.68 * LW, abs=0.05)
+
+
+def test_imminent_same_lane_car_still_dodges():
+    """同道临门不弃权（2026-11-09，闸 pass_no_surrender_enabled）：0.5s 到站
+    的同道车走不满 0.68 道，开闸时仍给同侧躲避目标，由执行层按同一条律走到
+    能到的位置。"""
+    rep = select(_road(), [], [Obj("car", 0.5 * LW, 0.5)], [], 0.0,
+                 _p(pass_no_surrender_enabled=True))
+    assert rep.layer == 2 and rep.why == "pass"
+    # 目标在车的另一侧、离车心 0.68 道：不是回中，也不是往车里挤
+    assert rep.target_x_m < 0.0 < 0.5 * LW
+    assert abs(rep.target_x_m - 0.5 * LW) == pytest.approx(0.68 * LW, abs=0.05)
+
+
+def test_no_surrender_gate_off_returns_center():
+    """闸关（默认，隔离 A/B 基线）：同道全量不可达弃候选→回中。"""
+    rep = select(_road(), [], [Obj("car", 0.5 * LW, 0.5)], [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_imminent_adjacent_car_still_requires_full_lean():
+    """邻道贴边（得分动作）保留全量可达门：临时起意贴车=撞车。"""
+    rep = select(_road(), [], [Obj("car", 1.0 * LW, 0.5)], [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_far_car_without_t_stays_center():
+    """远车 t=None 不放行——它在接近过程中会攒出到站时间。"""
+    rep = select(_road(), [], [Obj("car", 0.0, None, near=False)],
+                 [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
+def test_adjacent_near_car_without_t_not_candidate():
+    """挡道语义只覆盖同道：邻道车 t=None 仍不进候选。"""
+    rep = select(_road(), [], [Obj("car", 0.7 * LW, None, near=True)],
+                 [], 0.0, _p())
+    assert rep.layer == 4 and rep.why == "center"
+
+
 def test_both_sides_blocked_holds_center():
     cars = [Obj("car", 0.0, 2.0),
             Obj("car", 0.65 * LW, 2.0),
@@ -297,6 +342,121 @@ def test_coin_hold_then_release_and_override():
     sel.update(_road(), [], [], [], 0.0, 0.1)
     rep = sel.update(_road(), [Obj("reward", 0.8, 2.0)], [], [], 0.0, 0.05)
     assert rep.layer == 1 and rep.target_x_m == pytest.approx(0.8)
+
+
+def test_pass_latch_off_by_default():
+    """闸关：pass 选中后下一拍下层接管，不续（旧行为）。"""
+    sel = LayeredSelector(_p())
+    rep = sel.update(_road(), [], [Obj("car", 0.0, 2.0, oid=7)], [], 0.0, 0.05)
+    assert rep.why == "pass"
+    rep = sel.update(_road(), [], [], [], 0.0, 0.1)
+    assert rep.layer == 4
+
+
+def test_pass_latch_holds_through_lower_layer():
+    """闸开：pass 选中后，车读数丢失/下层接管时按车 id 续住，宽限后释放。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True))
+    rep = sel.update(_road(), [], [Obj("car", 0.0, 2.0, oid=7)], [], 0.0, 0.05)
+    assert rep.why == "pass"
+    x0 = rep.target_x_m
+    # 车表还在但已出候选窗（t=10），下层本会回中；保持闩续住原线
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.0, 10.0, oid=7)], [],
+                         0.0, 0.1)
+        assert rep.why == "pass" and rep.layer == 2
+        assert rep.target_x_m == pytest.approx(x0, abs=0.05)
+    # 车读数完全丢失：1s 宽限内仍续，超时回中
+    for _ in range(8):
+        rep = sel.update(_road(), [], [], [], 0.0, 0.1)
+        assert rep.why == "pass"
+    for _ in range(4):
+        rep = sel.update(_road(), [], [], [], 0.0, 0.1)
+    assert rep.layer == 4
+
+
+def test_pass_latch_keeps_original_side():
+    """pass 保持原选侧：车横位变化后不换到空间更大的一侧。"""
+    p = _p(pass_latch_enabled=True)
+    sel = LayeredSelector(p)
+    rep = sel.update(_road(), [], [Obj("car", 0.3, 2.0, oid=7)], [],
+                     0.0, 0.05)
+    assert rep.why == "pass"
+    assert rep.target_x_m < 0.3            # 初始选左（左侧空间更大）
+    car = Obj("car", -0.3, 10.0, oid=7)    # 车移到左边，右侧反而更空
+    rep = sel.update(_road(), [], [car], [], 0.0, 0.1)
+    assert rep.why == "pass"
+    assert rep.target_x_m < car.x          # 仍保持左侧，不横穿目标车
+
+
+def test_pass_latch_releases_on_commit_and_reward():
+    """承诺期不续 pass（并线目标由路线定）；奖励车更高层立即接管。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True))
+    sel.update(_road(), [], [Obj("car", 0.0, 2.0, oid=7)], [], 0.0, 0.05)
+    rep = sel.update(_road(), [], [Obj("car", 0.0, 2.0, oid=7)], [],
+                     0.0, 0.05, coarse_lane=0.0, committed=True)
+    assert rep.why == "commit" and rep.layer == 4
+    sel.update(_road(), [], [Obj("car", 0.0, 2.0, oid=7)], [], 0.0, 0.05)
+    rep = sel.update(_road(), [Obj("reward", 1.0, 2.0)], [],
+                     [Obj("car", 0.0, 2.0, oid=7)], 0.0, 0.05)
+    assert rep.layer == 1
+
+
+def test_side_pin_default_off():
+    """闸关：目标车横位抖过中线，原生会按「空间更大的一侧」翻到对面。"""
+    sel = LayeredSelector(_p())
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7)],
+                         [], 0.0, 0.05)
+    assert rep.target_x_m < 0.2
+    for _ in range(8):
+        rep = sel.update(_road(), [], [Obj("car", -0.2, 2.0, oid=7)],
+                         [], 0.0, 0.05)
+    assert rep.target_x_m > -0.2           # 翻到右侧（旧行为）
+
+
+def test_side_pin_keeps_side_across_jitter():
+    """闸开：同车贴边期内锁侧，横位抖动不再把目标翻到车另一侧。"""
+    sel = LayeredSelector(_p(pass_side_pin_enabled=True))
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7)],
+                         [], 0.0, 0.05)
+    assert rep.target_x_m < 0.2            # 初始锁左侧
+    for _ in range(8):
+        rep = sel.update(_road(), [], [Obj("car", -0.2, 2.0, oid=7)],
+                         [], 0.0, 0.05)
+    assert rep.why == "pass"
+    assert rep.target_x_m < -0.2           # 仍锁左侧，不横穿目标车
+
+
+def test_side_pin_yields_when_locked_side_blocked():
+    """锁定侧被别车占住：让位给原生换侧。"""
+    sel = LayeredSelector(_p(pass_side_pin_enabled=True))
+    for _ in range(3):
+        rep = sel.update(_road(), [], [Obj("car", 0.2, 2.0, oid=7)],
+                         [], 0.0, 0.05)
+    assert rep.target_x_m < 0.2
+    blocker = Obj("car", -2.1, 2.0, oid=8)   # 压住锁定侧通过位
+    for _ in range(10):
+        rep = sel.update(_road(), [], [Obj("car", -0.2, 2.0, oid=7),
+                                       blocker], [], 0.0, 0.05)
+    assert rep.target_x_m > -0.2           # 锁定侧不可用：允许换到另一侧
+
+
+def test_side_pin_escape_when_car_imminent():
+    """车 1s 内到站且锁定侧更远：走短侧逃生，不强行绕到锁定侧；
+    远车（≥1s）不给同一个理由换边。"""
+    from maaracing_master.plugins.speedrush.selection import SelectionReport
+    sel = LayeredSelector(_p(pass_side_pin_enabled=True))
+    sel._side_oid = 7
+    sel._hold_side = -1.0                  # 已锁左侧
+    ego = 0.0
+    raw = SelectionReport(2, (), 1.2, "pass", True, True, hit_oid=7)
+    near = [Obj("car", -0.5, 0.4, oid=7)]  # 锁定侧目标 −2.80，比原生远
+    out = sel._pin_pass_side(raw, _road(), near, [], ego, sel.p)
+    assert out.target_x_m == pytest.approx(1.2)     # 逃生走短侧
+    far = [Obj("car", -0.5, 2.0, oid=7)]   # 远车：仍锁左侧
+    out = sel._pin_pass_side(raw, _road(), far, [], ego, sel.p)
+    assert out.target_x_m < -0.5
 
 
 def test_committed_ignores_opportunities_and_preposition():
@@ -608,6 +768,45 @@ def test_pass_in_commit_dodges_during_merge():
     assert rep.layer == 2 and rep.why == "pass"
 
 
+def test_graze_in_merge_respects_commit_span():
+    """并线期贴边跨度（2026-11-08）：承诺道中心 0 时，1.3 道外的邻道车
+    贴边目标 0.62 道出跨度——不贴（commit）；0.9 道外目标 0.22 道在
+    跨度内放行。修前承诺期 commit_x 不喂，sp=None 使小口变全开。"""
+    p = _p(pass_in_commit_enabled=True, pass_graze_adjacent_enabled=True)
+    out = select(_road(), [], [Obj("car", 1.3 * LW, 3.0)], [], 0.0, p,
+                 commit_x_m=0.0, committed=True)
+    assert out.layer == 4 and out.why == "commit"
+    inside = select(_road(), [], [Obj("car", 0.9 * LW, 3.0)], [], 0.0, p,
+                    commit_x_m=0.0, committed=True)
+    assert inside.layer == 2 and inside.why == "graze"
+
+
+def test_pass_tries_other_side_when_roomier_blocked():
+    """贴边两侧逐侧过三关（2026-11-08）：首选（空间大）侧通过位被占，
+    另一侧净空够且横移路径空——改贴另一侧，不弃车。"""
+    p = _p(pass_graze_adjacent_enabled=True)
+    ego = 1.5 * LW
+    target = Obj("car", 1.0 * LW, 2.5)
+    blocker = Obj("car", 0.3 * LW, 1.0)     # 占首选侧通过位（0.32 道）
+    rep = select(_road(), [], [target, blocker], [], ego, p)
+    assert rep.layer == 2
+    assert rep.target_x_m > ego             # 改贴右（另一）侧
+
+
+def test_graze_hold_keeps_across_commit_span_when_not_merging():
+    """保持态贴边不被承诺道跨度夹（2026-11-08）：贴边/让位不进跨线门
+    （_pick_pass 契约）。1.3 道外车的贴边目标 0.62 道出本道跨度，闩仍续住；
+    修前 keep 态也做跨度检查，闩静默断、下一拍回 center。"""
+    sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True))
+    r1 = sel.update(_road(), [], [Obj("car", 1.25 * LW, 3.0, oid=11)],
+                    [], 0.0, 0.05, committed=False, commit_x_m=0.0)
+    assert r1.why == "graze"
+    # 到站 0.5s 已不可达：机会层不再命中，闩按车 id 续住
+    r2 = sel.update(_road(), [], [Obj("car", 1.25 * LW, 0.5, oid=11)],
+                    [], 0.0, 0.05, committed=False, commit_x_m=0.0)
+    assert r2.why == "graze"
+
+
 def test_pass_horizon_extends_candidates():
     """视界放宽：3.15s 出头的刹车主车（帧 #2017 实景）闸关被 3.0s 排除、
     闸开进入候选——躲不躲仍由可达性判据把关。"""
@@ -788,25 +987,29 @@ def test_graze_hold_yields_to_reward_car():
 
 
 def test_pass_window_queue_blocks_van_type_target():
-    """通过时窗占用（20261104 局2 f3605 帧证）：同道慢车前方、贴边线上
-    有更晚到达的排队车——点判据（到站+margin）看不见它，时窗判据拦截。
-    目标 2.2s 到站、收拢 15m/s（并排 0.67s），排队车 2.5s 压上贴边线：
-    无 v_close 逐位回今天（放行），有 v_close 拒贴。"""
+    """通过时窗占用（20261104 局2 f3605 帧证）：首选侧通过线上有排队车
+    → 绕另一侧；两侧都占 → 不贴（方向选择不破占用判定）。"""
     target = Obj("car", 0.0, 2.2, v_close=15.0)
     queue = Obj("car", 0.68 * LW, 2.5)      # 恰在贴边线上（邻道带）
     rep = select(_road(), [], [target], [], 0.0, _p())
     assert rep.layer == 2 and rep.why == "pass"
     rep2 = select(_road(), [], [target, queue], [], 0.0, _p())
-    assert rep2.why != "pass" and rep2.why != "graze"
+    assert rep2.layer == 2 and rep2.target_x_m < 0     # 绕右被占 → 绕左
+    queue2 = Obj("car", -0.68 * LW, 1.0)    # 左也占（t<lean 门，自身不进候选）
+    rep3 = select(_road(), [], [target, queue, queue2], [], 0.0, _p())
+    assert rep3.why != "pass" and rep3.why != "graze"
 
 
 def test_pass_window_slow_target_long_alongside():
-    """速度近同的目标并排段最长（f3775 磨车 4.8s 形态）：收拢 2m/s 时
-    并排 5s，horizon 外（4s）才到贴边线的车也在窗内——拒绝贴边。"""
+    """速度近同的目标并排段最长（f3775 磨车 4.8s 形态）：首选侧通过线
+    被晚到车占 → 绕另一侧；两侧都占 → 不贴。"""
     target = Obj("car", 0.0, 2.5, v_close=2.0)
     late = Obj("car", 0.68 * LW, 4.0)
     rep = select(_road(), [], [target, late], [], 0.0, _p())
-    assert rep.why != "pass" and rep.why != "graze"
+    assert rep.layer == 2 and rep.target_x_m < 0       # 绕左
+    late2 = Obj("car", -0.68 * LW, 1.0)
+    rep3 = select(_road(), [], [target, late, late2], [], 0.0, _p())
+    assert rep3.why != "pass" and rep3.why != "graze"
     rep2 = select(_road(), [], [Obj("car", 0.0, 2.5)], [], 0.0, _p())
     assert rep2.layer == 2 and rep2.why == "pass"
 
@@ -820,3 +1023,44 @@ def test_pass_hold_beside_rejects_occupied_window():
     rep = select(_road(), [], [beside, queue], [], 0.0,
                  _p(pass_hold_enabled=True))
     assert rep.why != "pass" and rep.layer != 2
+
+
+def test_guard_moves_target_out_of_arriving_car_band():
+    """目标占用守卫（2026-11-09）：目标点落在「2 秒内到站车」的车体带上时
+    推到车体带外。旧行为下回中目标与来车同线，等于把车摆在它的路上。"""
+    from maaracing_master.plugins.speedrush.selection import _clear_of_arrivals
+    road = _road()
+    p = _p(arrival_guard_enabled=True)
+    x = _clear_of_arrivals(0.17 * LW, 0.45 * LW,
+                           [Obj("car", 0.5 * LW, 1.0)], road, p)
+    assert abs(x - 0.5 * LW) >= 0.54 * LW
+    # 3 秒后才到的车不在守卫视界内：目标原样保留
+    assert _clear_of_arrivals(0.17 * LW, 0.45 * LW,
+                              [Obj("car", 0.5 * LW, 3.0)], road, p)         == pytest.approx(0.17 * LW)
+    # 闸关（默认，隔离 A/B 基线）：守卫直通，目标原样
+    assert _clear_of_arrivals(0.17 * LW, 0.45 * LW,
+                              [Obj("car", 0.5 * LW, 1.0)], road,
+                              _p()) == pytest.approx(0.17 * LW)
+
+
+def test_guard_ignores_grid_pseudo_cars():
+    """深占据伪车源（src=grid）不驱动到车守卫：该源有已知假阳性（HUD 投影
+    /路面），守卫若跟它走会把目标拽离 1~2 道（20261109_134818 离线重放
+    fid 1217：有伪车 +3.52m、无伪车 +0.59m，录制值 0.59m）。真车照常守卫。"""
+    from maaracing_master.plugins.speedrush.selection import _clear_of_arrivals
+    road = _road()
+    p = _p(arrival_guard_enabled=True)
+    ghost = Obj("car", 0.5 * LW, 1.0, src="grid")
+    assert _clear_of_arrivals(0.17 * LW, 0.45 * LW, [ghost], road, p)         == pytest.approx(0.17 * LW)
+    real = Obj("car", 0.5 * LW, 1.0, src="metric")
+    assert abs(_clear_of_arrivals(0.17 * LW, 0.45 * LW, [real], road, p)
+               - 0.5 * LW) >= 0.54 * LW
+
+
+def test_graze_target_stays_outside_guard():
+    """擦边目标离车心 0.68 道（> 半宽和），守卫与擦边层本身不该改动它。"""
+    rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.0)], [], 0.0,
+                 _p(pass_graze_adjacent_enabled=True,
+                    arrival_guard_enabled=True))
+    assert rep.why == "graze"
+    assert abs(rep.target_x_m - 1.2 * LW) == pytest.approx(0.68 * LW, abs=0.06)

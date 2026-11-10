@@ -30,7 +30,7 @@ import math
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -79,12 +79,10 @@ from maaracing_master.plugins.speedrush.lane_obs import (
     LaneObsConfig, LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
-from maaracing_master.plugins.speedrush.route import (
-    ATTR_SHIFT_HELD, PositionLineage)
+from maaracing_master.plugins.speedrush.route import PositionLineage
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
-from maaracing_master.plugins.speedrush.evidence import archive_session_evidence
 from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
 from maaracing_master.plugins.speedrush.world_model import KIND_CAR, load_calib
@@ -221,40 +219,6 @@ def classify_ro_hop(t0: float, ro0: float, src0: str | None,
     hop = 1 if abs(d) > HOP_V_MAX_LANE_S * gap + HOP_NOISE_LANE else 0
     return {"gap": gap, "d": d, "v": v, "hop": hop,
             "src_chg": int(src0 != src1)}
-
-
-def _note_c_event(chain: dict, kind: str, fid: int, ts_ns: int,
-                  **detail) -> None:
-    """记一次 C 相关事件（阶段收尾据此冻结证据）。首次事件保留现场。"""
-    ev = chain.get("c_evidence")
-    if ev is None:
-        ev = {"first": None, "kinds": {}}
-        chain["c_evidence"] = ev
-    ev["kinds"][kind] = ev["kinds"].get(kind, 0) + 1
-    if ev["first"] is None:
-        ev["first"] = {"kind": kind, "fid": fid, "ts_ns": ts_ns, **detail}
-
-
-def _c_events(eng, position) -> list[tuple[str, dict]]:
-    """本拍是否出现 C 相关事件（只读；不含 blkfin-only 的普通拦截拍）。
-
-    冻结触发面：路线相位/定案/参考道分歧（真正的 C 效果）、选择影子分歧或
-    同输入不一致（下游差异/信任根故障）、换档读数上的完成（C 的目标样本）。
-    """
-    out: list[tuple[str, dict]] = []
-    rv, sv = eng.route_verdict, eng.route_shadow_verdict
-    if rv is not None and sv is not None and (
-            (rv.phase, rv.verdict, rv.lane_ref)
-            != (sv.phase, sv.verdict, sv.lane_ref)):
-        out.append(("route_div", {"prod": rv.verdict, "shadow": sv.verdict}))
-    sst = eng.selection_shadow_trace
-    if sst is not None:
-        out.append(("sel_bug" if sst.get("bug") else "sel_div",
-                    {"layer": sst.get("l"), "req": sst.get("req")}))
-    if rv is not None and rv.verdict == "finish" and position is not None \
-            and getattr(position, "kind", None) == ATTR_SHIFT_HELD:
-        out.append(("c_finish", {"target": rv.lane_ref}))
-    return out
 
 
 # 驾驶页锚点复查间隔。锚点识别走框架（post_task + 等待，单轮毫秒级），不必每帧跑；
@@ -1662,10 +1626,6 @@ class SpeedRushModule(ActivityModule):
             if drive_hud is not None:
                 drive_hud.stop("phase_end" if self._running else "stopped")
                 self._hud = None
-            # 证据冻结放在最后：trace 已 flush、汇总已写、深度观察器已停，
-            # 复制出来的是这一阶段的完整素材。失败显式告警（WARNING）。
-            if chain is not None and chain.get("c_evidence"):
-                self._archive_c_evidence(chain, phase)
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -2048,7 +2008,9 @@ class SpeedRushModule(ActivityModule):
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"],
                     # 唯一意图：决策本拍的目标（planner 车道系）。计划不再自己
                     # 挑机会——它只回答"怎么安全地去"，避免两套目标轮流打方向。
-                    intent_lane=out.x_target)
+                    intent_lane=out.x_target,
+                    # 贴边/让位是计分几何：交付死区按窄档，不吃回中的宽死区。
+                    precise=out.intent_precise)
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None
@@ -2524,10 +2486,6 @@ class SpeedRushModule(ActivityModule):
             # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
             # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
             "oage": round(age_ms, 1)}
-        # C 相关事件标记（只记账，阶段收尾据此冻结证据）：路线相位/定案分歧、
-        # 选择影子分歧/同输入不一致、换档读数上的完成。
-        for _kind, _detail in _c_events(eng, position_evidence):
-            _note_c_event(chain, _kind, fid, ts_ns, **_detail)
         chain["trace"].append(_row)
         _ts = chain.get("trace_sink")
         if _ts is not None:
@@ -2625,40 +2583,6 @@ class SpeedRushModule(ActivityModule):
                       f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
-
-    @staticmethod
-    def _cfg_view(chain: dict) -> dict | None:
-        """冻结用的配置快照；不可序列化就放弃——配置缺失不阻断证据保存。"""
-        cfg = chain.get("cfg")
-        if cfg is None:
-            return None
-        try:
-            return asdict(cfg)
-        except (TypeError, ValueError):
-            return None
-
-    def _archive_c_evidence(self, chain: dict, phase: int) -> None:
-        """C 相关事件证据冻结（logs 之外的 evidence 目录）。
-
-        失败必须显式告警：归档触发不等于素材已保存。日志写盘未开时没有源
-        文件，同样按失败处理——不能让"以为存了"进入后续分析。
-        """
-        ev = chain.get("c_evidence") or {}
-        root = logger.session_dir
-        if root is None:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件 {ev.get('first')} "
-                  "但日志写盘未开，无素材可冻结", "WARNING")
-            return
-        res = archive_session_evidence(root, phase, ev, config=self._cfg_view(chain))
-        if res["ok"]:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件证据已冻结 → "
-                  f"{res['trace']}（{res['bytes']} B）", "INFO")
-        else:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件证据冻结失败: "
-                  f"{res['error']}", "WARNING")
 
     def _record_round_phase(self, chain: dict, phase: int,
                             stats: dashboard_store.PhaseStats,

@@ -287,7 +287,10 @@ class MetricCarState:
       未开——消费端此时回退像素 t_meet，不算 pacing）。
     - t_meet_s = z/v_close（v_close ≤ 0 = 掠过/远离 → None，**与「估计窗未开」
       同值不同义**——区分靠 source：source 非 UNKNOWN 且 t None= pacing/远离
-      占用语义；source=UNKNOWN=无锚，回退像素）。"""
+      占用语义；source=UNKNOWN=无锚，回退像素）。
+    - z_box_bridged：本拍发布 z 取自框高比桥接（BOX_RATIO），是框高量子化
+      与锚步进的阶梯噪声，不是锚点基线；consumer 不得用它判断「换锚/真实
+      通过」。"""
 
     target_id: int
     source: DistanceSource
@@ -306,6 +309,10 @@ class MetricCarState:
     # 框高比桥接距离（z_m 之外的第二列；trace 消费）。与 bridged 无关：
     # bridged 是速度像素桥（t_meet），本字段是距离桥（z）。
     box_bridge_z_m: float | None = None
+    # 本拍发布 z 是否取自框高比桥接（method=BOX_RATIO）。决策层据此把
+    # 桥接值与锚点口径分开：桥接值是框高量子化 + 锚步进的阶梯噪声，不进
+    # 锚点的跳变门/EMA 基线（跳变≠真实换锚），只作闭速稳健斜率的原料。
+    z_box_bridged: bool = False
 
 
 @dataclass(frozen=True)
@@ -350,6 +357,8 @@ class DecisionOutput:
     phase: str = "keep"
     authority: str = "GENTLE"
     deadline_s: float | None = None
+    # 交付型意图（贴边/让位）：目标位本身是计分几何，计划不再套回中的宽死区。
+    intent_precise: bool = False
 
 
 @dataclass(frozen=True)
@@ -1066,7 +1075,8 @@ class Tracker:
             target_id=t.id, source=d.source, z_m=z, x_m=x_m,
             v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms,
             bridged=bridged, bridge_reason=bridge_reason,
-            box_bridge_z_m=d.box_bridge_m)
+            box_bridge_z_m=d.box_bridge_m,
+            z_box_bridged=(d.method is DistanceMethod.BOX_RATIO))
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """2D 身份主干 + 几何回退，两遍贪心 1:1 配对。

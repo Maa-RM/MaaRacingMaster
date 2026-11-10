@@ -268,9 +268,35 @@ def test_candidates_and_determinism():
     n_base = len(CFG.motion.heading_levels) + 1          # 绝对档位 + 当前朝向
     n_rev = sum(1 for u in CFG.motion.heading_levels
                 if abs(u) >= CFG.motion.reverse_min_rad) + 1  # 半程回正（含当前）
-    assert len(a.cand_x) == n_base + n_rev + 1   # + 意图跟踪候选
+    n_pulse = (sum(1 for u in CFG.motion.heading_levels
+                   if abs(u) >= CFG.motion.short_pulse_min_rad)
+               if CFG.motion.short_pulse_enabled else 0)
+    assert len(a.cand_x) == n_base + n_rev + 1 + n_pulse  # + 意图跟踪 + 短脉冲
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
+
+
+def test_short_pulse_candidate_caps_the_hold():
+    """高挡短脉冲候选：保持 short_pulse_s 后回零，总横移小于同档恒朝向与
+    半程回正——人工满舵是 0.10~0.12s 短脉冲，不是 1s 保持。"""
+    motion = replace(CFG.motion, short_pulse_enabled=True,
+                     short_pulse_s=0.18, short_pulse_min_rad=0.09)
+    p = _plan(_scene(road=_wide_road()), motion=motion)
+    n_base = len(motion.heading_levels) + 1
+    n_rev = sum(1 for u in motion.heading_levels
+                if abs(u) >= motion.reverse_min_rad) + 1
+    first = n_base + n_rev + 1                 # 意图候选之后
+    assert len(p.cand_x) == first + sum(
+        1 for u in motion.heading_levels
+        if abs(u) >= motion.short_pulse_min_rad)
+    idx14 = first + 3                          # 档位序：-0.14 -0.09 0.09 0.14
+    xs = p.cand_x[idx14]
+    total = abs(xs[-1] - xs[0])
+    const_total = abs(p.cand_x[12][-1] - p.cand_x[12][0])   # +0.14 恒朝向
+    half_total = abs(p.cand_x[21][-1] - p.cand_x[21][0])    # +0.14 半程
+    assert total > 0.0
+    assert total < const_total
+    assert total < half_total
 
 
 def test_reverse_candidate_brakes_toward_center():
@@ -282,6 +308,21 @@ def test_reverse_candidate_brakes_toward_center():
     assert p.psi_feedforward < 0.4                      # 不是继续右打
     end = p.cand_x[p.chosen][-1]
     assert abs(end) < 1.0                             # 末端回到路心 1m 内
+
+
+def test_precision_band_lands_on_scoring_intent():
+    """交付型意图（贴边/让位）不套回中的宽死区：0.5 道外的目标必须落到
+    目标位本身，不能停在带内（掠过横距会系统性偏大半档）。"""
+    s = _scene(road=_wide_road(), ego_m=0.0)
+    ego = EgoState(0.0, 0.0, 45.0, 0.0)
+    intent_m = 1.7                                   # ≈0.5 道 @3.38m
+    coarse = _plan(s, ego=ego, intent_lane=intent_m / LW)
+    precise = plan_motion(s, ego, CFG.motion, CFG.selection, CFG.planner,
+                          None, intent_lane=intent_m / LW, precise=True)
+    assert abs(precise.cand_x[precise.chosen][-1] - intent_m) <= 0.1
+    # 宽死区下候选择在带内任意处（本场景停在目标外 0.4m+）——行为差异是
+    # 本闸存在的理由，锁住它防回退
+    assert abs(coarse.cand_x[coarse.chosen][-1] - intent_m) > 0.25
 
 
 def test_scene_opportunities_do_not_steer_the_plan():
@@ -370,6 +411,25 @@ def test_late_timed_car_blocks_lane_change_toward_it():
               ego=EgoState(0.0, 0.0, 45.0, 0.0), intent_lane=0.85)
     assert p.psi_feedforward < base.psi_feedforward
     assert p.psi_feedforward <= 0.05
+
+
+def test_late_car_far_laterally_does_not_pin_wheel():
+    """临门门的横距上限（fid 8082）：车在 5m 外、0.18s 到站、只是已经并排，
+    不是挡在前面——朝路心的回正不得被它钉死。缩到 2m 内（真往它身上并）
+    仍要拦：满舵到它到站那一刻也够得着。"""
+    ego_x = -1.319                       # 8082 实测自车横位（场景米）
+    ego = EgoState(ego_x / LW, 0.0, 41.0, 0.0)
+    base = _plan(_scene(road=_wide_road(), ego_m=ego_x),
+                 ego=ego, intent_lane=0.28)
+    assert base.psi_feedforward >= 0.05
+    far = CarSource(ego_x + 5.09, 0.184, z_m=20.0, age_ms=0.0, src="metric")
+    p = _plan(_scene(road=_wide_road(), ego_m=ego_x, cars=[far]),
+              ego=ego, intent_lane=0.28)
+    assert p.psi_feedforward == pytest.approx(base.psi_feedforward, abs=0.01)
+    near = CarSource(ego_x + 2.0, 0.184, z_m=20.0, age_ms=0.0, src="metric")
+    p2 = _plan(_scene(road=_wide_road(), ego_m=ego_x, cars=[near]),
+               ego=ego, intent_lane=0.28)
+    assert p2.psi_feedforward < base.psi_feedforward
 
 
 def test_metric_x_hard_jump_is_held_until_confirmed():
