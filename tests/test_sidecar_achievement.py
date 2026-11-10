@@ -88,3 +88,31 @@ def test_restore_profile_recovers_notify_flag(tmp_path, monkeypatch):
     svc._achievement_notify = True
     svc._restore_profile()
     assert svc._achievement_notify is False
+
+
+def test_notify_off_init_meta_suppresses_event(tmp_path):
+    norm, _ = a.validate_catalog({"schema_version": 1, "achievements": [
+        {"id": "dep", "title": "依赖", "rule": {"fact": "k", "agg": "count", "target": 1}},
+        {"id": "meta", "title": "集齐", "rule": {"agg": "all_unlocked", "scope": "plugin"}},
+    ]}, "demo")
+    reg = {"demo": norm}
+    a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg).process_fact("k", "1", {})
+    events = []
+    svc = SidecarService.__new__(SidecarService)
+    svc._lock = threading.RLock()
+    svc._achievement_notify = False  # 用户已关通知（先于引擎构造回填）
+    svc._send_event_best_effort = events.append
+    svc._achievement_engine = a.AchievementEngine(
+        store_path=tmp_path / "ach.json", registry=reg, on_unlock=svc._on_achievement_unlock)
+    assert events == []  # 初始化触发元成就解锁但不发通知
+    assert {v["global_id"] for v in svc._achievement_engine.get_view()
+            if v["unlocked"]} == {"demo.dep", "demo.meta"}
+
+
+def test_get_achievements_null_engine_degrades(tmp_path):
+    svc = _service(tmp_path, [])
+    svc._achievement_engine = None  # 引擎初始化失败降级
+    ok, data, err = svc.get_achievements({})
+    assert ok and err is None
+    assert data["achievements"] == []
+    assert data["notify"] is True

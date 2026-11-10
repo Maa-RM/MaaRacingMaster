@@ -312,13 +312,16 @@ class AchievementEngine:
         self._consumed: OrderedDict[str, bool] = OrderedDict(
             (k, True) for k in state["consumed_keys"][-DEDUP_WINDOW:])
         # 加载时求值元成就：依赖项此前已全解锁的新装元成就也能触发（不止靠后续解锁事件）。
+        # 候选态落盘成功才提交；任何异常都不留半提交态、不上抛（不阻断 sidecar 启动）。
         if not self._frozen:
-            newly = self._eval_meta_locked(set())
+            new_unlocked = dict(self._unlocked)
+            newly = self._eval_meta_locked(set(), new_unlocked)
             if newly:
                 try:
-                    self._save_state_locked()
-                except OSError as exc:
-                    logger.log(f"[achievement] 元成就初始存档失败: {exc!r}", "WARNING")
+                    self._save_state_locked(self._progress, new_unlocked, self._consumed)
+                    self._unlocked = new_unlocked
+                except Exception as exc:  # noqa: BLE001 —— 初始化失败降级，不阻断启动
+                    logger.log(f"[achievement] 元成就初始存档失败（未提交）: {exc!r}", "WARNING")
                     newly = []
             self._notify(newly)
 
@@ -351,17 +354,22 @@ class AchievementEngine:
             state["consumed_keys"] = [k for k in raw["consumed_keys"] if isinstance(k, str)]
         return state
 
-    def _save_state_locked(self) -> None:
+    def _save_state_locked(self, progress: dict, unlocked: dict,
+                           consumed: OrderedDict) -> None:
+        """把候选状态原子落盘；失败清理临时文件并上抛（调用方据此不提交）。"""
         state = {
             "store_schema_version": ACHIEVEMENT_STORE_SCHEMA_VERSION,
-            "progress": self._progress,
-            "unlocked": self._unlocked,
-            "consumed_keys": list(self._consumed.keys()),
+            "progress": progress,
+            "unlocked": unlocked,
+            "consumed_keys": list(consumed.keys()),
         }
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_name(f".{self._path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self._path)
+        try:
+            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     # ---------- 进度与解锁 ----------
 
@@ -376,10 +384,10 @@ class AchievementEngine:
             return False
         return progress >= entry["rule"]["target"]
 
-    def _eval_meta_locked(self, already: set[str]) -> list[str]:
-        """求值元成就（锁内调用）；返回新解锁的全局 ID。already 携带本次已解锁集。"""
+    def _eval_meta_locked(self, already: set[str], unlocked: dict) -> list[str]:
+        """求值元成就（锁内调用，操作候选 unlocked 副本）；返回新解锁的全局 ID。"""
         newly: list[str] = []
-        unlocked_set = set(self._unlocked) | already
+        unlocked_set = set(unlocked) | already
         for mod_id, metas in self._meta_by_mod.items():
             deps = self._non_meta_by_mod.get(mod_id, [])
             if not deps or not all(d in unlocked_set for d in deps):
@@ -387,7 +395,7 @@ class AchievementEngine:
             for meta in metas:
                 gid = meta["global_id"]
                 if gid not in unlocked_set:
-                    self._unlocked[gid] = time.time_ns()
+                    unlocked[gid] = time.time_ns()
                     unlocked_set.add(gid)
                     newly.append(gid)
         return newly
@@ -420,6 +428,7 @@ class AchievementEngine:
             if dedup_key in self._consumed:
                 return False
             new_progress = dict(self._progress)
+            new_unlocked = dict(self._unlocked)
             newly: list[str] = []
             for entry in matching:
                 rule = entry["rule"]
@@ -441,8 +450,8 @@ class AchievementEngine:
                 else:
                     continue
                 new_progress[gid] = nxt
-                if gid not in self._unlocked and self._is_unlocked(entry, nxt):
-                    self._unlocked[gid] = ts_wall_ns if ts_wall_ns is not None else time.time_ns()
+                if gid not in new_unlocked and self._is_unlocked(entry, nxt):
+                    new_unlocked[gid] = ts_wall_ns if ts_wall_ns is not None else time.time_ns()
                     newly.append(gid)
             # 去重键入有界 FIFO：超容量修剪最旧（窗口外重报不保证去重，契约 I3）。
             new_consumed = OrderedDict(self._consumed)
@@ -450,20 +459,13 @@ class AchievementEngine:
             new_consumed.move_to_end(dedup_key)
             while len(new_consumed) > DEDUP_WINDOW:
                 new_consumed.popitem(last=False)
-            meta_newly = self._eval_meta_locked(set(newly))
-            newly.extend(meta_newly)
-            # 事务：先把一致新状态落盘，成功才置为已提交（原子替换≠提交，契约 P0-2）。
-            old_progress, old_consumed = self._progress, self._consumed
-            old_unlocked = dict(self._unlocked)
+            newly.extend(self._eval_meta_locked(set(newly), new_unlocked))
+            # 候选状态先落盘，成功才整体提交（契约 I4/P0-2）。落盘失败时 self.* 尚未
+            # 改动→自动回滚，不留半提交态；异常上抛由门面隔离（契约 I1）。
+            self._save_state_locked(new_progress, new_unlocked, new_consumed)
             self._progress = new_progress
+            self._unlocked = new_unlocked
             self._consumed = new_consumed
-            try:
-                self._save_state_locked()
-            except OSError:
-                self._progress = old_progress
-                self._consumed = old_consumed
-                self._unlocked = old_unlocked
-                raise
         self._notify(newly)
         return True
 

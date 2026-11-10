@@ -652,14 +652,19 @@ class SidecarService:
         self._config_meta_notes: dict[tuple[str, str], str] = {}
         # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
         self._boost_priority_enabled = False
-        # 成就机制：引擎由 sidecar 持有生命周期（registry 只产无运行态声明索引）；绑定
-        # 门面后插件可上报事实。解锁回调读通知开关（_restore_profile 回填），尽力发壳侧事件。
         self._achievement_notify = True
-        self._achievement_engine = achievement.AchievementEngine(
-            on_unlock=self._on_achievement_unlock)
-        achievement.bind_engine(self._achievement_engine)
-        # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
+        # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关 + 成就通知开关）。
         self._restore_profile()
+        # 成就机制：引擎由 sidecar 持有生命周期（registry 只产无运行态声明索引）。偏好已
+        # 回填，构造期元成就解锁回调即遵守用户设置；初始化失败降级为成就功能不可用，不阻断启动。
+        try:
+            self._achievement_engine = achievement.AchievementEngine(
+                on_unlock=self._on_achievement_unlock)
+            achievement.bind_engine(self._achievement_engine)
+        except Exception as exc:  # noqa: BLE001 —— 成就旁路，不拖垮业务后端启动
+            self._achievement_engine = None
+            achievement.bind_engine(None)
+            logger.log(f"[sidecar] 成就引擎初始化失败，成就功能暂不可用: {exc!r}", "WARNING")
 
     # ---------- 协议输出 ----------
 
@@ -2162,9 +2167,11 @@ class SidecarService:
         })
 
     def get_achievements(self, params):
-        """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。"""
-        return (True, {"achievements": self._achievement_engine.get_view(),
-                       "notify": self._achievement_notify}, None)
+        """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。
+
+        引擎初始化失败降级时返回空列表（成就功能暂不可用），不抛错。"""
+        view = self._achievement_engine.get_view() if self._achievement_engine else []
+        return (True, {"achievements": view, "notify": self._achievement_notify}, None)
 
     def set_achievement_notify(self, params):
         """成就解锁通知开关：关闭后仅写进度不弹通知；持久化到 profile（debug.achievement_notify）。"""

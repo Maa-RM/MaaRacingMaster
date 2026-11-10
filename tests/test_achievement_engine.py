@@ -195,7 +195,7 @@ def test_a3_write_failure_rolls_back_uncommitted(tmp_path, monkeypatch):
     reg = _registry(_entry("c", {"fact": "k", "agg": "count", "target": 5}))
     eng = _engine(tmp_path, reg)
 
-    def _boom():
+    def _boom(*a, **k):
         raise OSError("disk full")
 
     monkeypatch.setattr(eng, "_save_state_locked", _boom)
@@ -239,7 +239,7 @@ def test_a4_facade_swallows_write_error(tmp_path, monkeypatch):
     eng = _engine(tmp_path, reg)
     a.bind_engine(eng)
 
-    def _boom():
+    def _boom(*a, **k):
         raise OSError("disk full")
 
     monkeypatch.setattr(eng, "_save_state_locked", _boom)
@@ -287,3 +287,90 @@ def test_a6_corrupt_store_rebuilt_empty(tmp_path):
     eng = a.AchievementEngine(store_path=path, registry=reg)
     assert eng.get_view()[0]["progress"] == 0
     assert eng.process_fact("k", "1", {}) is True
+
+
+# ---------- 事务失败路径：解锁态必须随进度一起去重一起回滚 ----------
+
+def test_unlock_rollback_on_write_failure_then_resubmit(tmp_path, monkeypatch):
+    events = []
+    reg = _registry(_entry("c", {"fact": "k", "agg": "count", "target": 1}))
+    eng = _engine(tmp_path, reg, events)
+    original = eng._save_state_locked
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(eng, "_save_state_locked", _boom)
+    with pytest.raises(OSError):
+        eng.process_fact("k", "1", {})
+    v = eng.get_view()[0]
+    assert v["progress"] == 0 and v["unlocked"] is False  # 解锁态真回滚
+    assert events == []
+    assert not (tmp_path / "ach.json").exists()
+    monkeypatch.setattr(eng, "_save_state_locked", original)
+    assert eng.process_fact("k", "1", {}) is True  # 回滚后未记去重，同键可重提
+    assert eng.get_view()[0]["unlocked"] is True
+    assert events == ["demo.c"]  # 仅首次成功提交通知一次
+
+
+def test_meta_unlock_rollback_on_write_failure(tmp_path, monkeypatch):
+    events = []
+    reg = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}),
+                    _entry("meta", {"agg": "all_unlocked", "scope": "plugin"}))
+    eng = _engine(tmp_path, reg, events)
+    original = eng._save_state_locked
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(eng, "_save_state_locked", _boom)
+    with pytest.raises(OSError):
+        eng.process_fact("k", "1", {})  # 一条事实同时解锁普通+元成就
+    assert {v["global_id"] for v in eng.get_view() if v["unlocked"]} == set()
+    assert events == []
+    monkeypatch.setattr(eng, "_save_state_locked", original)
+    assert eng.process_fact("k", "1", {}) is True
+    assert {v["global_id"] for v in eng.get_view() if v["unlocked"]} == {"demo.dep", "demo.meta"}
+    assert events == ["demo.dep", "demo.meta"]
+
+
+def test_non_oserror_rollback_and_facade_isolation(tmp_path, monkeypatch):
+    reg = _registry(_entry("c", {"fact": "k", "agg": "count", "target": 1}))
+    eng = _engine(tmp_path, reg)
+
+    def _boom(*a, **k):
+        raise TypeError("serialize fail")
+
+    monkeypatch.setattr(eng, "_save_state_locked", _boom)
+    a.bind_engine(eng)
+    assert a.report_fact("k", "1", {}) is False  # 门面隔离非 OSError
+    v = eng.get_view()[0]
+    assert v["progress"] == 0 and v["unlocked"] is False
+
+
+def test_init_meta_write_failure_no_fake_unlock(tmp_path, monkeypatch):
+    reg_dep = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}))
+    _engine(tmp_path, reg_dep).process_fact("k", "1", {})  # dep 解锁落盘
+    reg_full = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}),
+                         _entry("meta", {"agg": "all_unlocked", "scope": "plugin"}))
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(a.AchievementEngine, "_save_state_locked", _boom)
+    eng2 = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg_full)  # 不抛
+    assert {v["global_id"] for v in eng2.get_view() if v["unlocked"]} == {"demo.dep"}
+
+
+def test_init_meta_non_oserror_isolated(tmp_path, monkeypatch):
+    reg_dep = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}))
+    _engine(tmp_path, reg_dep).process_fact("k", "1", {})
+    reg_full = _registry(_entry("dep", {"fact": "k", "agg": "count", "target": 1}),
+                         _entry("meta", {"agg": "all_unlocked", "scope": "plugin"}))
+
+    def _boom(*a, **k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(a.AchievementEngine, "_save_state_locked", _boom)
+    eng2 = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg_full)  # 不抛
+    assert {v["global_id"] for v in eng2.get_view() if v["unlocked"]} == {"demo.dep"}
