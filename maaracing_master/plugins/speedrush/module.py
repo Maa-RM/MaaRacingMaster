@@ -1692,7 +1692,11 @@ class SpeedRushModule(ActivityModule):
                                    box_bridge_enabled=cfg.box_bridge.enabled,
                                    box_bridge_trace_only=cfg.box_bridge.trace_only,
                                    anchor_box_gate_enabled=cfg.box_bridge.anchor_gate,
-                                   lane_line_enabled=cfg.lane_line.enabled),
+                                   lane_line_enabled=cfg.lane_line.enabled,
+                                   demerge_enabled=cfg.demerge.enabled,
+                                   demerge_jump=cfg.demerge.jump_max_lane,
+                                   demerge_coloc=cfg.demerge.coloc_lane,
+                                   demerge_gap=cfg.demerge.gap_ticks),
                 "agg": CoinGroupAggregator(),
                 # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
                 # 传入不抄第二份）

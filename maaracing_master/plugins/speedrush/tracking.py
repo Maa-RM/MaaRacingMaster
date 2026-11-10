@@ -525,7 +525,11 @@ class Tracker:
                  box_bridge_enabled: bool = False,
                  box_bridge_trace_only: bool = True,
                  anchor_box_gate_enabled: bool = False,
-                 lane_line_enabled: bool = False):
+                 lane_line_enabled: bool = False,
+                 demerge_enabled: bool = False,
+                 demerge_jump: float = 0.8,
+                 demerge_coloc: float = 0.35,
+                 demerge_gap: int = 4):
         # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
         self.cal = cal if cal is not None else load_calib()
         self.p = params
@@ -541,6 +545,13 @@ class Tracker:
         # 车道线定道（双线同行插值，闸 lane_line.enabled，默认关=字段恒 None）：
         # 闸由 decision.json 传入，配置流向单点在链构建
         self._lane_line_on = lane_line_enabled
+        # 并号拆分（闸 demerge.enabled，默认关）：横位跳超限且新位置有另
+        # 一活跃轨道即拒绝匹配，让位并存号——治并号不治读数伪跳（伪跳无
+        # 并存证据，门不触发，归横位未知态）
+        self._demerge_on = demerge_enabled
+        self._demerge_jump = demerge_jump
+        self._demerge_coloc = demerge_coloc
+        self._demerge_gap = demerge_gap
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._last_fid: int | None = None
@@ -1125,7 +1136,38 @@ class Tracker:
             used_t.add(ti)
             used_o.add(oi)
             matches[ti] = oi
+        self._demerge(matches, obs, fid)
         return matches
+
+    def _demerge(self, matches: dict[int, int], obs: list[_Obs],
+                 fid: int) -> None:
+        """并号拆分（闸 demerge.enabled，默认关不消费）：横位跳超限且新
+        位置上有另一活跃轨道（与旧位置可分）的匹配即拒绝——旧轨道不跟
+        过去，让位并存号。治并号（一号先后挂两辆物理车：真值小集 same
+        事件 50% 链内横跳超限的机理）；纯读数伪跳（90% 拆点已目视排除，
+        自车横移/近距出画/远场小位移）无并存证据、门不触发，归横位未知
+        态。拍距 > gap_ticks 的候选不比（那是断号重挂的领域）。"""
+        if not self._demerge_on:
+            return
+        for ti, oi in list(matches.items()):
+            t, o = self._tracks[ti], obs[oi]
+            if t.x_lane is None or o.x_lane is None:
+                continue
+            if fid - t.last_seen > self._demerge_gap:
+                continue
+            if abs(o.x_lane - t.x_lane) <= self._demerge_jump:
+                continue
+            for tj, u in enumerate(self._tracks):
+                if tj == ti or u.kind != t.kind or u.x_lane is None:
+                    continue
+                if fid - u.last_seen > self.p.grace_ticks:
+                    continue
+                if (abs(o.x_lane - u.x_lane) <= self._demerge_coloc
+                        and abs(u.x_lane - t.x_lane) > self._demerge_coloc):
+                    del matches[ti]
+                    if tj not in matches:
+                        matches[tj] = oi   # 让位：检测归已在新位置的并存号
+                    break
 
     def _pred_box(self, t: _Track,
                   fid: int) -> tuple[float, float, float, float]:

@@ -631,6 +631,24 @@ class BoxBridge:
 
 
 @dataclass(frozen=True)
+class Demerge:
+    """并号拆分（跟踪器匹配读拒绝，2026-11-10 离线复算过筛）。
+
+    语义：`enabled` 开闸后，匹配对「相邻拍横位跳 > jump_max_lane 道
+    （拍距 ≤ gap_ticks，超出是断号重挂的领域）且新位置 coloc_lane 道内
+    有另一活跃轨道（与旧位置可分）」即拒绝——旧轨道不跟过去，让位给已
+    在新位置的并存号。治的是并号（一号先后挂两辆物理车，真值小集 same
+    事件 50% 链内横跳超限的机理）；纯读数伪跳（90% 拆点已目视排除，
+    自车横移/近距出画/远场小位移）无并存证据、门不触发，归横位未知态。
+    判据与拆号复算同门（0.8 道 / 0.35 道 / 4 拍）。"""
+
+    enabled: bool = False
+    jump_max_lane: float = 0.8
+    coloc_lane: float = 0.35
+    gap_ticks: int = 4
+
+
+@dataclass(frozen=True)
 class LaneLine:
     """车道线定道（双线同行插值，2026-11-02 排定待办 3）。
 
@@ -695,6 +713,7 @@ class DecisionConfig:
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
     box_bridge: BoxBridge = BoxBridge()
+    demerge: Demerge = Demerge()
     lane_line: LaneLine = LaneLine()
     view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
@@ -1178,6 +1197,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             enabled=_bool(d, "box_bridge", "enabled", default=False),
             trace_only=_bool(d, "box_bridge", "trace_only", default=True),
             anchor_gate=_bool(d, "box_bridge", "anchor_gate", default=False)),
+        demerge=Demerge(
+            enabled=_bool(d, "demerge", "enabled", default=False),
+            jump_max_lane=_num_def(d, "demerge", "jump_max_lane", 0.8, lo=0),
+            coloc_lane=_num_def(d, "demerge", "coloc_lane", 0.35, lo=0),
+            gap_ticks=_int_def(d, "demerge", "gap_ticks", 4, lo=1)),
         lane_line=LaneLine(
             enabled=_bool(d, "lane_line", "enabled", default=False),
             consume=_bool(d, "lane_line", "consume", default=False)),
