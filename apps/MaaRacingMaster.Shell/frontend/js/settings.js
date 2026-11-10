@@ -1004,7 +1004,7 @@
       </div>
 
       <div class="col-right">
-        <!-- 快捷工具：目录占用面板与环境中心两个入口 -->
+        <!-- 快捷工具：目录占用面板、环境中心、成就管理三个入口 -->
         <div class="card">
           <div class="card-head"><h3>快捷工具</h3></div>
           <div class="card-body">
@@ -1016,6 +1016,10 @@
               <button class="maarm-tool-btn" data-tool="env">
                 ${MaaRMIcons.svg('settings', {class: 'maarm-tool-btn-icon'})}
                 <span class="maarm-tool-btn-label">运行环境</span>
+              </button>
+              <button class="maarm-tool-btn" data-tool="achievements">
+                ${MaaRMIcons.svg('trophy', {class: 'maarm-tool-btn-icon'})}
+                <span class="maarm-tool-btn-label">成就管理</span>
               </button>
             </div>
           </div>
@@ -1243,11 +1247,13 @@
       });
     });
 
-    // 快捷工具：folder → 目录占用面板（面板内再跳资源管理器）；env → 环境中心
+    // 快捷工具：folder → 目录占用面板（面板内再跳资源管理器）；env → 环境中心；
+    // achievements → 成就管理整页覆盖层
     document.querySelectorAll('.maarm-tool-btn[data-tool]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (btn.dataset.tool === 'folder') openDataUsage();
         else if (btn.dataset.tool === 'env') openOptimizerCenter();
+        else if (btn.dataset.tool === 'achievements') MaaRM.achievements.open();
       });
     });
   }

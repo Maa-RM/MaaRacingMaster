@@ -174,7 +174,7 @@
     const desc = data.description || '';
     const slot = el.querySelector('[data-icon-slot]');
     // 图标串只来自本仓库真源 icons.js（静态 SVG），不掺任何运行时数据
-    if (slot && window.MaaRMIcons) slot.innerHTML = MaaRMIcons.svg('gift');
+    if (slot && window.MaaRMIcons) slot.innerHTML = MaaRMIcons.svg('trophy');
     if (tier === 'hidden') {
       el.querySelector('.maarm-ach__title').classList.add('maarm-text-scan', 'maarm-text-scan--rave');
       el.querySelector('.maarm-ach__detail-title').classList.add('maarm-text-scan', 'maarm-text-scan--rave');

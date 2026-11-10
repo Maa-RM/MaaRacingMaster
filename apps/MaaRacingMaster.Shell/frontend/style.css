@@ -2254,3 +2254,342 @@ footer .spacer { flex: 1; }
   }
   .maarm-ach[data-tier="hidden"] { animation: none !important; }
 }
+
+/* ============================================================================
+   成就管理（整页覆盖层）
+   ----------------------------------------------------------------------------
+   入口：设置 → 快捷工具 →「成就管理」。按「核心 / 各模块」分组，概览 + 筛选 +
+   卡片三态（已解锁 / 未解锁 / 隐藏遮蔽）；页头是备份、重置与解锁提示开关。
+   存档来自更高版本时进冻结态：顶部警示条 + 进度显示不可用 + 导入/重置置灰。
+   ============================================================================ */
+
+.maarm-ach-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;                 /* 正文之上、模态（9999）之下 */
+  background: var(--maarm-background);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach-sheet[hidden] { display: none; }
+.maarm-ach-sheet.is-open { opacity: 1; transform: none; }
+
+.maarm-ach-sheet__head {
+  flex: 0 0 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  background: var(--maarm-surface);
+  border-bottom: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-sheet__title { font-size: 15px; font-weight: 600; }
+.maarm-ach-sheet__meta { font-size: 12px; color: var(--maarm-foreground-muted); }
+.maarm-ach-sheet__actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.maarm-ach-sheet__close {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--maarm-foreground-muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+}
+.maarm-ach-sheet__close:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+
+.maarm-ach-ghost {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary);
+  cursor: pointer;
+}
+.maarm-ach-ghost:hover:not(:disabled) { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.maarm-ach-ghost:disabled { opacity: 0.45; cursor: not-allowed; }
+.maarm-ach-ghost--danger:hover:not(:disabled) {
+  border-color: #F3C9CA;
+  color: var(--maarm-primary);
+  background: #FFF7F7;
+}
+
+.maarm-ach-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  font: inherit;
+  font-size: 12px;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--maarm-foreground-secondary);
+  cursor: pointer;
+}
+.maarm-ach-switch i {
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--maarm-border);
+  position: relative;
+  display: inline-block;
+  transition: background 0.16s ease;
+}
+.maarm-ach-switch i::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.16s ease;
+}
+.maarm-ach-switch.is-on i { background: var(--maarm-success); }
+.maarm-ach-switch.is-on i::after { transform: translateX(12px); }
+.maarm-ach-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.maarm-ach-banner {
+  flex: 0 0 auto;
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #8A5A00;
+  background: #FFF7E6;
+  border: 1px solid #F3DFB8;
+}
+.maarm-ach-banner[hidden] { display: none; }
+
+.maarm-ach-sheet__body { flex: 1 1 auto; overflow-y: auto; padding: 14px 20px 24px; }
+
+/* 概览条 */
+.maarm-ach-summary {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  background: var(--maarm-surface);
+  border-radius: 10px;
+  box-shadow: var(--maarm-shadow-sm);
+  padding: 16px 20px;
+  margin-bottom: 12px;
+}
+.maarm-ach-summary__num { display: flex; align-items: baseline; gap: 3px; }
+.maarm-ach-summary__num b { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+.maarm-ach-summary__num span { font-size: 14px; color: var(--maarm-foreground-muted); }
+.maarm-ach-summary__main { flex: 1 1 auto; min-width: 0; }
+.maarm-ach-summary__label { font-size: 12px; color: var(--maarm-foreground-muted); margin-bottom: 7px; }
+.maarm-ach-summary__track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--maarm-border-light);
+  overflow: hidden;
+}
+.maarm-ach-summary__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--maarm-foreground);
+  transition: width 0.4s ease;
+}
+.maarm-ach-summary__tiers {
+  display: flex;
+  gap: 18px;
+  padding-left: 20px;
+  border-left: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-tier-stat { display: flex; flex-direction: column; gap: 4px; }
+.maarm-ach-tier-stat__name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-ach-tier-stat__name::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tier-color, #1F2328);
+}
+.maarm-ach-tier-stat__val { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.maarm-ach-tier-stat__val em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--maarm-foreground-muted);
+  font-weight: 400;
+}
+
+/* 筛选行 */
+.maarm-ach-filters { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.maarm-ach-filter {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary);
+  cursor: pointer;
+}
+.maarm-ach-filter.is-active {
+  background: var(--maarm-foreground);
+  border-color: var(--maarm-foreground);
+  color: #fff;
+  font-weight: 600;
+}
+.maarm-ach-filters__meta { margin-left: auto; font-size: 12px; color: var(--maarm-foreground-muted); }
+
+/* 分组与网格 */
+.maarm-ach-group { margin-bottom: 22px; }
+.maarm-ach-group__head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 10px; }
+.maarm-ach-group__title { font-size: 13.5px; font-weight: 600; }
+.maarm-ach-group__count {
+  font-size: 12px;
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach-group__bar {
+  flex: 0 0 90px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--maarm-border-light);
+  overflow: hidden;
+  align-self: center;
+}
+.maarm-ach-group__bar i {
+  display: block;
+  height: 100%;
+  background: var(--maarm-foreground-secondary);
+  border-radius: 2px;
+}
+.maarm-ach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 12px;
+}
+
+/* 卡片三态：已解锁 / 未解锁 / 隐藏遮蔽 */
+.maarm-ach-card {
+  --ring: var(--maarm-border);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 142px;
+  padding: 14px 15px;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--ring) border-box;
+  box-shadow: var(--maarm-shadow-sm);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.maarm-ach-card:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(16, 18, 24, 0.08); }
+.maarm-ach-card[data-tier="rare"] { --ring: #38BDF8; }
+.maarm-ach-card[data-tier="precious"] { --ring: var(--maarm-primary); }
+.maarm-ach-card[data-tier="hidden"] { --ring: #D9DCE4; }
+.maarm-ach-card.is-locked {
+  background: linear-gradient(#FCFCFD, #FCFCFD) padding-box, var(--ring) border-box;
+}
+.maarm-ach-card.is-locked[data-tier="rare"] { --ring: #CFE9F8; }
+.maarm-ach-card.is-locked[data-tier="precious"] { --ring: #F6D3D4; }
+.maarm-ach-card.is-locked[data-tier="hidden"] { --ring: #E4E0EF; }
+
+.maarm-ach-card__head { display: flex; align-items: center; gap: 9px; }
+.maarm-ach-card__badge {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--maarm-surface-hover);
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__badge { color: #B9C0CE; }
+.maarm-ach-card__badge svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.maarm-ach-card__tier { margin-left: auto; font-size: 11px; color: var(--maarm-foreground-muted); }
+.maarm-ach-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 11px;
+  line-height: 1.3;
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__title { color: var(--maarm-foreground-secondary); font-weight: 500; }
+.maarm-ach-card__masked { letter-spacing: 0.18em; }
+.maarm-ach-card__desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--maarm-foreground-muted);
+  margin-top: 5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.maarm-ach-card__foot {
+  margin-top: auto;
+  padding-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach-card__bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--maarm-border-light);
+  overflow: hidden;
+}
+.maarm-ach-card__bar i {
+  display: block;
+  height: 100%;
+  background: var(--maarm-foreground-secondary);
+  border-radius: 2px;
+}
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot { color: #0F7A55; }
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--maarm-success);
+}
+.maarm-ach-card[data-tier="hidden"].is-unlocked { --ring: #C9B6F2; }
+
+/* 隐藏档已解锁：彩虹标题（复用页首的扫光实现） */
+.maarm-ach-card__title.is-rainbow { --maarm-scan-cycle: 6s; }
+
+/* 冻结态：进度区压暗，界面上以「不可用」占位，不谎报 0/1 */
+.maarm-ach-sheet.is-frozen .maarm-ach-card__foot,
+.maarm-ach-sheet.is-frozen .maarm-ach-summary__main { opacity: 0.45; }
+
+.maarm-ach-empty {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--maarm-foreground-muted);
+}

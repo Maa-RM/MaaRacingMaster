@@ -248,6 +248,45 @@
   <canvas id="ach-fx" aria-hidden="true"></canvas>
   <div id="ach-island" role="status" aria-live="polite"></div>
 
+  <!-- ===== 成就管理（整页覆盖层，入口在 设置 → 快捷工具；文案与计数由 js/achievement.js 填） ===== -->
+  <section class="maarm-ach-sheet" id="ach-sheet" hidden aria-hidden="true">
+    <div class="maarm-ach-sheet__head">
+      <span class="maarm-ach-sheet__title">成就管理</span>
+      <span class="maarm-ach-sheet__meta" id="ach-meta"></span>
+      <div class="maarm-ach-sheet__actions">
+        <button class="maarm-ach-ghost" id="ach-export" type="button">导出备份</button>
+        <button class="maarm-ach-ghost" id="ach-import" type="button">导入备份</button>
+        <button class="maarm-ach-ghost maarm-ach-ghost--danger" id="ach-reset" type="button">重置…</button>
+        <button class="maarm-ach-switch is-on" id="ach-notify" type="button" aria-pressed="true">
+          <i></i><span>解锁提示</span>
+        </button>
+      </div>
+      <button class="maarm-ach-sheet__close" id="ach-close" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="maarm-ach-banner" id="ach-banner" hidden></div>
+    <div class="maarm-ach-sheet__body">
+      <div class="maarm-ach-summary">
+        <div class="maarm-ach-summary__num">
+          <b id="ach-sum-done">0</b><span>/ <span id="ach-sum-all">0</span></span>
+        </div>
+        <div class="maarm-ach-summary__main">
+          <div class="maarm-ach-summary__label">已解锁 <span id="ach-sum-pct">0%</span></div>
+          <div class="maarm-ach-summary__track"><div class="maarm-ach-summary__fill" id="ach-sum-fill"></div></div>
+        </div>
+        <div class="maarm-ach-summary__tiers" id="ach-sum-tiers"></div>
+      </div>
+
+      <div class="maarm-ach-filters">
+        <button class="maarm-ach-filter is-active" type="button" data-filter="all">全部</button>
+        <button class="maarm-ach-filter" type="button" data-filter="locked">未解锁</button>
+        <button class="maarm-ach-filter" type="button" data-filter="unlocked">已解锁</button>
+        <span class="maarm-ach-filters__meta" id="ach-status">解锁后永久保留，不随模块移出或重装丢失</span>
+      </div>
+
+      <div id="ach-groups"></div>
+    </div>
+  </section>
+
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>
@@ -256,6 +295,7 @@
   <script src="js/rpc.js"></script>
   <script src="js/achievement-toast.js"></script>
   <script src="js/modal.js"></script>
+  <script src="js/achievement.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>
   <script src="js/settings.js"></script>
