@@ -38,8 +38,22 @@ internal static class RpcBridge
         "set_emergency_stop", "set_click_mode", "set_intent_mode",
         "set_mute_game", "pick_game_exe",
         "set_boost_priority",
-        "get_achievements", "set_achievement_notify",
+        "get_achievements", "set_achievement_notify", "note_ui_event",
+        "export_achievements", "import_achievements", "reset_achievements",
     };
+
+    /// <summary>
+    /// 会弹系统对话框的方法给长等待：用户在保存/选择框里磨多久，管道就等多久。
+    /// 写死 10 秒会造出「后端已生效、前端报超时」——导入/重置尤其危险（用户一重试
+    /// 就盖掉 pre-import 备份）。其余方法维持 10 秒，不把真卡死拖成长等待。
+    /// </summary>
+    private static readonly HashSet<string> LongCallMethods = new(StringComparer.Ordinal)
+    {
+        "pick_game_exe", "export_achievements", "import_achievements",
+    };
+
+    private static TimeSpan TimeoutFor(string method) =>
+        LongCallMethods.Contains(method) ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(10);
 
     private static PythonSidecar? s_sidecar;
 
@@ -79,7 +93,7 @@ internal static class RpcBridge
         {
             if (s_sidecar is null)
                 throw new InvalidOperationException("backend unavailable");
-            var resp = await s_sidecar.CallAsync(method, paramsEl, TimeSpan.FromSeconds(10));
+            var resp = await s_sidecar.CallAsync(method, paramsEl, TimeoutFor(method));
             data = resp.GetProperty("data"); // JsonElement：null 或对象直接嵌入回传
         }
         catch (Exception ex)

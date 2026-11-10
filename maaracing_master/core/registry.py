@@ -56,6 +56,10 @@ def _register_achievements(mod_id: str, plugin_dir: Path, manifest) -> None:
         rel = getattr(manifest, "ACHIEVEMENTS", None)
         if rel is None:
             return
+        if mod_id == achievement.CORE_MOD_ID:
+            # 保留命名空间：core 成就目录由 sidecar 从包内资源注册，插件不得占用。
+            logger.log(f"[registry] 插件 {mod_id}: mod_id 为成就保留命名空间，跳过成就声明", "WARNING")
+            return
         if not isinstance(rel, str) or not rel:
             logger.log(f"[registry] 插件 {mod_id} ACHIEVEMENTS 声明非法，跳过成就", "WARNING")
             return

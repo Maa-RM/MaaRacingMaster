@@ -411,6 +411,32 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧返回失败（累计 {}） seq={}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧失败（累计 {}） seq={}: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
+
+    # ---- 成就机制（core/achievement.py · core/registry.py · core/sidecar.py） ----
+    # 成就整体是旁路功能：不挂业务组、失败只降级（契约 I1），工作线程是 sidecar 启动期
+    # 与 RPC 线程，稳定业务组不存在。
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就目录不可用（{}）: {}', 'WARNING', 'state', 'cross', 'core 成就目录在 sidecar 初始化期加载，先于任何业务组；文件缺失/损坏只降级为无核心成就，不阻断启动。'),
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就: {}', 'WARNING', 'state', 'cross', 'catalog 逐条校验问题回显（启动期、无业务组）：非法条目丢弃但不静默，否则成就莫名不弹无从排查。'),
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就目录校验失败，跳过', 'WARNING', 'state', 'cross', '整份目录不可用（schema 版本不符等）：降级为无核心成就，启动期无业务组可挂。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档损坏，重建为空: {}', 'WARNING', 'state', 'cross', '存档解析失败按空态重建：引擎构造期读取，无业务组；WARNING 让用户知道进度被重建。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档形状非法，重建为空', 'WARNING', 'state', 'cross', '存档顶层不是对象：同属构造期降级路径，无业务组可挂。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档版本 {} 高于支持 {}，保留原文件停写', 'WARNING', 'state', 'cross', '降级保护（高版本存档）：只读冻结、不改运行结局，构造期无业务组；这条必须可见，否则用户以为进度丢了。'),
+    _s('core/achievement.py', 'AchievementEngine.__init__', '[achievement] 元成就初始存档失败（未提交）: {}', 'WARNING', 'state', 'cross', '构造期元成就求值落盘失败：不提交、不上抛，成就旁路故障，无业务组。'),
+    _s('core/achievement.py', 'AchievementEngine._notify', '[achievement] 解锁回调异常 {}: {}', 'WARNING', 'state', 'cross', '通知回调在引擎锁外执行且尽力而为：失败不回灌引擎（契约 I1），工作线程无业务组。'),
+    _s('core/achievement.py', '_warn_throttled', '<dynamic>', 'WARNING', 'state', 'cross', '事实处理失败的限频告警（模板由调用方给出）：跨切面旁路事件，已有 60s 限频防刷屏。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {}: mod_id 为成就保留命名空间，跳过成就声明', 'WARNING', 'state', 'cross', '插件扫描发生在 registry import 期，早于任何业务组；保留 mod_id 冲突只拒绝该插件的成就声明。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 声明非法，跳过成就', 'WARNING', 'state', 'cross', '插件声明错误隔离（不撤销模块注册）：import 期无业务组。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 须为插件内相对路径，跳过', 'WARNING', 'state', 'cross', '路径闸拒绝绝对路径：import 期、无业务组，拒绝即跳过该插件的成就。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 路径越界，跳过', 'WARNING', 'state', 'cross', '路径闸拒绝穿越插件目录：import 期、无业务组。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就目录缺失: {}，跳过', 'WARNING', 'state', 'cross', '声明了成就目录但文件不在：import 期隔离该插件成就，不影响模块注册。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就: {}', 'WARNING', 'state', 'cross', 'catalog 逐条校验问题回显：import 期无业务组，非法条目丢弃但不静默。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就目录不可用，跳过', 'WARNING', 'state', 'cross', '整份目录不可用：import 期降级为无该插件成就，不影响模块注册。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就注册失败，跳过: {}', 'WARNING', 'state', 'cross', '成就注册兜底异常隔离：import 期、无业务组，失败不阻断模块注册。'),
+    _s('core/sidecar.py', 'SidecarService.__init__', '[sidecar] 成就引擎初始化失败，成就功能暂不可用: {}', 'WARNING', 'state', 'cross', 'sidecar 构造期初始化旁路功能：失败降级为成就不可用，不改运行结局，无业务组。'),
+    _s('core/sidecar.py', '_warn_unknown_ui_event', '[sidecar] 未知 UI 事件，已忽略: {}', 'WARNING', 'state', 'cross', 'RPC 线程上的前端输入校验回显（已 60s 限频）：前端字面量拼错时这是唯一痕迹，无业务组。'),
+    _s('core/sidecar.py', 'SidecarService.export_achievements', '[achievement] 已导出成就备份: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的管理操作，RPC 线程、无业务组；导出结果需要用户可见（路径与条数）。'),
+    _s('core/sidecar.py', 'SidecarService.import_achievements', '[achievement] 已导入成就备份: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的管理操作，RPC 线程、无业务组；导入源与条数需要可追溯。'),
+    _s('core/sidecar.py', 'SidecarService.reset_achievements', '[achievement] 已重置成就进度: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的重置操作，RPC 线程、无业务组；清了几条要留痕（重置会撤销解锁态）。'),
 ]
 
 # 迁到玩法流水的站点：key（四元组）→ (流水模块, 判别字段, 所属阶段)。

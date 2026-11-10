@@ -44,7 +44,7 @@ def _registry(*entries, mod_id="demo"):
 def _engine(tmp_path, registry_dict, events=None, **kw):
     return a.AchievementEngine(
         store_path=tmp_path / "ach.json",
-        on_unlock=(lambda gid, en: events.append(gid)) if events is not None else None,
+        on_unlock=(lambda gid, en, ts: events.append(gid)) if events is not None else None,
         registry=registry_dict, **kw)
 
 
@@ -250,7 +250,7 @@ def test_a4_facade_swallows_write_error(tmp_path, monkeypatch):
 def test_a4_notify_error_does_not_block_commit(tmp_path):
     reg = _registry(_entry("c", {"fact": "k", "agg": "count", "target": 1}))
 
-    def _bad_unlock(gid, en):
+    def _bad_unlock(gid, en, ts):
         raise RuntimeError("notify down")
 
     eng = a.AchievementEngine(store_path=tmp_path / "ach.json",
@@ -374,3 +374,128 @@ def test_init_meta_non_oserror_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(a.AchievementEngine, "_save_state_locked", _boom)
     eng2 = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg_full)  # 不抛
     assert {v["global_id"] for v in eng2.get_view() if v["unlocked"]} == {"demo.dep"}
+
+# ---------- 导入 / 导出 / 重置 ----------
+
+
+def _one(tmp_path, **kw):
+    """单条夹具成就（fact=k，target=1）。"""
+    reg = _registry(_entry("first", {"fact": "k", "agg": "count", "target": 1}))
+    return a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg, **kw)
+
+
+def test_export_roundtrip_keeps_progress(tmp_path):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    backup = tmp_path / "backup.json"
+    assert eng.export_store(backup) == 1
+    payload = json.loads(backup.read_text(encoding="utf-8"))
+    assert payload["exported_at"] and payload["app_version"]
+    assert payload["store_schema_version"] == a.ACHIEVEMENT_STORE_SCHEMA_VERSION
+
+    eng.reset("all")
+    assert eng.get_view()[0]["unlocked"] is False
+    assert eng.import_store(backup) == 1
+    view = eng.get_view()[0]
+    # 导入必须同步内存态：不重启就能看到新进度（只改磁盘 = 假成功）
+    assert view["unlocked"] is True and view["progress"] == 1
+
+
+def test_export_without_store_writes_empty_backup(tmp_path):
+    eng = _one(tmp_path)  # 从没产生过进度：存档文件尚未生成
+    assert not (tmp_path / "ach.json").exists()
+    backup = tmp_path / "backup.json"
+    assert eng.export_store(backup) == 0
+    assert json.loads(backup.read_text(encoding="utf-8"))["progress"] == {}
+
+
+def test_import_rejects_higher_store_version(tmp_path):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    before = (tmp_path / "ach.json").read_text(encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"store_schema_version": 99, "progress": {},
+                               "unlocked": {}, "consumed_keys": []}), encoding="utf-8")
+    with pytest.raises(a.AchievementStoreError):
+        eng.import_store(bad)
+    assert (tmp_path / "ach.json").read_text(encoding="utf-8") == before
+    assert eng.get_view()[0]["unlocked"] is True
+
+
+def test_import_bad_shape_keeps_original(tmp_path):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    before = (tmp_path / "ach.json").read_text(encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"store_schema_version": 1, "progress": {}}), encoding="utf-8")
+    with pytest.raises(a.AchievementStoreError):
+        eng.import_store(bad)
+    assert (tmp_path / "ach.json").read_text(encoding="utf-8") == before
+
+
+def test_import_backs_up_current_store(tmp_path):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    backup = tmp_path / "backup.json"
+    eng.export_store(backup)
+    eng.import_store(backup)
+    assert list(tmp_path.glob("ach.pre-import-*.json"))
+
+
+def test_reset_all_clears_consumed_keys(tmp_path):
+    eng = _one(tmp_path)
+    eng.process_fact("k", "k::1", {})
+    assert eng.reset("all") == 1
+    state = json.loads((tmp_path / "ach.json").read_text(encoding="utf-8"))
+    assert state["consumed_keys"] == [] and state["progress"] == {} and state["unlocked"] == {}
+
+
+def test_reset_single_keeps_other_entries(tmp_path):
+    reg = _registry(_entry("a1", {"fact": "k", "agg": "count", "target": 1}),
+                    _entry("b1", {"fact": "k", "agg": "count", "target": 1}))
+    eng = a.AchievementEngine(store_path=tmp_path / "ach.json", registry=reg)
+    eng.process_fact("k", "k::1", {})
+    assert eng.reset("demo.a1") == 1
+    view = {v["global_id"]: v for v in eng.get_view()}
+    assert view["demo.a1"]["unlocked"] is False
+    assert view["demo.b1"]["unlocked"] is True
+
+
+def test_reset_unknown_id_rejected(tmp_path):
+    eng = _one(tmp_path)
+    with pytest.raises(a.AchievementStoreError):
+        eng.reset("demo.nope")
+
+
+def test_frozen_store_rejects_writes_and_keeps_file(tmp_path):
+    store = tmp_path / "ach.json"
+    original = json.dumps({"store_schema_version": 99, "progress": {"demo.first": 1},
+                           "unlocked": {"demo.first": 1}, "consumed_keys": ["k::1"]})
+    store.write_text(original, encoding="utf-8")
+    eng = _one(tmp_path)
+    assert eng.frozen is True and eng.store_version == 99
+
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1, "progress": {},
+                                  "unlocked": {}, "consumed_keys": []}), encoding="utf-8")
+    with pytest.raises(a.AchievementFrozenError):
+        eng.reset("all")
+    with pytest.raises(a.AchievementFrozenError):
+        eng.import_store(backup)
+    assert store.read_text(encoding="utf-8") == original  # 只读保护：原文件一个字节没动
+
+
+def test_reload_recomputes_frozen_state(tmp_path):
+    store = tmp_path / "ach.json"
+    store.write_text(json.dumps({"store_schema_version": 99, "progress": {},
+                                 "unlocked": {}, "consumed_keys": []}), encoding="utf-8")
+    eng = _one(tmp_path)
+    assert eng.frozen is True
+
+    store.write_text(json.dumps({"store_schema_version": 1,
+                                 "progress": {"demo.first": 1},
+                                 "unlocked": {"demo.first": 1700000000000000000},
+                                 "consumed_keys": []}), encoding="utf-8")
+    assert eng.reload_from_disk() is True
+    assert eng.frozen is False and eng.store_version == 1
+    assert eng.get_view()[0]["unlocked"] is True

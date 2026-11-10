@@ -30,6 +30,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -541,7 +542,8 @@ HANDLERS = frozenset({
     # 观测
     "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
     # 成就
-    "get_achievements", "set_achievement_notify",
+    "get_achievements", "set_achievement_notify", "note_ui_event",
+    "export_achievements", "import_achievements", "reset_achievements",
     # 调试与显示开关
     "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
     # 行为开关
@@ -554,12 +556,53 @@ HANDLERS = frozenset({
 # 普通错误处理并下轮重试），不排队——排队会让 reader 等锁、违背同一铁律。
 _MAX_INFLIGHT = 16
 
+# ---------- 成就：核心 UI 事实 ----------
+# 前端只报原始事件，时间窗判定在这里做。安全口径：UI 事实由前端上报，不保证
+# 不可伪造；成就无实物奖励，接受该风险。
+CORE_UI_EVENTS = frozenset({"start_click", "start_cancel"})
+CORE_UI_REPEAT_WINDOW_S = 60.0
+# 本侧会发射的全部事实种别；与 core 成就目录的 rule.fact 双向一致由回归锁守住
+# （tests/test_achievement_core_catalog.py）——拼错一个字符就会静默永不触发。
+CORE_UI_FACTS = frozenset({
+    "core.ui.start_click",
+    "core.ui.start_cancel",
+    "core.ui.start_repeat_fast",
+    "core.ui.cancel_repeat_fast",
+})
+_UI_EVENT_WARN_INTERVAL_S = 60.0
+_ui_event_warn_ts = 0.0
 
-def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
-    """弹系统「打开文件」对话框，返回所选路径；取消返回空串。
+
+def core_ui_facts(event: str, prev_ts: float | None, now: float) -> list[str]:
+    """把一次 UI 事件翻译成要上报的事实种别（纯函数，边界由测试锁死）。
+
+    prev_ts 是该事件上一次到达的时刻（monotonic），None = 本进程内第一次。事实名
+    不携带窗口数值：窗口是常量，写进名字等于把可调参数焊进成就 ID。
+    """
+    if event not in CORE_UI_EVENTS:
+        return []
+    facts = [f"core.ui.{event}"]
+    if prev_ts is not None and (now - prev_ts) < CORE_UI_REPEAT_WINDOW_S:
+        facts.append("core.ui.start_repeat_fast" if event == "start_click"
+                     else "core.ui.cancel_repeat_fast")
+    return facts
+
+
+def _warn_unknown_ui_event(event: Any) -> None:
+    """未知 UI 事件限频告警：前端字面量拼错时，这是日志里唯一的痕迹。"""
+    global _ui_event_warn_ts
+    now = time.monotonic()
+    if now - _ui_event_warn_ts >= _UI_EVENT_WARN_INTERVAL_S:
+        logger.log(f"[sidecar] 未知 UI 事件，已忽略: {event!r}", "WARNING")
+        _ui_event_warn_ts = now
+
+
+def _file_dialog(title: str, filter_str: str, default_ext: str, *,
+                 save: bool, initial_name: str = "") -> str:
+    """弹系统文件对话框，返回所选路径；取消返回空串。
 
     在 sidecar 侧弹窗：对话框属于本进程自己的 UI，不需要给 WebView 开放任何文件系统
-    能力（前端只说"用户点了浏览"，拿不到任意路径读取权）。
+    能力（前端只说"用户点了浏览"，拿不到任意路径读写权）。
     """
     import ctypes
     import ctypes.wintypes as wt
@@ -578,24 +621,46 @@ def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
             ("dwReserved", wt.DWORD), ("FlagsEx", wt.DWORD),
         ]
 
-    OFN_FILEMUSTEXIST = 0x00001000
-    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_OVERWRITEPROMPT = 0x00000002
+    OFN_HIDEREADONLY = 0x00000004
     OFN_NOCHANGEDIR = 0x00000008
+    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_FILEMUSTEXIST = 0x00001000
     OFN_EXPLORER = 0x00080000
-    filter_str = "可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0"
 
-    buf = ctypes.create_unicode_buffer(2048)
+    flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER
+    flags |= OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY if save else OFN_FILEMUSTEXIST
+
+    buf = ctypes.create_unicode_buffer(initial_name, 2048)
     ofn = OPENFILENAMEW()
     ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
     ofn.lpstrFilter = filter_str
     ofn.lpstrFile = ctypes.cast(buf, wt.LPWSTR)
     ofn.nMaxFile = len(buf)
     ofn.lpstrTitle = title
-    ofn.lpstrDefExt = "exe"
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER
-    if not ctypes.WinDLL("comdlg32").GetOpenFileNameW(ctypes.byref(ofn)):
-        return ""
-    return buf.value
+    ofn.lpstrDefExt = default_ext
+    ofn.Flags = flags
+    comdlg32 = ctypes.WinDLL("comdlg32")
+    ok = (comdlg32.GetSaveFileNameW if save else comdlg32.GetOpenFileNameW)(ctypes.byref(ofn))
+    return buf.value if ok else ""
+
+
+def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
+    return _file_dialog(title, "可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0",
+                        "exe", save=False)
+
+
+_JSON_FILTER = "成就备份 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0"
+
+
+def _pick_achievement_export_path(default_name: str) -> str:
+    return _file_dialog("导出成就备份", _JSON_FILTER, "json",
+                        save=True, initial_name=default_name)
+
+
+def _pick_achievement_import_path(default_name: str = "") -> str:
+    return _file_dialog("选择成就备份", _JSON_FILTER, "json",
+                        save=False, initial_name=default_name)
 
 
 class SidecarService:
@@ -653,11 +718,17 @@ class SidecarService:
         # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
         self._boost_priority_enabled = False
         self._achievement_notify = True
+        # UI 事件时间戳（按事件名分开记，monotonic）与它们的锁：只服务核心成就的
+        # 时间窗判定，不参与业务锁，避免对话框/运行链路互相阻塞。
+        self._achievement_ui_last: dict[str, float] = {}
+        self._achievement_ui_lock = threading.Lock()
         # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关 + 成就通知开关）。
         self._restore_profile()
         # 成就机制：引擎由 sidecar 持有生命周期（registry 只产无运行态声明索引）。偏好已
         # 回填，构造期元成就解锁回调即遵守用户设置；初始化失败降级为成就功能不可用，不阻断启动。
         try:
+            # core 自带成就目录先入声明索引，引擎构造时才能读到（失败只降级，不阻断启动）。
+            achievement.register_core_catalog()
             self._achievement_engine = achievement.AchievementEngine(
                 on_unlock=self._on_achievement_unlock)
             achievement.bind_engine(self._achievement_engine)
@@ -2152,26 +2223,50 @@ class SidecarService:
                    "INFO" if enabled else "DEBUG")
         return (True, {"boost_priority": enabled}, None)
 
-    def _on_achievement_unlock(self, global_id: str, entry: dict) -> None:
+    def _on_achievement_unlock(self, global_id: str, entry: dict,
+                               unlocked_ts: int | None = None) -> None:
         """引擎解锁回调（锁外调用）：通知开关开启时尽力发壳侧事件。
 
-        事件送达尽力而为；壳侧负责前台/后台单通道显示与 Closing 闸门（阶段 4）。
+        载荷自足：提示条（标题 + 描述）、详情卡（档位 + 触发条件 + 解锁时间）都靠它
+        渲染，前端不再回查 `get_achievements`（解锁瞬间的查询会与推送竞争）。
+        事件送达尽力而为；壳侧负责前台/后台单通道显示与 Closing 闸门。
         """
         if not self._achievement_notify:
             return
+        hidden = bool(entry.get("hidden"))
         self._send_event_best_effort({
             "type": "event", "event": "achievement_unlocked",
-            "data": {"global_id": global_id, "title": entry.get("title", ""),
-                     "category": entry.get("category", ""),
-                     "mod_id": global_id.split(".", 1)[0]},
+            "data": {
+                "global_id": global_id,
+                "title": entry.get("title", ""),
+                "description": entry.get("description", ""),
+                # 隐藏档的第四种视觉由 hidden 承担，与 get_view 口径一致
+                "tier": "hidden" if hidden else entry.get("tier", "normal"),
+                "hint": entry.get("hint", ""),
+                "category": entry.get("category", ""),
+                "mod_id": global_id.split(".", 1)[0],
+                "unlocked_ts": unlocked_ts,
+            },
         })
 
     def get_achievements(self, params):
         """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。
 
-        引擎初始化失败降级时返回空列表（成就功能暂不可用），不抛错。"""
-        view = self._achievement_engine.get_view() if self._achievement_engine else []
-        return (True, {"achievements": view, "notify": self._achievement_notify}, None)
+        `state` 告诉前端能不能读写：`ready` 正常；`frozen` 存档由更高版本写入，成就
+        只读（不累计、不解锁、不能导入/重置，可以导出）；`unavailable` 引擎初始化失败。
+        冻结后引擎返回的是空进度，原样渲染等于谎报「进度没了」。
+        """
+        engine = self._achievement_engine
+        if engine is None:
+            return (True, {"achievements": [], "notify": self._achievement_notify,
+                           "state": "unavailable"}, None)
+        return (True, {
+            "achievements": engine.get_view(),
+            "notify": self._achievement_notify,
+            "state": "frozen" if engine.frozen else "ready",
+            "store_version": engine.store_version,
+            "supported_version": engine.supported_store_version,
+        }, None)
 
     def set_achievement_notify(self, params):
         """成就解锁通知开关：关闭后仅写进度不弹通知；持久化到 profile（debug.achievement_notify）。"""
@@ -2180,6 +2275,99 @@ class SidecarService:
             self._achievement_notify = enabled
             self._persist_debug_flag("achievement_notify", enabled)
         return (True, {"achievement_notify": enabled}, None)
+
+    def note_ui_event(self, params):
+        """UI 事件上报（开始/取消倒计时）：前端只报原始事件，时间窗在后端判定。
+
+        为什么需要这条窄通道：开始运行的三秒倒计时是纯前端 `setTimeout`，倒计时中
+        再点一次只 `clearTimeout`、不发任何 RPC，后端对这两个动作完全不知情。
+        尽力而为：未知事件限频 WARNING 后忽略；上报失败不改变运行链路（契约 I1）。
+        """
+        event = (params or {}).get("event")
+        if not isinstance(event, str) or event not in CORE_UI_EVENTS:
+            _warn_unknown_ui_event(event)
+            return (True, {"ignored": True}, None)
+        now = time.monotonic()
+        with self._achievement_ui_lock:
+            prev = self._achievement_ui_last.get(event)
+            self._achievement_ui_last[event] = now
+        for kind in core_ui_facts(event, prev, now):
+            # dedup_key 每条事实一个 uuid：UI 事件不重试、无需跨进程稳定，
+            # 重复点击本身就是多个合法实例（契约去重只管同一条事实的重放）。
+            achievement.report_fact(kind, f"{kind}::{uuid.uuid4().hex}", {})
+        return (True, None, None)
+
+    # ---------- 成就管理（导出 / 导入 / 重置） ----------
+
+    def _achievement_engine_or_error(self):
+        """引擎可用性闸：初始化降级时返回明确错误，不静默成功。"""
+        if self._achievement_engine is None:
+            return None, "成就功能不可用（引擎未初始化）"
+        return self._achievement_engine, None
+
+    def _refuse_achievement_write(self) -> str | None:
+        """导入/重置要求当前未运行：避免与运行期写入竞争（_worker 非空 = slot 已占用）。"""
+        if self._worker is not None:
+            return "运行中不能导入或重置成就存档，请先停止"
+        return None
+
+    def export_achievements(self, params):
+        """导出成就备份：弹系统保存框（路径不从前端进），把存档本体写到用户选的位置。"""
+        engine, err = self._achievement_engine_or_error()
+        if err:
+            return (False, None, err)
+        default_name = f"achievements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        try:
+            path = _pick_achievement_export_path(default_name)
+        except Exception as exc:  # noqa: BLE001 —— 弹窗失败不拖垮服务
+            return (False, None, f"打开保存对话框失败: {exc!r}")
+        if not path:
+            return (True, {"cancelled": True}, None)
+        try:
+            count = engine.export_store(Path(path))
+        except achievement.AchievementStoreError as exc:
+            return (False, None, str(exc))
+        logger.log(f"[achievement] 已导出成就备份: {path}（{count} 条）", "INFO")
+        return (True, {"path": path, "count": count}, None)
+
+    def import_achievements(self, params):
+        """导入成就备份：校验 → 备份现档 → 覆盖 → 内存态同步（不重启即生效）。"""
+        engine, err = self._achievement_engine_or_error()
+        if err:
+            return (False, None, err)
+        refuse = self._refuse_achievement_write()
+        if refuse:
+            return (False, None, refuse)
+        try:
+            path = _pick_achievement_import_path()
+        except Exception as exc:  # noqa: BLE001
+            return (False, None, f"打开选择对话框失败: {exc!r}")
+        if not path:
+            return (True, {"cancelled": True}, None)
+        try:
+            count = engine.import_store(Path(path))
+        except achievement.AchievementStoreError as exc:
+            return (False, None, str(exc))
+        logger.log(f"[achievement] 已导入成就备份: {path}（{count} 条）", "INFO")
+        return (True, {"count": count}, None)
+
+    def reset_achievements(self, params):
+        """重置成就进度：`scope=all` 全清（含去重键集），否则为单个 global_id。"""
+        engine, err = self._achievement_engine_or_error()
+        if err:
+            return (False, None, err)
+        refuse = self._refuse_achievement_write()
+        if refuse:
+            return (False, None, refuse)
+        scope = (params or {}).get("scope") or "all"
+        if not isinstance(scope, str):
+            return (False, None, "scope 必须是 'all' 或成就 global_id")
+        try:
+            cleared = engine.reset(scope)
+        except achievement.AchievementStoreError as exc:
+            return (False, None, str(exc))
+        logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
+        return (True, {"scope": scope, "cleared": cleared}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。
