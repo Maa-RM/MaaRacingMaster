@@ -100,6 +100,10 @@ public sealed partial class MainWindow : Window
     private AppWindow? _appWindow;
     private InputNonClientPointerSource? _inputNonClientPointerSource;
 
+    // 窗口是否处于激活态（Window.Activated/Deactivated 维护）：与最小化一起决定
+    // 成就提示走窗内提示条还是系统通知。
+    private bool _isActive;
+
     // 前端上报的标题栏交互区（DIP，各元素矩形）：精确注册为 Passthrough（输入穿透交给 HTML），
     // Draggable = 整条标题栏带（Passthrough 优先于 drag rects，重叠无冲突，见 UpdateDragRects）
     private readonly List<RectInt32> _interactionRectsDips = new();
@@ -124,6 +128,8 @@ public sealed partial class MainWindow : Window
         _appWindow = AppWindow;
         _appWindow.Changed += AppWindow_Changed;
         _appWindow.Closing += AppWindow_Closing;
+        // 激活态：成就解锁的单通道闸门要用（后台/被遮住时改走系统通知）
+        Activated += (_, e) => _isActive = e.WindowActivationState != WindowActivationState.Deactivated;
 
         // 非客户区指针源：Draggable 空白区系统处理拖动/双击最大化，Passthrough 交互区穿透给 HTML
         _inputNonClientPointerSource = InputNonClientPointerSource.GetForWindowId(AppWindow.Id);
@@ -388,11 +394,24 @@ public sealed partial class MainWindow : Window
 
     private void HandleAchievementUnlocked(JsonElement data)
     {
-        // 关窗过程不发迟到通知（与轮次通知同闸门）。通知显示（前台 toast / 后台系统通知
-        // 的单通道协调）属表现层，在前端成就视图阶段实现；此处只把事件送到 WebView 边界。
+        // 关窗过程不发迟到通知（与轮次通知同闸门）。
         if (_roundState == RoundState.Closing) return;
-        PostAchievement(data);
+        // 单通道显示：窗口在前台且未最小化 → 窗内提示条；否则走系统通知。
+        // 只看最小化不够——窗口在后台被其他窗口遮住时，提示条会推到看不见的地方。
+        if (IsWindowForeground())
+        {
+            PostAchievement(data);
+            return;
+        }
+        var title = TryGetString(data, "title");
+        if (string.IsNullOrEmpty(title)) return;
+        App.Notifications?.Show(title!, TryGetString(data, "description") ?? string.Empty);
     }
+
+    /// <summary>窗口可见并可被用户看到：已激活且未最小化。</summary>
+    private bool IsWindowForeground()
+        => _isActive &&
+           !(AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized });
 
     private void PostAchievement(JsonElement data)
     {

@@ -2061,3 +2061,196 @@ footer .spacer { flex: 1; }
      描边仍是自算路径（见 js/gallery-shape.js），但轮廓、照片裁切、边框都已回到原生。 */
   .task-gallery-cell { corner-shape: var(--maarm-corner-shape); }
 }
+
+/* ============================================================================
+   成就解锁提示条（灵动岛）
+   ----------------------------------------------------------------------------
+   三态：圆点入场 → 胶囊（标题 + 描述）→ 详情卡；多条堆叠、队首 5 秒串行推进。
+   四档落在整条外圈描边上（普通/稀有/珍贵/隐藏），隐藏档色环旋转 + 彩虹标题。
+   层级：在正文之上、模态（9999）之下；错误 toast 在 bottom:56px，本岛抬到 100px
+   以免同屏重叠。
+   ============================================================================ */
+
+#ach-fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* 全窗画布：绝不能吃鼠标事件 */
+  z-index: 8400;
+}
+
+#ach-island {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 100px;
+  height: 0;
+  pointer-events: none;   /* 空白区域不吃鼠标事件，单条自己开 auto */
+  z-index: 8500;
+}
+
+.maarm-ach {
+  --ach-h: 56px;          /* 紧凑态直径 / 胶囊高度 */
+  --ach-ring-w: 2.5px;    /* 档位描边宽度 */
+  --ach-ring: #1F2328;    /* 档位色，落在整条外圈描边 */
+  --dy: 0px;              /* 堆叠上移量 */
+
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin: 0 auto;         /* 水平居中用外边距，不靠 transform */
+  bottom: var(--dy);      /* 堆叠位置也用布局属性 */
+  width: var(--ach-h);
+  height: var(--ach-h);
+  /* 圆角取高度一半：胶囊端头成立，且胶囊 → 详情卡的圆角变化看得出来 */
+  border-radius: calc(var(--ach-h) / 2);
+  /* 双背景描边：内层铺底色，外层铺档位色，四档几何完全一致 */
+  border: var(--ach-ring-w) solid transparent;
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--ach-ring) border-box;
+  box-shadow: 0 12px 32px rgba(16, 18, 24, 0.16), 0 2px 6px rgba(16, 18, 24, 0.06);
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: scale(0.18); /* 只在入场那一下用，入场结束回到 none */
+  /* 静态态不保留 transform、不写 will-change：留在合成层会让文字抗锯齿退化成灰度 */
+  transition:
+    width 460ms cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    height 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    bottom 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 240ms ease,
+    transform 280ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+}
+.maarm-ach.is-shown { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] { border-radius: 18px; }
+
+.maarm-ach__face {
+  display: flex;
+  align-items: center;
+  height: calc(var(--ach-h) - var(--ach-ring-w) * 2);
+  transition: opacity 200ms ease;
+}
+.maarm-ach__badge {
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.maarm-ach__badge svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: var(--maarm-foreground);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.maarm-ach__text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 20px 0 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition:
+    opacity 220ms ease 100ms,
+    transform 320ms cubic-bezier(0.2, 0.9, 0.25, 1) 80ms;
+}
+.maarm-ach__title { font-size: 15px; font-weight: 600; line-height: 1.25; color: var(--maarm-foreground); }
+.maarm-ach__sub { font-size: 12px; line-height: 1.2; color: var(--maarm-foreground-muted); }
+
+.maarm-ach[data-state="stacked"] .maarm-ach__text,
+.maarm-ach[data-state="detail"] .maarm-ach__text { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] .maarm-ach__face { opacity: 0; }
+
+/* 详情卡：绝对定位铺满，不参与尺寸计算 */
+.maarm-ach__detail {
+  position: absolute;
+  inset: 0;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 240ms ease,
+    transform 300ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach[data-state="detail"] .maarm-ach__detail { opacity: 1; transform: none; }
+
+.maarm-ach__detail-head { display: flex; align-items: center; gap: 8px; }
+.maarm-ach__detail-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.maarm-ach__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--maarm-border-light);
+  color: var(--maarm-foreground-secondary);
+}
+.maarm-ach__tier::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ach-dot, var(--ach-ring));
+}
+.maarm-ach__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach__detail-desc { font-size: 13px; line-height: 1.45; color: var(--maarm-foreground-secondary); }
+.maarm-ach__detail-cond {
+  margin-top: auto;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--maarm-foreground-muted);
+  border-top: 1px solid var(--maarm-border-light);
+  padding-top: 8px;
+}
+
+/* 档位：整条胶囊的描边（值来自后端载荷的 tier，第四档由 hidden 承担） */
+.maarm-ach[data-tier="normal"] { --ach-ring: #1F2328; }
+.maarm-ach[data-tier="rare"] { --ach-ring: #38BDF8; }
+.maarm-ach[data-tier="precious"] { --ach-ring: var(--maarm-primary); }
+
+@property --maarm-ach-spin {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes maarm-ach-spin { to { --maarm-ach-spin: 360deg; } }
+/* 隐藏档：色环走元素自身的 border-box 背景，与其它三档同一套几何
+   （伪元素画环会被 overflow:hidden 在 padding-box 处裁掉） */
+.maarm-ach[data-tier="hidden"] {
+  --ach-ring: conic-gradient(from var(--maarm-ach-spin) in oklch longer hue,
+    oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  /* 档位小圆点单独给静态色环，避免依赖正在旋转的 --maarm-ach-spin */
+  --ach-dot: conic-gradient(in oklch longer hue, oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  animation: maarm-ach-spin 3.2s linear infinite;
+}
+.maarm-ach[data-tier="hidden"] .maarm-ach__title,
+.maarm-ach[data-tier="hidden"] .maarm-ach__detail-title { --maarm-scan-cycle: 3.2s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .maarm-ach {
+    transition: opacity 150ms ease, width 150ms ease, height 150ms ease !important;
+    transform: none !important;
+  }
+  .maarm-ach[data-tier="hidden"] { animation: none !important; }
+}

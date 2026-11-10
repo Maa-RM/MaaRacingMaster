@@ -244,12 +244,17 @@
     </button>
   </div>
 
+  <!-- ===== 成就解锁提示条挂点（灵动岛 + 礼花画布，层级见 style.css 成就节） ===== -->
+  <canvas id="ach-fx" aria-hidden="true"></canvas>
+  <div id="ach-island" role="status" aria-live="polite"></div>
+
   <script src="icons.js"></script>
   <script src="vendor.morphicons.js"></script>
   <script src="peep-consumer.js"></script>
   <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
        app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
   <script src="js/rpc.js"></script>
+  <script src="js/achievement-toast.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>
