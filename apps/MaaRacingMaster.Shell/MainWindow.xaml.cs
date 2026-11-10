@@ -359,6 +359,9 @@ public sealed partial class MainWindow : Window
             case "auto_exit":
                 HandleAutoExit();
                 break;
+            case "achievement_unlocked":
+                HandleAchievementUnlocked(data);
+                break;
         }
     }
 
@@ -381,6 +384,27 @@ public sealed partial class MainWindow : Window
         var title = TryGetString(data, "title");
         if (string.IsNullOrEmpty(title)) return;
         App.Notifications?.Show(title!, TryGetString(data, "body") ?? string.Empty);
+    }
+
+    private void HandleAchievementUnlocked(JsonElement data)
+    {
+        // 关窗过程不发迟到通知（与轮次通知同闸门）。通知显示（前台 toast / 后台系统通知
+        // 的单通道协调）属表现层，在前端成就视图阶段实现；此处只把事件送到 WebView 边界。
+        if (_roundState == RoundState.Closing) return;
+        PostAchievement(data);
+    }
+
+    private void PostAchievement(JsonElement data)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(new { type = "achievement", data });
+            web.CoreWebView2?.PostWebMessageAsJson(json);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] 推送成就解锁事件失败: {ex.Message}");
+        }
     }
 
     private void HandleBackendExited(int? exitCode)
