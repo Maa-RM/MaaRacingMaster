@@ -330,6 +330,31 @@ EventProvider 未启用它，hex 掩码亦无效）；而 **WPR 内置 GPU / GPU
 计数与 tracerpt CSV 窗口直方图逐条对齐（CSwitch 264877 / Sample 27169 /
 ReadyThread(T) 885）作解码可信度校验。
 
+**生产组合 profile 首次命中（2026-11-10 16:03，ETL 2.6GB，Dropped=0，录制 5h49m）**：
+DxgKrnl(802ec45a)=193万条，GPU 队列时间线首次在生产停顿窗内拿到。
+
+停顿拍 yolo_run=334ms（tid 5300），整窗 935ms 三分：**在跑 498ms(53%) / 就绪 21ms(2%)
+/ 阻塞 416ms(45%)**。切出 Ready=334 / Wait=114；wait reason 31(WrPreempted)=341、
+6(WrExecutive)=119 → 阻塞份以抢占 + 内核同步等待为主。采样 513 次，模块归属：
+**openblas(354,69%)** / System.Management.Automation(78) / ORT(10,2%) / D3D12Core(6)。
+与 11/8 生产窗（83% 在跑 / 88% ORT / 0.5% 阻塞）**签名相反**。
+
+**GPU 队列（100ms 桶）**：每桶 DmaPacket 均非零（20→79→239→646→587），
+QueuePacket.Start 同步非零 → **停顿期间 GPU 持续执行**。gpu.jsonl 功耗 ~50W（正常负载），
+停顿瞬间短暂降至 32W 后恢复；nvidia-smi PERFORMANCE 查询耗时 531ms（驱动忙）。
+系统 CPU 81-96%（self ~537%=5.4 核），属高背景负载。
+
+**判读**：本拍 = **争用型**（高背景 CPU → 抢占 + fence 等待 → GPU 忙但线程排不上），
+与带载复现签名一致。11/8 那拍 = **GPU 节流型**（低背景 → GPU 掉空闲 → ORT 内 CPU 旋），
+两者机制不同，生产至少存在两条触发路径。
+
+**同日第二拍（16:41，无 ETW——采集已停）**：yolo 在飞 388ms，nvidia-smi 报 P8 +
+SW Power Cap Active + SW Thermal Slowdown Active（累计 ~1s），与 11/8、11/9 节流型
+签名一致。GPU 队列对齐仍待下一次布防命中。
+
+**里程碑**：争用型路径闭环（带载复现 + 生产 ETW 互证）；节流型路径有 CPU 调度 +
+GPU 点状证据，差整窗 GPU 队列对齐。issue #18 不关闭（机制定位中）。
+
 ## 退出路径
 
 结论兑现 home（CODE_WIKI 坑点 / MAAFW_GUIDE 视情况）后删目录；采样与停顿哨
