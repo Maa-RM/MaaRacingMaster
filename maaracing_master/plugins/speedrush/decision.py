@@ -1219,6 +1219,7 @@ class DecisionEngine:
                   z_box_bridged: bool = False) -> None:
             if x is None or x != x:
                 return
+            x_unknown = False
             # 安全资格来自对象表（同 id）：表里没有该车=身份不明，按不可安全
             # 处理（fail-closed）；这不会改变今天的输出——表与车源同拍同源。
             entry = None if tid is None else self._objects.track(KIND_CAR, tid)
@@ -1240,6 +1241,15 @@ class DecisionEngine:
                            and (pza is None or abs(z_m - pza) >
                                 self.cfg.traffic.metric_z_jump_max_m))
                 prev = self._car_xf.get(tid)
+                # 横位未知态（2026-11-10 真值小集）：z_reset 拍的新锚横位首拍
+                # 无可信历史（fid 2074：横位连续、下游目标仍跳 1.37 道——
+                # 弯道修正项跟着新锚跳）；发布横位相邻跳 >0.8 道（真实横移
+                # 单拍上限 ~0.43 道，超限必是并号/锚错挂）同样不可信。只关
+                # 贴边得分入口（CarSource.x_unknown），躲避/障碍照旧。
+                x_unknown = bool(z_reset)
+                if prev is not None and not z_reset:
+                    x_unknown = abs(xr - prev) > \
+                        self.cfg.traffic.pass_x_unknown_jump_m
                 if z_reset:
                     self._car_xf[tid] = xr
                     self._car_x_hold[tid] = (xr, 0)
@@ -1287,7 +1297,10 @@ class DecisionEngine:
                                  z_m=z_m, age_ms=age_ms, src=src,
                                  near=near, half_w_m=half_w_m,
                                  id=tid, seen=seen, safety_ok=safe,
-                                 v_close_mps=v_close))
+                                 v_close_mps=v_close,
+                                 x_unknown=x_unknown
+                                 if self.cfg.selection.pass_x_unknown_enabled
+                                 else False))
 
         out.extend(self._grid_car_sources(off, road, origin))
 
@@ -1740,7 +1753,8 @@ class DecisionEngine:
                     v_close=c.v_close_mps,
                     near=c.near,
                     src=c.src,
-                    z=c.z_m)
+                    z=c.z_m,
+                    x_unknown=c.x_unknown)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,

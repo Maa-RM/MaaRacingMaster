@@ -930,3 +930,68 @@ def test_route_ttc_horizon_covers_overtake_threshold(monkeypatch):
     e._tick_route(c0=0.0, executed=0.0)
     assert seen["h"] == pytest.approx(
         max(e.cfg.motion.horizon_s, overtake_need_s(e._route_params)))
+
+
+def test_pass_x_unknown_marks_jump_zreset_and_gate():
+    """横位未知判据（2026-11-10）：发布横位相邻跳 >pass_x_unknown_jump_m
+    或锚点口径换锚（z_reset）的拍标 x_unknown；正常 EMA 横移不误标；
+    开关关恒 False（逐位回今天）。"""
+    import dataclasses
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+
+    def mc(z, x):
+        return (MetricCarState(target_id=1, source=DistanceSource.ANCHOR,
+                               z_m=z, x_m=x, v_close_mps=-10.0,
+                               t_meet_s=None, anchor_age_ms=0.0),)
+
+    def eng(on, ema=1.0, jmax=0.0):
+        return DecisionEngine(dataclasses.replace(
+            CFG,
+            traffic=dataclasses.replace(
+                CFG.traffic, metric_x_ema_alpha=ema,
+                metric_x_jump_max_m=jmax),
+            selection=dataclasses.replace(
+                CFG.selection, pass_x_unknown_enabled=on)))
+
+    def _no_ruler_view():
+        # x_lane=None：横向互证无像素证人，x 直接吃 MetricCarState.x_m
+        return (CarView(id=1, x_lane=None, cy=500, rel_approach=20.0,
+                        d_min=0.0, age_ticks=10),)
+
+    # 新轨首拍即换锚（无纵深历史）→ 标：邻道贴边要到站时间，首拍本就
+    # 进不了候选，语义是「横位无历史不可信」
+    e = eng(True)
+    e._views = _no_ruler_view()
+    e._metric_cars = mc(20.0, 0.0)
+    assert e._reach_car_sources(0.0)[0].x_unknown is True
+    # 拍 2：z 连续、发布横位跳 3.5m >2.8m 门 → 标
+    e._metric_cars = mc(20.0, 3.5)
+    assert e._reach_car_sources(0.0)[0].x_unknown is True
+    # 拍 3：读数回到连续 → 重新武装不标
+    e._metric_cars = mc(20.0, 3.5)
+    assert e._reach_car_sources(0.0)[0].x_unknown is False
+
+    # 锚点口径换锚（z 跳 8m >6m）即使横位只跳 0.3m 也标（弯道修正项会跳）
+    e2 = eng(True)
+    e2._views = _no_ruler_view()
+    e2._metric_cars = mc(20.0, 0.0)
+    e2._reach_car_sources(0.0)
+    e2._metric_cars = mc(28.0, 0.3)
+    assert e2._reach_car_sources(0.0)[0].x_unknown is True
+
+    # 生产 EMA（0.35）下的正常横移 1m：EMA 后 0.35m ≤门，不误标
+    e3 = eng(True, ema=0.35, jmax=1.5)
+    e3._views = _no_ruler_view()
+    e3._metric_cars = mc(20.0, 0.0)
+    e3._reach_car_sources(0.0)
+    e3._metric_cars = mc(20.0, 1.0)
+    assert e3._reach_car_sources(0.0)[0].x_unknown is False
+
+    # 开关关：跳超限也不标（逐位回今天）
+    e4 = eng(False)
+    e4._views = _no_ruler_view()
+    e4._metric_cars = mc(20.0, 0.0)
+    e4._reach_car_sources(0.0)
+    e4._metric_cars = mc(20.0, 3.5)
+    assert e4._reach_car_sources(0.0)[0].x_unknown is False

@@ -1117,3 +1117,26 @@ def test_graze_target_stays_outside_guard():
                     arrival_guard_enabled=True))
     assert rep.why == "graze"
     assert abs(rep.target_x_m - 1.2 * LW) == pytest.approx(0.68 * LW, abs=0.06)
+
+
+def test_pass_x_unknown_blocks_adjacent_not_same_lane():
+    """横位未知态（2026-11-10 真值小集）：发布横位相邻跳 >0.8 道或锚点换锚
+    的拍，邻道贴边得分候选弃车（等读数回到连续再重新武装）；同道躲避不滤
+    （躲避宁多动不撞）；闸关=逐位回今天。"""
+    p_on = _p(pass_graze_adjacent_enabled=True, pass_x_unknown_enabled=True)
+    # 邻道 unknown 车不进贴边
+    rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.5, x_unknown=True)],
+                 [], 0.0, p_on)
+    assert rep.why not in ("pass", "graze")
+    # 同一车读数可信（unknown=False）：照常贴
+    rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.5)], [], 0.0, p_on)
+    assert rep.why in ("pass", "graze")
+    # 闸关：unknown 标记不生效
+    rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.5, x_unknown=True)],
+                 [], 0.0, _p(pass_graze_adjacent_enabled=True))
+    assert rep.why in ("pass", "graze")
+    # 同道 unknown 车仍躲避（挡道即候选语义不动）
+    rep = select(_road(), [],
+                 [Obj("car", 0.0, None, near=True, x_unknown=True)],
+                 [], 0.0, p_on)
+    assert rep.why in ("pass", "graze")

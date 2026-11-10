@@ -122,6 +122,9 @@ class Obj:
     # 纵深（米，对象表 z_m）：只用于贴边目标保持的读数有效性判定
     # （相邻拍横位/纵深跳变＝身份或锚点错挂）。None=无纵深读数。
     z: float | None = None
+    # 横位未知（CarSource.x_unknown 透传）：本拍横位读数不可信（相邻拍发布
+    # 跳 >0.8 道或锚点换锚）。只关邻道贴边得分候选；同道躲避不滤。
+    x_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,12 @@ class CarSource:
     seen: bool | None = None
     # 对象表 safety_ok：False=超龄/退役/无横位，安全消费点跳过；价值项不看。
     safety_ok: bool = True
+    # 横位未知（2026-11-10 真值小集）：本拍发布横位相邻跳 >0.8 道（真实横移
+    # 单拍上限 ~0.43 道，超限必是并号/锚错挂）或锚点口径换锚（新锚横位首拍
+    # 无可信历史，且其弯道修正项会跳）。只关贴边得分入口（邻道候选弃车），
+    # 同道躲避/障碍/安全照旧用原读数——躲避宁多动不撞。闸
+    # pass_x_unknown_enabled 关=恒 False（逐位回今天）。
+    x_unknown: bool = False
 
 
 @dataclass(frozen=True)
@@ -299,6 +308,11 @@ class SelectionParams:
     # 读数间隔超过该拍数视为重新出现（不做相邻拍有效性比较，避免旧读数
     # 把复现判定成错挂）。
     pass_target_hold_miss_ticks: int = 5
+    # 横位未知态（2026-11-10）：CarSource.x_unknown=True 的车该拍不进邻道
+    # 贴边得分候选（弃车，等读数回到连续再重新武装）；同道躲避不滤。
+    # 影子 164024：翻面 72→29、近距候选 129→111（截掉的最小横距 0.03 道）、
+    # 有效贴边拍 −21%。判据在 decision 车源合成层；闸关=逐位回今天。
+    pass_x_unknown_enabled: bool = False
     # 并线承诺期擦边放行（闸，2026-11-02）：承诺期安全动作不被并线锁死。
     pass_in_commit_enabled: bool = False
     # 擦边候选视界（0=用 horizon_s；>0 放宽）：刹车主车到站爆缩前的窗口。
@@ -700,6 +714,8 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
         adjacent = abs(c.x - ego) > half
         if adjacent and not (allow_adjacent and p.pass_graze_adjacent_enabled):
             continue
+        if adjacent and c.x_unknown and p.pass_x_unknown_enabled:
+            continue                # 横位未知拍弃车（只关得分贴边，躲避不滤）
         if adjacent and t_eff < p.pass_lean_min_s:
             continue                # 邻道贴边要「极为充足」的时间，临时起意=撞车
         # 两侧逐侧过三关（2026-11-08）：净空够（_pass_x_candidates 已夹

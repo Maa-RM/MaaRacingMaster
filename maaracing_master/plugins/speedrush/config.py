@@ -101,6 +101,9 @@ class Selection:
     pass_target_hold_lane: float = 0.5
     pass_target_hold_z_jump_m: float = 5.0
     pass_target_hold_miss_ticks: int = 5
+    # 横位未知态（2026-11-10）：判据与消费见 selection.SelectionParams 同名
+    # 注释；闸关=逐位回今天。
+    pass_x_unknown_enabled: bool = False
     pass_min_gap_lane: float = 0.6
     # 并线承诺期擦边放行 + 擦边候选视界放宽（2026-11-02，帧级证据见
     # selection.py 同名注释）。闸关=逐位回今天。
@@ -342,6 +345,10 @@ class Traffic:
     # 米制纵深跳变门：超过此值视为真实通过/换锚，直接重置；小抖动才走 EMA。
     # 70m/s 通过时 0.05s 真实变化可达 3.5m，旧 EMA 会把并列车拖成 13m 前方。
     metric_z_jump_max_m: float = 6.0
+    # 横位未知判据（2026-11-10 真值小集）：发布横位相邻跳超过它=并号/锚错挂
+    # （真实横移单拍上限 ~0.43 道×3.5m），该拍标 x_unknown 关贴边得分入口。
+    # 与 selection.pass_x_unknown_enabled 配套；闸关时不判。
+    pass_x_unknown_jump_m: float = 2.8
     # 远场车道线互证闸（2026-11-09，默认关）：尺子缺席时以车道线中位与米制
     # 互证。实测车道线与米制远场误差打平、收益未证，加闸隔离；近场尺子重锚
     # 不受此闸影响。
@@ -916,6 +923,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "traffic", "metric_x_jump_hold_ticks", 3, lo=1),
             metric_z_jump_max_m=_num_def(
                 d, "traffic", "metric_z_jump_max_m", 6.0, lo=0),
+            pass_x_unknown_jump_m=_num_def(
+                d, "traffic", "pass_x_unknown_jump_m", 2.8, lo=0),
             metric_ll_veto_enabled=_bool(
                 d, "traffic", "metric_ll_veto_enabled", default=False)),
         motion=Motion(
@@ -1075,6 +1084,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_target_hold_z_jump_m", 5.0, lo=0),
             pass_target_hold_miss_ticks=int(_num_def(
                 d, "selection", "pass_target_hold_miss_ticks", 5, lo=1)),
+            pass_x_unknown_enabled=_bool(
+                d, "selection", "pass_x_unknown_enabled", default=False),
             pass_min_gap_lane=_num_def(
                 d, "selection", "pass_min_gap_lane", 0.6, lo=0),
             pass_in_commit_enabled=_bool(
