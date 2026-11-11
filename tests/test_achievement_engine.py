@@ -534,6 +534,36 @@ def test_poisoned_store_repaired_with_backup(tmp_path):
     assert events == []                           # 修复与补偿都静默
 
 
+@pytest.mark.parametrize("field", ["progress", "unlocked", "consumed_keys",
+                                   "store_schema_version"])
+def test_explicit_null_field_is_corrupt(tmp_path, field):
+    """显式 null 不等于缺字段：前者是坏结构，必须留证后修复，不能静默当空集合。"""
+    store = tmp_path / "ach.json"
+    payload = {"store_schema_version": 1,
+               "progress": {"demo.first": 1},
+               "unlocked": {"demo.first": 1700000000000000000},
+               "consumed_keys": ["k::1"]}
+    payload[field] = None
+    store.write_text(json.dumps(payload), encoding="utf-8")
+    eng = _one(tmp_path)
+    assert eng.frozen is False
+    assert eng.repaired_backup and (tmp_path / eng.repaired_backup).is_file()
+    json.dumps(eng.get_view(), ensure_ascii=False, allow_nan=False)
+    state = json.loads(store.read_text(encoding="utf-8"))
+    assert state["store_schema_version"] == a.ACHIEVEMENT_STORE_SCHEMA_VERSION
+    # 其余合法数据保留：修复只针对坏掉的字段
+    assert eng.get_view()[0]["unlocked"] is True
+
+
+def test_missing_fields_still_accepted(tmp_path):
+    """缺字段仍按旧档兼容处理：不报损坏、不建备份。"""
+    store = tmp_path / "ach.json"
+    store.write_text(json.dumps({"store_schema_version": 1, "progress": {},
+                                 "unlocked": {}}), encoding="utf-8")
+    eng = _one(tmp_path)
+    assert eng.frozen is False and eng.repaired_backup is None
+
+
 def test_poisoned_store_without_backup_turns_readonly(tmp_path, monkeypatch):
     """留证失败时宁可不写盘：原文件一个字节都不能动。"""
     store = tmp_path / "ach.json"
@@ -595,6 +625,9 @@ def test_sum_overflow_rejected_without_pollution(tmp_path):
     {"progress": {"demo.first": float("inf")}},
     {"unlocked": {"demo.first": "yesterday"}},
     {"consumed_keys": [1]},
+    {"progress": None},
+    {"unlocked": None},
+    {"consumed_keys": None},
 ])
 def test_import_rejects_invalid_values(tmp_path, bad):
     eng = _one(tmp_path)

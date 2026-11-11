@@ -13,9 +13,9 @@
 3. **引擎**：消费事实信封 → 规则匹配 → 进度累计 → 有界去重 → 原子持久化 → 解锁判定。
    事务顺序：锁内算出一致新状态 → 持久化成功才置为已提交 → 提交后锁外发解锁回调。
 4. **存档**：读盘与导入共用值规范化（进度只收有限数值、解锁时间戳收非负数值、去重键
-   只收非空字符串）；导入遇到非法值整份拒绝。损坏档先复制留证再修复为规范档，留证
-   失败转只读，原文件不动。导入与启动共用补偿路径：只补「进度达标但缺解锁记录」的
-   条目，不撤销既有解锁，恢复出的解锁不弹通知。
+   只收非空字符串；缺字段按旧档兼容，显式 null 视为损坏）；导入遇到非法值整份拒绝。
+   损坏档先复制留证再修复为规范档，留证失败转只读，原文件不动。导入与启动共用补偿
+   路径：只补「进度达标但缺解锁记录」的条目，不撤销既有解锁，恢复出的解锁不弹通知。
 5. **门面**：``report_fact`` 尽力而为、永不抛；未绑定引擎即无操作。
 6. **重置**：仅支持全量；单项重置会牵连依赖它的元成就，级联语义定案后再开放。
 
@@ -67,6 +67,9 @@ MAX_HINT = 120
 
 # 声明索引：mod_id → 规范化 catalog（含全局 ID）。registry 扫描时填充，引擎初始化时读取。
 ACHIEVEMENT_REGISTRY: dict[str, dict] = {}
+
+# 区分「字段缺失」与「字段显式为 null」：前者是旧档兼容，后者不是合法的 v1 结构。
+_MISSING = object()
 
 
 class AchievementContractError(ValueError):
@@ -332,10 +335,11 @@ def _normalize_store(raw: dict) -> tuple[dict, list[str]]:
     issues: list[str] = []
     state = _empty_state()
 
-    progress = raw.get("progress")
-    if progress is None:
+    progress = raw.get("progress", _MISSING)
+    if progress is _MISSING:
         state["progress"] = {}
     elif not isinstance(progress, dict):
+        # 显式 null 不等于空集合：空进度与"结构坏了"要分开处理，否则会静默吞掉损坏信号。
         issues.append("progress 不是对象")
     else:
         for key, value in progress.items():
@@ -346,8 +350,8 @@ def _normalize_store(raw: dict) -> tuple[dict, list[str]]:
             else:
                 issues.append(f"progress[{key}] 非有限数值: {value!r}")
 
-    unlocked = raw.get("unlocked")
-    if unlocked is None:
+    unlocked = raw.get("unlocked", _MISSING)
+    if unlocked is _MISSING:
         state["unlocked"] = {}
     elif not isinstance(unlocked, dict):
         issues.append("unlocked 不是对象")
@@ -360,8 +364,8 @@ def _normalize_store(raw: dict) -> tuple[dict, list[str]]:
             else:
                 issues.append(f"unlocked[{key}] 不是非负时间戳: {value!r}")
 
-    consumed = raw.get("consumed_keys")
-    if consumed is None:
+    consumed = raw.get("consumed_keys", _MISSING)
+    if consumed is _MISSING:
         state["consumed_keys"] = []
     elif not isinstance(consumed, list):
         issues.append("consumed_keys 不是列表")
@@ -479,22 +483,22 @@ class AchievementEngine:
                 self._rewrite_repaired(_empty_state())
             return _empty_state()
 
-        version = raw.get("store_schema_version")
-        version_ok = isinstance(version, int) and not isinstance(version, bool)
+        version_raw = raw.get("store_schema_version", _MISSING)
+        version_ok = isinstance(version_raw, int) and not isinstance(version_raw, bool)
         if version_ok:
-            self._store_version = version
-            if version > ACHIEVEMENT_STORE_SCHEMA_VERSION:
+            self._store_version = version_raw
+            if version_raw > ACHIEVEMENT_STORE_SCHEMA_VERSION:
                 # 用户降级：保留原文件、停写，防降级清档毁进度。
-                logger.log(f"[achievement] 存档版本 {version} 高于支持 "
+                logger.log(f"[achievement] 存档版本 {version_raw} 高于支持 "
                            f"{ACHIEVEMENT_STORE_SCHEMA_VERSION}，保留原文件停写", "WARNING")
                 self._frozen = True
                 self._frozen_reason = "version"
                 return _empty_state()
 
         state, issues = _normalize_store(raw)
-        if version is not None and not version_ok:
-            # 版本字段读不懂按损坏处理：先留证再修复，不猜它是不是更高版本。
-            issues.insert(0, f"store_schema_version 非法: {version!r}")
+        if version_raw is not _MISSING and not version_ok:
+            # 版本字段读不懂（含显式 null）按损坏处理：先留证再修复，不猜。
+            issues.insert(0, f"store_schema_version 非法: {version_raw!r}")
         if issues:
             if not self._preserve_corrupt_store(f"{len(issues)} 处非法值"):
                 return _empty_state()

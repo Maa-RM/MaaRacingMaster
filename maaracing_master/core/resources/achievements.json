@@ -27,7 +27,7 @@
       "description": "刚刚是我看岔眼了！",
       "category": "核心",
       "tier": "precious",
-      "hint": "一分钟内第二次开始运行",
+      "hint": "一分钟内第二次按下开始",
       "hidden": false,
       "rule": {"fact": "core.ui.start_repeat_fast", "agg": "count", "target": 1}
     },

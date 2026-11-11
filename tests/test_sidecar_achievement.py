@@ -244,6 +244,28 @@ def test_management_refused_while_running(tmp_path, monkeypatch):
     assert called == []  # 先拒再弹窗：不要让用户白选一遍文件
 
 
+def test_import_refused_when_run_starts_during_dialog(tmp_path, monkeypatch):
+    """检查通过后、选文件期间用户点了开始：最终检查必须与导入同锁区间。"""
+    svc = _service(tmp_path, [], registry=_core_registry())
+    svc._achievement_engine.process_fact("core.ui.start_click", "core::c::1", {})
+    store = tmp_path / "ach.json"
+    before = store.read_text(encoding="utf-8")
+    backup = tmp_path / "backup.json"
+    backup.write_text(json.dumps({"store_schema_version": 1, "progress": {},
+                                  "unlocked": {}, "consumed_keys": []}),
+                      encoding="utf-8")
+
+    def pick():
+        svc._worker = object()   # 模拟选文件期间 start 抢到运行槽
+        return str(backup)
+
+    monkeypatch.setattr(sc, "_pick_achievement_import_path", pick)
+    ok, data, err = svc.import_achievements({})
+    assert ok is False and "运行中" in err
+    assert store.read_text(encoding="utf-8") == before
+    assert svc._achievement_engine.get_view()[0]["unlocked"] is True
+
+
 def test_get_achievements_reports_frozen(tmp_path):
     store = tmp_path / "ach.json"
     store.write_text(json.dumps({"store_schema_version": 99, "progress": {},
@@ -288,6 +310,20 @@ def test_get_achievements_survives_poisoned_store(tmp_path):
     assert data["frozen_reason"] is None
     assert data["repaired_backup"]
     json.dumps(data, ensure_ascii=False, allow_nan=False)  # 不抛即合法
+
+
+def test_get_achievements_survives_explicit_null_field(tmp_path):
+    """显式 null 的顶层集合同样按损坏修复，不静默当空档。"""
+    store = tmp_path / "ach.json"
+    store.write_text('{"store_schema_version": 1, "progress": null,'
+                     ' "unlocked": {"core.first_start": 1700000000000000000},'
+                     ' "consumed_keys": []}', encoding="utf-8")
+    svc = _service(tmp_path, [], registry=_core_registry())
+    ok, data, err = svc.get_achievements({})
+    assert ok and err is None and data["state"] == "ready"
+    assert data["repaired_backup"]
+    view = {v["global_id"]: v for v in data["achievements"]}
+    assert view["core.first_start"]["unlocked"] is True
 
 
 # ---------- UI 事实：发射点、时间窗、前端字面量 ----------

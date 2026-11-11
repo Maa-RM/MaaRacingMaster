@@ -2336,11 +2336,17 @@ class SidecarService:
         return (True, {"path": path, "count": count}, None)
 
     def import_achievements(self, params):
-        """导入成就备份：校验 → 备份现档 → 覆盖 → 内存态同步（不重启即生效）。"""
+        """导入成就备份：校验 → 备份现档 → 覆盖 → 内存态同步（不重启即生效）。
+
+        「运行中禁止导入」分两段检查：弹窗前来一次是为免用户白选文件；选完文件后
+        在 `_lock` 内**重新检查**再执行——文件对话框不占侧栏锁，用户完全可能在选
+        文件期间点开始，只查一次等于把契约写成建议。
+        """
         engine, err = self._achievement_engine_or_error()
         if err:
             return (False, None, err)
-        refuse = self._refuse_achievement_write()
+        with self._lock:
+            refuse = self._refuse_achievement_write()
         if refuse:
             return (False, None, refuse)
         try:
@@ -2350,7 +2356,11 @@ class SidecarService:
         if not path:
             return (True, {"cancelled": True}, None)
         try:
-            count = engine.import_store(Path(path))
+            with self._lock:
+                refuse = self._refuse_achievement_write()
+                if refuse:
+                    return (False, None, refuse)
+                count = engine.import_store(Path(path))
         except achievement.AchievementStoreError as exc:
             return (False, None, str(exc))
         logger.log(f"[achievement] 已导入成就备份: {path}（{count} 条）", "INFO")
@@ -2361,20 +2371,22 @@ class SidecarService:
 
         单项重置尚未开放：撤销单项会牵连依赖它的元成就，级联语义定案前不保留这条
         可达路径。非法/缺失/空值一律拒绝——绝不把看不懂的参数兜底成"全清"。
+        检查与重置在同一锁区间：与 `start` 抢占同一个运行槽，不允许检查后插入启动。
         """
         engine, err = self._achievement_engine_or_error()
         if err:
             return (False, None, err)
-        refuse = self._refuse_achievement_write()
-        if refuse:
-            return (False, None, refuse)
-        scope = (params or {}).get("scope")
-        if scope != "all":
-            return (False, None, "仅支持全量重置（scope='all'），单项重置暂未开放")
-        try:
-            cleared = engine.reset(scope)
-        except achievement.AchievementStoreError as exc:
-            return (False, None, str(exc))
+        with self._lock:
+            refuse = self._refuse_achievement_write()
+            if refuse:
+                return (False, None, refuse)
+            scope = (params or {}).get("scope")
+            if scope != "all":
+                return (False, None, "仅支持全量重置（scope='all'），单项重置暂未开放")
+            try:
+                cleared = engine.reset(scope)
+            except achievement.AchievementStoreError as exc:
+                return (False, None, str(exc))
         logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
         return (True, {"scope": scope, "cleared": cleared}, None)
 
