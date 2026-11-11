@@ -631,3 +631,36 @@ def test_predict_advances_x_without_new_identity():
     assert r["x"] == pytest.approx(x0, abs=1e-9)
     assert r["n_locked"] == 0
     assert r["pred"] is True
+
+
+def _dash_prob(s: float, a: float) -> np.ndarray:
+    """概率图上画一条远场虚线：dash 中心落在全幅直线 x=s·y+a 上（640 尺度落图）。"""
+    prob = np.zeros((360, 640), np.float32)
+    for y640 in range(220, 272, 4):
+        x640 = int(round((s * (2.0 * y640) + a) / 2.0))
+        prob[y640:y640 + 2, max(0, x640 - 6):x640 + 6] = 1.0
+    return prob
+
+
+def test_row_segments_step_one_hits_thin_dash_rows():
+    """逐行扫描：高 2 行的远场虚线两条行都命中（原步长 3 只有 1~2 行，虚线
+    轨迹凑不满拟合点数——2026-11-11 分解诊断的主死因）。"""
+    prob = np.zeros((360, 640), np.float32)
+    prob[230:232, 300:340] = 1.0
+    rows = la._row_segments(prob)
+    assert len(rows) == 2
+
+
+def test_lines_from_prob_captures_far_dash_without_color():
+    """虚线组能成线，且颜色不参与：L 正确、字段恒 '?'、无 yellow/white 键。
+    锁 2026-11-11 的提取改动（虚线与实线同待遇、无颜色匹配）。"""
+    s = la.LANE_W / la.DEFAULT_CAM_H          # L=1 道对应的全幅斜率
+    a = 600.0 - s * 500.0                     # y=500 处 x=600（远带中部）
+    lines = la._lines_from_prob(_dash_prob(s, a), la.DEFAULT_CAM_H, 807.7)
+    hit = [ln for ln in lines if abs(ln["L"] - 1.0) <= 0.15]
+    assert hit, f"虚线组未成线或 L 偏了：{[ln['L'] for ln in lines]}"
+    ln = hit[0]
+    assert ln["rms"] <= la.LINE_RMS_MAX
+    assert ln["color"] == "?"
+    assert "yellow" not in ln and "white" not in ln
+    assert ln["y0"] >= 440.0 and ln["y1"] <= 546.0

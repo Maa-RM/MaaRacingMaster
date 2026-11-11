@@ -16,7 +16,8 @@ worker 不启动并返回 None，深度档本身不受影响。
 还原横位。多线共同证实的新鲜锚点当拍重锚，单线仍等连续两拍；深度空窗里
 新线由所有在期线投票定号，未过门的新线与被拒线都不留道号。线锁建立后
 网格冻结：新线不再靠相对票补位，只能等跳变/重锁后由深度锚重新定号。颜色
-只用于显示与黄线拟合符号质量门。
+不参与提取与道号（2026-11-11 起：概率图提取不使用任何颜色匹配，线字段恒
+"?"，仅供显示兜底）。
 
 状态机：
   TRACK  有通过等间距/残差门的线：输出锚定后的绝对横位；
@@ -59,8 +60,6 @@ FOCAL_EMA = 0.25          # 逐帧焦距轻平滑（场景内容会让估计帧�
 # coef[2] 仍会飙到 3.2~4.5，线几何不能用它。
 CAM_H_LO = 1.12
 CAM_H_HI = 1.55
-YELLOW_MIN = 0.6
-WHITE_MIN = 0.6
 NEAR_Y = (560.0, 720.0)
 FAR_Y = (440.0, 545.0)
 PROB_THRESH = 0.30
@@ -127,8 +126,13 @@ def _lane_prob(sess, rgb: np.ndarray) -> np.ndarray:
 
 
 def _row_segments(prob: np.ndarray) -> list[tuple[int, list[dict]]]:
+    """逐行扫描概率图成段（步长 1）。
+
+    2026-11-11 起步长 1（原 3）：远处分界虚线在图像里是被透视压扁的横条
+    （概率图里高 2~5 行），步长 3 只命中 1~2 行，虚线轨迹永远凑不满拟合
+    点数——实验区分解诊断的主死因（见 speedrush_lane_model 实验区）。"""
     rows = []
-    for yc in range(206, 360, 3):
+    for yc in range(206, 360):
         row = prob[yc]
         idx = np.flatnonzero(row > PROB_THRESH)
         if len(idx) == 0:
@@ -322,23 +326,38 @@ def lane_pos_nearest(cx: float, y_b: float, lines: list[dict],
     return L_i + (cx - x_i) / px_per_lane
 
 
-def _color(hsv: np.ndarray, pts) -> tuple[float, float]:
-    H, W = hsv.shape[:2]
-    ny = nw = n = 0
-    step = max(1, len(pts) // 12)      # 12 个采样点足够判色，少抢 GIL
-    for q in pts[::step]:
-        x, y = int(round(2 * q["xc"])), int(round(2 * q["yc"]))
-        if not (0 <= x < W and 0 <= y < H):
+def _lines_from_prob(prob: np.ndarray, cam_h: float,
+                     focal: float | None) -> list[dict]:
+    """概率图 → 线候选（无颜色匹配）。
+
+    颜色不参与提取（2026-11-11 维护者叫停）：黄昏场景下白色分界线系统性
+    过不了白门、甚至被误判成黄线，而几何门（残差/线角/等间距/离群）已
+    足以筛野线；线字段恒 "?"，仅供显示兜底。虚线与实线同待遇，进
+    LineTracker 同一套道号逻辑。"""
+    lines = []
+    for pts in _build_tracks(_row_segments(prob)):
+        near = _fit(pts, cam_h, *NEAR_Y, focal)
+        far = _fit(pts, cam_h, *FAR_Y, focal)
+        f = near or far
+        if f is None:
             continue
-        win = hsv[max(0, y - 1):y + 2, max(0, x - 5):x + 6]
-        h, s, v = (win[..., 0].astype(int), win[..., 1].astype(int),
-                   win[..., 2].astype(int))
-        n += 1
-        if ((h >= 14) & (h <= 42) & (s >= 110) & (v >= 90)).any():
-            ny += 1
-        if ((s < 75) & (v >= 125)).any():
-            nw += 1
-    return (ny / n if n else 0.0), (nw / n if n else 0.0)
+        x_near = _near_x(pts)
+        # 双线同行插值用：每条线的像素位来自各自的 2D 拟合（s·y+a）。
+        # 近/远两段拟合都带（框底行落在哪段就吃哪段，不外推出拟合范围）。
+        fits = [{"s": ft["s"], "a": ft["a"],
+                 "y0": ft["y0"], "y1": ft["y1"]}
+                for ft in (near, far) if ft is not None]
+        lines.append({"L": round(f["L"], 3),
+                      "theta": None if f["theta"] is None
+                      else round(f["theta"], 4),
+                      "n": f["n"], "rms": round(f["rms"], 2),
+                      "y0": int(f["y0"]), "y1": int(f["y1"]),
+                      "color": "?",
+                      "x_near": None if x_near is None
+                      else round(x_near, 1),
+                      "side": _side_from_x(x_near),
+                      "fits": fits})
+    return lines
 
 
 class LineTracker:
@@ -1017,34 +1036,4 @@ class LaneObsWorker:
         prob = self._run(rgb)
         if prob is None:
             return None
-        import cv2
-        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)   # 每帧一次，不按线重复
-        lines = []
-        for pts in _build_tracks(_row_segments(prob)):
-            yf, wf = _color(hsv, pts)
-            if max(yf, wf) < WHITE_MIN:
-                continue
-            color = "y" if yf >= YELLOW_MIN else ("w" if wf >= WHITE_MIN else "?")
-            near = _fit(pts, cam_h, *NEAR_Y, focal)
-            far = _fit(pts, cam_h, *FAR_Y, focal)
-            f = near or far
-            if f is None:
-                continue
-            x_near = _near_x(pts)
-            # 双线同行插值用：每条线的像素位来自各自的 2D 拟合（s·y+a）。
-            # 近/远两段拟合都带（框底行落在哪段就吃哪段，不外推出拟合范围）。
-            fits = [{"s": ft["s"], "a": ft["a"],
-                     "y0": ft["y0"], "y1": ft["y1"]}
-                    for ft in (near, far) if ft is not None]
-            lines.append({"L": round(f["L"], 3),
-                          "theta": None if f["theta"] is None
-                          else round(f["theta"], 4),
-                          "n": f["n"], "rms": round(f["rms"], 2),
-                          "y0": int(f["y0"]), "y1": int(f["y1"]),
-                          "color": color, "yellow": round(yf, 2),
-                          "white": round(wf, 2),
-                          "x_near": None if x_near is None
-                          else round(x_near, 1),
-                          "side": _side_from_x(x_near),
-                          "fits": fits})
-        return {"lines": lines}
+        return {"lines": _lines_from_prob(prob, cam_h, focal)}
