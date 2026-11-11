@@ -7,7 +7,7 @@
 ```
 models/
 ├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
-├── depth/moge2_vits_static_336x598_t1032_q4f16.onnx         # 深度几何（MoGe-2 q4f16，Apache-2.0）
+├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 深度几何（DepthART MNV4-M-slim-SPF，Apache-2.0）
 └── lane/plus_small_384x640.onnx                             # 线观测（TwinLiteNet+ Small，BDD100K 非商业/科研）
 ```
 
@@ -29,8 +29,8 @@ models/
 
 - `perception/model.onnx`：10,665,412 字节，SHA256
   `0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af`
-- `depth/moge2_vits_static_336x598_t1032_q4f16.onnx`：71,913,448 字节，SHA256
-  `2e5c58b4bd6367593a8ed6039ef729a89c4b19f3a64e5954713f10a36ec0f116`
+- `depth/relative_mnv4m_slim_spf_448_default.onnx`：24,155,097 字节，SHA256
+  `825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71`
 - `lane/plus_small_384x640.onnx`：543,153 字节，SHA256
   `45044c268d54ee34cbd097abcf19fb0d53858a8815e0024018db0df6137289e4`
 
@@ -48,16 +48,14 @@ models/
   [Ultralytics Enterprise License](https://www.ultralytics.com/license)。
 - 上游: <https://github.com/ultralytics/ultralytics>
 
-## depth/moge2_vits_static_336x598_t1032_q4f16.onnx —— 深度几何（Apache-2.0）
+## depth/relative_mnv4m_slim_spf_448_default.onnx —— 深度几何（Apache-2.0）
 
-- **来源**：Microsoft MoGe-2（ViT-S）官方 ONNX 导出权重的 q4f16 量化、
-  720×1280 输入折叠静态图（输出点图 336×598）；量化折叠产物经离线同卷
-  验证与金标回归后入库（2026-10-01 深度几何 v4 换装，取代 DA-S 视差权重）。
-- **许可**：Apache-2.0（上游权重与转换产物同许可），可随发布包自由再分发。
+- **来源**：DepthART（ACM MM 2026）MobileNetV4-M-slim-SPF 相对深度权重，
+  448×448 固定输入；量化与 ONNX 导出产物经离线同卷验证与合成点图回归后入库。
+- **许可**：上游 Hugging Face 模型卡标注 Apache-2.0，可随发布包自由再分发。
 - **运行时不依赖上游仓库代码**：推理仅通过 ONNX Runtime 加载本 ONNX 图；
-  focal/shift 恢复与点图重建的后处理为本仓库复刻（`moge_post.py`，公式
-  对齐官方 geometry_numpy / v2.py）。
-- 上游: <https://github.com/microsoft/MoGe>
+  米制换算（车道线灭点行 + 地面模型 → 合成点图）为本仓库实现（`depth_geo.py`）。
+- 上游: <https://github.com/xuefeng-cvr/DepthART> 、<https://huggingface.co/Fengxue93/DepthART>
 
 ## lane/plus_small_384x640.onnx —— 线观测（许可待核对）
 

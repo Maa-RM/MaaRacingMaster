@@ -271,7 +271,7 @@ MaaRacingMaster/
 | ---- | ---------------------------------------------------------------------- | ------------------ |
 | 流程编排 | [MAA Framework](https://github.com/MaaAssistantArknights/MaaFramework) | 窗口截图 + Pipeline 驱动 |
 | 视觉识别 | YOLO + ONNX Runtime (DirectML)                                         | 实时目标检测             |
-| 深度与车道 | MoGe-2 / TwinLiteNet+（可选模型包）                                           | 单目深度几何与车道线观测       |
+| 深度与车道 | DepthART / TwinLiteNet+（可选模型包）                                        | 单目相对深度与车道线观测       |
 | 文字识别 | RapidOCR                                                               | 游戏内数字/文本识别         |
 | 虚拟手柄 | vgamepad                                                               | Xbox 360 手柄模拟      |
 | 图像处理 | OpenCV 5.x                                                             | 模板匹配 / 可视化         |

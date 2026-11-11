@@ -1,51 +1,45 @@
 # -*- coding: utf-8 -*-
-"""深度几何观测层 v4（2026-10-01 几何真源统一：MoGe 逐帧自估焦距点云当米制主人）。
+"""深度几何观测层 v5（生产者：车道线几何 + DepthART 相对深度）。
 
-**职责**：帧 → MoGe-2 q4f16 点云（逐帧 fx/fy，官方 recover_focal_shift 链路，
-后处理见 moge_post）→ 倾角感知平面拟合分地/障 → 高出路面 hgt → Z 分箱横向
-中位剖面离地穿越找边 → 两侧缘读数（车道单位）。输出与 BoundarySummary 的
-``left_edge_lane / right_edge_lane`` 字段鸭子同构，消费方原样可用。
+**职责**：帧 → 合成点云（贴地像素的米制距离由车道线几何给，地面以上由
+DepthART 相对深度按地面模型换算）→ 倾角感知平面拟合分地/障 → 高出路面 hgt →
+Z 分箱横向中位剖面离地穿越找边 → 两侧缘读数（车道单位）。输出与
+BoundarySummary 的 ``left_edge_lane / right_edge_lane`` 字段鸭子同构，消费方
+原样可用。
 
-**为什么是这套读法**（金标直路帧全 ≤1m，探针实证 2026-10-01；旧 DA 视差链
-同日整体退役，用户拍板「只留 3D 链路」）：
-- **逐帧自估焦距是仲裁结论**：旧链静态内参（FY 中位）下算出的相机高度跨帧漂移
-  2.5→3.9m（物理不可能）；MoGe 逐帧自估焦距稳定（cam_h 1.8~2.2m）——游戏相机
-  等效 FOV 随速度变化（维护者确认 2026-10-10，RULES §3.8），自估焦距追踪它。
-  焦距链路活体审计（2026-10-10）：fx 帧间漂移的主模态=单盆地随内容滑动 + shift
-  沿补偿曲线联动（spearman(s,f)≈+0.9），路宽对 fx 的独立敏感度≈0——fx 曲线
-  本身不是控制风险。点云、反投影、回投一律同帧 fx/fy，
-  静态内参不再存在；**3D 量的像素往返禁用任何写死焦距**。
-- **米制直读**：旧 DA 相对视差缺米制，靠路半宽 W_REF 逐帧自标定；MoGe 输出
-  米制点云（物理自洽：cam_h≈2m、路宽≈13.5m≈四车道），整套尺度自标定机制随
-  旧链退役。
-- **「边」= 可行驶路面消失处**（维护者口径 2026-10-01）：检出判据=离地穿越
-  （0.03m@3m 起每米 +5mm，两格持续 + 先见地面 + 尾部持续——缘后是缘体，
-  影子 bump/路面渐变穿过后回落），kerb 与护栏两类通用；宽肩帧
-  的墙脚与检出差是口径差非误差。**弯道不做特殊优化**：逐 Z 箱独立读数无直线
-  假设，天然描出弯道边线。
-- **车道量换算**：lane = x_m / cal.lane_w_m（gate0.json 几何标定真源，左负右
-  正，与退役像素尺同号约定）。
-- **空中结构剔除**：SKY_HGT=1.2m——桥/天空域点 hgt 实测 ≥7.5m，护栏 ≤1m，
-  间隙巨大；不剔会把远端 Z 箱中位整体抬高、穿越在桥带内缘误触发。
-- **挖除一条缝**：YOLO 物体候选区 × 剃本体刀（hgt>OBJ_KNIFE_HGT）——找边/
-  栅格/质量门共用同一口径。保险杠机位（2026-10-23）自车在相机之后、不进点云，
-  旧追车机位的自车 3D 框退役（它会把车头前方 3~10m 有效路面当车体挖掉）。
+**合成口径**（验证记录与证据指针=换装提交）：
+- 相对深度 V 在地面是仿射场 ``V = A + m·(r−y_h) + a·u``（r=全幅行中心、
+  u=列归一）；
+- 贴地像素 ``|V − V_g| ≤ 0.05``：``Z = fy·cam_h / (r − y_h)``（纯车道线几何）；
+- 地面以上：``Z = m·fy·cam_h / (V − A − a·u)``；
+- 反投影 ``X=(c−cx)·Z/fy``、``Y=(r−y_h)·Z/fy``，主点行取灭点行（平路 Y≡cam_h）。
+- fy=630（RULES §3.8 FOV 曲线中间值）、cam_h=1.25（RULES §3.8）、cx=640.5。
+- 灭点行逐帧由车道线观测给出，缺值回退 gate0.y_h。**相对深度是视差向仿射
+  不变量，地平线无法从深度本身辨识**（y_h 与 A 共线，扫 y_h 残差恒定）。
 
-**标定常量出处**：平面拟合阈值=55 帧口径沿用（2026-09-26 定案）；找边阈值
-（EDGE_HT/ZBIN 等）=金标帧 MoGe 点云校准（2026-10-01，探针定案后随产线实现
-在金标集上回归确认）；lane_w_m=金标 BEV 实测（gate0.json _notes 记出处）。
+**为什么是这套读法**：DepthART slim-SPF 只给相对深度，不给焦距与米制尺度；
+米制由车道线灭点行与已知相机高提供。前向约 6~10ms；点图合成与找边是本层
+主要的 CPU 开销（异步 worker 承担，不进控制拍）。合成点图与旧点云链读数
+对齐（左缘差中位 0.16 lane、右 0.09）。
+**消费方全部保留**：平面拟合、近箱离地穿越、最近一致边界、质量门、栅格、
+中远场粗带、读数换算。找边口径与挖除缝不变（「边」= 可行驶路面消失处的
+离地穿越；YOLO 候选区 × 剃本体刀一条缝）。
 
-**降级路径**：权重缺失/推理异常 → observe 返回 None，road_offset 链路退回
-纯模型积分；平面拟合失败/无穿越 → 该侧弃权（None，rejects 留因）。
+**标定常量出处**：lane_w_m=金标 BEV 实测（gate0.json）；合成口径的焦距/
+相机高见上（RULES §3.8）。
+
+**降级路径**：权重缺失/推理异常/地面拟合失败 → observe 返回 None，
+road_offset 链路退回纯模型积分；平面拟合失败/无穿越 → 该侧弃权（None，
+rejects 留因）。
 
 **上拍形态**：生产经 AsyncDepthRoadObserver（异步 worker，协议同 treasure OCR）
 使用本层——控制拍只付 push+take，observe 成本在后台线程；本模块的同步
 observe 保留为纯函数面（测试与离线复算直接调用）。
 
-**离线复算**：debug 证据包（*_evid.npz）存 336×598 原生点图 fp16 + valid +
-归一化焦距（reconstruct 口径 cx=cy=0.5）；复算 = load → 各通道 cv2.resize 到
-1280×720（pts 线性/valid 最近邻）→ 焦距 ×(1280, 720) 得全幅像素焦距 →
-invalid 置 nan → reading_from_points，与在线逐位一致。
+**离线复算**：debug 证据包（*_evid.npz）存半幅（360×640）合成点图 fp16 +
+valid + 全幅像素焦距 + 灭点行 + 地面模型；复算 = load → 点图各通道
+cv2.resize 到 1280×720（线性）/valid 最近邻 → invalid 置 nan →
+reading_from_points(ds=1280/点图宽)。
 """
 
 from __future__ import annotations
@@ -58,55 +52,41 @@ import io
 import queue
 from collections import deque
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
-from typing import cast
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 
 from maaracing_master.core import dml_lock
-from maaracing_master.plugins.speedrush import moge_post
 from maaracing_master.plugins.speedrush.world_model import Calib
 
-# ── 检测带（与既有捕获几何 1280×720 绑定；推理吃全帧，天空/远景是焦距锚）──
+# ── 检测带（与既有捕获几何 1280×720 绑定）──
 Y0, DIAG_Y1 = 340, 715
-MOGE_IN_W, MOGE_IN_H = 1280, 720    # 折叠静态输入（free-dim 覆盖，见 load_session）
+FRAME_W, FRAME_H = 1280, 720
 
-# ── 几何块抽取因子（2026-10-17 链路提速）──
-# MoGe 原生输出 336×598，infer_points 上采样到 720×1280 供调试图与锚点框裁切；
-# 平面拟合/找边/栅格在这份 4.6× 插值冗余的点上做全幅统计，时延里没有一分来自
-# 新测量。2×2 抽取到 360×640（≈原生分辨率）后三段各降 3~4×（离线实测 plane
-# 4.2× / edges 4.6× / grid 3.2×，读数同判 db7cc85）。
-# 抽取后带区与像素诊断按 _band_rows / ds 折算——常数 Y0/DIAG_Y1 仍是 720 行口径。
-GEO_DS = 2
-
-# ── 几何块直接吃原生点图（2026-10-17 开启；替代 upsize+抽取的往返搬运）──
-# 抽取到 360×640 与原生 336×598 分辨率几乎相同（面积比 0.87）——几何块从未
-# 用到 1280×720 的信息，upsize 出来的 4/5 像素是插值且随即被抽掉。
-#
-# **证据（1819 帧 × 20 局，同帧紧邻交替 A/B，见 DEPTH_CHAIN_LATENCY_20261017.md
-# §12）**：observe 配对差 P50 −15.6ms（P10 −27.3 / P90 −6.7）；sides 同判
-# 1785/1819=98.1%；边缘差 P50 0.000 / P90 0.008 lane；平面质量门 33 vs 35
-# （原生还少拒 2 次）。尾部 P99 0.741 lane、>0.1 lane 占 5.1%——三臂对照证明
-# 这与「生产现状（GEO_DS=2 抽取）vs 全幅」的尾部统计等价（97.8% vs 97.8%、
-# P99 0.846 vs 0.847、质量门 35 vs 33），即**低分辨率点图的共性代价，不是本改动
-# 引入的**。41 帧「实机质量门拒过」的困难帧上两臂拒得完全一致（7 vs 7）。
-#
-# 像素契约不变：reading 的 fx/fy/left_x/right_x 仍是**全幅像素**（按 ds=W_full/
-# W_pts 折算，见 reading_from_points 的 ds 参数）；锚点框裁切按 _box_anchor_z 的
-# 尺寸归一化；调试图自包含（自己把证据包放大到全幅）——三处均无需改。
-#
-# **回滚开关**：置 False 即回「upsize + GEO_DS 抽取」旧路径（逐位一致）。
-# 验收用相对量（同帧配对差 ≤ −10ms 或相对该局旧路径基线降 ≥10%）——跨局绝对值
-# 不可用：基线随局波动 ±9ms（§11.4）。
-NATIVE_GEO = True
+# ── 合成点图（生产者口径；验证指针=换装提交）──
+DA_IN = 448                     # DepthART 固定方形输入
+DA_MEAN = np.array([0.485, 0.456, 0.406], np.float32)   # ImageNet 归一（首节点
+DA_STD = np.array([0.229, 0.224, 0.225], np.float32)    # 是 Conv，图内无归一化）
+PT_W, PT_H = 640, 360           # 点图网格（半幅，ds=2；与全幅读数差 p90 ≤0.006 lane）
+PT_CX = 640.5                   # 全幅主点列（探针口径，2026-11-11 合成验证）
+FOCAL_PX = 630.0                # 固定投影焦距（RULES §3.8 FOV 曲线 613~664 中间值）
+CAM_H_M = 1.25                  # 权威相机高（RULES §3.8）
+GROUND_TAU = 0.05               # 贴地判据（相对深度绝对口径，实测残差 p90 ≤0.055）
+GROUND_ROW_LO, GROUND_ROW_HI = 380, 690   # 地面模型拟合带（全幅行）
+GROUND_EXCL_PAD = 8             # 拟合时挖掉最大车框的外扩像素
+GROUND_STRIDE = 4               # 拟合抽样步长（4×4，点数降 4 倍；与 2×2 的系数差：
+                                #  m ≤3e-7、A ≤3e-6、a ≤1.5e-4，折算到深度可忽略）
+GROUND_MIN_PTS = 4000           # 地面拟合最少样本（4×4 抽样后；挖除大车后仍应满足）
+POINT_Z_MIN, POINT_Z_MAX = 1.2, 220.0   # 合成点云有效纵域（米）
 
 
 def _band_rows(h: int) -> tuple[int, int]:
     """检测带行区间（按输入高度缩放）。
 
-    Y0/DIAG_Y1 是 720 行口径的常数；几何块按 GEO_DS 抽取后输入高度变小，
+    Y0/DIAG_Y1 是 720 行口径的常数；点图按半幅生成后输入高度变小，
     带必须同比缩放才落在同一物理行域（h=720 时逐位等于 (Y0, DIAG_Y1)）。"""
     return (Y0 * h // 720, DIAG_Y1 * h // 720)
 
@@ -153,7 +133,7 @@ DIG_CELL_FRAC = 0.5        # 格级挖除占比：刀是逐点的，格是 0.25m
                            # 不饿死整格
 
 # ── 降级补考（2026-10-11 定案，主门拒后的路区重判）────────────────────────
-# 贴栏/近旁大车帧 MoGe 深度整体放歪（弯曲残余是相机位姿不变量，后处理不可
+# 贴栏/近旁大车帧深度整体放歪（弯曲残余是相机位姿不变量，后处理不可
 # 救，349 帧普查钉死），但维护者目检 141218_0113~0117 实证其中一部分帧
 # 「地面大体还是平的」——主门一刀切弃权损失可用供数帧。补考过了保留原平面
 # 打 degraded 继续供数；rejects 记「质量门降级放行」，corridor._plane_health
@@ -198,7 +178,7 @@ WALK_MIN_COL_PTS = 10   # 单列有效像素下限（少于则整列弃权）
 WALK_COL_STRIDE = 4     # 隔列采样（特征逐列独立，跳列不影响别的列；算力档）
 WALK_ROW_STRIDE = 2     # 隔行采样（增量理论值同比放大，行走轮数减半；算力档）
 
-# ── 3D 找边（Z 分箱横向剖面离地穿越；金标 MoGe 点云校准 2026-10-01）─────
+# ── 3D 找边（Z 分箱横向剖面离地穿越；金标点云校准 2026-10-01，合成点图复验 2026-11-11）──
 ZBIN = ((3, 5), (5, 7), (7, 9), (9, 12), (12, 16), (16, 20), (20, 25),
         (25, 30))       # 深度箱（米）；弯道无直线假设，逐箱独立读数
 #                       # 2026-10-10 扩窗（纵深 16→30，用户拍板）：远场实测
@@ -354,11 +334,6 @@ class DepthRoadReading:
     # 离线复算用；产线栅格 2026-10-09 起并行自拟合，不再消费此字段）
     fx: float | None = None    # 同帧全幅焦距（调试图把检测框反投影回 BEV 用；
     fy: float | None = None    #  离线缓存路径 fy 缺=回退 fx，与平面拟合同约定）
-    metric_scale: float | None = None   # MoGe 尺度头原始输出（观测面，只写不读
-    # ——尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默通过平面门，先落盘
-    # 可见再谈防护；c=coef[2] 即 cam_h，同属观测面）
-    solver: dict | None = None   # 焦距求解器诊断（shift/resid/n/step0/evals，见
-    # moge_post._solve_shift；焦距漂移治理 2026-10-10 观测面，只写不读）
     far_extents: tuple = ()  # 中远场粗带地面横向范围（(z0,z1,x_lo,x_hi,n) 序列，
     # ground_far_extents 产出，同帧同拍；走廊层 _ground_far_boundary 消费）
     degraded: bool = False   # 主质量门拒、降级补考放行（常量区注释有定案背
@@ -367,138 +342,168 @@ class DepthRoadReading:
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
-    """MoGe q4f16 会话（DML 优先逐级回退 CPU；输入 720×1280 折叠静态）。
+    """DepthART slim-SPF 会话（DML 优先逐级回退 CPU；输入 448×448 固定）。
 
-    **折叠是时延成立的前提，不是优化项**（机理同 DA 链验证）：batch/height/
-    width 三个自由维全部固定触发常量折叠、DML 整图融合；输出点图为 336×598
-    原生分辨率（权重名即档位），由 infer_points 升采样回全幅。捕获几何一变，
-    infer 立即抛形状错——observe 捕获后返回 None，road_offset 退回纯模型积分。"""
+    DepthART 只出相对深度图（无 mask/points/scale），米制换算由 infer_points
+    用车道线几何 + 地面模型完成。权重缺失/加载失败由调用方捕获后禁用深度层。"""
     avail = set(ort.get_available_providers())
     providers = [p for p in ("DmlExecutionProvider", "CUDAExecutionProvider",
                              "CPUExecutionProvider") if p in avail]
     so = ort.SessionOptions()
-    for name, dim in zip(("batch_size", "height", "width"),
-                         (1, MOGE_IN_H, MOGE_IN_W)):
-        so.add_free_dimension_override_by_name(name, int(dim))
+    so.log_severity_level = 3
     return ort.InferenceSession(str(weights), sess_options=so, providers=providers)
 
 
+def _da_preprocess(rgb: np.ndarray) -> np.ndarray:
+    """官方预处理：INTER_CUBIC 拉伸到 448² → /255 → ImageNet 均值方差。"""
+    im = cv2.resize(rgb, (DA_IN, DA_IN), interpolation=cv2.INTER_CUBIC)
+    x = im.astype(np.float32) / 255.0
+    x = (x - DA_MEAN) / DA_STD
+    return x.transpose(2, 0, 1)[None]
+
+
+@lru_cache(maxsize=4)
+def _up_maps(sh: int, sw: int, h: int, w: int) -> tuple[np.ndarray, np.ndarray]:
+    """align_corners 双线性坐标图（尺寸固定，进程内只生成一次）。"""
+    ys = np.linspace(0, sh - 1, h, dtype=np.float32)
+    xs = np.linspace(0, sw - 1, w, dtype=np.float32)
+    return np.meshgrid(xs, ys)
+
+
+def _resize_align_corners(img: np.ndarray, h: int, w: int) -> np.ndarray:
+    """官方 bilinear align_corners 回原尺寸（448² → 全幅）。
+
+    坐标图按 align_corners 语义缓存，插值交给 OpenCV：旧实现用 Python 级四份
+    gather 在 720p 上做同一件事（实测 11ms），remap 后约 0.7ms，逐像素最大差
+    ≤4e-6。"""
+    sh, sw = img.shape[:2]
+    mapx, mapy = _up_maps(sh, sw, h, w)
+    src = np.ascontiguousarray(img, dtype=np.float32)
+    return cv2.remap(src, mapx, mapy, interpolation=cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_REPLICATE)
+
+
+def _ground_model(v: np.ndarray, y_v: float, box: tuple | None
+                  ) -> tuple[float, float, float, float] | None:
+    """相对深度地面模型 ``V = A + m·(r−y_h) + a·u`` → (m, a, A, mad)。
+
+    ``box``（最大车框，全幅像素）外扩 8px 后从拟合域挖掉：贴脸大车的车身会
+    把地面模型拽歪。MAD 只记录（质量门在消费方，拟合失败返回 None）。"""
+    h, w = v.shape
+    rows = np.arange(h)[:, None]
+    mask = np.broadcast_to(
+        (rows >= GROUND_ROW_LO) & (rows <= GROUND_ROW_HI), (h, w)).copy()
+    if box is not None:
+        x0, y0, x1, y1 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
+        mask[max(0, y0 - GROUND_EXCL_PAD):min(h, y1 + GROUND_EXCL_PAD),
+             max(0, x0 - GROUND_EXCL_PAD):min(w, x1 + GROUND_EXCL_PAD)] = False
+    mask = mask[::GROUND_STRIDE, ::GROUND_STRIDE]
+    ys, xs = np.nonzero(mask)
+    ys, xs = ys * GROUND_STRIDE, xs * GROUND_STRIDE
+    if ys.size < GROUND_MIN_PTS:
+        return None
+    rc = ys + 0.5
+    u = (xs + 0.5) / w
+    A = np.stack([rc - y_v, u, np.ones(ys.size)], 1)
+    y = v[ys, xs].astype(np.float64, copy=False)
+
+    def _solve3(Aw: np.ndarray, yw: np.ndarray) -> np.ndarray:
+        # 3 列正规方程；比 lstsq 的 SVD 快一个量级，双精度下条件数足够
+        return np.linalg.solve(Aw.T @ Aw, Aw.T @ yw)
+
+    coef = _solve3(A, y)
+    mad = 0.0
+    for _ in range(4):
+        resid = A @ coef - y
+        med = np.median(resid)
+        mad = float(np.median(np.abs(resid - med)) * 1.4826)
+        keep = np.abs(resid - med) < 2.5 * (mad + 1e-9)
+        coef = _solve3(A[keep], y[keep])
+    return float(coef[0]), float(coef[1]), float(coef[2]), mad
+
+
+def _synth_points(v: np.ndarray, y_v: float, gm: tuple
+                  ) -> tuple[np.ndarray, np.ndarray, float]:
+    """相对深度 + 地面模型 → 半幅合成点图（米制相机系，无效像素 nan）。"""
+    m, a, A = float(gm[0]), float(gm[1]), float(gm[2])
+    rows = np.arange(0, v.shape[0], 2)
+    cols = np.arange(0, v.shape[1], 2)
+    vv = v[rows][:, cols]
+    rc = rows[:, None] + 0.5
+    uu = (cols[None, :] + 0.5) / v.shape[1]
+    vg = A + m * (rc - y_v) + a * uu
+    k = FOCAL_PX * CAM_H_M
+    zf = rc - y_v
+    zg = k / np.maximum(1.0, zf)
+    ground = np.abs(vv - vg) <= GROUND_TAU
+    den = vv - A - a * uu
+    with np.errstate(divide="ignore", invalid="ignore"):
+        zo = m * k / np.where(np.abs(den) < 1e-6, np.nan, den)
+    Z = np.where(ground, zg, zo)
+    valid = (zf > 2.0) & np.isfinite(Z) & (Z > POINT_Z_MIN) & (Z < POINT_Z_MAX)
+    if m <= 0:
+        valid &= ground
+    X = (cols[None, :] + 0.5 - PT_CX) * Z / FOCAL_PX
+    Y = zf * Z / FOCAL_PX
+    pts = np.stack([X, Y, Z], -1).astype(np.float32)
+    pts[~valid] = np.nan
+    frac = float(ground[valid].mean()) if valid.any() else 0.0
+    return pts, valid, frac
+
+
 def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
-                 with_evidence: bool = False, native: bool = False,
-                 scale: float = 1.0):
-    """一帧 → (点图, fx, fy[, 证据包])。无效像素 nan。
+                 y_v: float, box: tuple | None = None,
+                 with_evidence: bool = False):
+    """一帧 → (点图, fx, fy[, 证据包])；地面拟合失败 → (None, fx, fy[, None])。
 
-    ``native=False``（缺省）点图 (720,1280,3) 全幅；``native=True`` 直接给模型
-    原生点图（336×598）**不做上采样**——几何块本来就在这个量级工作（GEO_DS=2
-    抽取后 360×640），upsize 是纯搬运（2026-10-17 实测省 15ms、读数差 P50
-    0.000 lane，见 NATIVE_GEO 注释）。
-    fx/fy **两种模式都返回全幅像素焦距**（口径不变：消费端按点图宽度自算倍率
-    ds = 全幅宽 / pts.shape[1]，见 reading_from_points）。
+    ``y_v``=当帧灭点行（全幅像素）；``box``=最大车框（全幅像素，地面拟合挖除）。
+    点图为半幅 ``(360, 640, 3)`` 米制相机系，无效像素 nan；``fx/fy`` 恒为
+    **全幅像素焦距**（消费端按 ``ds = 全幅宽 / pts.shape[1]`` 折算）。
 
-    ``scale``：MoGe 米制全局缩放（gate0 depth_scale）；证据包 ``ms`` 是应用后
-    的尺度，``ms_raw`` 是模型原始输出，``scale`` 是乘数。
+    证据包：pts（半幅米制点图）、valid、fx/fy（全幅像素）、y_v、
+    ground=(m,a,A)、mad、ground_frac——离线复算与调试图用。
 
-    ``with_evidence`` 时返回原生证据 dict（pts=336×598 点图 fp32、valid、
-    fx/fy=归一化焦距，复算 ×(W,H)）——离线复算与实机渲染用，比全幅小 6 倍且
-    复算逐位一致（复算口径见模块 docstring）。
-
-    DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程
-    （2026-09-25 实机 + 双线程复现），故 run 本体抢锁、抢不到抛 Busy 让调用方
-    跳帧——本层不等待，控制拍的感知优先。"""
-    global LAST_SLOW_FORWARD
-    # 分段计时（单 worker 线程调用，无竞争）：observe_debug 取走后进观测面。
-    # 离线分解见 probe_moge_stage_decompose；在线口径盯 forward 漂移（显存
-    # 吃紧时普通路径会翻倍，IO binding 定案的实机哨）。
+    DML 互斥（core.dml_lock）：感知会话与深度会话并发 run 会段错误杀进程，
+    故 run 本体抢锁、抢不到抛 Busy 让调用方跳帧。"""
     t_pre = time.perf_counter()
-    blob = moge_post.preprocess(rgb, MOGE_IN_W, MOGE_IN_H)
+    blob = _da_preprocess(rgb)
     LAST_STAGE_MS["pre"] = (time.perf_counter() - t_pre) * 1000.0
     if not dml_lock.LOCK.acquire(blocking=False):
         raise dml_lock.Busy("DML 被感知推理占用，本帧放弃（latest-only 下一帧再来）")
-    dml_lock.RUN_WATCH.enter("moge")
+    dml_lock.RUN_WATCH.enter("depthart")
     try:
         t_fwd = time.perf_counter()
-        points, mask, metric_scale = moge_post.forward(sess, blob, 1032)
-        fwd_ms = (time.perf_counter() - t_fwd) * 1000.0
-        LAST_STAGE_MS["forward"] = fwd_ms
-        if fwd_ms >= SLOW_FORWARD_MS:
-            LAST_SLOW_FORWARD = {
-                "ts_ns": int(time.perf_counter() * 1e9),
-                "forward_ms": round(fwd_ms, 1),
-                "pre_ms": round(LAST_STAGE_MS.get("pre", 0.0), 1),
-            }
+        out = sess.run(None, {sess.get_inputs()[0].name: blob})[0][0, 0]
+        LAST_STAGE_MS["forward"] = (time.perf_counter() - t_fwd) * 1000.0
     finally:
         dml_lock.RUN_WATCH.exit()
         dml_lock.LOCK.release()
-    t_rec = time.perf_counter()
-    # 2026-10-29 重新标定：MoGe 米制偏大约 1.12（画线金标），在唯一入口
-    # 缩一次，cam_h/点云/宽度/目标距离随之一致回到真米。
-    ms_applied = metric_scale * float(scale)
-    res = moge_post.reconstruct(points, mask, ms_applied)
-    LAST_STAGE_MS["reconstruct"] = (time.perf_counter() - t_rec) * 1000.0
-    pts = res["pts"]
-    ow, oh = points.shape[1], points.shape[0]
+    t_pt = time.perf_counter()
+    v = _resize_align_corners(out, FRAME_H, FRAME_W)
+    gm = _ground_model(v, float(y_v), box)
+    if gm is None:
+        LAST_STAGE_MS["points"] = (time.perf_counter() - t_pt) * 1000.0
+        return (None, FOCAL_PX, FOCAL_PX, None) if with_evidence \
+            else (None, FOCAL_PX, FOCAL_PX)
+    pts, valid, frac = _synth_points(v, float(y_v), gm)
+    LAST_STAGE_MS["points"] = (time.perf_counter() - t_pt) * 1000.0
     evidence = None
-    t_up = time.perf_counter()
-    if native:
-        # 原生直吃：不做上采样。evidence 持有 reconstruct 的原对象（未写 nan，
-        # 与旧路径同语义），pts 取副本——下面要原地写 nan，不能污染证据包。
-        if with_evidence:
-            evidence = {"pts": pts, "valid": res["valid"],
-                        "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
-                        "scale": float(scale), "solver": res["solver"]}
-        pts = np.array(pts, copy=True)
-        valid = res["valid"]
-    elif (oh, ow) != (MOGE_IN_H, MOGE_IN_W):
-        if with_evidence:
-            evidence = {"pts": pts, "valid": res["valid"],
-                        "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
-                        "scale": float(scale), "solver": res["solver"]}
-        pts = np.stack([cv2.resize(pts[..., k], (MOGE_IN_W, MOGE_IN_H),
-                                   interpolation=cv2.INTER_LINEAR)
-                        for k in range(3)], -1)
-        valid = cv2.resize(res["valid"].astype(np.float32), (MOGE_IN_W, MOGE_IN_H),
-                           interpolation=cv2.INTER_NEAREST).astype(bool)
-    else:
-        if with_evidence:
-            evidence = {"pts": pts, "valid": res["valid"],
-                        "fx": res["fx"], "fy": res["fy"],
-                        "ms": float(ms_applied), "ms_raw": float(metric_scale),
-                        "scale": float(scale), "solver": res["solver"]}
-            # 下面要原地写 nan：证据包持有原对象，工作副本另拷
-            pts = np.array(pts, copy=True)
-        valid = res["valid"]
-    LAST_STAGE_MS["upsize"] = (time.perf_counter() - t_up) * 1000.0
-    # np.stack / np.array(copy=True) 产物独占（无别名持有；with_evidence 持有的是
-    # 上游原生点图，另一对象），nan 写原地做，省一次拷贝（~3ms，2026-10-09 实测）
-    pts[~valid] = np.nan
-    # 归一化焦距（u∈[0,1] 口径）→ 全幅像素焦距：u_full = (X/Z)·fx_norm·W_full + W/2
-    fx = res["fx"] * MOGE_IN_W
-    fy = res["fy"] * MOGE_IN_H
-    return (pts, float(fx), float(fy), evidence) if with_evidence \
-        else (pts, float(fx), float(fy))
+    if with_evidence:
+        evidence = {"pts": pts, "valid": valid, "fx": FOCAL_PX, "fy": FOCAL_PX,
+                    "y_v": float(y_v),
+                    "ground": (float(gm[0]), float(gm[1]), float(gm[2])),
+                    "mad": float(gm[3]), "ground_frac": frac}
+    return (pts, FOCAL_PX, FOCAL_PX, evidence) if with_evidence \
+        else (pts, FOCAL_PX, FOCAL_PX)
 
 
 # 最近一帧的分段耗时（ms），单 worker 线程调用，无竞争：
-#   infer_points 四段   pre / forward / reconstruct / upsize
+#   infer_points 三段   pre / forward / points（合成点图）
 #   后处理三段          plane=路面平面拟合（reading_from_points 内）
 #                       edges=找边全段、grid=栅格构建（observe_debug 内）
 # scan（找边扣除平面拟合）= edges−plane，离线导出。observe_debug 取走后进
 # _stage_win 滑窗；worker 发布时随帧快照，进 trace dgeo_seg.stages。
 LAST_STAGE_MS: dict[str, float] = {}
-
-# 慢 forward 锁存（2026-10-22 DML 锁卡顿归因）：worker 是 latest-only，
-# 卡住那一帧的 segments 会被后续正常帧覆盖；这里把每次 forward ≥ 阈值的
-# 尝试单独留下一条（同钟 perf_counter_ns），控制拍 trace 直接读取。
-# 不影响推理/锁协议，只做观测。
-SLOW_FORWARD_MS = 200.0
-LAST_SLOW_FORWARD: dict | None = None
-
-
-def last_slow_forward() -> dict | None:
-    """最近一次慢 forward 锁存；无则 None（trace 诊断用）。"""
-    return LAST_SLOW_FORWARD
 
 
 def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
@@ -905,21 +910,18 @@ def reading_from_points(pts: np.ndarray, fx: float, cal: Calib,
                         ) -> DepthRoadReading:
     """点图 → 读数（纯函数，回归锁可直接喂缓存点云；observe=推理+本函数）。
 
-    ``pts`` 全幅 (720,1280,3)、无效像素 nan；``fx`` 同帧全幅焦距（横向剖面画外
+    ``pts`` 点图 (H,W,3)、无效像素 nan；``fx`` 同帧全幅焦距（横向剖面画外
     守卫与诊断回投共用）。``fy`` 同帧纵向焦距（列剖面特征行走的增量理论值用）；
-    None 时回退 fx——MoGe 归一化内参约定下横纵焦距差实测 ~0.1%，远小于行走
-    容差窗（离线点云缓存只存了 fx，故回退合法；产线 observe 传真值）。
+    None 时回退 fx——合成点图横纵焦距同为固定 630，两者恒等。
     ``object_mask``（YOLO 框）为候选区，按统一挖除缝（候选区）×
     剃本体刀挖除（断车身→路面粘连）。``coef`` 传入已有平面即跳过拟合（产线
     observe_debug 一帧一拟共享，2026-10-10 合并定案；离线复算/单独调用缺省
     自拟合）——质量门仍在本函数内判（门判据=挖除缝内残差，随平面走）。
 
-    ``ds``：点图像素 → **全幅像素**的倍率（= 全幅宽 / pts.shape[1]；抽取路径是
-    整数 GEO_DS，原生直吃是 1280/598≈2.14 这类非整数）。pts/object_mask 是
-    点图自己的像素系，而 ``fx``/``fy``/``left_x``/``right_x`` 保持**全幅像素**
-    契约——内部按 ds 折算到点图像素系（带区、画外守卫、诊断回投），返回的
-    fx/fy 与 u 都不改口径（调试图反投影与 trace 消费端无感）。ds=1 时逐位等于
-    旧路径。
+    ``ds``：点图像素 → **全幅像素**的倍率（= 全幅宽 / pts.shape[1]；产线半幅
+    点图是 2）。pts/object_mask 是点图自己的像素系，而 ``fx``/``fy``/``left_x``/
+    ``right_x`` 保持**全幅像素**契约——内部按 ds 折算到点图像素系（带区、画外
+    守卫、诊断回投），返回的 fx/fy 与 u 都不改口径。ds=1 时逐位等于全幅路径。
 
     掩码尺寸必须与点图一致（不一致是调用方漏了缩放，**静默错位**且不抛异常的
     那类坑）——入口显式拒绝，把哑巴亏变成大声失败。"""
@@ -1260,7 +1262,7 @@ def grid_center_lane(grid: DrivableGrid, lane_w_m: float) -> float | None:
 
     极性契约（v3 事故链门禁同款）：绿区居 X=+1m → 返回 +1/lane_w_m（正值=
     路心在右）；消费方 `_EgoRoadObserver` 取 off=−值，与 off=−(L+R)/2 同式。
-    栅格与找边共用 MoGe 点云/平面/挖洞掩码——本读数不是独立传感器，只作
+    栅格与找边共用同一份点云/平面/挖洞掩码——本读数不是独立传感器，只作
     「找边锁错结构」的互证面（消费闸见 decision.json grid_xcheck）。"""
     if not (lane_w_m > 0):
         return None
@@ -1402,31 +1404,28 @@ def _dig_band(dig: np.ndarray | None, pts: np.ndarray) -> np.ndarray:
 
 # ---------- 物体锚点清单（混合测距刀一：detection-keyed 度量的免费副产品） ----------
 #
-# 契约（混合测距刀一 b385d4b）：本清单只含
-# frame/detection 身份，**深度域不认识 track_id，永不该认识**——归轨道是
-# 消费端（Tracker）用自家帧映射表做的事。逐框 Z 与路面读数同源同拍（同一份
-# 原生点图上裁框），点图未挖物体（object_mask 只在路面读数/栅格口径挖除），
-# 这里不付任何额外推理成本。
+# 契约（混合测距刀一 b385d4b）：本清单只含 frame/detection 身份，**深度域不认识
+# track_id，永不该认识**——归轨道是消费端（Tracker）用自家帧映射表做的事。
+# 2026-11-11 起逐框 Z 不再从点云裁框，改吃「框底行 + 地平线 + 固定焦距 + 权威
+# 相机高」：`z = fy·cam_h/(y_bot − y_h)`（保险杠机位、正前车）。相对深度在
+# 40m 外只有 4~10px 分辨率，框底条带不可用（实验区实证）。
 
 ANCHOR_Z_LO, ANCHOR_Z_HI = 2.0, 90.0   # 测量有效域（米；anchor-age 实验真值域口径）
-# 近簇选择阈值（2026-10-13）：候选 bin 计数须达最密 bin 的此份额才算"有料"——
-# 挡近端散点小计数；起值 [需实测]，过低会抓散点、过高退回最密簇（翻跳复发）
-_NEAR_CLUSTER_FRAC = 0.4
-_BOTTOM_MIN_PTS = 10       # 框底条带最少有效点（不足回退整框近簇）
+# 邻道门（2026-11-11 实验结论）：邻道框的框底行给的是「最近侧面点」，不是纵向
+# 车距（并行车 3~5m 会被当成前车），横向米制位超此值或框被画面截断一律不给锚。
+ANCHOR_ADJACENT_X_M = 1.2
 
 
 @dataclass(frozen=True)
 class AnchorEntry:
-    """一个车框在本深度帧上的米制锚点。bbox 是**原始框**（不外扩）——
-    外扩口径会把框内混进背景，直方图主簇翻跳（实验实录的语义污染）正是
-    这么来的。"""
+    """一个车框在本深度帧上的米制锚点。bbox 是**原始框**（不外扩）。"""
 
     det_idx: int          # 本帧 result.cars 内序号（消费端帧映射表的 key 之一）
     x0: int
     y0: int
     x1: int
     y1: int
-    z_m: float            # 框内点云 24bin 最密簇中位（probe_approach_ab.entity_z 逐位同口径）
+    z_m: float            # 框底行几何距离（fy·cam_h/(y_bot−y_h)）
 
 
 @dataclass(frozen=True)
@@ -1435,10 +1434,8 @@ class DepthAnchorSheet:
     entries 可为空（本帧有推理但无有效锚点）——「有证据但量不出」与「没证据」
     是两回事，消费端据此区分弃权原因。
 
-    fx：同帧全幅像素焦距——车框横向米制位 x_m=(cx−vpx)·z/fx 的换算锚（C 线
-    米制车状态，2026-10-12）。fx 与 z_m 同帧同拍：焦距随内容漂移（模块头
-    活体审计），横向反投影必须吃锚点帧自己的焦距，不吃常数不吃他帧。
-    None=旧路径未传（消费端 x_m 弃权，z 仍供）。"""
+    fx：横向反投影用的全幅像素焦距（C 线米制车状态，2026-10-12）。2026-11-11
+    起与 z_m 同为固定投影焦距（RANGE §3.8 的 630），不再是逐帧自估值。"""
 
     fid: int
     ts_ns: int            # 锚点帧到达采集回调的时刻（perf_counter_ns，frame_with_age 同钟）
@@ -1446,65 +1443,49 @@ class DepthAnchorSheet:
     fx: float | None = None
 
 
-def _box_anchor_z(pts: np.ndarray, box: tuple[int, int, int, int]) -> float | None:
-    """框内 Z = 框底条带中位（2026-11-04 距离突变修正）。
+def _box_anchor_z(box: tuple[int, int, int, int], y_v: float,
+                  focal: float = FOCAL_PX, cam_h: float = CAM_H_M,
+                  frame_w: int = FRAME_W) -> float | None:
+    """框底行 → 车距（米）。框底=接地点，``z = focal·cam_h/(y_bot − y_h)``。
 
-    框底=车接地面，就在车距——底部 ~25% 行的中位直接给车距；背景（车顶
-    上方越过的远路面）只落在框的上部行，天然排除。整框直方图近簇（旧口径，
-    2026-10-13）在远框上失效：原生分辨率下远车框仅几十点，车身与背景混成
-    40m 宽斜坡无可分簇，近簇中位被背景拉远 +10~35m、过渡期一步跳变
-    （102658_p1 raw 0084-0087 实测：同一辆车整框口径 57→45→42→34m 乱跳、
-    实机账本 54.6→29.98 一步跳 25m；底带 46.4→45.8→42.1→33.9 单调平滑，
-    P25-P75 ≤3.4m）。底带有效点不足（框过小/无效点多）回退整框近簇。"""
-    gh, gw = pts.shape[:2]
-    x0 = max(0, int(box[0] * gw / 1280))
-    y0 = max(0, int(box[1] * gh / 720))
-    x1 = min(gw, int(box[2] * gw / 1280))
-    y1 = min(gh, int(box[3] * gh / 720))
+    弃权（None，不造假锚）：框过小、框底在灭点行之上（几何无效）、距离出
+    ``ANCHOR_Z_LO/HI``、横向米制位超 ``ANCHOR_ADJACENT_X_M``（邻道车框底给的是
+    最近侧面点）、框被画面横向截断（框心不可信）。"""
+    x0, y0, x1, y1 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
     if x1 - x0 < 3 or y1 - y0 < 3:
         return None
-    yb = y0 + (y1 - y0) * 3 // 4              # 框底条带：底部 25% 行
-    zv = pts[yb:y1, x0:x1, 2]
-    zv = zv[np.isfinite(zv)]
-    if zv.size >= _BOTTOM_MIN_PTS:
-        return float(np.median(zv))
-    zv = pts[y0:y1, x0:x1, 2]
-    zv = zv[np.isfinite(zv)]
-    if zv.size < 10:
+    dz = float(y1) - float(y_v)
+    if dz <= 2.0:
         return None
-    lo, hi = np.percentile(zv, [2, 98])
-    hist, edges = np.histogram(zv, bins=24, range=(lo, hi))
-    densest = hist.max()
-    pick = int(hist.argmax())               # 缺省=最密（近框无背景时即车身）
-    for i in range(len(hist)):
-        if hist[i] >= _NEAR_CLUSTER_FRAC * densest:
-            pick = i                        # 从近端数第一个有料的 bin = 车身簇
-            break
-    c = 0.5 * (edges[pick] + edges[pick + 1])
-    core = np.abs(zv - c) < (hi - lo) / 24
-    if core.sum() < 10:
-        core = np.ones(zv.size, bool)
-    return float(np.median(zv[core]))
+    z = focal * cam_h / dz
+    if not ANCHOR_Z_LO <= z <= ANCHOR_Z_HI:
+        return None
+    cx = 0.5 * (x0 + x1)
+    x_m = (cx - PT_CX) * z / focal
+    if abs(x_m) > ANCHOR_ADJACENT_X_M or x0 <= 0 or x1 >= frame_w:
+        return None
+    return float(z)
 
 
-def anchor_sheet_from_detections(pts: np.ndarray, detections, fid: int,
-                                 ts_ns: int, fx: float | None = None
+def anchor_sheet_from_detections(detections, fid: int, ts_ns: int, y_v: float,
+                                 focal: float = FOCAL_PX,
+                                 cam_h: float = CAM_H_M
                                  ) -> DepthAnchorSheet | None:
     """逐车框算锚点 → 清单。detections = (det_idx, x0, y0, x1, y1) 全分辨率
-    原始框序列。出域（ANCHOR_Z_LO/HI）或量不出的框**静默弃权**（清单少一条
-    = 消费端「无锚」语义，不造假锚）；detections 为空 → None（零成本路径）。"""
+    原始框序列。出域/邻道/截断的框**静默弃权**（清单少一条=消费端「无锚」
+    语义，不造假锚）；detections 为空 → None（零成本路径）。"""
     if not detections:
         return None
     entries: list[AnchorEntry] = []
     for det_idx, x0, y0, x1, y1 in detections:
-        z = _box_anchor_z(pts, (x0, y0, x1, y1))
-        if z is None or not ANCHOR_Z_LO <= z <= ANCHOR_Z_HI:
+        z = _box_anchor_z((x0, y0, x1, y1), y_v, focal=focal, cam_h=cam_h)
+        if z is None:
             continue
         entries.append(AnchorEntry(
             det_idx=det_idx, x0=int(x0), y0=int(y0), x1=int(x1), y1=int(y1),
             z_m=z))
     return DepthAnchorSheet(fid=fid, ts_ns=ts_ns, entries=tuple(entries),
-                            fx=None if fx is None else float(fx))
+                            fx=float(focal))
 
 
 class DepthRoadObserver:
@@ -1520,75 +1501,63 @@ class DepthRoadObserver:
         # observe 分段滑窗（worker 单线程写；分段口径见 LAST_STAGE_MS）
         self._stage_win: dict[str, deque] = {
             k: deque(maxlen=200)
-            for k in ("pre", "forward", "reconstruct", "upsize",
-                      "plane", "edges", "grid")}
+            for k in ("pre", "forward", "points", "plane", "edges", "grid")}
 
     def observe(self, frame_rgb: np.ndarray,
-                object_mask: np.ndarray | None = None) -> DepthRoadReading | None:
+                object_mask: np.ndarray | None = None,
+                y_v: float | None = None) -> DepthRoadReading | None:
         """一帧 → 读数（两侧可各自弃权）；推理失败 → None（不抛，控制链不因感知停摆）。
 
         ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码候选区，
         按统一挖除缝（候选区）× 剃本体刀挖除——物体从点云源头
-        消失，"穿车读墙"假缘不再产生。"""
-        reading, _ = self.observe_debug(frame_rgb, object_mask)
+        消失，"穿车读墙"假缘不再产生。``y_v``=当帧灭点行（车道线观测给，
+        缺值回退 gate0.y_h）。"""
+        reading, _ = self.observe_debug(frame_rgb, object_mask, y_v=y_v)
         return reading
 
     def observe_debug(self, frame_rgb: np.ndarray, object_mask: np.ndarray | None = None,
                       detections: tuple | None = None, fid: int | None = None,
                       frame_ts_ns: int | None = None,
+                      y_v: float | None = None,
                       ) -> tuple[DepthRoadReading | None, dict | None]:
-        """同 observe，另返回原生证据包（离线复算+实机渲染用；与 reading 同源同拍）。
+        """同 observe，另返回证据包（离线复算+实机渲染用；与 reading 同源同拍）。
 
-        证据包 dict：pts=336×598 原生点图 fp32、valid、fx/fy=原生归一化焦距。
-        复算口径见模块 docstring「离线复算」。
+        证据包 dict：pts=半幅合成点图 fp32、valid、fx/fy=全幅像素焦距、y_v、
+        ground=(m,a,A)、mad、ground_frac。复算口径见模块 docstring「离线复算」。
         detections/fid/frame_ts_ns：混合测距锚点清单供数（刀一）——三者齐备时
-        在同一份点图上逐车框裁 Z，清单挂 ``evid["anchors"]``；缺任一不产清单
+        逐框按框底行几何给 Z，清单挂 ``evid["anchors"]``；缺任一不产清单
         （年龄诚实：没有帧时刻就没法算锚点年龄）。"""
         if self._sess is None:
             return None, None
         t0 = time.perf_counter()
+        yh = float(y_v) if y_v is not None else float(self._cal.y_h)
+        box = (None if not detections else
+               max(detections, key=lambda d: (int(d[3]) - int(d[1]))
+                   * (int(d[4]) - int(d[2])))[1:5])
         try:
-            # with_evidence=True 时三个分支都产出证据包；类型上仍标 Optional，
-            # 只因 infer_points 内 evidence 以 None 初始化。
-            pts, fx, fy, evid = cast(
-                "tuple[np.ndarray, float, float, dict]",
-                infer_points(self._sess, frame_rgb,
-                             with_evidence=True,
-                             native=NATIVE_GEO,
-                             scale=self._cal.depth_scale))
+            pts, fx, fy, evid = infer_points(
+                self._sess, frame_rgb, y_v=yh, box=box, with_evidence=True)
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
             return None, None
-        stage = {k: LAST_STAGE_MS[k] for k in
-                 ("pre", "forward", "reconstruct", "upsize")}
+        if pts is None:      # 地面拟合失败：本帧诚实弃权（road_offset 退纯模型积分）
+            return None, None
+        stage = {k: LAST_STAGE_MS[k] for k in ("pre", "forward", "points")}
         t_e = time.perf_counter()
         # 一帧一拟（2026-10-10 合并定案）：平面在 observe 拟一次，找边与栅格
-        # 只读共享 coef——栅格不再自拟合，省一次列剖面重算（~34ms/帧）。并行
-        # 语义下不共享可变状态：两路各自用同一 coef 独立算挖除缝与质量门，
-        # 同输入逐位同结果。异常在 join 处原样重抛，保持 observe 的降级语义
-        # （不吞错不换错）。
+        # 只读共享 coef——栅格不再自拟合，省一次列剖面重算。并行语义下不共享
+        # 可变状态：两路各自用同一 coef 独立算挖除缝与质量门，同输入逐位同结果。
+        # 异常在 join 处原样重抛，保持 observe 的降级语义（不吞错不换错）。
         #
-        # 点图来源两路（NATIVE_GEO，2026-10-17）：
-        #  - True：infer_points 给原生 336×598，不再 upsize 也不抽取——几何块
-        #    本来就在这个量级工作；掩码同比缩到点图系（NEAREST，实测边缘差
-        #    P90 0.002 lane）；ds=全幅宽/点图宽（≈2.14）折回全幅像素契约。
-        #  - False：旧路径（upsize 到 720×1280 + GEO_DS 抽取），回滚用。
-        if NATIVE_GEO:
-            pts_g = pts
-            ds = MOGE_IN_W / float(pts.shape[1])
-            mask_g = (None if object_mask is None
-                      else cv2.resize(object_mask.astype(np.uint8),
-                                      (pts.shape[1], pts.shape[0]),
-                                      interpolation=cv2.INTER_NEAREST).astype(bool))
-        else:
-            ds = float(GEO_DS)
-            if GEO_DS > 1:
-                pts_g = np.ascontiguousarray(pts[::GEO_DS, ::GEO_DS])
-                mask_g = (None if object_mask is None
-                          else np.ascontiguousarray(object_mask[::GEO_DS, ::GEO_DS]))
-            else:
-                pts_g, mask_g = pts, object_mask
+        # 点图半幅（2026-11-11）：掩码同比缩到点图系（NEAREST），ds=全幅宽/
+        # 点图宽（=2）折回全幅像素契约。
+        pts_g = pts
+        ds = FRAME_W / float(pts.shape[1])
+        mask_g = (None if object_mask is None
+                  else cv2.resize(object_mask.astype(np.uint8),
+                                  (pts.shape[1], pts.shape[0]),
+                                  interpolation=cv2.INTER_NEAREST).astype(bool))
         y0, y1 = _band_rows(pts_g.shape[0])
         X, Y, Z = pts_g[y0:y1, :, 0], pts_g[y0:y1, :, 1], pts_g[y0:y1, :, 2]
         t_p = time.perf_counter()
@@ -1633,14 +1602,12 @@ class DepthRoadObserver:
         evid["grid"] = grid
         evid["far_bands"] = far
         if detections and fid is not None and frame_ts_ns is not None:
-            sheet = anchor_sheet_from_detections(pts, detections, fid,
-                                                 frame_ts_ns, fx=fx)
+            sheet = anchor_sheet_from_detections(detections, fid,
+                                                 frame_ts_ns, yh)
             if sheet is not None:
                 evid["anchors"] = sheet
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0,
-                       metric_scale=evid["ms"],
-                       solver=evid.get("solver"),
                        far_extents=far), evid
 
     @property
@@ -1727,30 +1694,44 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
     hm = np.zeros((DIAG_Y1 - Y0, w, 3), np.uint8)
     fx_f = float("nan")
     cam_h: float | None = None
+    yv_f: float | None = None
+    gm: tuple | None = None
+    mad: float | None = None
+    gfrac: float | None = None
     if evid is not None:
         pts_n, valid_n = evid["pts"], evid["valid"]
-        fx_f = float(evid["fx"]) * w   # 归一化焦距 → 全幅像素焦距
-        pts = np.stack([cv2.resize(pts_n[..., k], (w, h),
-                                   interpolation=cv2.INTER_LINEAR) for k in range(3)], -1)
-        valid = cv2.resize(valid_n.astype(np.float32), (w, h),
-                           interpolation=cv2.INTER_NEAREST).astype(bool)
-        pts[~valid] = np.nan
-        X, Y, Z = pts[Y0:DIAG_Y1, :, 0], pts[Y0:DIAG_Y1, :, 1], pts[Y0:DIAG_Y1, :, 2]
+        fx_f = float(evid["fx"])          # 已是全幅像素焦距
+        yv_f = evid.get("y_v")
+        gm = evid.get("ground")
+        mad = evid.get("mad")
+        gfrac = evid.get("ground_frac")
+        if yv_f is not None:
+            yv_i = int(round(float(yv_f)))
+            cv2.line(f, (0, yv_i), (w - 1, yv_i), (0, 200, 255), 1)
+            cv2.putText(f, f"horizon y_v={float(yv_f):.1f}",
+                        (w - 260, max(18, yv_i - 6)),
+                        cv2.FONT_HERSHEY_SIMPLEX, .5, (0, 200, 255), 1)
+        ph, pw = pts_n.shape[:2]
+        ds = w / float(pw)
+        y0h, y1h = _band_rows(ph)
+        X, Y, Z = (pts_n[y0h:y1h, :, 0], pts_n[y0h:y1h, :, 1],
+                   pts_n[y0h:y1h, :, 2])
         coef = _fit_road_plane(X, Y, Z)
         if coef is not None:
             a_c, b_c, c_c = (float(coef[0]), float(coef[1]), float(coef[2]))
             sgn = -1.0 if b_c * 5.0 + c_c > 0 else 1.0
             hgt = sgn * (Y - (a_c * X + b_c * Z + c_c))
+            hm_s = np.zeros((y1h - y0h, pw, 3), np.uint8)
             okm = np.isfinite(hgt)
-            hm[okm] = _hgt_rgb(hgt[okm])
+            hm_s[okm] = _hgt_rgb(hgt[okm])
             cam_h = abs(c_c)                  # 平面在相机正下方的高度≈相机离地高
             # 路径预估叠加（corridor_reach 闸开才有值）：绿点=规划路径、蓝点=
             # 当前横向线（x=0），标注「横向@距离」。投影与检测反投影同口径
-            # （u=x/z、v=a·u+b+c/z，当帧归一化焦距，禁写死焦距）；质量门拒帧
-            # coef=None 投不出去，诚实不画——路径预估与平面证据同源。
+            # （u=x/z、v=a·u+b+c/z，固定投影焦距）；质量门拒帧 coef=None
+            # 投不出去，诚实不画——路径预估与平面证据同源。
             cr_path = (note or {}).get("cr_path") or []
             if cr_path:
-                fx_px, fy_px = float(evid["fx"]) * w, float(evid["fy"]) * h
+                fx_px, fy_px = float(evid["fx"]), float(evid["fy"])
 
                 def _proj(zh: float, x_self: float):
                     z = zh + CAM_Z_DATUM_M           # 车头系→相机系
@@ -1778,10 +1759,8 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                                 cv2.FONT_HERSHEY_SIMPLEX, .45, (0, 255, 0), 1)
             for _side, zc, xm in reading.edge_pts:
                 # 锚点画在「检出穿越真实所在像素」：按 (side, zc, x_m) 反查带内
-                # 点云像素取中位，①原图与②高度图同位各画一圈。不做解析回投——
-                # 归一化/原生像素两套焦距单位在这里打过架（fy·h/oh 把黄圈全体
-                # 压到带顶，2026-10-02 挂账实证），像素真值零单位约定、零主点
-                # 假设，锚点语义=「这些像素的离地穿越被判成缘」。
+                # 点云像素取中位，①原图与②高度图同位各画一圈。像素真值零单位
+                # 约定、零主点假设，锚点语义=「这些像素的离地穿越被判成缘」。
                 # 近地面过滤（hgt≤0.15）：缘底在地面爬升起始处，X 窗内还有整面
                 # 缘体（墙脸/车身 hgt≥0.3），不过滤中位会被拽到结构中部。
                 m = ((Z >= zc - 1.0) & (Z < zc + 1.0) & (_side * X > 0.2)
@@ -1793,9 +1772,13 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
                 if not m.any():
                     continue
                 rr, cc = np.nonzero(m)
-                u, v = int(round(np.median(cc))), int(round(np.median(rr)))
-                cv2.circle(hm, (u, v), 5, (0, 255, 255), 2)
-                cv2.circle(f, (u, v + Y0), 6, (0, 255, 255), 2)
+                u_s = int(round(np.median(cc)))
+                v_s = int(round(np.median(rr)))
+                cv2.circle(hm_s, (u_s, v_s), 3, (0, 255, 255), 2)
+                cv2.circle(f, (int(round(u_s * ds)), int(round((y0h + v_s) * ds))),
+                           6, (0, 255, 255), 2)
+            hm = cv2.resize(hm_s, (w, DIAG_Y1 - Y0),
+                            interpolation=cv2.INTER_NEAREST)
     rej = ";".join(reading.rejects)[:110]
     if rej:
         cv2.putText(hm, rej, (8, hm.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
@@ -1828,11 +1811,14 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
           f" raw={_f(note.get('ro_raw'))}"
           f" age={note.get('age', '-')}ms new={note.get('new', '-')}"
           f"  fx={fx_f:.0f} cam_h={_f(cam_h)}")
-    sol = (evid or {}).get("solver") or {}
-    if sol:
-        l2 += (f" sh={sol.get('shift', float('nan')):+.3f}"
-               f" R̄={sol.get('resid_mean', float('nan')):.3f}"
-               f" n={sol.get('n', '-')}")
+    if yv_f is not None:
+        l2 += f" yv={float(yv_f):.1f}"
+    if mad is not None:
+        l2 += f" mad={float(mad):.3f}"
+    if gm is not None:
+        l2 += f" m={float(gm[0]):.4f} a={float(gm[1]):+.4f}"
+    if gfrac is not None:
+        l2 += f" gf={float(gfrac):.0%}"
     cv2.putText(band, l1, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 255, 255), 1)
     cv2.putText(band, l2, (8, 46), cv2.FONT_HERSHEY_SIMPLEX, .55, (200, 255, 200), 1)
     return np.vstack([body, band])
@@ -1841,7 +1827,7 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
 class AsyncDepthRoadObserver:
     """深度几何异步观测器（2026-09-24 解耦落地，协议与 treasure OCR worker 同构）。
 
-    为什么解耦这一层：observe 成本（MoGe q4f16 推理 + 点云重建 + 平面拟合/找边
+    为什么解耦这一层：observe 成本（DepthART 推理 + 合成点图 + 平面拟合/找边
     后处理）同步形态把控制拍预算吃光；路缘是**慢变量**——滞后 1~2 拍（50~100ms）
     读数仍有效；金币/街车是快变目标、必须与本拍像素同源，所以感知与黄线层不做
     异步（treasure「令牌与读数字节同源」的教训：跨线程搬运必有窗口，快变对象上
@@ -1852,9 +1838,8 @@ class AsyncDepthRoadObserver:
       不是结果——路缘下一拍还会再来）。captured_ts 用 perf_counter（与耗时/时效
       同族时钟；monotonic 在本机粒度 ~16ms 会把 age 量化）。
     - worker：节流窗（INFER_MIN_INTERVAL_S，开工时刻起算——产出间隔=max(窗,
-      observe 耗时)，压 DML 锁占空比）→ **错峰**（控制拍在跑时，等它刚放锁的
-      节拍、再等本拍 push 落地才开工——54ms 前向伸进下一拍的余量从 1~54ms
-      收到几何下限 ~19ms）→
+      observe 耗时)）→ **错峰**（控制拍在跑时，等它刚放锁的节拍、再等本拍 push
+      落地才开工，保证取到本拍帧）→
       pop latest →
       同步 observe（run 本体受 core.dml_lock 互斥：与控制拍感知并发 run 会段错误
       杀进程，2026-09-25 实证；抢不到锁抛 Busy → 计 busy_skips 弃本帧，不排队）
@@ -1887,12 +1872,11 @@ class AsyncDepthRoadObserver:
                           # 即**内容陈旧度**上限：净效果比旧口径紧 cap 段（P50
                           # 21.7ms），实测超龄丢弃率变化见 DEPTH_CHAIN_LATENCY
                           # _20261017.md §5
-    INFER_MIN_INTERVAL_S = 0.04   # worker 出工下间隔：锁内只有 run 本体，控制拍
-                                  # 感知（同锁）的碰撞等待有上界即可（见 dml_lock）。
-                                  # 2026-10-17 从 0.07 降到 0.04：几何块抽取后
-                                  # observe P50 落到 ~86ms，窗仍不咬合（产出间隔
-                                  # =observe 耗时）；降窗只是把"窗成为新瓶颈"的
-                                  # 门槛让开，当前产出间隔不变
+    INFER_MIN_INTERVAL_S = 0.06   # worker 出工下间隔（名义 ~10Hz）：v5 全链单线程
+                                  # 38ms、并发 48ms；错峰平均再吃掉 ~25ms，100ms 窗
+                                  # 实测只到 6.4Hz，60ms 窗实测 9~9.4Hz（结果龄 p50
+                                  # 53ms、弃帧 0）。深度是慢变量，让出 CPU 给控制拍
+                                  # 与线观测，结果龄仍在 350ms 预算内
     STAGGER_FRESH_S = 1.0     # 错峰判据：最近一次控制拍放锁在此之内 = 控制拍在跑，
                               # 按它的节拍开工；超过则视为没有控制拍（菜单/开局前），
                               # 不空等（否则 worker 每轮白等一个上限）
@@ -1906,7 +1890,7 @@ class AsyncDepthRoadObserver:
                              # 假设漂移的取证节奏下漏帧——漂移拍与调试图对不上；
                              # 磁盘代价 ≈90 帧/局 ×1.3MB，取证局可承受）
 
-    DEBUG_WRITE_QUEUE = 6    # 调试落盘待写包上限（每包≈帧 2.7MB + 原生点图 2.4MB）：
+    DEBUG_WRITE_QUEUE = 6    # 调试落盘待写包上限（每包≈帧 2.7MB + 半幅点图 0.7MB）：
                              # 写盘跟不上就丢新包——debug 不得反压推理（丢包计数见
                              # health()["debug_dropped"]）
 
@@ -1944,7 +1928,7 @@ class AsyncDepthRoadObserver:
         self._pending: tuple[int, np.ndarray, float, np.ndarray | None,
                              dict | None, int | None,
                              tuple | None, int | None,
-                             dict | None] | None = None
+                             dict | None, float | None] | None = None
         self._result: tuple[int, DepthRoadReading, DrivableGrid | None,
                             float, dict, DepthAnchorSheet | None,
                             int | None] | None = None
@@ -2009,13 +1993,15 @@ class AsyncDepthRoadObserver:
              frame_ts_ns: int | None = None,
              detections: tuple | None = None,
              fid: int | None = None,
-             cap_pre: dict | None = None) -> None:
+             cap_pre: dict | None = None,
+             y_v: float | None = None) -> None:
         """object_mask：本帧 YOLO 检测框掩码（与帧同源同拍，见 observe 注）。
         note：消费端上一拍决策快照（只读小 dict，主线程每拍新建）——随帧进
         调试图决策带，供人工核对。frame_ts_ns：本帧到达采集回调的时刻
         （perf_counter_ns，frame_with_age 同源）——分段计时 cap 段的起点；
         不传则分段缺 cap（仍记 queue/pub）。detections/fid：混合测距锚点
         清单供数（(det_idx,x0,y0,x1,y1) 原始车框序列 + 帧号；刀一只收车框）。
+        y_v：当帧灭点行（车道线观测快照，慢变量；缺值回退 gate0.y_h）。
         cap_pre：拍内时间戳链（perf_counter 秒，与 frame_ts_ns 同钟；键有序
         pick/rec/det/mask，缺环节点值 None）——cap 段内段拆解的原料，见
         _timing_segments。无 worker（session 缺失/start 未调）时直接空转：
@@ -2027,7 +2013,8 @@ class AsyncDepthRoadObserver:
             self._pushed += 1
             self._pending = (self._pushed, frame_rgb.copy(), time.perf_counter(),
                              None if object_mask is None else object_mask.copy(),
-                             note, frame_ts_ns, detections, fid, cap_pre)
+                             note, frame_ts_ns, detections, fid, cap_pre,
+                             None if y_v is None else float(y_v))
         self._wakeup.set()
 
     def take(self) -> tuple[DepthRoadReading | None, DrivableGrid | None, bool]:
@@ -2131,7 +2118,7 @@ class AsyncDepthRoadObserver:
         凭空老 90ms，worker 相位也被踢乱（pub 双峰、多等满一拍）。
 
         events 模式仍走 worker 内联编码：ring 存已编码字节（~2-3MB/包），改存原始
-        帧会涨到 ~5MB/包 × ring 长。取证包口径（336×598 原生点图 fp16 + valid +
+        帧会涨到 ~5MB/包 × ring 长。取证包口径（360×640 合成点图 fp16 + valid +
         原生焦距，可按模块 docstring「离线复算」逐位重放）不变。"""
         now = time.monotonic()
         # 单拍事件即时判定：CONSERVE 只持续 1~2 拍时，判定排 0.5s 节流后
@@ -2200,16 +2187,16 @@ class AsyncDepthRoadObserver:
         cv2.imwrite(str(stem) + "_frame.jpg",
                     cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
                     [cv2.IMWRITE_JPEG_QUALITY, 85])
-        sol = (evid or {}).get("solver") or {}
+        gm = (evid or {}).get("ground") or (np.nan, np.nan, np.nan)
         np.savez(str(stem) + "_evid.npz",
                  pts=evid["pts"].astype(np.float16),
                  valid=np.packbits(evid["valid"].ravel()),
                  valid_shape=np.array(evid["valid"].shape, np.int64),
                  fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
-                 ms=np.float64(evid.get("ms", -1.0)),
-                 sol_sh=np.float64(sol.get("shift", np.nan)),
-                 sol_resid=np.float64(sol.get("resid", np.nan)),
-                 sol_n=np.int64(sol.get("n", -1)),
+                 y_v=np.float64(evid.get("y_v", np.nan)),
+                 g_m=np.float64(gm[0]), g_a=np.float64(gm[1]),
+                 g_A=np.float64(gm[2]),
+                 mad=np.float64(evid.get("mad", np.nan)),
                  fid=np.int64(note["fid"]) if note and note.get("fid") is not None
                  else np.int64(-1))
         if object_mask is not None:
@@ -2251,17 +2238,17 @@ class AsyncDepthRoadObserver:
         try:
             img = render_depth_debug(frame, evid, reading, object_mask, note,
                                      grid=evid.get("grid") if evid else None)
-            sol = (evid or {}).get("solver") or {}
+            gm = (evid or {}).get("ground") or (np.nan, np.nan, np.nan)
             buf = io.BytesIO()
             np.savez(buf,
                      pts=evid["pts"].astype(np.float16),
                      valid=np.packbits(evid["valid"].ravel()),
                      valid_shape=np.array(evid["valid"].shape, np.int64),
                      fx=np.float64(evid["fx"]), fy=np.float64(evid["fy"]),
-                     ms=np.float64(evid.get("ms", -1.0)),
-                     sol_sh=np.float64(sol.get("shift", np.nan)),
-                     sol_resid=np.float64(sol.get("resid", np.nan)),
-                     sol_n=np.int64(sol.get("n", -1)),
+                     y_v=np.float64(evid.get("y_v", np.nan)),
+                     g_m=np.float64(gm[0]), g_a=np.float64(gm[1]),
+                     g_A=np.float64(gm[2]),
+                     mad=np.float64(evid.get("mad", np.nan)),
                      fid=np.int64(note["fid"]) if note and note.get("fid") is not None
                      else np.int64(-1))
             return {
@@ -2296,7 +2283,7 @@ class AsyncDepthRoadObserver:
     def _pop_latest(self) -> tuple[int, np.ndarray, float, np.ndarray | None,
                                    dict | None, int | None,
                                    tuple | None, int | None,
-                                   dict | None] | None:
+                                   dict | None, float | None] | None:
         with self._lock:
             item, self._pending = self._pending, None
             return item
@@ -2306,18 +2293,13 @@ class AsyncDepthRoadObserver:
             return None if self._pending is None else self._pending[0]
 
     def _stagger_wait(self) -> bool:
-        """等控制拍刚放下 DML 锁的节拍、并等本拍新帧落地后再开工；False=停机。
+        """等控制拍放锁的节拍、并等本拍新帧落地后再开工；False=停机。
 
-        前向 54ms 是不可分割的原子、比控制拍 50ms 还长——无论怎么排都会伸进
-        下一拍。自由起跑时伸出量在 1~54ms 之间随机（实测 37~42% 的拍要等锁，
-        其中一大档等满 40~54ms）；从感知刚放锁的瞬间起跑，伸出量压到几何下限
-        ~19ms（前向 54 − 拍内空档 42 + 预处理 7）。等节拍放在取帧之前：弹出的
-        仍是刚采集的帧，不额外增加结果年龄。
-
-        节拍之后还要等本拍的 push 落地：拍内 push 在感知之后约 6~10ms（掩码
-        构建 + 入队），只等节拍会取到**上一拍**的帧——实测队列段 20→47ms，
-        结果年龄 p90 反超 350ms 预算。等的是"push 序号变化"，不是固定延时；
-        采集停顿时按 PUSH_WAIT_S 超时，用现有帧继续。
+        v5 前向只占锁 5~7ms、全链约 38ms，锁冲突已不是主因；错峰保留的理由
+        变成取帧相位：拍内 push 在感知之后约 6~10ms（掩码构建 + 入队），不等
+        节拍会取到**上一拍**的帧——实测队列段 20→47ms，结果年龄反超 350ms
+        预算。等的是"push 序号变化"，不是固定延时；采集停顿时按 PUSH_WAIT_S
+        超时，用现有帧继续。
         """
         seq_push = self._pending_seq()
         beat_seq, t_beat = dml_lock.TICK_BEAT.snapshot()
@@ -2373,7 +2355,8 @@ class AsyncDepthRoadObserver:
             try:
                 reading, evid = self._obs.observe_debug(
                     item[1], object_mask=item[3], detections=item[6],
-                    fid=item[7], frame_ts_ns=item[5])
+                    fid=item[7], frame_ts_ns=item[5],
+                    y_v=item[9] if len(item) > 9 else None)
             except dml_lock.Busy:
                 # DML 被控制拍感知占用：弃本帧不排队（latest-only，下一帧再来），
                 # 单独计数——这是让锁的常规代价，不是故障。

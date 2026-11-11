@@ -31,8 +31,8 @@ DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
         "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
     ),
     DEPTH_MODEL_REL: (
-        71913448,
-        "2e5c58b4bd6367593a8ed6039ef729a89c4b19f3a64e5954713f10a36ec0f116",
+        24155097,
+        "825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71",
     ),
 }
 

@@ -45,12 +45,12 @@ class Calib:
     """
 
     vpx: float        # 消失点 x
-    y_h: float        # 地平线行
-    focal_px: float   # 线角几何的全幅相机焦距（≠ MoGe 逐帧 fx，见 _notes）
+    y_h: float        # 地平线行（2D 尺子口径；合成点图的地平线逐帧取车道线灭点，
+                      # 缺值时回退此值）
+    focal_px: float   # 线角几何的全幅相机焦距（≠ 合成点图的固定投影焦距 630）
     a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
     lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
-    depth_scale: float  # MoGe 米制点云全局缩放（metric_scale × 此值）
 
 
 def _require(d: dict, key: str) -> float:
@@ -69,11 +69,10 @@ def _read_gate0(path) -> Calib:
     cal = Calib(
         vpx=_require(d, "vpx"), y_h=_require(d, "y_h"),
         focal_px=_require(d, "focal_px"), a_x=_require(d, "a_x"),
-        min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"),
-        depth_scale=_require(d, "depth_scale"))
+        min_denom=_require(d, "min_denom"), lane_w_m=_require(d, "lane_w_m"))
     # 依赖矛盾检查：尺子分母与换算锚都不能退化
     if not (cal.a_x > 0 and cal.min_denom > 0 and cal.vpx > 0
-            and cal.lane_w_m > 0 and cal.depth_scale > 0):
+            and cal.lane_w_m > 0):
         raise ValueError(f"gate0.json 数值非法：{cal}")
     return cal
 

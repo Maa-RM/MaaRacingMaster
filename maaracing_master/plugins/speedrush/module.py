@@ -66,8 +66,7 @@ from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading,
-    last_slow_forward)
+    blocked_inner_reading, load_session, region_reading)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import (
@@ -1704,7 +1703,8 @@ class SpeedRushModule(ActivityModule):
                                                conf_floor=cfg.scoring.conf_floor),
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
-                # 线角相机的全幅焦距（gate0 标定；不是 MoGe 逐帧 fx 的口径）
+                # 线角相机的全幅焦距（gate0 标定；与合成点云的固定投影焦距
+                # 不是同一个量，见 gate0 _notes）
                 "focal_px": cal.focal_px,
                 "wall_track": wt,
                 "ego_road": _EgoRoadObserver(
@@ -1761,8 +1761,6 @@ class SpeedRushModule(ActivityModule):
                 "abort_phase": False,
                 "prev_ts": None, "disabled": False,
                 "trace": [], "trace_sink": self._trace,
-                # 跨会话残留的慢 forward 锁存不写进新会话（同钟起点过滤）
-                "slow_seen_ns": int(time.perf_counter() * 1e9),
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
                 # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
@@ -1845,8 +1843,8 @@ class SpeedRushModule(ActivityModule):
             last_fid = chain.get("last_fid")
             fid_jump = last_fid is not None and fid - last_fid > 2
             chain["last_fid"] = fid
-            # 深度几何（几何主人，v4 2026-10-01：MoGe 逐帧焦距点云 3D 找边当
-            # road_offset 供数源；黄线 2D 链路整体退役）。异步解耦协议同前：
+            # 深度几何（几何主人，v5 2026-11-11：车道线灭点行 + DepthART 相对
+            # 深度合成点云，3D 找边当 road_offset 供数源）。异步解耦协议同前：
             # 本帧交 worker 后台推理，take() 只消费过了 age 闸的最新结果——
             # 控制拍不再付 observe 成本。协议本身不抛，异常闸按观测件惯例
             # 保留（fail-safe）。push/take 前移到 tracker 之前：锚点清单随
@@ -1856,6 +1854,13 @@ class SpeedRushModule(ActivityModule):
             dgrid = None
             dgeo_new = False
             anchor_sheet = None
+            # 线观测快照先取（深度生产者要用它的灭点行做米制骨架）。线是慢
+            # 变量、灭点行更是，允许比本帧滞后一拍；缺值时深度层回退标定值。
+            lw = chain.get("lane_obs")
+            lane = lw.latest() if lw is not None else None
+            lane_usable = (lane is not None and bool(lane.get("usable"))
+                           and (lane.get("det_age_ms") or 0.0)
+                           <= LANE_POS_AGE_MS)
             try:
                 # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图
                 # 的决策带，供人工逐帧核对"大脑当时拿了什么"。不可变小 dict，
@@ -1872,6 +1877,7 @@ class SpeedRushModule(ActivityModule):
                     frame, object_mask=mask,
                     frame_ts_ns=ts_ns,
                     detections=boxes, fid=fid, cap_pre=cap_ts,
+                    y_v=None if lane is None else lane.get("y_v"),
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
@@ -1886,16 +1892,8 @@ class SpeedRushModule(ActivityModule):
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             if chain.get("view_guard") is not None and gpad is not None:
                 self._tick_view_guard(chain, gpad, dgeo, dgeo_new)
-            # 线观测先取（供数也要用）：线严格可用时它就是走廊中心原点，
-            # 深度只填边界/宽度。用上一拍的执行位（本拍 planner.update 还没跑），
-            # 与决策拿到的 executed 同源，场景参考系因此一致。
-            # 读取前移到 tracker.update 之前（车道线定道 phase 1）：同一拍
-            # 快照供跟踪层做框底行车道成员插值。
-            lw = chain.get("lane_obs")
-            lane = lw.latest() if lw is not None else None
-            lane_usable = (lane is not None and bool(lane.get("usable"))
-                           and (lane.get("det_age_ms") or 0.0)
-                           <= LANE_POS_AGE_MS)
+            # 线观测快照已在深度 push 前取过（同一对象、同一拍）：这里只判语义门
+            # ——线严格可用时它就是走廊中心原点，深度只填边界/宽度。
             obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
                                           anchors=anchor_sheet,
                                           lane=lane if lane_usable else None)
@@ -2128,12 +2126,6 @@ class SpeedRushModule(ActivityModule):
         ctrl_ms = _seg(_cap.get("det"), _now)
         _dbg = chain.get("debug")
         _dst = _dbg.stats() if _dbg is not None else {}
-        _slow = last_slow_forward()
-        if _slow is not None and _slow.get("ts_ns", 0) > chain.get(
-                "slow_seen_ns", 0):
-            chain["slow_seen_ns"] = _slow["ts_ns"]
-        else:
-            _slow = None
         _plan_ego = chain.get("last_plan_ego")   # plan 非 None 时必为本拍 EgoState
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
@@ -2391,33 +2383,17 @@ class SpeedRushModule(ActivityModule):
             # （age 起点之外、此前不可见的段；内段 cap_pick/rec/det/mask/copy_ms
             # =拾取/录制/检测/掩码/入队拷贝，同钟伸缩 Σ内段≡cap，2026-10-08
             # 性能第二批插桩）、queue=入队→worker 开工、
-            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=MoGe 四段快照。
+            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=生产者三段快照
+            # （pre/forward/points）+ 后处理三段（plane/edges/grid）。
             # 仅新证据拍记录（驻留复用拍重复无信息），见 _timing_segments
             "dgeo_seg": None if not (dgeo is not None and dgeo_new)
             else chain["depth_geo"].last_segments,
-            # dgeo_slow=worker 慢 forward 锁存（>200ms，同钟 ts_ns/pre/forward）：
-            # latest-only 会覆盖卡住帧的 dgeo_seg，这列保证那次尝试仍可见。
-            "dgeo_slow": _slow,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
-            # 尺度观测三列（尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默
-            # 通过平面门，先落盘可见再谈防护，只写不读）：MoGe 尺度头原始输出
-            # + 全幅焦距 + 平面 c（=cam_h，名义 ~1.9m，瞬态段 3.9~5.7）。
-            # 列名 dgeo_metric（2026-10-10 焦距治理修正）：曾与上方耗时列重名
-            # dgeo_ms——同 dict 后键胜出，耗时列被静默覆盖。
-            "dgeo_metric": None if dgeo is None or dgeo.metric_scale is None
-            else round(dgeo.metric_scale, 3),
+            # 焦距与相机高观测两列：焦距是固定投影焦距（RULES §3.8），
+            # cam_h 取平面 c（名义 1.25m；坏平面会显形）。
             "dgeo_focal": None if dgeo is None or dgeo.fx is None
             else round(dgeo.fx, 1),
-            # 焦距求解器诊断（焦距漂移治理 2026-10-10，观测面只写不读）：
-            # shift=深度偏移解、resid=逐样本平均残差（uv² 单位，跨帧可比）、
-            # nsol=64×64 采样有效样本数（GPT 审查 P0：残差必须随 n 归一）
-            "dgeo_shift": None if dgeo is None or not dgeo.solver
-            else round(float(dgeo.solver.get("shift", float("nan"))), 4),
-            "dgeo_resid": None if dgeo is None or not dgeo.solver
-            else round(float(dgeo.solver.get("resid_mean", float("nan"))), 6),
-            "dgeo_nsol": None if dgeo is None or not dgeo.solver
-            else int(dgeo.solver.get("n", -1)),
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
             else round(abs(dgeo.coef[2]), 3),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账

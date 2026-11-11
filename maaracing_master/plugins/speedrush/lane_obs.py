@@ -50,8 +50,8 @@ DEFAULT_CAM_H = 1.28
 # x_lane_abs_max 注入（LaneObsWorker 构造参数），此处只是直构缺省。
 OFF_MAX = 2.6
 # 线角焦距 = gate0 标定的相机焦距（全幅像素），由调用方随帧传入：
-# 线角正切 = 像素偏置 ÷ 焦距。注意它与 MoGe 逐帧 fx 不是同一口径（后者是
-# 点云/框投影的焦距，实测约 670）；拿它代入会把车头角放大 1.2 倍、在线速度
+# 线角正切 = 像素偏置 ÷ 焦距。注意它与合成点云的固定投影焦距（630）不是
+# 同一个口径（后者是点云/框投影的焦距，见 depth_geo 模块头）——拿它代入会把车头角放大 1.2 倍、在线速度
 # 比例反向压低（HUD 得分速度锚实测 0.9→0.62）。本模块不再持有焦距字面量。
 FOCAL_LO = 400.0
 FOCAL_HI = 1400.0
@@ -63,6 +63,12 @@ CAM_H_HI = 1.55
 NEAR_Y = (560.0, 720.0)
 FAR_Y = (440.0, 545.0)
 PROB_THRESH = 0.30
+# 灭点行（地平线）估计的三级门（2026-11-11 车道几何探针定案）：步长 1 后远场
+# 虚线碎片变多，稀疏碎片两两交点会给出 300 行的假灭点。俯仰物理门约 ±2°
+# （fy=630 下 ±22px），行 520 处线距门挡「同线碎片/跨太多道」，MAD 挡少数派。
+VANISH_Y_LO, VANISH_Y_HI = 341.0, 381.0
+VANISH_PROBE_Y = 520.0
+VANISH_SPAN_LO, VANISH_SPAN_HI = 60.0, 900.0
 TRACK_TOL = 0.15
 TRACK_GAP = 6
 COAST_MAX_TICKS = 10
@@ -358,6 +364,46 @@ def _lines_from_prob(prob: np.ndarray, cam_h: float,
                       "side": _side_from_x(x_near),
                       "fits": fits})
     return lines
+
+
+def _vanish_row(lines: list[dict]) -> float | None:
+    """线候选 → 逐帧灭点行（地平线）。每条线取近段拟合（缺近段回退远段），
+    两两交点过三级门后取中位；证据不足返回 None（调用方保留上一值/回退标定）。
+
+    这是合成点云的地平线来源：相对深度是视差向仿射不变量，地面模型里 y_h 与
+    偏移项共线，**深度本身给不出地平线**（y_h 扫值残差恒定，2026-11-11 探针）。"""
+    fits = []
+    for c in lines:
+        fts = c.get("fits") or ()
+        if not fts:
+            continue
+        ft = fts[0]                     # (near, far)：近段优先
+        s, a = ft.get("s"), ft.get("a")
+        if s is None or a is None:
+            continue
+        fits.append((float(s), float(a)))
+    if len(fits) < 2:
+        return None
+    yvs = []
+    for i in range(len(fits)):
+        for j in range(i + 1, len(fits)):
+            s1, a1 = fits[i]
+            s2, a2 = fits[j]
+            if abs(s1 - s2) < 5e-3:
+                continue
+            yv = (a2 - a1) / (s1 - s2)
+            if not (VANISH_Y_LO <= yv <= VANISH_Y_HI):
+                continue
+            d = abs((s1 - s2) * VANISH_PROBE_Y + (a1 - a2))
+            if not (VANISH_SPAN_LO <= d <= VANISH_SPAN_HI):
+                continue
+            yvs.append(float(yv))
+    if not yvs:
+        return None
+    med = float(np.median(yvs))
+    mad = float(np.median(np.abs(np.asarray(yvs) - med)) * 1.4826)
+    keep = [y for y in yvs if abs(y - med) <= 2.5 * mad] if mad > 0.5 else yvs
+    return float(np.median(keep))
 
 
 class LineTracker:
@@ -811,6 +857,7 @@ class LaneObsWorker:
         self._n = 0
         self._use_dml = False
         self._focal: float | None = None   # 逐帧全幅焦距（深度读数同源）
+        self._yv: float | None = None      # 最近一次可算的灭点行（地平线，慢变量）
         self.busy_skips = 0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
@@ -971,6 +1018,9 @@ class LaneObsWorker:
                     rec = self._infer(rgb, cam_h, self._focal)
                     if rec is None:      # DML 被占：本帧让路，下一帧再来
                         continue
+                    yv = _vanish_row(rec["lines"])
+                    if yv is not None:
+                        self._yv = yv
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
                                                jump, anchor)
                 t_done = time.perf_counter()
@@ -1007,6 +1057,9 @@ class LaneObsWorker:
                 "locked": int(res.get("locked", 0)),
                 "focal": None if self._focal is None
                 else round(self._focal, 1),
+                # 灭点行（地平线）：合成点云的米制骨架；慢变量，检测拍更新、
+                # 预测/断线拍保留上一值
+                "y_v": None if self._yv is None else round(self._yv, 2),
                 "t_done": t_done, "t_det": self._last_det_t,
                 # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
                 "lines": res["lines"]}
