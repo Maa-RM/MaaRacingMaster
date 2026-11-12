@@ -15,7 +15,7 @@ status: active
 迭代 2 的个体配对（币轨迹预期到达 ↔ 比分跳变）在四个收集行上都贴着循环平移零分布，
 没有稳定信号（commit `a020ad3`）。随后模型外的颜色计数证明「路上本来就几乎没有币」——
 不是模型漏检（commit `ba3bd4b`）；浮字面额直读又把收入结构结掉：**极限动作约占算内收入一半，
-30 分档（金币 / 普通超车）只占小头**（`RULES.md` §4.8，[`speedrush_scoring`](../speedrush_scoring/README.md) 结论 11）。
+30 分档（金币 / 普通超车）只占小头**（`RULES.md` §4.8）。
 
 故「为币写规划器」的前提不成立，题目作废。原 `probe_decision_points.py` 依赖的旧 3 类检测模型
 已不在仓库、脚本无法复跑，随之删除；过程与数字留在 git（`git log -- tools/experiments/speedrush_planning`）。
