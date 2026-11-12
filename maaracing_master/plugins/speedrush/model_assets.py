@@ -39,8 +39,8 @@ DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
 # 线观测可选：缺失时退回深度/墙供数，不影响深度档启动
 LANE_MANIFEST: dict[str, tuple[int, str]] = {
     LANE_MODEL_REL: (
-        543153,
-        "45044c268d54ee34cbd097abcf19fb0d53858a8815e0024018db0df6137289e4",
+        543156,
+        "bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc",
     ),
 }
 

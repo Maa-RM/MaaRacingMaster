@@ -86,6 +86,18 @@ GROUND_MAD_MAX = 0.06           # 地面模型残差 MAD 上限：超过=拟合�
 #                                 0.19 之间的空档）。超限按「本帧弃权」处理，
 #                                 与地面拟合失败同路（road_offset 退线/记忆/模型）。
 GROUND_ROW_LO, GROUND_ROW_HI = 380, 690   # 地面模型拟合带（全幅行）
+# 两阶段拟合的中央列带（2026-11-12）：自车正前方必然是路面（物理先验），
+# 护栏/人行道/建筑都在两侧。粗拟只吃这一段，质量门的 MAD 也在这段上算——
+# 拿全幅算等于让「画面里非路面结构的占比」决定这一帧可不可用。
+GROUND_CORE_LO, GROUND_CORE_HI = 0.30, 0.70
+GROUND_REFIT_K = 3.0            # 全宽筛贴地点的容差倍数（× 中央粗拟 MAD）
+# 中央列「离群占比」上限（2026-11-12 独立复核补）：MAD 只说明「拟合住了」，
+# 不说明「拟合住的是路面」。中央被一块平面状障碍占去 65% 时，障碍本身是平面，
+# 4 轮 2.5σ 裁剪会收敛到障碍平面、MAD 只有 0.038（过门），但参数 A 从 0.33
+# 跳到 3.95、路面点全成离群——旧全幅拟合因为障碍只占 26% 反而正确。所以中央
+# 拟合必须同时看「被裁掉多少点」：真实路面帧 p95 18.3%，障碍占 65% 时 33.8%。
+# 超限即退回旧全幅路径（保守，不猜）。
+GROUND_CORE_OUTLIER_MAX = 0.20
 GROUND_EXCL_PAD = 8             # 拟合时挖掉最大车框的外扩像素
 GROUND_STRIDE = 4               # 拟合抽样步长（4×4，点数降 4 倍；与 2×2 的系数差：
                                 #  m ≤3e-7、A ≤3e-6、a ≤1.5e-4，折算到深度可忽略）
@@ -397,43 +409,110 @@ def _resize_align_corners(img: np.ndarray, h: int, w: int) -> np.ndarray:
                      borderMode=cv2.BORDER_REPLICATE)
 
 
-def _ground_model(v: np.ndarray, y_v: float, box: tuple | None
-                  ) -> tuple[float, float, float, float] | None:
-    """相对深度地面模型 ``V = A + m·(r−y_h) + a·u`` → (m, a, A, mad)。
+def _ground_points(v: np.ndarray, box: tuple | None
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """拟合带内的 stride 抽样点集 → (ys, xs, vals)，全幅像素坐标。
 
-    ``box``（最大车框，全幅像素）外扩 8px 后从拟合域挖掉：贴脸大车的车身会
-    把地面模型拽歪。MAD 只记录（质量门在消费方，拟合失败返回 None）。"""
+    只在这一份抽样网格上做后续全部运算（拟合/筛选/质量门），不再对
+    720×1280 全幅建掩码——那是两阶段拟合多付 19ms 的来源。"""
     h, w = v.shape
-    rows = np.arange(h)[:, None]
-    mask = np.broadcast_to(
-        (rows >= GROUND_ROW_LO) & (rows <= GROUND_ROW_HI), (h, w)).copy()
+    ys = np.arange(GROUND_ROW_LO, GROUND_ROW_HI, GROUND_STRIDE)
+    xs = np.arange(0, w, GROUND_STRIDE)
+    YY, XX = np.meshgrid(ys, xs, indexing="ij")
+    vals = v[GROUND_ROW_LO:GROUND_ROW_HI:GROUND_STRIDE, ::GROUND_STRIDE]
+    vals = vals.astype(np.float64, copy=False)
     if box is not None:
         x0, y0, x1, y1 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
-        mask[max(0, y0 - GROUND_EXCL_PAD):min(h, y1 + GROUND_EXCL_PAD),
-             max(0, x0 - GROUND_EXCL_PAD):min(w, x1 + GROUND_EXCL_PAD)] = False
-    mask = mask[::GROUND_STRIDE, ::GROUND_STRIDE]
-    ys, xs = np.nonzero(mask)
-    ys, xs = ys * GROUND_STRIDE, xs * GROUND_STRIDE
+        keep = ~((YY >= y0 - GROUND_EXCL_PAD) & (YY < y1 + GROUND_EXCL_PAD)
+                 & (XX >= x0 - GROUND_EXCL_PAD) & (XX < x1 + GROUND_EXCL_PAD))
+        return YY[keep], XX[keep], vals[keep]
+    return YY.ravel(), XX.ravel(), vals.ravel()
+
+
+def _fit_pts(ys: np.ndarray, xs: np.ndarray, vals: np.ndarray,
+             y_v: float, w: int) -> tuple[float, float, float, float] | None:
+    """点集上的 4 轮 MAD 剔除平面拟合 → (m, a, A, mad)；点数不足返回 None。"""
     if ys.size < GROUND_MIN_PTS:
         return None
-    rc = ys + 0.5
-    u = (xs + 0.5) / w
-    A = np.stack([rc - y_v, u, np.ones(ys.size)], 1)
-    y = v[ys, xs].astype(np.float64, copy=False)
+    A = np.stack([ys + 0.5 - y_v, (xs + 0.5) / w, np.ones(ys.size)], 1)
 
     def _solve3(Aw: np.ndarray, yw: np.ndarray) -> np.ndarray:
         # 3 列正规方程；比 lstsq 的 SVD 快一个量级，双精度下条件数足够
         return np.linalg.solve(Aw.T @ Aw, Aw.T @ yw)
 
-    coef = _solve3(A, y)
+    coef = _solve3(A, vals)
     mad = 0.0
     for _ in range(4):
-        resid = A @ coef - y
+        resid = A @ coef - vals
         med = np.median(resid)
         mad = float(np.median(np.abs(resid - med)) * 1.4826)
         keep = np.abs(resid - med) < 2.5 * (mad + 1e-9)
-        coef = _solve3(A[keep], y[keep])
+        if keep.sum() < GROUND_MIN_PTS // 2:
+            break
+        coef = _solve3(A[keep], vals[keep])
     return float(coef[0]), float(coef[1]), float(coef[2]), mad
+
+
+def _ground_model(v: np.ndarray, y_v: float, box: tuple | None
+                  ) -> tuple[float, float, float, float] | None:
+    """相对深度地面模型 ``V = A + m·(r−y_h) + a·u`` → (m, a, A, mad)。
+
+    **两阶段拟合（2026-11-12）**：旧实现拿全幅行带 380~690 一次拟合，隐含
+    「这半幅画面是同一个地平面」。贴右护栏的构型里混凝土护栏 + 人行道占了
+    右下四成，它们高出路面 0.15~0.25（相对深度），把全幅 MAD 顶到 0.14~0.21
+    （门限 0.06）→ 整帧弃用 → 下游无深度、无线锚、决策盲（20261112 局 p2：
+    453/800 拍被弃，前 31 秒 `ro_source=none`）。
+
+    ① 中央列带粗拟：自车正前方**通常**是路面（物理先验），护栏/人行道在两侧；
+    ② 全带用粗平面筛贴地点重拟：把两侧真路面纳进来、剔掉高出路面的结构；
+    ③ 质量门仍在**中央列**上算——不在筛选后的点集上算，避免「筛完当然小」
+       的自证（筛选本身由粗平面定义，拿它当判据等于自说自话）。
+
+    **中央列不是无条件的**（2026-11-12 独立复核修正）：前车贴脸、飞坡跳台、斜
+    对墙时中央列被占，粗拟会拟合出一个荒谬的平面；更隐蔽的是「中央被一块平面
+    状障碍占去多数」——障碍本身是平面，MAD 只有 0.03 就过门，但参数已被换掉
+    （合成实测：障碍占中央 65% 时 A 从 0.33 跳到 3.95，路面点全成离群）。所以
+    中央粗拟要同时过两道门：MAD ≤ 0.06 **且** 2.5σ 裁剪的离群占比 ≤ 0.20；
+    任何一道不过、或重拟后中央 MAD 仍超门，一律**退回旧的全幅一次拟合**。
+    旧行为就是那条路径，改造因此对「接受率」严格单调不劣（实测 607 帧：旧合格
+    253 帧全部保留，另救回 323 帧）。注意这不是「平面函数等价」的保证——旧
+    合格帧仍可能换成参数不同但同样合格的新平面（|Δa| p95 ≈ 0.05）。"""
+    h, w = v.shape
+    ys, xs, vals = _ground_points(v, box)
+    if ys.size < GROUND_MIN_PTS:
+        return None
+    core = (xs >= w * GROUND_CORE_LO) & (xs < w * GROUND_CORE_HI)
+    fit_core = _fit_pts(ys[core], xs[core], vals[core], y_v, w)
+    if fit_core is None:                      # 中央列不足：退回旧全幅路径
+        return _fit_pts(ys, xs, vals, y_v, w)
+    m0, a0, A0, mad0 = fit_core
+    # 中央列两道门：拟合优度 + 离群占比（后者防「平面状障碍占多数」）
+    cy, cx, cv = ys[core], xs[core], vals[core]
+    rr0 = (A0 + m0 * (cy + 0.5 - y_v) + a0 * (cx + 0.5) / w) - cv
+    cm0 = float(np.median(rr0))
+    mad0_core = float(np.median(np.abs(rr0 - cm0)) * 1.4826)
+    out0 = float(np.mean(np.abs(rr0 - cm0) > 2.5 * (mad0_core + 1e-9)))
+    if mad0_core > GROUND_MAD_MAX or out0 > GROUND_CORE_OUTLIER_MAX:
+        # 中央被占（前车/飞坡/斜对墙/平面障碍）：中央读数不可信，退回旧行为
+        return _fit_pts(ys, xs, vals, y_v, w)
+    # ② 筛：只留粗平面解释得住的点（护栏/人行道/车辆高出来被剔掉）
+    resid = (A0 + m0 * (ys + 0.5 - y_v) + a0 * (xs + 0.5) / w) - vals
+    med = float(np.median(resid))
+    tau = max(GROUND_TAU, GROUND_REFIT_K * mad0)
+    sel = np.abs(resid - med) <= tau
+    fit_full = _fit_pts(ys[sel], xs[sel], vals[sel], y_v, w)
+    if fit_full is None:
+        # 筛后点数不足（大车占满全带）：重拟没发生，退回旧全幅而不是用粗拟
+        return _fit_pts(ys, xs, vals, y_v, w)
+    m, a, A = fit_full[0], fit_full[1], fit_full[2]
+    # ③ 质量门 MAD 回到中央列（物理先验路面）上算，不重新拟合
+    rr = (A + m * (cy + 0.5 - y_v) + a * (cx + 0.5) / w) - cv
+    cm = float(np.median(rr))
+    mad = float(np.median(np.abs(rr - cm)) * 1.4826)
+    if not np.isfinite(mad) or mad > GROUND_MAD_MAX:
+        # 重拟后的平面解释不住中央列：同样退回旧行为，不放行半可信平面
+        return _fit_pts(ys, xs, vals, y_v, w)
+    return m, a, A, mad
 
 
 def _synth_points(v: np.ndarray, y_v: float, gm: tuple

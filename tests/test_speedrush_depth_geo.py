@@ -1998,6 +1998,100 @@ def test_ground_mad_separates_good_and_bad_fit():
     assert gm_noisy is not None and gm_noisy[3] > dg.GROUND_MAD_MAX
 
 
+def _depth_with_side_shelf(offset: float = 0.20,
+                           col_lo: float = 0.70) -> np.ndarray:
+    """中央是路面、右侧列带是高出路面的结构（护栏/人行道）的深度场。"""
+    v = _fake_depth_v_full()
+    x0 = int(dg.FRAME_W * col_lo)
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI, x0:] += offset
+    return v
+
+
+def test_ground_model_ignores_side_structure():
+    """两阶段拟合：右侧护栏/人行道高出路面不该整帧弃权（20261112 局 p2 的根因）。
+
+    旧实现拿全幅行带一次拟合，右侧四成是高出路面的结构，全幅 MAD 0.14~0.21
+    （门限 0.06）→ 453/800 拍整帧弃用 → 下游无深度、无线锚、决策盲。
+    新实现中央列粗拟 + 全带筛贴地点重拟，质量门只在中央列上算。
+    """
+    v = _depth_with_side_shelf()
+    gm = dg._ground_model(v, 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    # 平面参数必须仍是「中央路面」的平面，不能被高台拽走
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)     # m 斜率
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)       # A 截距
+
+
+def test_ground_model_falls_back_when_core_occluded():
+    """中央列被前车/飞坡占满时退回旧全幅拟合：改造不得比旧实现更差。
+
+    20261112 局 p1：前车贴脸（卡车占满中央）与飞坡跳台处，中央列 MAD
+    0.575/1.097。若固定用中央就会弃掉这些帧，而旧全幅拟合靠两侧路面仍能
+    给出合格平面（0.053/0.118）。所以中央粗拟超门必须退回旧路径。
+    """
+    v = _fake_depth_v_full()
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI,
+      int(dg.FRAME_W * 0.30):int(dg.FRAME_W * 0.70)] += 0.30
+    gm = dg._ground_model(v, 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    # 退回全幅后平面仍由两侧路面决定，不被中央高台拽走
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)
+
+
+def _depth_with_core_obstacle(frac: float = 0.65) -> np.ndarray:
+    """中央列被一块平面状障碍占去 frac 宽（前车尾门/墙板）的深度场。"""
+    v = _fake_depth_v_full(noise=0.004)
+    w = dg.FRAME_W
+    c0, cw = int(w * dg.GROUND_CORE_LO), int(w * (dg.GROUND_CORE_HI - dg.GROUND_CORE_LO))
+    ow = int(cw * frac)
+    ox = c0 + (cw - ow) // 2
+    rows = np.arange(dg.GROUND_ROW_LO, dg.GROUND_ROW_HI)
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI, ox:ox + ow] = (
+        4.0 + 0.0003 * (rows[:, None] - 535.0))
+    return v
+
+
+def test_ground_model_rejects_planar_obstacle_in_core():
+    """中央被平面状障碍占多数时不能当路面：MAD 会很小，但参数已被换掉。
+
+    2026-11-12 独立复核的合成反例：路面 A=0.33/m=0.0154，障碍占中央 65%
+    （V=4.0+0.0003·(row−535)）。障碍本身是平面，4 轮 2.5σ 裁剪会收敛到它，
+    MAD 只有 0.038 就过 0.06 门，但 A 从 0.33 跳到 3.95、路面点全成离群。
+    旧全幅拟合因为障碍只占 26% 反而正确。离群占比门（33.8% > 20%）退回全幅。
+    """
+    gm = dg._ground_model(_depth_with_core_obstacle(0.65), 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)     # 仍是路面斜率
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)       # 仍是路面截距
+
+
+def test_ground_model_accepts_clean_core():
+    """反面对照：中央是干净路面时走中央路径（不被离群门误退）。"""
+    gm = dg._ground_model(_fake_depth_v_full(noise=0.004), 361.0, None)
+    assert gm is not None and gm[3] <= dg.GROUND_MAD_MAX
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)
+
+
+def test_ground_model_still_rejects_global_noise():
+    """中央列本身被噪声打散时仍要弃权：质量门没被「筛完当然小」自证。"""
+    gm = dg._ground_model(_fake_depth_v_full(noise=0.08), 361.0, None)
+    assert gm is not None and gm[3] > dg.GROUND_MAD_MAX
+
+
+def test_ground_model_falls_back_when_core_removed():
+    """中央列被车框整块挖掉（点数不足）时退回全幅一次拟合，不返回垃圾。"""
+    v = _fake_depth_v_full()
+    box = (int(dg.FRAME_W * 0.25), dg.GROUND_ROW_LO - 10,
+           int(dg.FRAME_W * 0.75), dg.GROUND_ROW_HI + 10)
+    gm = dg._ground_model(v, 361.0, box)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+
+
 def test_infer_points_abstains_when_ground_mad_over_gate(monkeypatch):
     """MAD 超限整帧弃权（实验区定案「MAD>0.06 必须弃用」），并计数可查。"""
     before = dg.SKIP_STATS.get("mad", 0)

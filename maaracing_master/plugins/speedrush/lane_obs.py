@@ -100,6 +100,10 @@ LINE_RMS_MAX = 3.0         # 单线拟合残差（px，短段/坏拟合不参与
 # 强锁：曾用「双侧都在」的严格条件建立过线锁。此后单侧/一条线也继续作
 # 绝对位置（k 已稳定，深度只会更差）；只要 RELOCK 或横位跳变才作废。
 LINE_JUMP_RESET = 0.5      # 线横位单拍跳超此值（道）= 连续性中断，重新锁定
+# 单线（只有一条 accepted）时的单拍横位步长封顶（道）：单条线的 L 误差会直接
+# 写进 x_last，下一拍 k=round(x_last+L) 就可能整道错判（2026-11-12 局 p2
+# idx316 起漂到 −3.4 道）。0.10 道/拍 = 2 道/s，仍高于实测最大横移 1.4 道/s。
+LINE_SINGLE_STEP = 0.10
 # 黄边界侧别硬约束：用最靠车头的几个点判画面左右侧，压中线留死区。
 SIDE_NEAR_PTS = 5
 SIDE_DEADBAND_PX = 20.0
@@ -384,6 +388,118 @@ def _lines_from_prob(prob: np.ndarray, cam_h: float,
                       "side": _side_from_x(x_near),
                       "fits": fits})
     return lines
+
+
+# ---- HUD 距离徽章剔除（2026-11-12）------------------------------------------
+# 微调权重（实验区 speedrush_lane_model，74 帧目检集）会把画面中央的 HUD 距离
+# 徽章——红环 + **随机头像** + 下方「XX米」——画成一条竖直假线，整段复核实测连续
+# 30+ 帧稳定存在，且位置正好落在贴脸真线的目标带内（x≈300 vs 真线 258~282），
+# 消费端无法靠位置区分，所以必须在提取层剔掉。
+#
+# 为什么用「米」字做锚点：头像是随机的，整图模板跨会话必然失效（换一局掉到 0.4
+# 以下）；红环检测会被车尾灯/广告牌干扰（562 帧只检出 6%）。而「米」是固定字体、
+# 固定位置渲染：含徽章帧匹配得分 0.74~1.00、纵坐标恒为 0.890H，不含徽章帧只有
+# 0.36~0.52 且纵坐标对不上。实测 0.43ms/帧（1280×720 CPU）。
+#
+# 为什么按线剔而不是清零像素：贴脸真线正好从徽章旁边穿过，清零会把真线一起挖掉。
+# 规则：线的纵向支撑有 >=85% 的行落在徽章框内 → 只长在徽章上，丢弃。真线纵向跨
+# 90+ 行、远超徽章高度，比例上不去。实测（微调权重、843 帧）：近带 669 条线剔除
+# 51 条（7.6%），其中误剔真线 2 条（0.3%）。
+HUD_BADGE_GATE = True          # 置 False 即整道门回退（A/B 隔离用）
+HUD_BADGE_TPL_REL = "resources/policy/hud_badge_mi.png"
+HUD_BADGE_SCORE_MIN = 0.70     # 「米」字匹配下限（含徽章最低实测 0.745）
+HUD_BADGE_ROW_TOL = 3.0        # 「米」字纵坐标容差（固定 0.890H）
+HUD_BADGE_INSIDE_MAX = 0.85    # 线支撑落在徽章框内的比例上限
+_HUD_BADGE_TPL: dict = {"tried": False, "tpl": None}
+
+
+def _hud_badge_template():
+    """懒加载「米」字模板；缺失时返回 None，整道门静默跳过（行为与旧版一致）。"""
+    if not _HUD_BADGE_TPL["tried"]:
+        _HUD_BADGE_TPL["tried"] = True
+        try:
+            import cv2
+            path = Path(__file__).resolve().parent / HUD_BADGE_TPL_REL
+            tpl = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            if tpl is not None:
+                _HUD_BADGE_TPL["tpl"] = tpl.astype(np.float32)
+        except Exception:
+            _HUD_BADGE_TPL["tpl"] = None
+    return _HUD_BADGE_TPL["tpl"]
+
+
+def _hud_badge_box(frame: np.ndarray):
+    """定位 HUD 距离徽章，返回全幅像素框 (x0, y0, x1, y1)；无徽章返回 None。
+
+    用通道均值做灰度：调用方传 RGB 还是 BGR 都不影响结果（本模块上游口径
+    历史上变过一次，不再依赖通道顺序）。
+    """
+    tpl = _hud_badge_template()
+    if tpl is None or frame is None or getattr(frame, "ndim", 0) != 3:
+        return None
+    import cv2
+    h, w = frame.shape[:2]
+    y0, y1 = int(h * 0.855), int(h * 0.930)
+    x0, x1 = int(w * 0.28), int(w * 0.66)
+    # 先裁 ROI 再做通道均值：全图浮点均值实测要 12.9ms，裁到 155×50 后 0.7ms。
+    roi = frame[y0:y1, x0:x1].astype(np.float32).mean(axis=2)
+    th, tw = tpl.shape[:2]
+    if roi.shape[0] < th or roi.shape[1] < tw:
+        return None
+    res = cv2.matchTemplate(roi, tpl, cv2.TM_CCOEFF_NORMED)
+    _, score, _, loc = cv2.minMaxLoc(res)
+    if score < HUD_BADGE_SCORE_MIN:
+        return None
+    mi_y = loc[1] + y0 + th / 2.0
+    if abs(mi_y - h * 0.890) > HUD_BADGE_ROW_TOL:
+        return None
+    mi_x = loc[0] + x0 + tw / 2.0
+    # 「米」在徽章下方：徽章中心约 (米x-6, 米y-24)、半径约 21；框向下含箭头。
+    cx, cy, rad = mi_x - 6.0, mi_y - 24.0, 21.0
+    return (cx - rad - 6.0, cy - rad - 4.0, cx + rad + 6.0, mi_y + 44.0)
+
+
+def _line_in_badge(line: dict, box) -> bool:
+    """这条线是否只长在徽章上：纵向支撑 >=HUD_BADGE_INSIDE_MAX 落在徽章框内。
+
+    只看**实际采用的那段拟合**（``fits[0]``，即 `_lines_from_prob` 里
+    ``f = near or far`` 选中的那段）：近远两段都算会把远段的行当成「框外」，
+    让徽章假线的比例被稀释（f0204 实测因此漏剔）。
+    """
+    if box is None:
+        return False
+    fits = line.get("fits") or ()
+    if not fits:
+        return False
+    x0, y0, x1, y1 = box
+    # 框是模板反推的，边界有 2~4px 误差；不留容差会让「首行差半像素」把比例从
+    # 1.0 拉到 0.83（f0204 实测），刚好卡在门限下面漏剔。
+    t = 4.0
+    x0, y0, x1, y1 = x0 - t, y0 - t, x1 + t, y1 + t
+    ft = fits[0]
+    s, a = float(ft["s"]), float(ft["a"])
+    lo, hi = float(ft["y0"]), float(ft["y1"])
+    if hi - lo < 20.0:
+        return False
+    total = inside = 0
+    for yy in np.arange(lo, hi + 1.0, 8.0):
+        xx = s * yy + a
+        total += 1
+        if x0 <= xx <= x1 and y0 <= yy <= y1:
+            inside += 1
+    if total < 3:
+        return False
+    return inside / total >= HUD_BADGE_INSIDE_MAX
+
+
+def _drop_badge_lines(lines: list[dict], frame: np.ndarray) -> list[dict]:
+    """剔除只长在 HUD 距离徽章上的假线；模板缺失或本帧无徽章时原样返回。"""
+    if not HUD_BADGE_GATE or not lines:
+        return lines
+    box = _hud_badge_box(frame)
+    if box is None:
+        return lines
+    return [ln for ln in lines if not _line_in_badge(ln, box)]
 
 
 def _vanish_row(lines: list[dict]) -> float | None:
@@ -783,7 +899,22 @@ class LineTracker:
         if keep:
             for c in keep:
                 c["accepted"] = True
-            x_out = float(np.median([c["_xi"] for c in keep]))
+            x_raw = float(np.median([c["_xi"] for c in keep]))
+            if len(keep) < 2 and self.x_last is not None \
+                    and x_anchor is None:
+                # 单线只做子道细化，单拍步长封顶（2026-11-12 实机 p2 定案）：
+                # 一条线的 L 误差会直接写进 x_last，下一拍 k=round(x_last+L)
+                # 就可能整道错判，错判后的 x 又反过来喂 k——闭环正反馈。
+                # 实测 220717 局 p2 idx316：线质量崩到只剩一条 accepted，L 从
+                # −0.52 抖到 −0.32，x 跳 0.19；随后 k 从 {−1,0} 变 {−1,−2}、
+                # 再到 {−5,−4,−3}，横位漂到 −3.4（同拍真实 ro 只有 −0.4），
+                # 决策目标整道错位。该局单线拍的横位跳变率 18%，双线 2.4%。
+                # 封顶不冻结：单侧线仍能做子道细化（深度空窗靠它保持连续）。
+                d = float(np.clip(x_raw - self.x_last,
+                                  -LINE_SINGLE_STEP, LINE_SINGLE_STEP))
+                x_out = self.x_last + d
+            else:
+                x_out = x_raw
             # 稳定性计数：只有横位连续（单拍不跳 >LINE_JUMP_RESET）才累加；
             # 跳变=连续性中断，从 1 重新数（线锁的要件）。
             step = (abs(x_out - self.x_last)
@@ -1197,4 +1328,7 @@ class LaneObsWorker:
         prob = self._run(rgb)
         if prob is None:
             return None
-        return {"lines": _lines_from_prob(prob, cam_h, focal)}
+        # 先剔 HUD 距离徽章上的假线，再进 tracker：徽章假线位置正好落在贴脸真线
+        # 的目标带内，若进 tracker 会被当成真线锁道号，事后无法区分。
+        lines = _drop_badge_lines(_lines_from_prob(prob, cam_h, focal), rgb)
+        return {"lines": lines}

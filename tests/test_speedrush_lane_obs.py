@@ -746,3 +746,56 @@ def test_lane_cam_h_still_rejects_far_outliers():
     assert la._lane_cam_h(4.97)[1] is True
     assert la._lane_cam_h(None)[1] is True
     assert la._lane_cam_h(0.73)[0] == la.DEFAULT_CAM_H
+
+
+# ---------- HUD 距离徽章假线剔除（2026-11-12）----------
+
+def _fit_line(s, a, y0, y1):
+    """构造 _lines_from_prob 口径的线（fits 用全幅像素 x = s·y + a）。"""
+    return {"fits": [{"s": s, "a": a, "y0": y0, "y1": y1}]}
+
+
+# 徽章框：徽章中心 x≈618、纵向 592~685（含红环、米字与下方箭头）
+BADGE_BOX = (590.0, 592.0, 646.0, 685.0)
+
+
+def test_badge_only_line_is_dropped():
+    """只长在徽章上的竖线（x 恒定在框内、纵向不出框）判为假线。"""
+    line = _fit_line(0.0, 620.0, 592.0, 640.0)
+    assert la._line_in_badge(line, BADGE_BOX) is True
+
+
+def test_line_passing_beside_badge_is_kept():
+    """贴脸真线纵向跨 520~700、远超徽章高度，比例上不去，必须保留。"""
+    real = _fit_line(0.35, 370.0, 520.0, 700.0)
+    assert la._line_in_badge(real, BADGE_BOX) is False
+
+
+def test_line_outside_badge_x_is_kept():
+    """横向不在徽章范围内的线（左黄线/右侧虚线）与徽章无关。"""
+    left = _fit_line(0.05, 60.0, 520.0, 700.0)
+    assert la._line_in_badge(left, BADGE_BOX) is False
+
+
+def test_drop_badge_lines_uses_frame_box(monkeypatch):
+    """_drop_badge_lines 用当帧检测到的框：徽章线被剔、真线保留。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    real = _fit_line(0.35, 370.0, 520.0, 700.0)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: BADGE_BOX)
+    out = la._drop_badge_lines([badge, real], np.zeros((720, 1280, 3), np.uint8))
+    assert out == [real]
+
+
+def test_drop_badge_lines_noop_without_badge(monkeypatch):
+    """本帧没有徽章（或模板缺失）时行为与旧版一致：一条都不动。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: None)
+    assert la._drop_badge_lines([badge], np.zeros((720, 1280, 3), np.uint8)) == [badge]
+
+
+def test_badge_gate_can_be_disabled(monkeypatch):
+    """HUD_BADGE_GATE=False 时整道门回退（A/B 隔离）。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    monkeypatch.setattr(la, "HUD_BADGE_GATE", False)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: BADGE_BOX)
+    assert la._drop_badge_lines([badge], np.zeros((720, 1280, 3), np.uint8)) == [badge]

@@ -31,8 +31,8 @@ models/
   `0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af`
 - `depth/relative_mnv4m_slim_spf_448_default.onnx`：24,155,097 字节，SHA256
   `825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71`
-- `lane/plus_small_384x640.onnx`：543,153 字节，SHA256
-  `45044c268d54ee34cbd097abcf19fb0d53858a8815e0024018db0df6137289e4`
+- `lane/plus_small_384x640.onnx`：543,156 字节，SHA256
+  `bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc`
 
 缺失或校验失败时，深度模式会在连接游戏前终止并提示重新下载；直行与宏录制照常可用。
 
@@ -59,7 +59,11 @@ models/
 
 ## lane/plus_small_384x640.onnx —— 线观测（许可待核对）
 
-- **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；离线核验记录见提交历史。
+- **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；在此基础上用**自采
+  游戏帧**做定向微调（只解冻车道头三层，74 张逐张目检样本，Focal+Tversky 区域损失），
+  目的是补上原模型对「贴脸正中粗白虚线」的盲区。微调数据为本项目自采游戏画面，
+  不含第三方标注，许可随上游不变。离线核验记录见
+  `tools/experiments/speedrush_lane_model/README.md` 与提交历史。
 - **许可**：上游 TwinLiteNet+ 代码为 MIT；BDD100K 数据/标签适用 UC Regents 定制许可——
   教育、科研与非营利目的可复制、修改、分发（须随附版权与许可声明），商业用途仅限
   BDD/BAIR 成员。许可正文未单列“训练所得权重”，本项目按衍生作品处理：随可选模型包

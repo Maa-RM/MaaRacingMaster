@@ -37,7 +37,9 @@ OUT = HERE / "first_look_out"
 
 # ---- 生产口径常数（lane_obs.py 复刻，2026-11-11 与生产同源核对）----
 PROB_THRESH = 0.30
-ROW_LO, ROW_HI, ROW_STEP = 206, 360, 3     # 360 行内容空间里的行扫描带
+ROW_LO, ROW_HI, ROW_STEP = 206, 360, 1     # 与生产一致：步长 1
+# 生产 lane_obs._row_segments 自 2026-11-11 起步长为 1（原 3）：远处虚线在
+# 概率图里只有 2~5 行高，步长 3 会漏掉，虚线轨迹凑不满拟合点数。
 TRACK_TOL, TRACK_GAP = 13.0, 10
 NEAR_Y = (560.0, 720.0)                    # 全幅坐标
 FAR_Y = (440.0, 545.0)
@@ -96,8 +98,8 @@ def sample_frames(raw: Path, n: int) -> list[Path]:
     return fs[::step][:n]
 
 
-def preprocess(rgb: np.ndarray, padded: bool) -> np.ndarray:
-    im = cv2.resize(rgb, (640, 360), interpolation=cv2.INTER_AREA)
+def preprocess(bgr: np.ndarray, padded: bool) -> np.ndarray:
+    im = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_AREA)
     if padded:
         im = cv2.copyMakeBorder(im, LETTERBOX_PAD, LETTERBOX_PAD, 0, 0,
                                 cv2.BORDER_CONSTANT, value=(114, 114, 114))
@@ -105,11 +107,18 @@ def preprocess(rgb: np.ndarray, padded: bool) -> np.ndarray:
         (im.astype(np.float32) / 255.0).transpose(2, 0, 1)[None])
 
 
-def lane_prob(sess: ort.InferenceSession, rgb: np.ndarray, padded: bool) -> np.ndarray:
+def lane_prob(sess: ort.InferenceSession, bgr: np.ndarray, padded: bool) -> np.ndarray:
+    """bgr：cv2 读入的原始 BGR 帧，**不要转 RGB**。
+
+    生产 lane_obs.py 的推理输入是 `(im.astype(f32)/255).transpose(2,0,1)`，
+    im 直接来自 cv2.imread，即 BGR。此前本探针传的是 RGB，属于口径错误：
+    现役模型对通道不敏感（目标区都是 0.002~0.003），但微调权重会差到
+    0.116 vs 1.0，导致几何门结论完全反向（2026-11-12 复核）。
+    """
     inp = sess.get_inputs()[0].name
     outs = [o.name for o in sess.get_outputs()]
     ll_name = next((n for n in outs if "ll" in n.lower()), outs[-1])
-    logits = sess.run([ll_name], {inp: preprocess(rgb, padded)})[0][0]   # [2,H,W]
+    logits = sess.run([ll_name], {inp: preprocess(bgr, padded)})[0][0]   # [2,H,W]
     e = np.exp(logits - logits.max(0, keepdims=True))
     prob = (e[1] / e.sum(0)).astype(np.float32)
     if prob.shape[0] == 360 + 2 * LETTERBOX_PAD:
@@ -216,30 +225,30 @@ def near_side(pts) -> int | None:
     return -1 if x < VPX else 1
 
 
-def extract_lines(rgb: np.ndarray, prob: np.ndarray) -> list[dict]:
-    """生产 _infer 同语义：颜色门 → 近/远拟合 → 质量门，产出 accepted 线列表。"""
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+def extract_lines(bgr: np.ndarray, prob: np.ndarray) -> list[dict]:
+    """生产 _infer 同语义：颜色门 → 近/远拟合 → 质量门，产出 accepted 线列表。
+
+    bgr 口径与生产一致（颜色门按 BGR→HSV 判黄/白）。
+    """
     lines = []
     for pts in build_tracks(row_segments(prob)):
-        yf, wf = line_color(hsv, pts)
-        if max(yf, wf) < WHITE_MIN:
-            continue
-        color = "y" if yf >= YELLOW_MIN else ("w" if wf >= WHITE_MIN else "?")
+        # 颜色不参与提取（生产 lane_obs._lines_from_prob 2026-11-11 起叫停）：
+        # 黄昏下白色分界线系统性过不了白门、甚至被误判成黄线。此前探针保留
+        # 颜色门，导致把「模型已看见但颜色不达标」的帧错记成漏检。
         f_near = fit_line(pts, *NEAR_Y)
         f = f_near or fit_line(pts, *FAR_Y)
         if f is None:
             continue
         if f["rms"] > LINE_RMS_MAX or abs(f["theta"]) > LINE_THETA_MAX:
             continue
-        lines.append({**f, "color": color, "side": near_side(pts),
+        lines.append({**f, "color": "?", "side": near_side(pts),
                       "band": "near" if f_near else "far"})
     return lines
 
 
-def render_thumb(rgb: np.ndarray, prob: np.ndarray, lines: list[dict],
+def render_thumb(bgr: np.ndarray, prob: np.ndarray, lines: list[dict],
                  tag: str, ms: float) -> np.ndarray:
-    im = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    im = cv2.resize(im, (640, 360), interpolation=cv2.INTER_AREA)
+    im = cv2.resize(bgr, (640, 360), interpolation=cv2.INTER_AREA)
     for yc, segs in row_segments(prob):
         for q in segs:
             cv2.circle(im, (int(q["xc"]), yc), 1, (160, 160, 160), -1)
@@ -310,20 +319,19 @@ def main() -> None:
             overlay_frames = frames[::max(1, len(frames) // args.overlay_cols)][:args.overlay_cols]
             for i, fp in enumerate(frames):
                 bgr = cv2.imread(str(fp))
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                 for _ in range(3 if i == 0 else 1):
                     t0 = time.perf_counter()
-                    prob = lane_prob(m["sess"], rgb, m["padded"])
+                    prob = lane_prob(m["sess"], bgr, m["padded"])
                     ms = (time.perf_counter() - t0) * 1000.0
                 lat.append(ms)
-                lines = extract_lines(rgb, prob)
+                lines = extract_lines(bgr, prob)
                 acc_lines.append(len(lines))
                 sides = {c["side"] for c in lines}
                 both_sides.append(len(lines) >= 2 and sides == {-1, 1})
                 near_cnt.append(sum(1 for c in lines if c["band"] == "near"))
                 far_cnt.append(sum(1 for c in lines if c["band"] == "far"))
                 if fp in overlay_frames:
-                    thumbs.append(render_thumb(rgb, prob, lines, m["name"], ms))
+                    thumbs.append(render_thumb(bgr, prob, lines, m["name"], ms))
             while len(thumbs) < args.overlay_cols:
                 thumbs.append(np.full((360, 640, 3), 30, np.uint8))
             per_model_rows.append(thumbs)

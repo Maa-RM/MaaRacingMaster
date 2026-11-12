@@ -117,6 +117,8 @@ tools/pipeline/dev/
 # 插件正式分发的权重不在此列——它们在 plugins/*/resources/models/ 随包入库。
 tools/experiments/**/weights/
 tools/experiments/**/upstream/
+# 离线教师权重（HuggingFace 公开模型，体积 100MB+，取法与许可记在实验 README）
+tools/experiments/**/teachers/
 
 # 探针输出目录（命名约定 *_out/）：一次性报告的落点，读数归实验 README，文件本身可重跑。
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
