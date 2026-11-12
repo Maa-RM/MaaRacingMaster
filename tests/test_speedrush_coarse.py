@@ -233,37 +233,3 @@ def test_unsafe_car_ignored_by_lane_clearance():
     assert (unsafe.lane, unsafe.free_m, unsafe.reason) == \
         (clean.lane, clean.free_m, clean.reason)
     assert fresh != clean
-
-
-def test_lattice_shift_moves_candidate_centers_by_half_lane():
-    """候选格相位：走廊中心落在分隔线上时，整数格是分隔线，偏半道后才是道中心。
-
-    本玩法固定 4 车道（RULES §3.8），路心就是中间那条分隔线；旧候选格
-    「中心线 + 整数道」因此落在分隔线上，选道目标跟着压线。偏移半道后，
-    同样的路宽里能容下的候选中心换了一组。
-    """
-    road = _road([(i * 3.0, (i + 1) * 3.0, -3.38, 3.38) for i in range(8)])
-
-    def inside(rep):
-        return {c.lane for c in rep.lanes if c.blocker is None}
-
-    base = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=P)
-    up = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=P,
-                     lattice_shift=0.5)
-    down = choose_lane(road, [], ego_lane=0.0, lane_w_m=LW, p=P,
-                       lattice_shift=-0.5)
-    assert inside(base) == {0.0}
-    assert inside(up) == {-1.0, 0.0}
-    assert inside(down) == {0.0, 1.0}
-    assert up.lattice_shift == 0.5
-    assert up.as_trace()["shift"] == 0.5
-
-
-def test_lattice_shift_zero_is_legacy_lattice():
-    """shift=0（默认/无相位证据拍）逐位回旧整数格——回归锁。"""
-    road = _straight()
-    a = choose_lane(road, [], ego_lane=0.3, lane_w_m=LW, p=P)
-    b = choose_lane(road, [], ego_lane=0.3, lane_w_m=LW, p=P,
-                    lattice_shift=0.0)
-    assert a.as_trace() == b.as_trace()
-    assert a.lattice_shift == 0.0

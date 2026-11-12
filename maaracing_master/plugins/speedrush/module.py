@@ -2013,11 +2013,7 @@ class SpeedRushModule(ActivityModule):
                 state_unverified=planner.state_unverified,
                 # 持久车道图的时间维：前进/横移预测用执行层在线速度
                 ego_speed_mps=planner.state.v_mps,
-                ego_v_lat_lane_s=planner.state.v_lat,
-                # 候选格相位（2026-11-12）：线网格横位与 road_offset 同量纲，
-                # 两者之差即「走廊中心在道 0 线上的位置」，选道用它把候选
-                # 道中心从整数格掰到真实道中心（见 coarse.choose_lane）。
-                lane_x=None if lane is None else lane.get("x"))
+                ego_v_lat_lane_s=planner.state.v_lat)
             cfg = chain["cfg"]
             # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
             # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。

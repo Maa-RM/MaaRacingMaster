@@ -429,31 +429,6 @@ class SelectionShadowWatch:
         return rec
 
 
-def lattice_phase_step(prev: float | None, lane_x: float | None,
-                       road_offset: float | None,
-                       alpha: float = 0.3) -> tuple[float | None, float]:
-    """候选格相位步进 → (新相位, 候选格偏移)。
-
-    ``lane_x`` 是自车相对道 0 线（线网格）的横位，``road_offset`` 是自车相对
-    路心的横位，两者同量纲，相减即**路心在道 0 线上的位置**（道，折到 ±0.5）。
-
-    候选格要落在真实道中心上：线网格里分隔线在整数位，道中心就在半整数位，
-    所以偏移 ``shift = wrap(0.5 − 相位)``。路心本来就在道中心（相位≈0.5）时
-    shift≈0，逐位回旧整数格；路心在分隔线（相位≈0）时 shift≈0.5。
-
-    缺任一路读数返回 ``(prev, 0.0)``——无证据拍不猜，回旧格。
-    """
-    if lane_x is None or road_offset is None:
-        return prev, 0.0
-    ph = ((lane_x - road_offset + 0.5) % 1.0) - 0.5
-    new = ph if prev is None else \
-        prev + alpha * (((ph - prev + 0.5) % 1.0) - 0.5)
-    # 偏移取 [0, 1)：不连续点落在「路心正好是道中心」（相位 ±0.5）——那是
-    # 本玩法里的少数构型；把不连续点放在相位 0（路心在分隔线上，常见构型）
-    # 会让候选道号在抖动时整道翻面。
-    return new, (0.5 - new) % 1.0
-
-
 class DecisionEngine:
     """FSM + 迟滞（§二/§三/§五）。单线程 owner 使用（与 _log_grp 同一线程纪律）。"""
 
@@ -544,14 +519,6 @@ class DecisionEngine:
             cam_z_datum_m=CAM_Z_DATUM_M,
             far_direction=c.far_direction)
         self._coarse: CoarseReport | None = None
-        # 候选格相位（2026-11-12）：走廊中心在线网格里的位置（道，±0.5）。
-        # 输入是两个同量纲读数之差：lane_x（自车相对道 0 线）减 road_offset
-        # （自车相对路心）。EMA α=0.3：离线三局实测，α=0.3 时相位抖
-        # |Δshift| p90 0.08（原始相位 0.22），候选→真实道中心 p50 0.04。
-        self._lattice_phase: float | None = None
-        self._lattice_shift: float = 0.0
-        self._lane_x: float | None = None
-        self._ro_now: float | None = None
         # 路线承诺层（2026-10-23 V1）：横向意图的跨帧持有者。每拍用**原始**粗层
         # 报告推进（闸关时也推进——那是影子对照面，量"承诺拦掉哪些翻面"）；
         # 只有 route.control 开时它的参考道才接控制。不回读 coarse_lane 属性：
@@ -752,16 +719,14 @@ class DecisionEngine:
                state_unverified: bool = False,
                ego_speed_mps: float | None = None,
                ego_v_lat_lane_s: float = 0.0,
-               depth_grid: "DrivableGrid | None" = None,
-               lane_x: float | None = None) -> DecisionOutput:
+               depth_grid: "DrivableGrid | None" = None) -> DecisionOutput:
         """traffic=(在途车辆视图, 本拍落定事件)（traffic.TrafficObserver 直供）。
 
         缺省 None=无车流观测，行为与 coin-only v1 **逐拍相同**（V0/V1 兼容红线）。
         逐拍视图放实例通道（单线程 owner 纪律，与 _log_grp 同族）——helper 签名不扩散。
 
-        ``road_offset``：路心读数（自车相对路心，道，右正）。本层只在
-        候选格相位里消费它（与 ``lane_x`` 相减得到路心在道 0 线上的位置），
-        选道本身的空间证据仍由 corridor 带给出。``corridor``：同拍分带走廊，选择层唯一的空间证据；
+        ``road_offset``：保留在签名里兼容既有调用（本层不消费，路心由
+        corridor 带给出）。``corridor``：同拍分带走廊，选择层唯一的空间证据；
         None=无路，持守当前横位。``position``：当拍到达位置归因（观测面 +
         影子到达门；生产默认门关，不影响控制）。
 
@@ -776,8 +741,6 @@ class DecisionEngine:
         self._ego_speed_mps = ego_speed_mps
         self._depth_grid = depth_grid
         self._ego_v_lat = float(ego_v_lat_lane_s or 0.0)
-        self._lane_x = None if lane_x is None else float(lane_x)
-        self._ro_now = None if road_offset is None else float(road_offset)
         # 差异行只对本拍有效：没有推进选择层（无路/非巡航）的拍不能回放上一拍。
         self._sel_shadow_trace = None
         self._views, self._events = traffic if traffic is not None else ((), ())
@@ -1843,23 +1806,12 @@ class DecisionEngine:
                       (self._scene.ego_x_m - c0) / self._scene.lane_w_m)
         # 无带帧（c0=None）按 0 计：与上面 coarse_ego 的兜底同一口径
         c0_m = 0.0 if c0 is None else c0
-        # 候选格相位修正：走廊中心是深度连续量，和线格子没有任何绑定；
-        # 本玩法 4 车道（RULES §3.8）时路心就是分隔线，整数格即分隔线，
-        # 候选「道中心」会整体偏半道（离线实测候选→真实道中心 p50
-        # 0.22~0.34 道）。用「线网格 − 路心」的相位把候选格掰回道中心：
-        # 修正后 p50 0.00、99% 落进 0.15 道。无证据拍 shift=0 逐位回旧格。
-        if self.cfg.coarse.lattice_phase:
-            self._lattice_phase, self._lattice_shift = lattice_phase_step(
-                self._lattice_phase, self._lane_x, self._ro_now)
-        else:
-            self._lattice_shift = 0.0
         # SceneObj 是冻结 dataclass（只读属性），coarse._Car 协议声明的是可写
         # 属性：形状不符、运行时是同一批对象，这里只做类型层转换。
         self._coarse = choose_lane(
             self._scene.road, cast(Any, self._scene.objs), coarse_ego,
             self._scene.lane_w_m, self._coarse_params,
-            current_lane=None if self._coarse is None else self._coarse.lane,
-            lattice_shift=self._lattice_shift)
+            current_lane=None if self._coarse is None else self._coarse.lane)
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。

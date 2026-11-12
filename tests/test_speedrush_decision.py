@@ -995,33 +995,3 @@ def test_pass_x_unknown_marks_jump_zreset_and_gate():
     e4._reach_car_sources(0.0)
     e4._metric_cars = mc(20.0, 3.5)
     assert e4._reach_car_sources(0.0)[0].x_unknown is False
-
-
-def test_lattice_phase_puts_candidates_on_lane_centers():
-    """候选格相位：线网格里分隔线在整数位，道中心在半整数位。
-
-    路心读数（road_offset）与线网格横位（lane_x）之差就是路心在道 0 线上的
-    位置。路心落在分隔线（相位 0）时偏移半道，落在道中心（相位 ±0.5）时
-    偏移 0——后者逐位回旧整数格。
-    """
-    from maaracing_master.plugins.speedrush.decision import lattice_phase_step
-
-    ph, shift = lattice_phase_step(None, 0.0, 0.0)      # 路心=分隔线
-    assert ph == pytest.approx(0.0) and shift == pytest.approx(0.5)
-    ph, shift = lattice_phase_step(None, 0.5, 0.0)      # 路心=道中心
-    assert ph == pytest.approx(-0.5) and shift == pytest.approx(0.0)
-    # 无证据拍：相位保留、偏移归零（不猜）
-    assert lattice_phase_step(0.12, None, 0.3) == (0.12, 0.0)
-    assert lattice_phase_step(0.12, 0.4, None) == (0.12, 0.0)
-
-
-def test_lattice_phase_filters_tick_noise():
-    """单拍相位抖动被 EMA 吃掉：偏移不跟着逐拍翻。"""
-    from maaracing_master.plugins.speedrush.decision import lattice_phase_step
-
-    prev = None
-    shifts = []
-    for lane_x in (0.0, 0.30, 0.05, 0.25, 0.0, 0.20):
-        prev, shift = lattice_phase_step(prev, lane_x, 0.0)
-        shifts.append(shift)
-    assert max(abs(b - a) for a, b in zip(shifts, shifts[1:])) < 0.15
