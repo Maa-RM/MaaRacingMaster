@@ -14,7 +14,8 @@ BoundarySummary 的 ``left_edge_lane / right_edge_lane`` 字段鸭子同构，�
 - 地面以上：``Z = m·fy·cam_h / (V − A − a·u)``；
 - 反投影 ``X=(c−cx)·Z/fy``、``Y=(r−y_h)·Z/fy``，主点行取灭点行（平路 Y≡cam_h）。
 - fy=630（RULES §3.8 FOV 曲线中间值）、cam_h=1.25（RULES §3.8）、cx=640.5。
-- 灭点行逐帧由车道线观测给出，缺值回退 gate0.y_h。**相对深度是视差向仿射
+- 灭点行逐帧由车道线观测给出（中位平滑），缺值回退 FALLBACK_Y_V=361.0
+  （不是 gate0.y_h——那是 2D 尺子分母，两者差 7px 就够让 40m 偏 25%）。**相对深度是视差向仿射
   不变量，地平线无法从深度本身辨识**（y_h 与 A 共线，扫 y_h 残差恒定）。
 
 **为什么是这套读法**：DepthART slim-SPF 只给相对深度，不给焦距与米制尺度；
@@ -74,7 +75,16 @@ PT_W, PT_H = 640, 360           # 点图网格（半幅，ds=2；与全幅读数
 PT_CX = 640.5                   # 全幅主点列（探针口径，2026-11-11 合成验证）
 FOCAL_PX = 630.0                # 固定投影焦距（RULES §3.8 FOV 曲线 613~664 中间值）
 CAM_H_M = 1.25                  # 权威相机高（RULES §3.8）
+# 灭点行缺值时的回退（**不是** gate0.y_h）：y_h 这个纵向米制骨架必须和相机配置
+# 同源，而 gate0 的 354.2 是 MoGe 时代平面拟合的中位、同时承担 2D 尺子的分母
+# （两者不能共用同一个数）。车道线实测段中位 361.3、全池 p25~p75 358.5~362.2。
+# 量级：1px ≈ 40m 处 5%、66m 处 8% —— 用 354.2 会让远场系统性偏近 25~40%。
+FALLBACK_Y_V = 361.0
 GROUND_TAU = 0.05               # 贴地判据（相对深度绝对口径，实测残差 p90 ≤0.055）
+GROUND_MAD_MAX = 0.06           # 地面模型残差 MAD 上限：超过=拟合没解释住画面，
+#                                 整帧合成点图不可信（实验区 p90 ≤0.055 与坏帧
+#                                 0.19 之间的空档）。超限按「本帧弃权」处理，
+#                                 与地面拟合失败同路（road_offset 退线/记忆/模型）。
 GROUND_ROW_LO, GROUND_ROW_HI = 380, 690   # 地面模型拟合带（全幅行）
 GROUND_EXCL_PAD = 8             # 拟合时挖掉最大车框的外扩像素
 GROUND_STRIDE = 4               # 拟合抽样步长（4×4，点数降 4 倍；与 2×2 的系数差：
@@ -339,6 +349,9 @@ class DepthRoadReading:
     degraded: bool = False   # 主质量门拒、降级补考放行（常量区注释有定案背
     # 景）；消费语义第一版不变（下游不读，审计面经 rejects「质量门降级放行」
     # →corridor._plane_health="degraded" 透出）
+    y_v: float | None = None      # 本帧合成点图实际用的灭点行（诊断/trace）
+    y_v_src: str | None = None    # "lane"=车道线逐帧灭点行 / "fallback"=标定回退
+    # （回退拍的距离系统性偏差可达 25~40%，必须能逐拍看见）
 
 
 def load_session(weights: Path) -> ort.InferenceSession:
@@ -485,6 +498,15 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
         LAST_STAGE_MS["points"] = (time.perf_counter() - t_pt) * 1000.0
         return (None, FOCAL_PX, FOCAL_PX, None) if with_evidence \
             else (None, FOCAL_PX, FOCAL_PX)
+    if gm[3] > GROUND_MAD_MAX:
+        # 地面模型没解释住画面（贴旁车/贴墙/逆光）：合成点图整帧不可信。
+        # 实验区定案「MAD>0.06 的帧必须弃用并回退到线/记忆」；没有这道门时，
+        # 合成点图会自洽地在错误的地面上长出一片「平面」（贴地像素被公式钉在
+        # Y≡cam_h），平面质量门反而永远通过——坏帧静默变成好读数。
+        SKIP_STATS["mad"] = SKIP_STATS.get("mad", 0) + 1
+        LAST_STAGE_MS["points"] = (time.perf_counter() - t_pt) * 1000.0
+        return (None, FOCAL_PX, FOCAL_PX, None) if with_evidence \
+            else (None, FOCAL_PX, FOCAL_PX)
     pts, valid, frac = _synth_points(v, float(y_v), gm)
     LAST_STAGE_MS["points"] = (time.perf_counter() - t_pt) * 1000.0
     evidence = None
@@ -504,6 +526,10 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
 # scan（找边扣除平面拟合）= edges−plane，离线导出。observe_debug 取走后进
 # _stage_win 滑窗；worker 发布时随帧快照，进 trace dgeo_seg.stages。
 LAST_STAGE_MS: dict[str, float] = {}
+
+# 弃帧计数（process 级；同一进程只跑一个深度 worker）：mad=地面模型残差超限
+# 被整帧弃用。进 AsyncDepthRoadObserver.health()，实机第一批要能看见它。
+SKIP_STATS: dict[str, int] = {}
 
 
 def _timing_segments(frame_ts_ns: int | None, t_push: float, t_start: float,
@@ -1511,7 +1537,7 @@ class DepthRoadObserver:
         ``object_mask``：YOLO 检测框（车/金币/奖励，外扩后）布尔掩码候选区，
         按统一挖除缝（候选区）× 剃本体刀挖除——物体从点云源头
         消失，"穿车读墙"假缘不再产生。``y_v``=当帧灭点行（车道线观测给，
-        缺值回退 gate0.y_h）。"""
+        缺值回退 FALLBACK_Y_V）。"""
         reading, _ = self.observe_debug(frame_rgb, object_mask, y_v=y_v)
         return reading
 
@@ -1530,7 +1556,11 @@ class DepthRoadObserver:
         if self._sess is None:
             return None, None
         t0 = time.perf_counter()
-        yh = float(y_v) if y_v is not None else float(self._cal.y_h)
+        # 灭点行缺值只回退「合成骨架的标定值」FALLBACK_Y_V，不回退 gate0.y_h：
+        # 后者是 2D 尺子的分母口径（3.5m 画线标定过 a_x），两个数差 7px 就够让
+        # 40m 处偏 25%。来源进 reading 供 trace 逐拍区分。
+        y_v_src = "fallback" if y_v is None else "lane"
+        yh = FALLBACK_Y_V if y_v is None else float(y_v)
         box = (None if not detections else
                max(detections, key=lambda d: (int(d[3]) - int(d[1]))
                    * (int(d[4]) - int(d[2])))[1:5])
@@ -1608,7 +1638,7 @@ class DepthRoadObserver:
                 evid["anchors"] = sheet
         return replace(reading,
                        latency_ms=(time.perf_counter() - t0) * 1000.0,
-                       far_extents=far), evid
+                       far_extents=far, y_v=yh, y_v_src=y_v_src), evid
 
     @property
     def session_ready(self) -> bool:
@@ -2001,7 +2031,8 @@ class AsyncDepthRoadObserver:
         （perf_counter_ns，frame_with_age 同源）——分段计时 cap 段的起点；
         不传则分段缺 cap（仍记 queue/pub）。detections/fid：混合测距锚点
         清单供数（(det_idx,x0,y0,x1,y1) 原始车框序列 + 帧号；刀一只收车框）。
-        y_v：当帧灭点行（车道线观测快照，慢变量；缺值回退 gate0.y_h）。
+        y_v：当帧灭点行（车道线观测快照的中位平滑值，慢变量；缺值回退
+             FALLBACK_Y_V）。
         cap_pre：拍内时间戳链（perf_counter 秒，与 frame_ts_ns 同钟；键有序
         pick/rec/det/mask，缺环节点值 None）——cap 段内段拆解的原料，见
         _timing_segments。无 worker（session 缺失/start 未调）时直接空转：
@@ -2106,6 +2137,7 @@ class AsyncDepthRoadObserver:
                 "debug_dropped": self._dbg_dropped,
                 "age_p50": _p(ages, 0.5), "age_p95": _p(ages, 0.95),
                 "dur_p50": _p(durs, 0.5), "dur_p95": _p(durs, 0.95),
+                "mad_skips": int(SKIP_STATS.get("mad", 0)),
                 "max_age_ms": self._max_age_ms, **stage}
 
     # ---------- worker 线程 ----------

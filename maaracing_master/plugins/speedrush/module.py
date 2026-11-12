@@ -1771,19 +1771,39 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 开局视角守卫（2026-10-23） ----------
 
-    def _tick_view_guard(self, chain: dict, gpad, dgeo, dgeo_new: bool) -> None:
-        """喂一拍相机高度；坏视角按 RB。异常一律吞掉，守卫不炸驾驶链。"""
+    def _tick_view_guard(self, chain: dict, gpad, lane: dict | None) -> None:
+        """喂一拍相机高度；坏视角按 RB。异常一律吞掉，守卫不炸驾驶链。
+
+        **判据来自车道线反解**（``lane["cam_h_lane"]``，线间距法），不再读深度
+        路面平面的 c：v5 合成点图把贴地像素高度钉死在 Y≡cam_h，平面 c 恒等于
+        1.25，读它等于读常数、守卫永远放行（2026-11-12 逐帧核对）。
+        无判据时按「无法判定」放行并留 WARNING——拿不到证据不等于视角错了，
+        不能因此中止阶段（守卫中止会白丢一个阶段）。"""
         vg = chain.get("view_guard")
         if vg is None:
             return
         try:
-            cam_h = None
-            if dgeo is not None and dgeo.coef is not None:
-                try:
-                    cam_h = abs(float(dgeo.coef[2]))
-                except (TypeError, ValueError, IndexError):
-                    cam_h = None
-            action = vg.update(time.perf_counter(), cam_h, bool(dgeo_new))
+            now = time.perf_counter()
+            if chain.get("lane_obs") is None:
+                chain["view_guard"] = None
+                self._view_ok = True
+                _tlog(self, "[极速狂飙] 线观测未启用，视角守卫没有判据——"
+                            "按未验证放行（不切视角、不中止阶段）", "WARNING")
+                return
+            if vg.first_sample_at is None and now - vg.t0 > vg.cfg.arm_timeout_s:
+                chain["view_guard"] = None
+                self._view_ok = True
+                _tlog(self, f"[极速狂飙] 线观测 {vg.cfg.arm_timeout_s:.0f}s 内没给出"
+                            "可判的相机高——按未验证放行（不切视角、不中止阶段）",
+                      "WARNING")
+                return
+            cam_h = None if lane is None else lane.get("cam_h_lane")
+            # 样本按线观测的真实检测帧计：同一帧被多拍读到只算一次
+            fid = None if lane is None else lane.get("fid")
+            new = fid is not None and fid != chain.get("vg_fid")
+            if new:
+                chain["vg_fid"] = fid
+            action = vg.update(now, cam_h, new)
             if action == ViewGuard.WAIT:
                 return
             if action == ViewGuard.OK:
@@ -1891,7 +1911,7 @@ class SpeedRushModule(ActivityModule):
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             if chain.get("view_guard") is not None and gpad is not None:
-                self._tick_view_guard(chain, gpad, dgeo, dgeo_new)
+                self._tick_view_guard(chain, gpad, lane)
             # 线观测快照已在深度 push 前取过（同一对象、同一拍）：这里只判语义门
             # ——线严格可用时它就是走廊中心原点，深度只填边界/宽度。
             obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
@@ -2390,12 +2410,19 @@ class SpeedRushModule(ActivityModule):
             else chain["depth_geo"].last_segments,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
-            # 焦距与相机高观测两列：焦距是固定投影焦距（RULES §3.8），
-            # cam_h 取平面 c（名义 1.25m；坏平面会显形）。
+            # 焦距与相机高观测两列：焦距是固定投影焦距（RULES §3.8）；cam_h
+            # 是平面 c——v5 合成点图把贴地像素钉在 Y≡cam_h，这列**恒等于 1.25**，
+            # 只作「点图确实按合成骨架生成」的存在性审计，不能当视角判据读
+            # （视角判据=线观测的 cam_h_lane，见 lane_obs 块）。
             "dgeo_focal": None if dgeo is None or dgeo.fx is None
             else round(dgeo.fx, 1),
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
             else round(abs(dgeo.coef[2]), 3),
+            # 本帧米制骨架用的地平线行与来源（lane=车道线中位 / fallback=标定
+            # 回退）。回退拍的距离系统性偏 25~40%，归因这一批必须能逐拍看见。
+            "dgeo_yv": None if dgeo is None or dgeo.y_v is None
+            else round(dgeo.y_v, 1),
+            "dgeo_yv_src": None if dgeo is None else dgeo.y_v_src,
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
             # 与影子重放的验收面（带来源明细在 debugview/offline 重放）。
             # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据（master=规则
@@ -3311,7 +3338,13 @@ class _EgoRoadObserver:
 
     def _plane_gate(self, bnd) -> bool:
         """平面尺度门：|coef[2]|（=cam_h）在 bumper 机位物理带内；无平面证据
-        （coef=None/异常）不冒充坏帧——深度层的质量门已管那一档。"""
+        （coef=None/异常）不冒充坏帧——深度层的质量门已管那一档。
+
+        **v5 起这道门结构上不会触发**：合成点图把贴地像素钉在 Y≡cam_h，平面 c
+        恒等于 1.25。坏帧的拦截已上移到生产者（地面拟合 MAD 门，超限整帧不出
+        读数）——那一道比尺度门早一拍且更直接。此处保留是因为 master 链的
+        「整帧隔离」分支（缘点/绿区/远带一起作废）还要一条统一入口，不要把它
+        当活门读。"""
         coef = getattr(bnd, "coef", None) if bnd is not None else None
         if coef is None:
             return True

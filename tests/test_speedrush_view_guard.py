@@ -115,3 +115,67 @@ def test_press_view_button_always_releases(monkeypatch):
     kinds = [c[0] for c in pad.calls]
     assert kinds == ["press", "update", "release", "update"]
     assert pad.calls[0][1] == "RB"
+
+
+# ---------- 模块层接线（2026-11-12）：判据改吃车道线反解的相机高 ----------
+
+def _mod(monkeypatch):
+    """裸模块实例 + 静音 logger（只测 _tick_view_guard 的接线）。"""
+    import types
+    import maaracing_master.plugins.speedrush.module as smod
+    monkeypatch.setattr(smod, "logger",
+                        types.SimpleNamespace(log=lambda *a, **k: None))
+    return smod, smod.SpeedRushModule(None)
+
+
+def test_guard_releases_when_lane_instrument_absent(monkeypatch):
+    """线观测没启用 → 没有判据：放行、不切视角、不中止阶段。"""
+    import time
+    smod, m = _mod(monkeypatch)
+    vg = ViewGuard(ViewGuardConfig(enabled=True), time.perf_counter())
+    chain = {"view_guard": vg, "lane_obs": None, "abort_phase": False}
+    m._tick_view_guard(chain, None, None)
+    assert chain["view_guard"] is None
+    assert m._view_ok is True
+    assert chain["abort_phase"] is False
+
+
+def test_guard_releases_when_lane_never_yields_cam_h(monkeypatch):
+    """线在跑但一直给不出相机高：按「无法判定」放行，不走三视角失败。"""
+    import time
+    smod, m = _mod(monkeypatch)
+    cfg = ViewGuardConfig(enabled=True, sample_s=0.01, min_samples=2,
+                          arm_timeout_s=0.01, deadline_s=1.0)
+    vg = ViewGuard(cfg, time.perf_counter() - 1.0)
+    chain = {"view_guard": vg, "lane_obs": object(), "abort_phase": False}
+    m._tick_view_guard(chain, None, {"fid": 1, "cam_h_lane": None})
+    assert chain["view_guard"] is None
+    assert m._view_ok is True
+    assert chain["abort_phase"] is False
+
+
+def test_guard_takes_cam_h_from_lane_and_confirms(monkeypatch):
+    """判据来自车道线反解（lane.cam_h_lane），按线观测帧号去重计样本。"""
+    import time
+    smod, m = _mod(monkeypatch)
+    cfg = ViewGuardConfig(enabled=True, sample_s=0.01, min_samples=2,
+                          settle_s=0.0, arm_timeout_s=5.0, deadline_s=5.0)
+    vg = ViewGuard(cfg, time.perf_counter())
+    chain = {"view_guard": vg, "lane_obs": object(), "abort_phase": False}
+    m._tick_view_guard(chain, None, {"fid": 7, "cam_h_lane": 1.25})
+    m._tick_view_guard(chain, None, {"fid": 7, "cam_h_lane": 1.25})  # 同帧不重复计
+    assert len(vg.samples) == 1 and chain["view_guard"] is vg
+    time.sleep(0.02)
+    m._tick_view_guard(chain, None, {"fid": 8, "cam_h_lane": 1.27})
+    assert chain["view_guard"] is None and m._view_ok is True
+    assert vg.median == 1.26
+
+
+def test_guard_does_not_read_depth_plane_cam_h(monkeypatch):
+    """合成点图的平面 c 恒等于 1.25（贴地像素被钉在 Y≡cam_h），拿它当判据
+    等于读常数——模块层不得再把 dgeo 传进守卫（签名里没有这个入口）。"""
+    import inspect
+    smod, _m = _mod(monkeypatch)
+    params = list(inspect.signature(smod.SpeedRushModule._tick_view_guard)
+                  .parameters)
+    assert params == ["self", "chain", "gpad", "lane"]

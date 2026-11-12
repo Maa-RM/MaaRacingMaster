@@ -1954,3 +1954,55 @@ def test_region_reading_clip_side_honest():
     assert rr.left_clip_frac == pytest.approx(1.0)
     assert dg.region_reading(_xg_grid([]), 2.75).sides == 0
 
+
+
+# ---------- 米制骨架的标定口径（2026-11-12）：回退值与 MAD 门 ----------
+
+def test_fallback_horizon_is_lane_median_not_gate0():
+    """灭点行缺值只回退合成骨架的标定值 361.0。
+
+    gate0 的 y_h=354.2 是 2D 尺子分母（a_x 按它标定），两个数差 7px；拿它当
+    纵向骨架会让 40m 处偏近约 25%、66m 处偏近约 40%。"""
+    assert dg.FALLBACK_Y_V == pytest.approx(361.0)
+    assert dg.FALLBACK_Y_V != pytest.approx(CAL.y_h)
+
+
+def test_observe_uses_fallback_horizon_and_labels_it():
+    """y_v 缺值 → 用 361.0 合成，并在读数上标 y_v_src=fallback（trace 可见）。"""
+    obs = DepthRoadObserver(_FakeDepthSess(_fake_depth_v(361.0)), CAL)
+    r, _ev = obs.observe_debug(_frame_np(), y_v=None)
+    assert r is not None
+    assert r.y_v == pytest.approx(dg.FALLBACK_Y_V)
+    assert r.y_v_src == "fallback"
+    r2, _ev2 = obs.observe_debug(_frame_np(), y_v=360.4)
+    assert r2.y_v == pytest.approx(360.4) and r2.y_v_src == "lane"
+
+
+def _fake_depth_v_full(y_v: float = 361.0, m: float = 0.0154,
+                       a: float = 0.01, A: float = 0.33,
+                       noise: float = 0.0, seed: int = 0) -> np.ndarray:
+    """全幅相对深度场（_ground_model 的直接输入口径）。"""
+    rows = np.arange(dg.FRAME_H) + 0.5
+    u = (np.arange(dg.FRAME_W) + 0.5) / dg.FRAME_W
+    v = A + m * (rows[:, None] - y_v) + a * u[None, :]
+    if noise:
+        v = v + np.random.default_rng(seed).normal(0.0, noise, v.shape)
+    return v.astype(np.float32)
+
+
+def test_ground_mad_separates_good_and_bad_fit():
+    """MAD 门是「地面模型有没有解释住画面」的判据：干净场 ~0，噪声场跨过 0.06。"""
+    gm = dg._ground_model(_fake_depth_v_full(), 361.0, None)
+    assert gm is not None and gm[3] <= dg.GROUND_MAD_MAX
+    gm_noisy = dg._ground_model(_fake_depth_v_full(noise=0.08), 361.0, None)
+    assert gm_noisy is not None and gm_noisy[3] > dg.GROUND_MAD_MAX
+
+
+def test_infer_points_abstains_when_ground_mad_over_gate(monkeypatch):
+    """MAD 超限整帧弃权（实验区定案「MAD>0.06 必须弃用」），并计数可查。"""
+    before = dg.SKIP_STATS.get("mad", 0)
+    monkeypatch.setattr(dg, "GROUND_MAD_MAX", -1.0)   # 强制越门（干净场必过）
+    pts, _fx, _fy = infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(),
+                                 y_v=360.0)
+    assert pts is None
+    assert dg.SKIP_STATS.get("mad", 0) == before + 1

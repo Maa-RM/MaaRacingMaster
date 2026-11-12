@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+from collections import deque
 
 from maaracing_master.core.perf_sampler import beat
 import time
@@ -69,6 +70,18 @@ PROB_THRESH = 0.30
 VANISH_Y_LO, VANISH_Y_HI = 341.0, 381.0
 VANISH_PROBE_Y = 520.0
 VANISH_SPAN_LO, VANISH_SPAN_HI = 60.0, 900.0
+# 灭点行的时间平滑（2026-11-12）：单帧两两交点中位仍有 ±2~3px 的帧间抖，而它
+# 是合成点图与逐车距离的**尺度基准**——1px 约 40m 处 5%、66m 处 8%，逐帧直发
+# 会让同一辆车 0.1s 内的距离读数摆 20~40%（实机段实测 −27%~+43%）。地平线是
+# 慢变量（俯仰随载重/坡度变），取近 YV_WIN 个检测拍的中位即可，代价 0.1~0.2s
+# 的滞后；间隔超过 YV_GAP_S 说明中间断过（丢检/换段），旧样本不再代表当前姿态。
+YV_WIN = 5
+YV_GAP_S = 1.0
+# 相机高反解（线间距法）的物理带与样本门：结果只给视角守卫用（粗门），
+# 与深度链的 1.25 无耦合关系。
+CAM_H_EST_LO, CAM_H_EST_HI = 0.6, 3.0
+CAM_H_EST_MIN_ROWS = 10.0     # 两条线在同一行的可比对行窗（行）
+CAM_H_EST_MIN_DX = 5.0        # 同一行上两线的像素间距下限（重合线不算）
 TRACK_TOL = 0.15
 TRACK_GAP = 6
 COAST_MAX_TICKS = 10
@@ -404,6 +417,80 @@ def _vanish_row(lines: list[dict]) -> float | None:
     mad = float(np.median(np.abs(np.asarray(yvs) - med)) * 1.4826)
     keep = [y for y in yvs if abs(y - med) <= 2.5 * mad] if mad > 0.5 else yvs
     return float(np.median(keep))
+
+
+def _smooth_vanish(hist: deque, raw: float, now: float, last_t: float
+                   ) -> tuple[float, float]:
+    """单帧灭点行 → 发布值（近 YV_WIN 个检测拍的中位）。返回 (发布值, 入史时刻)。
+
+    长间隔（>YV_GAP_S）先清史：中间断过检就说明这段的俯仰证据不连续，拿旧
+    样本掺进中位会把一次真实的姿态变化当成噪声压掉。单帧离群由中位天然吸收，
+    不需要额外的跳变门（2 个样本时取中位=均值，余量另由物理门 341~381 兜）。"""
+    if hist and now - last_t > YV_GAP_S:
+        hist.clear()
+    hist.append(float(raw))
+    return float(np.median(hist)), now
+
+
+def _cam_h_from_lines(lines: list[dict], y_v: float | None) -> float | None:
+    """车道线反解相机高（像素间距法，与深度链完全无关）。
+
+    地面线满足 ``x = vpx + L·LANE_W·(y−y_v)/cam_h``，两条线在同一行的像素间距
+    ``Δx = |Δk|·LANE_W·(y−y_v)/cam_h``，于是 ``cam_h = |Δk|·LANE_W·(y−y_v)/Δx``。
+    只用 accepted 且已定道号（``k``）的线；每对取两段拟合的行窗交集的中点行，
+    两两结果取中位（≥3 个时先按 MAD 剔一次）。
+
+    这是视角守卫的**唯一诚实判据**：合成点图把贴地像素的高度钉在 Y≡cam_h，平面
+    系数 c 恒等于 1.25，读它等于读一个常数（2026-11-12 实机 18 帧逐帧核对）。
+    证据不足（<2 条可用线 / 行窗不重叠 / 间距过小）返回 None——调用方按「无判据」
+    处理，不盲判。"""
+    if y_v is None:
+        return None
+    fs: list[tuple[int, float, float, float, float]] = []
+    for c in lines:
+        if not c.get("accepted"):
+            continue
+        k = c.get("k")
+        fts = c.get("fits") or ()
+        if k is None or not fts:
+            continue
+        ft = fts[0]                     # (near, far)：近段优先，行窗更贴近车
+        s, a = ft.get("s"), ft.get("a")
+        y0, y1 = ft.get("y0"), ft.get("y1")
+        if s is None or a is None or y0 is None or y1 is None:
+            continue
+        fs.append((int(k), float(s), float(a), float(y0), float(y1)))
+    if len(fs) < 2:
+        return None
+    est: list[float] = []
+    for i in range(len(fs)):
+        for j in range(i + 1, len(fs)):
+            k1, s1, a1, lo1, hi1 = fs[i]
+            k2, s2, a2, lo2, hi2 = fs[j]
+            dk = abs(k1 - k2)
+            if dk < 1:
+                continue            # 同一条道（两段拟合重叠/碎片）
+            lo = max(lo1, lo2, y_v + 20.0)
+            hi = min(hi1, hi2)
+            if hi - lo < CAM_H_EST_MIN_ROWS:
+                continue
+            y = 0.5 * (lo + hi)
+            dx = abs((s1 - s2) * y + (a1 - a2))
+            if dx < CAM_H_EST_MIN_DX:
+                continue
+            h = dk * LANE_W * (y - y_v) / dx
+            if CAM_H_EST_LO <= h <= CAM_H_EST_HI:
+                est.append(float(h))
+    if not est:
+        return None
+    med = float(np.median(est))
+    if len(est) >= 3:
+        mad = float(np.median(np.abs(np.asarray(est) - med)) * 1.4826)
+        if mad > 0.02:
+            kept = [v for v in est if abs(v - med) <= 2.5 * mad]
+            if kept:
+                med = float(np.median(kept))
+    return med
 
 
 class LineTracker:
@@ -857,7 +944,10 @@ class LaneObsWorker:
         self._n = 0
         self._use_dml = False
         self._focal: float | None = None   # 逐帧全幅焦距（深度读数同源）
-        self._yv: float | None = None      # 最近一次可算的灭点行（地平线，慢变量）
+        self._yv: float | None = None      # 灭点行（地平线）·发布值=近 N 个检测拍中位
+        self._yv_raw: float | None = None  # 最近一次检测拍的单帧估计（未平滑，诊断用）
+        self._yv_hist: deque = deque(maxlen=YV_WIN)
+        self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史，见 _push_vanish）
         self.busy_skips = 0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
@@ -1020,7 +1110,9 @@ class LaneObsWorker:
                         continue
                     yv = _vanish_row(rec["lines"])
                     if yv is not None:
-                        self._yv = yv
+                        self._yv_raw = float(yv)
+                        self._yv, self._yv_t = _smooth_vanish(
+                            self._yv_hist, yv, time.perf_counter(), self._yv_t)
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
                                                jump, anchor)
                 t_done = time.perf_counter()
@@ -1040,8 +1132,12 @@ class LaneObsWorker:
         字段必须逐个显式搬运（不是 ``dict(res)``）：上游新增的位置原点判据
         （usable/locked）若在这里漏搬，消费方永远读到 None——线为主会静默
         失效且看不出错误。"""
+        is_pred = bool(res.get("pred", pred_fallback))
+        # 相机高反解只在真实检测拍上算：预测拍的线是上一拍的，重复发布等于把
+        # 同一个样本数两遍（守卫按「新样本」计数）。
+        h_lane = None if is_pred else _cam_h_from_lines(res["lines"], self._yv)
         return {"fid": fid, "cam_h": round(cam_h, 3),
-                "pred": bool(res.get("pred", pred_fallback)),
+                "pred": is_pred,
                 "ms": round((t_done - t0) * 1000.0, 1),
                 "n_lines": res["n_lines"],
                 "x": None if res["x"] is None else round(res["x"], 3),
@@ -1057,9 +1153,14 @@ class LaneObsWorker:
                 "locked": int(res.get("locked", 0)),
                 "focal": None if self._focal is None
                 else round(self._focal, 1),
-                # 灭点行（地平线）：合成点云的米制骨架；慢变量，检测拍更新、
-                # 预测/断线拍保留上一值
+                # 灭点行（地平线）：合成点图与逐车距离的米制骨架。``y_v`` 是
+                # 近 YV_WIN 个检测拍的中位（发布值，深度链吃这个）；``y_v_raw``
+                # 是本拍单帧估计，只作诊断——两者的差就是平滑吃掉的噪声。
                 "y_v": None if self._yv is None else round(self._yv, 2),
+                "y_v_raw": None if self._yv_raw is None
+                else round(self._yv_raw, 2),
+                # 相机高反解（线间距法）：视角守卫的唯一诚实判据，证据不足=None
+                "cam_h_lane": None if h_lane is None else round(h_lane, 3),
                 "t_done": t_done, "t_det": self._last_det_t,
                 # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
                 "lines": res["lines"]}

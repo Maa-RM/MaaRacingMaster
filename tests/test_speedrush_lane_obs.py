@@ -664,3 +664,64 @@ def test_lines_from_prob_captures_far_dash_without_color():
     assert ln["color"] == "?"
     assert "yellow" not in ln and "white" not in ln
     assert ln["y0"] >= 440.0 and ln["y1"] <= 546.0
+
+
+# ---------- 地平线发布口径（2026-11-12）：中位平滑 + 相机高反解 ----------
+
+def test_smooth_vanish_rejects_single_outlier():
+    """单帧离群被中位吸收：坏拍（假灭点）不得直接进合成点图的尺度基准。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    t = 0.0
+    for i, v in enumerate((361.0, 361.2, 360.8, 361.1)):
+        val, t = la._smooth_vanish(hist, v, i * 0.05, t)
+    assert val == pytest.approx(361.05, abs=0.15)
+    val, t = la._smooth_vanish(hist, 372.0, 0.30, t)      # 单帧跳 11px
+    assert abs(val - 361.0) < 1.0, f"离群没有被吸收：{val}"
+
+
+def test_smooth_vanish_clears_history_after_gap():
+    """断检超过 YV_GAP_S：旧姿态样本不得掺进新中位。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    t = 0.0
+    for i in range(5):
+        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t)
+    assert val == pytest.approx(361.0)
+    val, t = la._smooth_vanish(hist, 350.0, t + 5.0, t)
+    assert val == pytest.approx(350.0)
+
+
+def _vline(k, cam_h=1.25, y_v=361.0, y0=560.0, y1=700.0):
+    """按地面线方程造一条已定道号、已接受的线（x = vpx + L·LANE_W·(y−y_v)/cam_h）。"""
+    s = k * la.LANE_W / cam_h
+    a = la.VPX - s * y_v
+    return {"k": k, "accepted": True,
+            "fits": [{"s": s, "a": a, "y0": y0, "y1": y1}]}
+
+
+def test_lane_cam_h_from_pixel_spacing():
+    """两条相邻线的像素间距能独立反解相机高（不经过任何深度读数）。"""
+    got = la._cam_h_from_lines([_vline(-1), _vline(1)], 361.0)
+    assert got == pytest.approx(1.25, rel=0.01)
+
+
+def test_lane_cam_h_needs_two_distinct_lanes():
+    assert la._cam_h_from_lines([_vline(-1)], 361.0) is None
+    assert la._cam_h_from_lines([_vline(1), _vline(1)], 361.0) is None  # 同道
+    assert la._cam_h_from_lines([_vline(-1), _vline(1)], None) is None
+    bad = dict(_vline(1), accepted=False)
+    assert la._cam_h_from_lines([_vline(-1), bad], 361.0) is None
+
+
+def test_lane_cam_h_separates_chase_view():
+    """追尾机位（约 1.9m）必须落在守卫带 1.12~1.55 之外——这是守卫恢复判据的前提。"""
+    got = la._cam_h_from_lines([_vline(-1, cam_h=1.9), _vline(1, cam_h=1.9)],
+                               361.0)
+    assert got is not None and got > 1.55
+
+
+def test_lane_cam_h_insensitive_to_horizon_offset():
+    """y_v 有 4px 偏差时反解只差 2%（守卫是粗门，不吃地平线的细噪声）。"""
+    got = la._cam_h_from_lines([_vline(-1), _vline(1)], 365.0)
+    assert got == pytest.approx(1.25, rel=0.05)
