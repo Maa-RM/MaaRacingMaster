@@ -116,6 +116,7 @@ tools/pipeline/dev/
 # 实验区的待试权重：来源与许可未声明、体积大，一律不入库（实验 README 注明取法）。
 # 插件正式分发的权重不在此列——它们在 plugins/*/resources/models/ 随包入库。
 tools/experiments/**/weights/
+tools/experiments/**/upstream/
 
 # 探针输出目录（命名约定 *_out/）：一次性报告的落点，读数归实验 README，文件本身可重跑。
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
@@ -123,3 +124,6 @@ tools/experiments/**/*_out/
 
 # 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
 # （教育/科研/非营利可分发，商业用途需另行授权）
+
+tools/experiments/speedrush_lane_model/bdd100k/
+tools/experiments/speedrush_lane_model/fine_tune_out/

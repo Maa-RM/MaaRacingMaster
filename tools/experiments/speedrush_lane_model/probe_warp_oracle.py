@@ -54,12 +54,16 @@ def lane_prob(sess, rgb: np.ndarray, pad: int) -> np.ndarray:
     return p[pad:p.shape[0] - pad] if pad else p       # 内容域 360x640
 
 
-def warp_mat(mode: str, r: float, W: int, H: int) -> np.ndarray:
+def warp_mat(mode: str, r: float, W: int, H: int) -> tuple[np.ndarray, int]:
+    """返回 (M, flags)：M 按 dst→src 语义构造，须配 WARP_INVERSE_MAP 使用
+    （否则 OpenCV 当 src→dst 求逆，变成中央放大——2026-11-12 修正）。"""
     vpx, yh = VPX * W / 1280.0, Y_H * H / 720.0
     if mode == "pull":
-        return np.float32([[1 / r, 0, vpx * (1 - 1 / r)],
-                           [0, 1 / r, yh * (1 - 1 / r)]])
-    return np.float32([[1, 0, 0], [0, 1 / r, yh * (1 - 1 / r)]])
+        m = np.float32([[1 / r, 0, vpx * (1 - 1 / r)],
+                        [0, 1 / r, yh * (1 - 1 / r)]])
+    else:
+        m = np.float32([[1, 0, 0], [0, 1 / r, yh * (1 - 1 / r)]])
+    return m, cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP
 
 
 def content_box(roi, mode: str, r: float, W: int, H: int, pad_px: int = 6):
@@ -81,8 +85,9 @@ def content_box(roi, mode: str, r: float, W: int, H: int, pad_px: int = 6):
 def overlay(rgb, sess, roi, mode: str, r: float, native_max: float) -> Path:
     """三联图：原生+盲区框 | 重排域+响应 | 原生+逆映射伪标注。"""
     H, W = rgb.shape[:2]
-    dst = cv2.warpAffine(rgb, warp_mat(mode, r, W, H), (W, H),
-                         flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
+    M, flags = warp_mat(mode, r, W, H)
+    dst = cv2.warpAffine(rgb, M, (W, H), flags=flags,
+                         borderValue=(114, 114, 114))
     p = lane_prob(sess, dst, PAD)
     mask = cv2.dilate((p > 0.30).astype(np.uint8), np.ones((3, 3), np.uint8))
     ys, xs = np.nonzero(mask)
@@ -142,8 +147,8 @@ def main():
             blind.append(f"| {name} | native 对照 | {nat_p:.4f} | {nat_o:.4f} |")
         for mode in ("pull", "vscale"):
             for r in (0.25, 0.35, 0.5, 0.7):
-                dst = cv2.warpAffine(rgb, warp_mat(mode, r, W, H), (W, H),
-                                     flags=cv2.INTER_LINEAR,
+                M, flags = warp_mat(mode, r, W, H)
+                dst = cv2.warpAffine(rgb, M, (W, H), flags=flags,
                                      borderValue=(114, 114, 114))
                 q, qo = lane_prob(sp, dst, PAD), lane_prob(so, dst, 0)
                 if roi is None:
