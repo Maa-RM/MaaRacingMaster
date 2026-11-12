@@ -51,6 +51,7 @@ from maa.controller import CustomController
 from maa.resource import Resource
 from maa.tasker import Tasker
 
+from maaracing_master.core.advance import AdvanceRecognizer, RECOGNIZER_NAME as ADVANCE_NAME
 from maaracing_master.core.clicker import Clicker
 from maaracing_master.core.logger import logger
 from maaracing_master.core.pipeline_logger import PipelineLogger
@@ -649,6 +650,8 @@ class NavGraph:
         self._tasker = Tasker()
         self._resource.register_custom_recognition(
             RECOGNIZER_NAME, TemplateRecognizer(self, cursor_pos_provider=self.cursor_pos))
+        self._resource.register_custom_recognition(
+            ADVANCE_NAME, AdvanceRecognizer(self))
         self._resource.register_custom_action(ACTION_NAME, ClickAction(self))
         self._resource.register_custom_action(INPUT_ACTION_NAME, InputAction(self))
         self._resource.register_custom_action(PROBE_ACTION_NAME, ProbeAction(self))

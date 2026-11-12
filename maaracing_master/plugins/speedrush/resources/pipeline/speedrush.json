@@ -68,10 +68,10 @@
                     "mode": "template",
                     "colorspace": "rgb",
                     "rect": [
-                        0.0008,
-                        0.6861,
-                        0.1359,
-                        0.7875
+                        0.0084,
+                        0.3877,
+                        0.1604,
+                        0.8502
                     ],
                     "templates": [
                         "rank_fun_tab.png"
@@ -87,10 +87,10 @@
                 "custom_action_param": {
                     "settle": {
                         "rect": [
-                            0.0008,
-                            0.6861,
-                            0.1359,
-                            0.7875
+                            0.0084,
+                            0.3877,
+                            0.1604,
+                            0.8502
                         ],
                         "templates": [
                             "rank_fun_tab.png"
@@ -631,10 +631,10 @@
                     "mode": "template",
                     "colorspace": "rgb",
                     "rect": [
-                        0.0008,
-                        0.6861,
-                        0.1359,
-                        0.7875
+                        0.0084,
+                        0.3877,
+                        0.1604,
+                        0.8502
                     ],
                     "templates": [
                         "rank_fun_tab.png"

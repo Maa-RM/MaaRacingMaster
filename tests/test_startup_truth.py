@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 STARTUP_DIR = REPO / "maaracing_master" / "core" / "resources" / "startup"
 PIPELINE = STARTUP_DIR / "pipeline.json"
 IMAGE_DIR = STARTUP_DIR / "image"
+CORE_IMAGE_DIR = REPO / "maaracing_master" / "core" / "resources" / "image"
 
 POPUPS = [
     "startup.popup.claim_daily",
@@ -28,6 +29,7 @@ POPUPS = [
     "startup.popup.continue",
     "startup.popup.close_reward",
     "startup.popup.close_marketing",
+    "startup.popup.close_x",
 ]
 LOGIN = "startup.login.engine_start"
 CONFIRMS = ["startup.hall.confirm.1", "startup.hall.confirm.2", "startup.hall.confirm.3"]
@@ -127,6 +129,11 @@ def test_templates_resolve_and_do_not_shadow_plugins():
                      for p in (d.parent / "image").glob("*.png")}
     for name, node in _startup_nodes(graph, origin).items():
         for tpl in _templates(node):
+            if tpl.startswith("common_"):
+                # 通用控件（关闭叉 / 返回箭头）住全局模板目录：跨页跨模块只有这一份，
+                # 启动链与模块图都按文件名直接引用，不在这里复制副本。
+                assert (CORE_IMAGE_DIR / tpl).is_file(), f"{name} 引用的全局模板不存在: {tpl}"
+                continue
             assert (IMAGE_DIR / tpl).is_file(), f"{name} 引用的模板不存在: {tpl}"
             assert tpl.startswith("startup_"), f"启动链模板必须带 startup_ 前缀: {tpl}"
             assert tpl not in plugin_images, f"启动链模板与插件模板重名: {tpl}"

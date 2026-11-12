@@ -312,6 +312,7 @@ SITES: list[LogSite] = [
     # ---- core/ocr.py ----
     _s('core/ocr.py', '_pin_to_p_cores', '[OCR] CPU 亲和性未生效({})——E-core 漂移防护缺位，OCR 尾部耗时可能偏高', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
     _s('core/ocr.py', 'RapidOcrEngine._get_engine', '[OCR] RapidOCR 加载失败({})，OCR 已禁用', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
+    _s('core/ocr.py', 'RapidOcrEngine._get_block_engine', '[OCR] 整帧检测引擎加载失败({})，位置未知时的文字兜底已禁用', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
 
     # ---- core/perf_contract.py ----
     _s('core/perf_contract.py', 'rows_for', '[perf] {} 契约版本 {} 不认识（期望 {}），领域面整体不显示', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
