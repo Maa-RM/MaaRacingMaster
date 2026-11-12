@@ -248,42 +248,65 @@
   <canvas id="ach-fx" aria-hidden="true"></canvas>
   <div id="ach-island" role="status" aria-live="polite"></div>
 
-  <!-- ===== 成就管理（整页覆盖层，入口在 设置 → 快捷工具；文案与计数由 js/achievement.js 填） ===== -->
+  <!-- ===== 成就管理（设置 → 快捷工具进入；在标题栏之下展开，保留顶栏与底栏） =====
+       结构与文案见 style.css「成就管理」与 js/achievement.js；计数、筛选结果由脚本填。 -->
   <section class="maarm-ach-sheet" id="ach-sheet" hidden aria-hidden="true">
-    <div class="maarm-ach-sheet__head">
-      <span class="maarm-ach-sheet__title">成就管理</span>
-      <span class="maarm-ach-sheet__meta" id="ach-meta"></span>
-      <div class="maarm-ach-sheet__actions">
-        <button class="maarm-ach-ghost" id="ach-export" type="button">导出备份</button>
-        <button class="maarm-ach-ghost" id="ach-import" type="button">导入备份</button>
-        <button class="maarm-ach-ghost maarm-ach-ghost--danger" id="ach-reset" type="button">重置…</button>
-        <button class="maarm-ach-switch is-on" id="ach-notify" type="button" aria-pressed="true">
-          <i></i><span>解锁提示</span>
-        </button>
+    <div class="maarm-ach-head">
+      <button class="maarm-ach-back" id="ach-back" type="button" aria-label="返回设置">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="maarm-ach-crumb">
+        <span class="maarm-ach-crumb__up">设置</span>
+        <span class="maarm-ach-crumb__sep">/</span>
+        <span class="maarm-ach-crumb__cur">成就管理</span>
       </div>
-      <button class="maarm-ach-sheet__close" id="ach-close" type="button" aria-label="关闭">✕</button>
-    </div>
-    <div class="maarm-ach-banner" id="ach-banner" hidden></div>
-    <div class="maarm-ach-sheet__body">
-      <div class="maarm-ach-summary">
-        <div class="maarm-ach-summary__num">
-          <b id="ach-sum-done">0</b><span>/ <span id="ach-sum-all">0</span></span>
-        </div>
-        <div class="maarm-ach-summary__main">
-          <div class="maarm-ach-summary__label">已解锁 <span id="ach-sum-pct">0%</span></div>
-          <div class="maarm-ach-summary__track"><div class="maarm-ach-summary__fill" id="ach-sum-fill"></div></div>
-        </div>
-        <div class="maarm-ach-summary__tiers" id="ach-sum-tiers"></div>
-      </div>
-
-      <div class="maarm-ach-filters">
+      <div class="maarm-ach-seg" role="group" aria-label="筛选成就">
         <button class="maarm-ach-filter is-active" type="button" data-filter="all">全部</button>
         <button class="maarm-ach-filter" type="button" data-filter="locked">未解锁</button>
         <button class="maarm-ach-filter" type="button" data-filter="unlocked">已解锁</button>
-        <span class="maarm-ach-filters__meta" id="ach-status">解锁后永久保留，不随模块移出或重装丢失</span>
       </div>
-
-      <div id="ach-groups"></div>
+    </div>
+    <div class="maarm-ach-banner" id="ach-banner" hidden></div>
+    <div class="maarm-ach-body">
+      <div class="maarm-ach-inner">
+        <!-- 左：按「核心 / 各模块」分组，随窗口拉伸 -->
+        <div class="maarm-ach-main" id="ach-groups"></div>
+        <!-- 右：总览 / 提示开关 / 进度数据，宽度固定、滚动时常驻 -->
+        <aside class="maarm-ach-aside">
+          <div class="card">
+            <div class="card-head"><h3>总览</h3><span class="maarm-ach-meta" id="ach-meta"></span></div>
+            <div class="card-body">
+              <div class="maarm-ach-sum">
+                <div class="maarm-ach-sum__num"><b id="ach-sum-done">0</b><span>/ <span id="ach-sum-all">0</span></span></div>
+                <div class="maarm-ach-sum__pct" id="ach-sum-pct">0%</div>
+              </div>
+              <div class="maarm-ach-sum__track"><div class="maarm-ach-sum__fill" id="ach-sum-fill"></div></div>
+              <div class="maarm-ach-sum__tiers" id="ach-sum-tiers"></div>
+              <p class="maarm-ach-hint" id="ach-status">解锁后永久保留，不随模块移出或重装丢失</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>解锁提示</h3></div>
+            <div class="card-body">
+              <div class="maarm-ach-row">
+                <button class="maarm-ach-switch is-on" id="ach-notify" type="button" role="switch" aria-pressed="true"><i></i></button>
+                <div class="maarm-ach-row__main">
+                  <div class="maarm-ach-row__title">解锁时弹提示条</div>
+                  <p class="maarm-ach-row__desc">解锁瞬间浮出提示卡，5 秒后自动收回</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>进度数据</h3></div>
+            <div class="card-body maarm-ach-actions">
+              <button class="maarm-btn" id="ach-export" type="button">导出备份</button>
+              <button class="maarm-btn" id="ach-import" type="button">导入备份</button>
+              <button class="maarm-btn maarm-ach-danger" id="ach-reset" type="button">重置全部进度</button>
+            </div>
+          </div>
+        </aside>
+      </div>
     </div>
   </section>
 

@@ -369,9 +369,13 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 **提示条**只消费壳侧推送 `{ type: 'achievement', data }`，载荷自足——`title` / `description` / `tier` / `hint` / `unlocked_ts` 都在里面，不回查 `get_achievements`（解锁瞬间的查询会与推送竞争）。形态是圆点入场 → 胶囊 → 详情卡，多条堆叠、队首 5 秒串行推进，点空白处或闲置 9 秒收回。四档视觉由 `data-tier` 驱动（`normal` / `rare` / `precious` / `hidden`），第四档的彩色环与彩虹标题复用页首的 `.maarm-text-scan--rave`；隐藏档解锁时额外放礼花，`prefers-reduced-motion` 下不放。
 
-**管理页**是 `#ach-sheet` 整页覆盖层，入口在设置页快捷工具（`data-tool="achievements"`）。数据只来自 `get_achievements`（隐藏项后端已遮蔽标题/描述/提示与 `agg` / `target` / `progress`，锁定态不画进度条）与 `get_initial_state`（只取模块显示名），按「核心 / 各模块」分组，卡片三态是已解锁日期 / 进度条 / 隐藏遮蔽。只读态（`state === 'frozen'`）显示警示条并把进度写成「进度暂不可用」、导入与重置置灰——不把 0/1 画出来当真实进度；`frozen_reason === 'corrupt'` 是损坏且无法留备份（原文件未动），其余按版本过高说明。`repaired_backup` 非空时用同一条警示条告知「已自动修复，原文件备份为 X」，页面保持可读写。
+**管理页**是 `#ach-sheet` 子页，入口在设置页快捷工具（`data-tool="achievements"`）。它占据标题栏之下、底栏之上（顶栏与底栏常驻，窗口按钮与拖动区照旧），页头是返回 + 面包屑，筛选贴最右（页头不再单设关闭按钮，返回与 Esc 同效），正文按「左分组拉伸 / 右栏固定 340px」排：左边每组一张通用卡（卡头是组名与同组进度），右边是总览、解锁提示开关、备份与重置。右栏设 `min-width: 0`，操作结果（如导出路径）只占一行省略、完整路径进 `title`——否则一串绝对路径会把右栏顶宽、把左边挤窄。数据只来自 `get_achievements`（隐藏项后端已遮蔽标题/描述/提示与 `agg` / `target` / `progress`，锁定态不画进度条）与 `get_initial_state`（只取模块显示名），卡片三态是已解锁日期 / 进度条 / 隐藏遮蔽。只读态（`state === 'frozen'`）显示警示条并把进度写成「进度暂不可用」、导入与重置置灰——不把 0/1 画出来当真实进度；`frozen_reason === 'corrupt'` 是损坏且无法留备份（原文件未动），其余按版本过高说明。`repaired_backup` 非空时用同一条警示条告知「已自动修复，原文件备份为 X」，页面保持可读写。
 
-**层级**：`#ach-fx`（礼花画布，全窗、`pointer-events: none`）8400、`#ach-island` 8500、覆盖层 9000，都在模态（9999）之下；岛底距 100px，避开 `#error-toast` 的 56px。
+**卡片动效**：照 reactbits TiltedCard 的写法重做——倾斜、放大、按下、翻面走同一条二阶弹簧（`v += (ω²(target−x) − 2ζω·v)·h`，240Hz 子步防大 dt 失稳），参数同它的默认值：tilt ω=20·0.2^smoothness、ζ=1−0.3·smoothness（0.6 → 7.62 / 0.82），翻面 ω=9.5、ζ=0.72（略欠阻尼，到位回弹约 6°），按下 ω=26、ζ=0.8。角度全部由 js 逐帧写进 CSS 变量，样式里不设 transform transition——CSS 缓动会和弹簧叠成二次延迟。静止后移出动画队列，不空转。扫光仍由指针即时驱动（不参与弹簧），`prefers-reduced-motion` 下倾斜目标恒为 0、翻面走临界阻尼。未解锁的卡不倾斜也不放大（只有按下回弹），不做 `will-change` 提层——提层会让文字从次像素抗锯齿退化成灰度。
+
+**翻面看触发条件**：每张卡是 `role=button` + `tabindex=0`，点一下（或 Enter/空格）翻到背面看 `hint`，同屏只翻一张；Esc 先收背面、再按一次才离开，点正文空白也收。翻的是卡本身（`--flip` 并进同一个 rotateY）；卡只做三维舞台，底/描边/裁切都在两个面上，这样框和内容一起转、扫光也被圆角裁住。看背面时不接倾斜。隐藏项未解锁时后端已把 `hint` 抹空，背面写「？？？」；卡高不变——背面是绝对定位的整卡覆盖层。
+
+**层级**：成就页 9000 < `#ach-fx`（礼花画布，全窗、`pointer-events: none`）9400 < `#ach-island` 9500 < 模态 9999。解锁提示是全局通知，必须压在成就页之上——成就页打开时解锁的东西不能看不见；岛底距 100px，避开 `#error-toast` 的 56px。
 
 **文案安全**：标题、描述、触发条件都来自插件 catalog（不可信输入），一律写 `textContent`；`innerHTML` 只用于静态骨架与本仓库 `MaaRMIcons.svg()` 的静态串。徽标图标 `trophy` / `lock` 在 `icons.js` 的 LUCIDE 分区。
 
