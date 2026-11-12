@@ -40,7 +40,6 @@ status: active
 
 - `probe_3d_fusion.py` — 地面逆透视 + 车道标记跟踪出位姿，MoGe 点图按位姿累积成世界点云；
   判两件事：点云跨帧是否重合（位姿对不对）、走廊自由空间是否稳定（深度对不对）。
-  产物 `metrics_full.jsonl` 是 `speedrush_geom` 的参考链。
 - `probe_ego_motion.py` — 静态场景光流 + 深度点图反推自车横速与横摆角速度
   （`du ≈ fx·(v_y·dt/Z + ω·dt)`，近场不同 Z 给出不同方程，最小二乘解），与人工杆值对照，
   看能否当快回路的自车状态观测。
