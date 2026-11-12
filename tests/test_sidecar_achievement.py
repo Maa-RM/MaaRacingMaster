@@ -138,6 +138,33 @@ def test_note_ui_event_unlocks_core_achievements(tmp_path):
         a.bind_engine(None)
 
 
+def test_reset_clears_ui_repeat_window(tmp_path):
+    """重置必须同时作废 UI 事件的时间窗基线。
+
+    否则重置后第一次点开始会沿用重置前的计时，直接补发 start_repeat_fast，
+    刚清空的「一分钟内第二次」又亮起来——看起来就像重置没生效。
+    """
+    events = []
+    svc = _service(tmp_path, events, registry=_core_registry())
+    a.bind_engine(svc._achievement_engine)
+    try:
+        svc.note_ui_event({"event": "start_click"})
+        svc.note_ui_event({"event": "start_cancel"})
+        assert {e["data"]["global_id"] for e in events} == {
+            "core.first_start", "core.cancel_countdown"}
+
+        ok, data, _ = svc.reset_achievements({"scope": "all"})
+        assert ok and data["cleared"] == 2
+
+        events.clear()
+        svc.note_ui_event({"event": "start_click"})
+        svc.note_ui_event({"event": "start_cancel"})
+        assert [e["data"]["global_id"] for e in events] == [
+            "core.first_start", "core.cancel_countdown"]
+    finally:
+        a.bind_engine(None)
+
+
 def test_note_ui_event_ignores_unknown_event(tmp_path):
     events = []
     svc = _service(tmp_path, events, registry=_core_registry())

@@ -2387,6 +2387,10 @@ class SidecarService:
                 cleared = engine.reset(scope)
             except achievement.AchievementStoreError as exc:
                 return (False, None, str(exc))
+        # 时间窗基线一并作废：否则重置后第一次点「开始」会沿用重置前的计时，
+        # 直接补发 *_repeat_fast，让人以为重置没生效（那是重置前的第二次点击）。
+        with self._achievement_ui_lock:
+            self._achievement_ui_last.clear()
         logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
         return (True, {"scope": scope, "cleared": cleared}, None)
 
