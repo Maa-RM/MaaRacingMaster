@@ -738,6 +738,15 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
 **重复记账放大**（见下）→ v_lat 饱和 29 拍 → lat_veto 假否决（空路abort，
 帧 0043）+ 巡航画龙（executed 峰谷 0.6~1.73 道）。
 
+- **深度前向错峰（TICK_BEAT）**：深度 worker 取帧前等一次感知放锁节拍
+  （`core/dml_lock.TICK_BEAT`，`yolo_detector` 放锁后 `note()`）、再等本拍 push
+  落地（只等节拍会取到上一拍的帧），前向从「感知刚放锁」起跑，不再随机压住
+  控制拍；仅当最近一拍在 1s 内才等。回退面=删 TICK_BEAT/`note()` 与
+  `STAGGER_FRESH_S`/`STAGGER_WAIT_S`/`PUSH_WAIT_S` 三常量即回自由起跑。
+  验收结论（证据 commit `73a7164`，v5 换装前的供数特性）：识别等待 p99
+  ~54→≤30ms、每秒累计被延迟 217→~150ms；代价是深度复用拍占比上浮（~60%）、
+  depth_age p90 贴 350ms 闸上沿；行为面（路心/横向目标/打杆差分）无退化，
+  新读数首次消费年龄反而更小；「后处理与下一轮前向并行」的架构改动不启动。
 - **新鲜度纪律（planner ⑥b）**：`update()` 增 `road_offset_new`（module 传
   `dgeo_new`）。β 速度修正（β·r/dt）只在新证据拍生效，保鲜槽复用拍只收
   位置（α·r）——同一套旧读数若每拍都当速度新证据，一次 0.36 道翻跳会被

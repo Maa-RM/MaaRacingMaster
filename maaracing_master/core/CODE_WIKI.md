@@ -731,6 +731,8 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | 截图需要管理员权限                 | PrintWindow/BitBlt需要提升权限                      | Shell exe manifest 自动 UAC 提权（一次，child 继承） |
 | cv2不支持中文路径                | imread/imwrite在中文路径下失败                        | opencv\_utf8\_patch.py monkey-patch            |
 | YOLO ONNX 导出              | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度                        |
+| ORT-DML 并发崩溃           | 两个 GPU run 同时在飞即崩（onnxruntime #20713），与锁占时长/CPU 并发无关 | 全部 GPU run 走 `dml_lock` 串行持锁                    |
+| ORT-DML 派发税与 capture   | run 是分辨率无关的阻塞调用（MoGe 时代实测 ~40ms 固定税，降分辨率无效）；`enable_graph_capture` 首次 run 即崩 | 降税只有减节点（更小骨干）一条路；capture 路线不可用（证据 commit `73a7164`） |
 
 ### 5.2 光标导航
 
