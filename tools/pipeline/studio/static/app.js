@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const S = {
   session: "", module: "", behavior: "",
   behaviors: [], frames: [], manifest: null, idx: 0,
-  nodes: [], node: null, rect: null, drag: null,
+  nodes: [], node: null, rect: null, drag: null, showOverlay: true, legacyFrames: false,
 };
 
 function setStatus(text) {
@@ -83,7 +83,12 @@ async function loadFrames() {
   $("scrub").value = String(S.idx);
   $("manifest").textContent = S.manifest
     ? JSON.stringify(S.manifest, null, 2) : "（无清单）";
-  setStatus(`${S.frames.length} 帧`);
+  // 有没有 overlay 字段 = 是「干净落盘」还是「旧版把标注烧进图里」的分水岭。
+  // 旧会话的帧拿来裁模板会长出带字幕的图，先在这里明说一句。
+  S.legacyFrames = S.frames.length > 0 && S.frames.every((r) => !("overlay" in r));
+  setStatus(S.legacyFrames
+    ? `${S.frames.length} 帧 · 旧版落盘（帧上带绘制，裁模板请换新会话）`
+    : `${S.frames.length} 帧`);
   renderAll();
 }
 
@@ -143,7 +148,11 @@ function step(delta) {
   renderAll();
 }
 
-// ---------------- 回放叠加层（空；留给 ROI 页） ----------------
+// ---------------- 回放叠加层 ----------------
+//
+// 帧文件是**纯证据**：不含任何绘制。标注以数据形态随帧落盘（frames.jsonl 的
+// overlay 字段，坐标归一化），由这里画在 canvas 上。于是「看标注」和「裁模板」
+// 不再抢同一张图——从前二者共用带字帧，裁出来的模板天生带污染。
 
 function drawOverlay() {
   const img = $("frame");
@@ -151,7 +160,86 @@ function drawOverlay() {
   if (!img.naturalWidth) return;
   canvas.width = img.clientWidth;
   canvas.height = img.clientHeight;
-  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const row = currentFrame();
+  const ov = row && row.overlay;
+  if (!S.showOverlay || !ov) return;
+  const W = canvas.width, H = canvas.height;
+
+  const box = ov.nav_box;
+  if (Array.isArray(box) && box.length === 4) {
+    ctx.save();
+    ctx.strokeStyle = "#ffd400";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(box[0] * W, box[1] * H,
+                   (box[2] - box[0]) * W, (box[3] - box[1]) * H);
+    ctx.restore();
+  }
+
+  const marker = (at, color, radius) => {
+    if (!Array.isArray(at)) return;
+    const x = at[0] * W, y = at[1] * H, r = Math.max(6, radius * W);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.moveTo(x - r * 0.7, y); ctx.lineTo(x + r * 0.7, y);
+    ctx.moveTo(x, y - r * 0.7); ctx.lineTo(x, y + r * 0.7);
+    ctx.stroke();
+    ctx.restore();
+    return [x, y];
+  };
+
+  const cur = ov.cursor;
+  if (cur) {
+    const age = cur.age_s;
+    const p = marker(cur.at, age == null || age <= 1 ? "#e04030" : "#a04030", 0.012);
+    if (p && age != null) label(ctx, `cursor ${age.toFixed(1)}s`, p[0] + 14, p[1] - 8, "#e04030");
+  }
+  const it = ov.intent;
+  if (it) {
+    const p = marker(it.at, "#ebce87", 0.016);
+    if (p && it.text) label(ctx, it.text, p[0] + 18, p[1] + 6, "#ebce87");
+  }
+
+  // 底部状态带：与 PEEP 视图同一份文案，同一处位置
+  const lines = (ov.lines || []).slice(0, 2);
+  if (!lines.length) return;
+  const barH = Math.max(28, Math.round(H * 0.055));
+  ctx.fillStyle = "rgba(0,0,0,.72)";
+  ctx.fillRect(0, H - barH, W, barH);
+  const font = Math.max(11, Math.round(barH * 0.3));
+  ctx.font = `${font}px ui-monospace, Consolas, monospace`;
+  ctx.textBaseline = "top";
+  let y = H - barH + 4;
+  for (const ln of lines) {
+    ctx.fillStyle = ln.slot === "nav" ? "#f5f5f5" : "#b9b9b9";
+    ctx.fillText(clip(ctx, String(ln.text || ""), W - 12), 6, y);
+    y += Math.round(font * 1.25);
+  }
+}
+
+function clip(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let out = text;
+  while (out.length > 4 && ctx.measureText(out + "…").width > maxWidth) out = out.slice(0, -2);
+  return out + "…";
+}
+
+function label(ctx, text, x, y, color) {
+  ctx.save();
+  ctx.font = "12px ui-monospace, Consolas, monospace";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0,0,0,.85)";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+  ctx.restore();
 }
 
 // ---------------- ROI ----------------
@@ -181,6 +269,7 @@ function selectNode() {
   S.rect = S.node ? [...S.node.rect] : null;
   if (S.node) {
     $("node-info").textContent =
+      (S.legacyFrames ? "⚠ 旧版帧带绘制 · " : "") +
       `${S.node.file} · ${S.node.colorspace || "—"} · ${(S.node.templates || []).join(", ")}`;
     syncRectInputs();
   }
@@ -347,6 +436,10 @@ function bind() {
     renderAll();
   });
   $("frame").addEventListener("load", drawOverlay);
+  $("show-overlay").addEventListener("change", (evt) => {
+    S.showOverlay = !!evt.target.checked;
+    drawOverlay();
+  });
   $("roi-frame").addEventListener("load", drawRoi);
   window.addEventListener("resize", () => { drawOverlay(); drawRoi(); });
   $("node").addEventListener("change", selectNode);

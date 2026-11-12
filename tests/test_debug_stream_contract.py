@@ -324,6 +324,11 @@ class TestToggleBoundary:
 
 class TestFailureIsolation:
     def test_renderer_failure_does_not_stop_stream(self, tmp_path):
+        """模块渲染器属**视图**通道：它炸了，证据帧照旧落盘，只是这拍没有 PEEP。
+
+        2026-11-12 的分层：落盘图是模板标定素材，不参与任何绘制，所以渲染器故障
+        不再能顺带弄丢一帧证据（旧契约是 save_render_failed 并丢帧）。
+        """
         d = _hub(tmp_path)
         try:
             token = d.install_renderer(_BoomRenderer())
@@ -331,8 +336,10 @@ class TestFailureIsolation:
             seg.offer(_frame(1))
             _wait(d)
             c = d.status()["counters"]
-            assert c["save_render_failed"] == 1
-            assert c["peep_encoded"] == 1     # PEEP 基线不调用模块渲染器
+            assert c["peep_render_failed"] == 1
+            assert c["peep_encoded"] == 0
+            assert c["save_written"] == 1     # 视图挂了，证据还在
+            assert c["save_render_failed"] == 0
             assert d._worker_errors == 0
             d.remove_renderer(token)
         finally:

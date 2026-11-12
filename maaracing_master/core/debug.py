@@ -2,13 +2,18 @@
 # -*- coding: utf-8 -*-
 """
 MaaRacingMaster — 调试可视化模块
-每帧截图标注：探测轮廓(黄) / 入围候选(绿) / 选中光标(红) / 按钮目标
 
-两套渲染：
-  • 存盘模式（enabled）→ 全量绘制，保存到磁盘
-  • PEEP 模式（peep_enabled）→ 精简绘制，仅关键逻辑
+分三层，互不越界（详见 core/CODE_WIKI.md §1.4）：
 
-共用辅助方法 _draw_* 统一绘制逻辑，lite=True 时跳过文字标注和边缘散点。
+  • 证据帧 —— 落盘的原始像素，**永不绘制**。模板标定、回放、训练素材都从它取。
+  • 标注   —— `_overlay_payload` 解释出的纯数据（归一化坐标 + 文案），
+              随帧写进 `frames.jsonl` 的 `overlay` 字段，消费方自己画。
+  • 视图帧 —— `_render_overlay` 把同一份 payload 画在副本上，只喂 PEEP，
+              不落盘。绘制能力留在这里，但不回流进证据。
+
+绘制的具体样式（颜色、lite 精简）由 `_draw_*` 统一，lite=True 跳过文字与散点。
+
+遗留：`save_frame` 是旧入口，仍会把绘制烧进存盘图，新代码不得接入。
 """
 
 from __future__ import annotations
@@ -47,6 +52,8 @@ _COUNTER_KEYS = (
     "frames_due_peep", "frames_due_save",
     "frames_not_due_peep", "frames_not_due_save",
     "peep_encoded", "peep_render_failed", "peep_encode_failed",
+    # save_render_failed 自「落盘不再经过渲染器」起恒为 0，保留是为了让
+    # `frames_due_save = 成功 + 失败` 的闭合等式对历史会话仍然读得通。
     "save_written", "save_render_failed", "save_write_failed",
     "pending_at_close", "rejected_at_close",
 )
@@ -307,6 +314,33 @@ def _put_text(frame, text, pos, scale=0.5, color=(255, 255, 255), stroke=1):
     if stroke > 1:
         cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), stroke * 2 + 1)
     cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, max(1, stroke))
+
+
+# 状态文字独占的底部黑带高度（像素）。**文字绝不压画面**：这些帧是模板标定与
+# 复盘的素材，写在画面上的字会直接盖住待识别的控件——2026-11-12 的赛季公告页，
+# 左上角返回按钮正好被顶部的导航状态行压住，同一张模板在带字帧上只有 0.739，
+# 拿它标定就会把一个好模板判成废模板。宁可牺牲画面最底部一条窄带。
+_STATUS_BAND_H = 30
+
+
+def _draw_status_band(frame, nav_line: str = "", head: str = "") -> None:
+    """把状态文字画进画面底部独占的黑带（字幕与画面物理分离）。
+
+    只动最底部 `_STATUS_BAND_H` 像素：帧尺寸不变，ROI 归一化、录制回放、训练素材
+    都不受影响——扩高画布会把这些消费者全部带偏，代价远大于收益。
+    """
+    h, w = frame.shape[:2]
+    if h <= _STATUS_BAND_H + 10:
+        return
+    cv2.rectangle(frame, (0, h - _STATUS_BAND_H), (w, h), (0, 0, 0), -1)
+    lines = [(nav_line, (245, 245, 245)), (head, (185, 185, 185))]
+    lines = [(t, c) for t, c in lines if t]
+    if not lines:
+        return
+    y = h - _STATUS_BAND_H + 13
+    for text, color in lines:
+        _put_text(frame, text, (8, y), 0.42, color)
+        y += 13
 
 
 def _draw_dashed_rect(frame, pt1, pt2, color, thickness=1, dash_len=8):
@@ -785,33 +819,43 @@ class NavigationDebugger:
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         except Exception:  # noqa: BLE001
             frame_bgr = frame_rgb
-        base = self._render_baseline(frame_bgr, item)
+
+        # 「证据帧 / 标注数据 / 视图帧」三分（见 _overlay_payload、_render_overlay）：
+        #   raw     —— 原始像素。落盘、模板标定、后续训练素材的唯一样本，不得绘制；
+        #   payload —— 标注的数据形态，随帧索引落盘，Studio 回放自己照着画；
+        #   view    —— payload 画在 raw 副本上的瞬时视图，只喂 PEEP，不落盘。
+        # 从前三者是同一张图，于是「字幕污染模板」成了结构性问题而不是操作失误。
+        payload = self._overlay_payload(frame_bgr.shape, item)
+
         if item.due_save:
-            full = base
+            rel = self._save_full(item, frame_bgr, payload)
+            if rel is not None:
+                self._bump(seg_id, "save_written")
+                self._index({
+                    "type": "frame", "seq": item.seq, "segment": seg_id,
+                    "owner": item.owner, "label": item.label,
+                    "stage": item.stage, "fid": item.fid,
+                    "ts_ns": item.ts_ns, "run_id": self._run_id,
+                    "behavior": self._behavior_of(item),
+                    "age_ms": round(float(item.age_ms), 1), "file": rel,
+                    "overlay": payload or None})
+            else:
+                self._bump(seg_id, "save_write_failed")
+        if item.due_peep:
+            view = self._render_overlay(frame_bgr.copy(), payload)
             renderer = self._renderer
             if renderer is not None:
                 try:
-                    full = renderer.render_full(
-                        base.copy(), DebugState(label=item.label, **(item.state or {})))
-                except Exception:  # noqa: BLE001
-                    self._bump(seg_id, "save_render_failed")
-                    full = None
-            if full is not None:
-                rel = self._save_full(item, full)
-                if rel is not None:
-                    self._bump(seg_id, "save_written")
-                    self._index({
-                        "type": "frame", "seq": item.seq, "segment": seg_id,
-                        "owner": item.owner, "label": item.label,
-                        "stage": item.stage, "fid": item.fid,
-                        "ts_ns": item.ts_ns, "run_id": self._run_id,
-                        "behavior": self._behavior_of(item),
-                        "age_ms": round(float(item.age_ms), 1), "file": rel})
+                    view = renderer.render_peep(
+                        view, DebugState(label=item.label, **(item.state or {})))
+                except Exception:  # noqa: BLE001 —— 视图故障不得中止执行（I3）
+                    self._bump(seg_id, "peep_render_failed")
+                    view = None
+            if view is not None:
+                if self._encode_peep(view, item):
+                    self._bump(seg_id, "peep_encoded")
                 else:
-                    self._bump(seg_id, "save_write_failed")
-        if item.due_peep:
-            ok = self._encode_peep(base, item)
-            self._bump(seg_id, "peep_encoded" if ok else "peep_encode_failed")
+                    self._bump(seg_id, "peep_encode_failed")
 
     def _process_control(self, item: _StreamItem) -> None:
         ev = item.event
@@ -864,45 +908,54 @@ class NavigationDebugger:
 
     # ---------- 基线绘制（PEEP 最小集） ----------
 
-    def _render_baseline(self, frame_bgr: np.ndarray, item: _StreamItem) -> np.ndarray:
-        state = item.state or {}
+    def _overlay_payload(self, shape, item: _StreamItem) -> dict:
+        """把一帧的标注解释成纯数据——**不碰像素**，是标注的唯一解释源。
+
+        PEEP 照它画图、落盘侧把它写进帧索引、Studio 回放照它画 canvas。三处共用
+        同一份坐标与文案口径，才不会出现「预览说是这一步、索引说是另一步」。
+
+        坐标一律归一化到 `[0,1]`：帧分辨率是外部输入，写死像素在换分辨率时整体
+        错位；归一化也与 pipeline 里 ROI 的 JSON 口径一致。
+
+        返回为空 dict 表示这一帧没有可标注信息（调用方不得据此建空 overlay）。
+        """
+        if shape is None or len(shape) < 2:
+            return {}
+        h, w = int(shape[0]), int(shape[1])
+        if h <= 0 or w <= 0:
+            return {}
+
+        def _pt(x, y) -> list[float]:
+            return [round(float(x) / w, 5), round(float(y) / h, 5)]
+
+        payload: dict = {"size": [w, h], "lines": []}
+
         ptr = item.pointer or {}
         pos = ptr.get("pos")
         if pos:
-            x, y = int(pos[0]), int(pos[1])
             age = ptr.get("age_s")
-            color = (0, 0, 220) if age is None or age <= 1.0 else (0, 0, 150)
-            cv2.circle(frame_bgr, (x, y), 10, color, 2)
-            cv2.line(frame_bgr, (x - 7, y), (x + 7, y), color, 1)
-            cv2.line(frame_bgr, (x, y - 7), (x, y + 7), color, 1)
-            if age is not None:
-                _put_text(frame_bgr, f"cursor {float(age):.1f}s",
-                          (x + 12, y - 6), 0.4, color)
+            payload["cursor"] = {
+                "at": _pt(pos[0], pos[1]),
+                "age_s": None if age is None else round(float(age), 2),
+            }
 
+        state = item.state or {}
         intent = state.get("intent") or {}
-        pt = intent.get("point")
-        if pt:
+        point = intent.get("point")
+        if point:
             age_s = None
             if intent.get("ts"):
                 age_s = time.monotonic() - float(intent["ts"])
             if age_s is None or age_s <= 2.0:
-                ix, iy = int(pt[0]), int(pt[1])
-                color = (235, 206, 135)
-                cv2.circle(frame_bgr, (ix, iy), 14, color, 2)
-                cv2.line(frame_bgr, (ix - 9, iy), (ix + 9, iy), color, 2)
-                cv2.line(frame_bgr, (ix, iy - 9), (ix, iy + 9), color, 2)
-                label = str(intent.get("label") or "")
-                status = str(intent.get("status") or "")
-                text = " ".join(x for x in (label, status) if x)
-                if text:
-                    _put_text(frame_bgr, text, (ix + 17, iy + 5), 0.4, color)
+                text = " ".join(
+                    str(x) for x in (intent.get("label"), intent.get("status")) if x)
+                payload["intent"] = {"at": _pt(point[0], point[1]), "text": text}
 
         nav = state.get("nav") or {}
         box = nav.get("box")
         if box and len(box) >= 4:
-            _draw_dashed_rect(
-                frame_bgr, (int(box[0]), int(box[1])),
-                (int(box[2]), int(box[3])), (255, 255, 0), 2)
+            payload["nav_box"] = _pt(box[0], box[1]) + _pt(box[2], box[3])
+
         node = nav.get("node") or item.stage or ""
         if node:
             line = str(node)
@@ -915,11 +968,59 @@ class NavigationDebugger:
                     line += f" {float(nav['score']):.3f}"
                 except (TypeError, ValueError):
                     pass
-            _put_text(frame_bgr, line, (10, 22), 0.5, (255, 255, 255))
+            payload["lines"].append({"slot": "nav", "text": line})
+        payload["lines"].append({
+            "slot": "head",
+            "text": (f"{item.owner} · {item.stage or item.label} · "
+                     f"#{item.seq} · {float(item.age_ms or 0):.0f}ms")})
+        return payload
 
-        head = (f"{item.owner} · {item.stage or item.label} · "
-                f"#{item.seq} · {float(item.age_ms or 0):.0f}ms")
-        _put_text(frame_bgr, head, (10, frame_bgr.shape[0] - 10), 0.5, (230, 230, 230))
+    def _render_overlay(self, frame_bgr: np.ndarray, payload: dict) -> np.ndarray:
+        """按 payload 把标注画到帧上——**只服务 PEEP 瞬时视图，落盘帧永不经过这里**。
+
+        分层的理由很硬：落盘帧是模板标定与后续训练素材，任何像素级涂改都会把好
+        模板判成废模板。2026-11-12 的赛季公告页就是活例——左上角返回按钮被状态
+        文字压住，同一张模板在带字帧上从 0.95 掉到 0.74，差点被判成废图。
+        """
+        if not payload:
+            return frame_bgr
+        h, w = frame_bgr.shape[:2]
+
+        def _px(at) -> tuple[int, int]:
+            return int(at[0] * w), int(at[1] * h)
+
+        cur = payload.get("cursor")
+        if cur:
+            x, y = _px(cur.get("at") or (0, 0))
+            age = cur.get("age_s")
+            color = (0, 0, 220) if age is None or age <= 1.0 else (0, 0, 150)
+            cv2.circle(frame_bgr, (x, y), 10, color, 2)
+            cv2.line(frame_bgr, (x - 7, y), (x + 7, y), color, 1)
+            cv2.line(frame_bgr, (x, y - 7), (x, y + 7), color, 1)
+            if age is not None:
+                _put_text(frame_bgr, f"cursor {float(age):.1f}s",
+                          (x + 12, y - 6), 0.4, color)
+
+        it = payload.get("intent")
+        if it:
+            x, y = _px(it.get("at") or (0, 0))
+            color = (235, 206, 135)
+            cv2.circle(frame_bgr, (x, y), 14, color, 2)
+            cv2.line(frame_bgr, (x - 9, y), (x + 9, y), color, 2)
+            cv2.line(frame_bgr, (x, y - 9), (x, y + 9), color, 2)
+            if it.get("text"):
+                _put_text(frame_bgr, str(it["text"]), (x + 17, y + 5), 0.4, color)
+
+        box = payload.get("nav_box")
+        if box and len(box) >= 4:
+            x1, y1 = _px(box[0:2])
+            x2, y2 = _px(box[2:4])
+            _draw_dashed_rect(frame_bgr, (x1, y1), (x2, y2), (255, 255, 0), 2)
+
+        lines = payload.get("lines") or []
+        nav_line = next((x["text"] for x in lines if x.get("slot") == "nav"), "")
+        head = next((x["text"] for x in lines if x.get("slot") == "head"), "")
+        _draw_status_band(frame_bgr, nav_line, head)
         return frame_bgr
 
     def _behavior_of(self, item: _StreamItem) -> str:
@@ -936,7 +1037,13 @@ class NavigationDebugger:
         except ValueError:
             return None
 
-    def _save_full(self, item: _StreamItem, full: np.ndarray) -> str | None:
+    def _save_full(self, item: _StreamItem, frame: np.ndarray,
+                   payload: dict | None = None) -> str | None:
+        """落盘**证据帧**（原始像素）+ 它那一行标注数据。
+
+        标注不进像素、只进 `frames.jsonl` 的 `overlay` 字段：文案与坐标因此可被
+        程序读取（回放画层、按帧检索、训练集筛选），而图本身永远是干净样本。
+        """
         with self._lock:
             run_dir = self._run_dir
         if run_dir is None:
@@ -948,7 +1055,7 @@ class NavigationDebugger:
             seg_dir = behavior_dir(run_dir, scope, executor)
             seg_dir.mkdir(parents=True, exist_ok=True)
             path = seg_dir / f"{int(item.seq):06d}.jpg"
-            if not cv2.imwrite(str(path), full, [cv2.IMWRITE_JPEG_QUALITY, 90]):
+            if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90]):
                 return None
             now = datetime.now().isoformat(timespec="seconds")
             if read_manifest(seg_dir) is None:
@@ -963,6 +1070,7 @@ class NavigationDebugger:
                 "fid": int(item.fid or 0),
                 "stage": item.stage,
                 "run_id": self._run_id,
+                "overlay": payload or None,
             })
             return str(path.relative_to(run_dir)).replace("\\", "/")
         except Exception:  # noqa: BLE001
@@ -1335,13 +1443,13 @@ class NavigationDebugger:
         self._draw_raw_dets(frame, kw.get("all_raw_dets"), kw.get("detections"))
         self._draw_yolo_dets(frame, kw.get("detections"))
 
-        # 顶部信息栏
+        # 顶部信息栏改到底部黑带（文字不压画面）
         info_line = f"#{self.frame_count}"
         if label:
             info_line += f" | {label}"
-        _put_text(frame, info_line, (10, 22), 0.5, (255, 255, 255))
-        if kw.get("cursor_score", 0) > 0:
-            _put_text(frame, f"score={kw['cursor_score']:.3f}", (10, 42), 0.4, (200, 200, 200))
+        score_line = (f"score={kw['cursor_score']:.3f}"
+                      if kw.get("cursor_score", 0) > 0 else "")
+        _draw_status_band(frame, info_line, score_line)
 
         return frame
 
@@ -1363,7 +1471,7 @@ class NavigationDebugger:
         info_parts = [f"#{self.frame_count}"]
         if label:
             info_parts.append(label)
-        _put_text(frame, " | ".join(info_parts), (10, 30), 0.75, (255, 255, 255), stroke=3)
+        _draw_status_band(frame, " | ".join(info_parts))
 
         return frame
 
@@ -1410,6 +1518,10 @@ class NavigationDebugger:
         **extra_kwargs,
     ):
         """保存一帧调试截图
+
+        **遗留入口**：v5 主链路走 `_process`，落盘是干净证据帧、标注另存索引
+        （见 `_overlay_payload`）。本方法仍会把绘制烧进存盘图，因为它服务于旧版
+        调用方的那套口径；新代码不得接入，否则又会把标注写回像素。
 
         save_to_disk: False 时跳过 cv2.imwrite。
         PEEP 预览帧独立于存盘帧——PEEP 使用精简绘制，存盘使用全量绘制。
