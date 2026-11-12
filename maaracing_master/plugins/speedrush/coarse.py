@@ -85,6 +85,7 @@ class CoarseReport:
     free_m: float
     reason: str                  # space / keep / no_road
     lanes: tuple[CoarseLane, ...]
+    lattice_shift: float = 0.0   # 候选格相对「路心 + 整数道」的半道相位修正
 
     def as_trace(self) -> dict:
         return {
@@ -93,6 +94,7 @@ class CoarseReport:
             "dir": self.direction,
             "free": round(self.free_m, 2),
             "why": self.reason,
+            "shift": round(self.lattice_shift, 3),
             "cand": [[round(c.lane, 3), round(c.free_m, 2),
                       None if c.width_margin_m is None
                       else round(c.width_margin_m, 2),
@@ -126,7 +128,8 @@ def _car_distance(c: _Car, p: CoarseParams) -> tuple[float, bool] | None:
 
 def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
                 lane_w_m: float, p: CoarseParams,
-                current_lane: float | None = None) -> CoarseReport:
+                current_lane: float | None = None,
+                lattice_shift: float = 0.0) -> CoarseReport:
     """在走廊上选连续净空最长的车道。
 
     ``road``：场景帧分带走廊（带边界为场景绝对 x，带 z 为车头系）。
@@ -135,6 +138,13 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
     z=0 的中心线，不再用 planner 路心系的 executed，避免「带中心线 vs
     路心」残差混进方向判定）。``current_lane``：上一拍选定车道（道），
     用于换道迟滞；None=以自车最近车道为现任。
+
+    ``lattice_shift``：候选格相对「中心线 + 整数道」的相位修正（道，
+    ±0.5 内）。**默认 0 = 旧行为**。非零时把候选道中心从「整数道」挪到
+    「中心线相位 + 整数道」——用于本玩法 4 车道（RULES §3.8）下走廊中心
+    落在分隔线上的构型：此时整数格是分隔线，车道中心在半整数位，候选格
+    会系统偏半道（离线实测：候选→真实道中心 p50 0.22~0.34 道；按相位
+    修正后 p50 0.00、99% 落进 0.15 道）。
     """
     if not road.ok:
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
@@ -142,7 +152,7 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
     if c0 is None:
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
     if current_lane is None:
-        current_lane = round(ego_lane)
+        current_lane = round(ego_lane - lattice_shift)
 
     # 机会侧预置（方向级消费，开关默认关）：净空与占用打平时，字典序回中项
     # 换成「离远带更开的一侧最近」——近场无方向信号时顺着水流方向预置。
@@ -166,7 +176,7 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
 
     lanes: list[CoarseLane] = []
     for k in candidates:
-        x_rel = k * lane_w_m
+        x_rel = (k + lattice_shift) * lane_w_m
         free = p.lookahead_m
         width_margin: float | None = None
         blocker = None
@@ -248,4 +258,4 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
     delta = chosen.lane - ego_lane
     direction = 0 if abs(delta) <= p.align_tol_lane else (1 if delta > 0 else -1)
     return CoarseReport(ego_lane, chosen.lane, direction, chosen.free_m,
-                        reason, tuple(lanes))
+                        reason, tuple(lanes), lattice_shift)

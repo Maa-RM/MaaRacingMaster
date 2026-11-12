@@ -541,6 +541,10 @@ class Coarse:
     switch_margin_m: float = 4.0
     align_tol_lane: float = 0.4
     far_direction: bool = False
+    # 候选格相位修正（2026-11-12）：走廊中心落在分隔线上时（本玩法 4 车道，
+    # RULES §3.8），「中心线 + 整数道」的候选格会整体偏半道，选道目标是
+    # 分隔线而不是道中心。true=按实测相位折算；false=逐位回旧整数格。
+    lattice_phase: bool = True
 
 
 @dataclass(frozen=True)
@@ -1147,7 +1151,9 @@ def _read_decision(path: Path) -> DecisionConfig:
             align_tol_lane=_num_def(
                 d, "coarse", "align_tol_lane", 0.4, lo=0),
             far_direction=_bool(d, "coarse", "far_direction",
-                                default=False)),
+                                default=False),
+            lattice_phase=_bool(d, "coarse", "lattice_phase",
+                                default=True)),
         route=Route(
             control=_bool(d, "route", "control", default=False),
             urgent_confirm_s=_num_def(d, "route", "urgent_confirm_s",
