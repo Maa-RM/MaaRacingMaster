@@ -8,7 +8,7 @@
 3. 人工自己变 0.5/1 道要多久——给 ``selection.t_move`` 一个真实参照。
 
 用法：
-    .venv\\Scripts\\python.exe tools/experiments/speedrush_drive/probe_selection_calib.py <trace.jsonl>
+    .venv\\Scripts\\python.exe maaracing_master/plugins/speedrush/tools/probe_selection_calib.py <trace.jsonl>
 
 只读，不依赖实验区之外的包。输出为文本；需要逐拍表加 ``--rows``。
 """
