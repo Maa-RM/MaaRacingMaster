@@ -406,6 +406,38 @@ def _vanish_row(lines: list[dict]) -> float | None:
     return float(np.median(keep))
 
 
+# 双通道近场（2026-11-12）：远场永远走原生；贴脸正中构型原生不可见（微调可证伪，
+# 见实验区 speedrush_lane_model），特征在「路面退远一倍」的压缩视图下反而处于模型
+# 训练分布内（实测原生 0.002→压缩 0.99）。近带（内容行≥WARP_NEAR_ROW0）逐行
+# 回投取 max：消点/地面尺度与原生同一套标定，映射精确可逆。代价：每帧多一次
+# 推理（CPU ≈26ms）与一次仿射（≈0.5ms）。
+WARP_NEAR_R = 0.5          # 压缩视图缩放；0 = 关闭双通道
+WARP_NEAR_ROW0 = 240       # 近带回投起始内容行（640x360 坐标系）
+
+
+def _merge_warp_near(prob: np.ndarray, prob_w: np.ndarray) -> np.ndarray:
+    """近带融合压缩视图回投（逐行 max，行对齐无插值），远场保持纯原生。"""
+    merged = prob.copy()
+    rows = np.arange(WARP_NEAR_ROW0, prob.shape[0])
+    yw = np.round(Y_H / 2.0 + (rows - Y_H / 2.0) * WARP_NEAR_R).astype(int)
+    ok = (yw >= 0) & (yw < prob.shape[0])
+    merged[rows[ok]] = np.maximum(merged[rows[ok]], prob_w[yw[ok]])
+    return merged
+
+
+def _warp_pull(rgb: np.ndarray, r: float) -> np.ndarray:
+    """虚拟机位退远：M 按 dst→src 语义构造，必须带 WARP_INVERSE_MAP
+    （否则 OpenCV 当 src→dst 求逆，变成中央放大——2026-11-12 教训）。"""
+    import cv2
+    H, W = rgb.shape[:2]
+    vpx, yh = VPX * W / 1280.0, Y_H * H / 720.0
+    M = np.float32([[1 / r, 0, vpx * (1 - 1 / r)],
+                    [0, 1 / r, yh * (1 - 1 / r)]])
+    return cv2.warpAffine(rgb, M, (W, H),
+                          flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                          borderValue=(114, 114, 114))
+
+
 class LineTracker:
     """线观测状态机：等间距约束 + 深度路心定整数道号（2026-10-24 重写）。
 
@@ -1089,4 +1121,8 @@ class LaneObsWorker:
         prob = self._run(rgb)
         if prob is None:
             return None
+        if WARP_NEAR_R > 0:
+            prob_w = self._run(_warp_pull(rgb, WARP_NEAR_R))
+            if prob_w is not None:
+                prob = _merge_warp_near(prob, prob_w)
         return {"lines": _lines_from_prob(prob, cam_h, focal)}

@@ -664,3 +664,30 @@ def test_lines_from_prob_captures_far_dash_without_color():
     assert ln["color"] == "?"
     assert "yellow" not in ln and "white" not in ln
     assert ln["y0"] >= 440.0 and ln["y1"] <= 546.0
+
+
+def test_merge_warp_near_band_only():
+    """双通道近场融合：近带回投取 max、远场保持纯原生、原生簇保留。"""
+    prob = np.zeros((360, 640), np.float32)
+    prob[250, 100] = 0.9                      # 原生近带簇
+    pw = np.zeros((360, 640), np.float32)
+    yw = int(round(la.Y_H / 2.0 + (320 - la.Y_H / 2.0) * la.WARP_NEAR_R))
+    pw[yw, 400] = 0.8                         # 压缩域簇（回投应落到行 320）
+    m = la._merge_warp_near(prob, pw)
+    assert m[250, 100] == pytest.approx(0.9)   # 原生保留
+    assert m[320, 400] == pytest.approx(0.8)   # 回投注入
+    assert m[200, 400] == 0.0                  # 远场不受压缩域影响
+
+
+def test_warp_pull_round_trip():
+    """压缩视图往返一致性：源点经 warp 后落在 vpx+(src-vpx)*r，再以 1/r 还原。"""
+    img = np.zeros((720, 1280, 3), np.uint8)
+    src = (1000, 600)
+    img[src[1] - 4:src[1] + 5, src[0] - 4:src[0] + 5] = 255   # 小方块标记
+    r = la.WARP_NEAR_R
+    w = la._warp_pull(img, r)
+    dst = (int(round(640.7 + (src[0] - 640.7) * r)),
+           int(round(354.2 + (src[1] - 354.2) * r)))
+    assert w[dst[1], dst[0]].max() > 200      # 标记出现在预期压缩位置
+    back = la._warp_pull(w, 1.0 / r)
+    assert back[src[1], src[0]].max() > 200   # 逆变换还原到源位

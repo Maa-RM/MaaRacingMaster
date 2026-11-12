@@ -51,6 +51,10 @@ DEV = sys.argv[2] if len(sys.argv) > 2 else ("cuda" if torch.cuda.is_available()
 PRESET = sys.argv[3] if len(sys.argv) > 3 else "heads"      # heads | caam | full
 ALPHA2 = float(sys.argv[4]) if len(sys.argv) > 4 else 0.9   # Tversky 漏检权重 = 1-ALPHA2
 LAM_NEAR = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0  # 近带辅助损失权重（0=关）
+AUX_ROW0 = int(sys.argv[6]) if len(sys.argv) > 6 else 252    # 近带辅助损失起始行
+FILTER = sys.argv[7] if len(sys.argv) > 7 else ""            # 训练帧名过滤（过拟合测试用）
+if len(sys.argv) > 8:
+    BATCH = int(sys.argv[8])                                 # 批量覆盖（过拟合测试用）
 BATCH = 16 if DEV == "cuda" else 8
 LR = 1e-4
 WD = 5e-4
@@ -82,8 +86,11 @@ def augment_hsv(img: np.ndarray) -> None:
 
 
 class LaneSet(torch.utils.data.Dataset):
-    def __init__(self, split: str, train: bool):
-        self.names = sorted((DATA / "images" / split).glob("*.jpg"))
+    def __init__(self, split: str, train: bool, name_filter: str = ""):
+        names = sorted((DATA / "images" / split).glob("*.jpg"))
+        if name_filter:
+            names = [n for n in names if name_filter in n.name]
+        self.names = names
         self.train = train
 
     def __len__(self):
@@ -176,8 +183,8 @@ def main():
     focal = FocalLossSeg(mode="multiclass", alpha=0.25, gamma=2.0)
 
     train_ld = torch.utils.data.DataLoader(
-        LaneSet("train", True), batch_size=BATCH, shuffle=True, num_workers=2,
-        drop_last=True)
+        LaneSet("train", True, FILTER), batch_size=BATCH, shuffle=True, num_workers=2,
+        drop_last=len([n for n in LaneSet("train", True, FILTER).names]) > BATCH)
     val_ld = torch.utils.data.DataLoader(LaneSet("val", False), batch_size=BATCH)
 
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
@@ -206,7 +213,7 @@ def main():
                 # 近带专属目标项：近带只占全图像素 0.2%，全图平均会把它的梯度稀释
                 # 到噪音级（实测训练帧自身都拟合不上）；这里给它独立的一份
                 # Tversky(α=0.7 偏召回)+Focal，误报由提取层几何门把关。
-                out_n, gt_n = out_c[:, :, 252:], gt[:, 252:]
+                out_n, gt_n = out_c[:, :, AUX_ROW0:], gt[:, AUX_ROW0:]
                 loss = loss + LAM_NEAR * (tversky_near(out_n, gt_n)
                                           + focal(out_n, gt_n))
             loss.backward()
@@ -222,7 +229,7 @@ def main():
             f"({time.perf_counter() - t0:.0f}s)")
         state = {"epoch": epoch, "val_IoU": iou, "val_IoU_near": iou_near,
                  "device": DEV, "preset": PRESET, "alpha2": ALPHA2,
-                 "lam_near": LAM_NEAR,
+                 "lam_near": LAM_NEAR, "aux_row0": AUX_ROW0,
                  "state_dict": {k: v.cpu() for k, v in model.state_dict().items()}}
         torch.save(state, OUT / f"ft_small_{PRESET}_last.pth")
         if iou + iou_near > best:
