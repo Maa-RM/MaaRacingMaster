@@ -2006,3 +2006,28 @@ def test_infer_points_abstains_when_ground_mad_over_gate(monkeypatch):
                                  y_v=360.0)
     assert pts is None
     assert dg.SKIP_STATS.get("mad", 0) == before + 1
+
+
+def test_health_reports_mad_skips():
+    """阶段汇总行与逐拍 trace 都读这个计数；缺键会让「弃帧率」验收项失明。"""
+    a = AsyncDepthRoadObserver(_StubObserver([_mk_reading()]))  # type: ignore[arg-type]
+    assert isinstance(a.health().get("mad_skips"), int)
+
+
+def test_degraded_cam_h_gate_is_dead_in_v5_but_alive_offline():
+    """⑥ 尺度门：v5 合成点图的平面 c 恒等于 CAM_H_M → 结构上恒真。
+
+    它是**死门**，生产质量靠 GROUND_MAD_MAX 整帧弃权 + ⑤ 残差门；保留它只为
+    离线真实点云回放能挡住异常尺度。别再把它写成「平面质量已检查」。"""
+    rng = np.random.default_rng(11)
+    n = 40000
+    X = rng.uniform(-3.9, 3.9, n).astype(np.float32)
+    Z = rng.uniform(4.0, 13.9, n).astype(np.float32)
+    Y = (dg.CAM_H_M + rng.normal(0, 0.02, n)).astype(np.float32)
+    dig = np.zeros(n, bool)
+    assert dg.DEGRADED_CAM_H_LO <= dg.CAM_H_M <= dg.DEGRADED_CAM_H_HI
+    assert dg._plane_degraded_ok(
+        np.array([0.0, 0.0, dg.CAM_H_M], np.float32), X, Y, Z, dig) is True
+    # 离线异常尺度仍被挡（这道门没删，只是标注为生产死门）
+    assert dg._plane_degraded_ok(
+        np.array([0.0, 0.0, 3.25], np.float32), X, Y + 2.0, Z, dig) is False

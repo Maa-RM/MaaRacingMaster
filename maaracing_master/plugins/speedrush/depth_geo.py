@@ -154,6 +154,7 @@ DEGRADED_QUAD_MIN = 200        # 四象限（X<0/≥0 × Z 近/远段）各需�
 DEGRADED_INLIER_MIN = 0.85     # 剪后内点率地板（比主门 0.70 严：主门已拒，
                                # 只有贴得非常平才有救）
 DEGRADED_RESID_P50_MAX = 0.06  # 剪后残差中位上限（与主门旁路同值）
+# ↓ v5 生产路径的结构性死门（见 _plane_degraded_ok ⑥），只服务离线回放
 DEGRADED_CAM_H_LO, DEGRADED_CAM_H_HI = 1.15, 2.20   # 尺度 sanity：cam_h 与待
                                # 验平面同源（平面放歪读数跟着错），不是平面
                                # 正确性的独立证据，只挡 UI/结算帧这类 grossly
@@ -791,6 +792,11 @@ def _plane_degraded_ok(coef, X: np.ndarray, Y: np.ndarray, Z: np.ndarray,
         return False
     if float(np.nanmedian(np.abs(hgt[clip]))) > DEGRADED_RESID_P50_MAX:
         return False
+    # ⑥ cam_h 尺度 sanity —— **v5 生产路径上的死门**：合成点图把贴地像素钉
+    # 在 Y≡CAM_H_M，拟合出的 coef[2] 恒等于 1.25，此式结构上恒真，不得当活
+    # 判据读（与 module._plane_gate 同口径）。保留供离线真实点云回放；生产的
+    # 地面模型质量由 infer_points 的 GROUND_MAD_MAX 整帧弃权 + 本函数 ⑤ 残差
+    # 门把守。别再拿它当「平面质量已检查」的证据。
     return DEGRADED_CAM_H_LO <= abs(float(coef[2])) <= DEGRADED_CAM_H_HI
 
 

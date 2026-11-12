@@ -65,8 +65,8 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading)
+    AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, SKIP_STATS,
+    grid_center_lane, blocked_inner_reading, load_session, region_reading)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import (
@@ -1758,6 +1758,10 @@ class SpeedRushModule(ActivityModule):
                                if cfg.view_guard.enabled and not self._view_ok
                                and self._control_mode and self._drive_mode != "straight"
                                else None),
+                # 线反解相机高的近 5 个检测拍中位（喂线几何）：不再用合成
+                # 点图的平面 c（v5 下恒 1.25）。单点反解会飘到 0.73~2.93，
+                # 中位滤掉它；真机位切换是持续值，仍能收敛过去。
+                "lane_cam_h_hist": deque(maxlen=5),
                 "abort_phase": False,
                 "prev_ts": None, "disabled": False,
                 "trace": [], "trace_sink": self._trace,
@@ -2063,8 +2067,16 @@ class SpeedRushModule(ActivityModule):
                                  else int(lane.get("n_locked") or 0),
                                  plan=(plan if cfg.motion.mode == "live" else None))
             if lw is not None:
-                cam_h = (None if dgeo is None or dgeo.coef is None
-                         else abs(float(dgeo.coef[2])))
+                # 相机高只认车道线反解（与视角守卫同源）。合成点图的平面 c
+                # 恒等于标称相机高，拿它当输入等于读常数：机位被打回追尾时
+                # 线几何仍按保险杠高度换算横位，静默错 1~2 道。反解只在检测
+                # 拍进历史、取中位（单点会飘到 0.73~2.93）；预测拍沿用当前
+                # 中位，首个检测拍之前传 None → lane_obs 回退标定值。
+                # 守卫吃的是未平滑的原始反解，两者独立、不互相污染。
+                if lane is not None and lane.get("cam_h_lane") is not None:
+                    chain["lane_cam_h_hist"].append(float(lane["cam_h_lane"]))
+                hist = chain["lane_cam_h_hist"]
+                cam_h = float(np.median(hist)) if hist else None
                 # 线观测的绝对锚点=同帧新鲜**独立深度**读数换算的自车横位
                 # （复用/历史拍不给，让线退回上一拍横位做子道细化，不让旧深度
                 # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
@@ -2423,6 +2435,10 @@ class SpeedRushModule(ActivityModule):
             "dgeo_yv": None if dgeo is None or dgeo.y_v is None
             else round(dgeo.y_v, 1),
             "dgeo_yv_src": None if dgeo is None else dgeo.y_v_src,
+            # 地面模型拟合弃权累计（MAD>0.06 整帧弃用）：逐拍可见才能算
+            # 「弃帧率 / 深度出工次数」，阶段汇总另有终值。全局计数跨阶段
+            # 累加，按阶段取差值。
+            "dgeo_mad_skips": SKIP_STATS.get("mad", 0),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
             # 与影子重放的验收面（带来源明细在 debugview/offline 重放）。
             # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据（master=规则
@@ -2683,7 +2699,8 @@ class SpeedRushModule(ActivityModule):
                 f"/让锁跳帧 {h['busy_skips']}"
                 f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
                 f"（预算 {h['max_age_ms']:.0f}ms）"
-                f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms")
+                f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms"
+                f"/MAD 弃帧 {h['mad_skips']}")
         if h.get("forward_p50"):
             line += (f"/分段 p50 前向 {h['forward_p50']:.0f} 找边 {h['edges_p50']:.0f}"
                      f" 栅格 {h['grid_p50']:.0f}ms")

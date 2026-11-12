@@ -725,3 +725,24 @@ def test_lane_cam_h_insensitive_to_horizon_offset():
     """y_v 有 4px 偏差时反解只差 2%（守卫是粗门，不吃地平线的细噪声）。"""
     got = la._cam_h_from_lines([_vline(-1), _vline(1)], 365.0)
     assert got == pytest.approx(1.25, rel=0.05)
+
+
+# ---------- 线几何的相机高输入（2026-11-12）：换源后的合法机位带 ----------
+
+def test_lane_cam_h_accepts_chase_view():
+    """线几何要能按真实机位换算：追尾 1.9m 不再被砍回标定值 1.28。
+
+    旧带 1.12~1.55 是「深度平面坏帧」的 v4 防护，换源后它反而会制造静默
+    错。视角判定门（view_guard）仍只认保险杠，两者语义不同。"""
+    assert la._lane_cam_h(1.9) == (1.9, False)
+    assert la._lane_cam_h(1.269) == (1.269, False)
+
+
+def test_lane_cam_h_still_rejects_far_outliers():
+    """带放宽不等于不设防：实机反解会飘到 0.73 / 2.93，越界仍回退。
+    界内的单点噪声由 module 侧 5 拍中位先滤一层。"""
+    assert la._lane_cam_h(0.73)[1] is True
+    assert la._lane_cam_h(2.93)[1] is True
+    assert la._lane_cam_h(4.97)[1] is True
+    assert la._lane_cam_h(None)[1] is True
+    assert la._lane_cam_h(0.73)[0] == la.DEFAULT_CAM_H
