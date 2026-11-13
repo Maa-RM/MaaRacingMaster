@@ -9,6 +9,7 @@ models/
 ├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
 ├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 深度几何（DepthART MNV4-M-slim-SPF，Apache-2.0）
 └── lane/plus_small_384x640.onnx                             # 线观测（TwinLiteNet+ Small，BDD100K 非商业/科研）
+    └── plus_small_fp16_384x640.onnx                         # 同上权重的 FP16 版（DML 专用加速件）
 ```
 
 ## 安装（深度模式与线观测）
@@ -33,6 +34,9 @@ models/
   `825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71`
 - `lane/plus_small_384x640.onnx`：543,156 字节，SHA256
   `bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc`
+- `lane/plus_small_fp16_384x640.onnx`：314,482 字节，SHA256
+  `abdf3d46706c0dc259d178df8a27ae23b9c3ce03f658e75aadc391b035bd9e26`
+  （由上一份权重 `keep_io_types` 转 FP16，仅 DML 使用；缺失或会话失败时回退 FP32）
 
 缺失或校验失败时，深度模式会在连接游戏前终止并提示重新下载；直行与宏录制照常可用。
 
@@ -62,8 +66,7 @@ models/
 - **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；在此基础上用**自采
   游戏帧**做定向微调（只解冻车道头三层，74 张逐张目检样本，Focal+Tversky 区域损失），
   目的是补上原模型对「贴脸正中粗白虚线」的盲区。微调数据为本项目自采游戏画面，
-  不含第三方标注，许可随上游不变。离线核验记录见
-  `tools/experiments/speedrush_lane_model/README.md` 与提交历史。
+  不含第三方标注，许可随上游不变。离线核验记录见仓库提交历史（微调与逐张目检）。
 - **许可**：上游 TwinLiteNet+ 代码为 MIT；BDD100K 数据/标签适用 UC Regents 定制许可——
   教育、科研与非营利目的可复制、修改、分发（须随附版权与许可声明），商业用途仅限
   BDD/BAIR 成员。许可正文未单列“训练所得权重”，本项目按衍生作品处理：随可选模型包

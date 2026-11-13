@@ -3,9 +3,7 @@
 
 **职责**：帧 → 合成点云（贴地像素的米制距离由车道线几何给，地面以上由
 DepthART 相对深度按地面模型换算）→ 倾角感知平面拟合分地/障 → 高出路面 hgt →
-Z 分箱横向中位剖面离地穿越找边 → 两侧缘读数（车道单位）。输出与
-BoundarySummary 的 ``left_edge_lane / right_edge_lane`` 字段鸭子同构，消费方
-原样可用。
+Z 分箱横向中位剖面离地穿越找边 → 两侧缘读数（车道单位），供走廊/路心消费。
 
 **合成口径**（验证记录与证据指针=换装提交）：
 - 相对深度 V 在地面是仿射场 ``V = A + m·(r−y_h) + a·u``（r=全幅行中心、
@@ -1996,6 +1994,7 @@ class AsyncDepthRoadObserver:
                               # 按它的节拍开工；超过则视为没有控制拍（菜单/开局前），
                               # 不空等（否则 worker 每轮白等一个上限）
     STAGGER_WAIT_S = 0.2      # 错峰等待上限：拍间隔 50ms 的 4 倍兜底（拍停顿时不卡死）
+    SLOT_WAIT_S = 0.030       # 槽位：等线观测让锁的上限（线槽窗 30ms），过点自行开工
     PUSH_WAIT_S = 0.03        # 等拍后再等本拍新帧落地的上限：拍内 push 在感知放锁之后
                               # ~6~10ms（掩码构建+入队），不等就会取到上一拍的帧——实测
                               # 队列段 20→47ms、结果年龄反超预算；采集停顿时超时用现有帧
@@ -2410,13 +2409,17 @@ class AsyncDepthRoadObserver:
             return None if self._pending is None else self._pending[0]
 
     def _stagger_wait(self) -> bool:
-        """等控制拍放锁的节拍、并等本拍新帧落地后再开工；False=停机。
+        """等控制拍放锁、等线观测让出槽位、再等本拍新帧落地；False=停机。
 
         v5 前向只占锁 5~7ms、全链约 38ms，锁冲突已不是主因；错峰保留的理由
         变成取帧相位：拍内 push 在感知之后约 6~10ms（掩码构建 + 入队），不等
         节拍会取到**上一拍**的帧——实测队列段 20→47ms，结果年龄反超 350ms
         预算。等的是"push 序号变化"，不是固定延时；采集停顿时按 PUSH_WAIT_S
         超时，用现有帧继续。
+
+        槽位（2026-11-13）：线观测与深度共用一把 DML 锁时，控制拍放锁后先给
+        线观测（槽窗 30ms），深度等它 ``SLOTS.mark_done`` 再开工；线观测没跑
+        或让锁时按 SLOT_WAIT_S 超时自行开工，不抢锁也不会被无限拖住。
         """
         seq_push = self._pending_seq()
         beat_seq, t_beat = dml_lock.TICK_BEAT.snapshot()
@@ -2424,6 +2427,9 @@ class AsyncDepthRoadObserver:
             dml_lock.TICK_BEAT.wait_newer(beat_seq, timeout=self.STAGGER_WAIT_S)
             if self._stop.is_set():
                 return False
+            new_seq, _t_new = dml_lock.TICK_BEAT.snapshot()
+            if new_seq > beat_seq:
+                dml_lock.SLOTS.wait_done(new_seq, timeout=self.SLOT_WAIT_S)
             if self._pending_seq() == seq_push:
                 t_end = time.perf_counter() + self.PUSH_WAIT_S
                 while not self._stop.is_set() and self._pending_seq() == seq_push:

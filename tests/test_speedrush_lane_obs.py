@@ -540,10 +540,18 @@ def test_dml_busy_skips_without_calling_model(monkeypatch):
         def release(self):
             pass
 
+    class _StaleBeat:
+        def snapshot(self):
+            return 1, -1e9          # 没有在跑的控制拍：不走槽位等待
+
+        def wait_newer(self, seq, timeout):
+            return True
+
     w._sess = _Sess()
     monkeypatch.setattr(la, "_letterbox", lambda rgb: np.zeros((1, 3, 384, 640),
                                                               np.float32))
     monkeypatch.setattr(la.dml_lock, "LOCK", _Lock())
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", _StaleBeat())
     assert w._run(np.zeros((8, 8, 3), np.uint8)) is None
     assert w.busy_skips == 1
     assert called["n"] == 0

@@ -45,3 +45,6 @@ DEPTH_MODEL_REL = "resources/models/depth/relative_mnv4m_slim_spf_448_default.on
 DEPTH_MODEL_FILE = MODELS_DIR / "depth" / "relative_mnv4m_slim_spf_448_default.onnx"
 LANE_MODEL_REL = "resources/models/lane/plus_small_384x640.onnx"
 LANE_MODEL_FILE = MODELS_DIR / "lane" / "plus_small_384x640.onnx"
+# DML 专用半精度版本（同一权重转 FP16，keep_io_types）：仅 DML 使用，CPU 回退用 fp32
+LANE_FP16_MODEL_REL = "resources/models/lane/plus_small_fp16_384x640.onnx"
+LANE_FP16_MODEL_FILE = MODELS_DIR / "lane" / "plus_small_fp16_384x640.onnx"

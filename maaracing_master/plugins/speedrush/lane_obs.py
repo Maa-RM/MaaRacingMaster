@@ -5,9 +5,10 @@
 不可用时控制链退回深度/墙，不抛进控制环。模型随可选模型包分发：缺失时
 worker 不启动并返回 None，深度档本身不受影响。
 
-生产者：`LaneObsWorker` 在独立线程跑（默认 provider=cpu，不抢 GPU 锁——
-实测 dml 与深度共用锁会相位锁，把深度饿到只剩 5% 帧；dml 仍可选，但要
-自证不与深度争锁），队列深度 1，控制拍只 push 最新帧并读 `latest()`。
+生产者：`LaneObsWorker` 在独立线程跑，队列深度 1，控制拍只 push 最新帧并读
+`latest()`。provider=dml（2026-11-13 起）走 GPU 槽位排班：等控制拍放锁后的
+30ms 槽窗开跑，放锁即 `SLOTS.mark_done` 把锁交给深度；超窗放弃本帧，不抢锁。
+DML 优先用 FP16 权重（缺失或会话失败回退 FP32），CPU provider 只用 FP32。
 
 坐标系与离线 gold 同源：地面线满足 ``x_px = VPX + L*LANE_W*(y-Y_H)/cam_h``，
 线的横向偏移 ``L = slope*cam_h/LANE_W``（与道号无关）；自车横位
@@ -1165,6 +1166,7 @@ class LaneObsWorker:
         self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史，见 _push_vanish）
         self.busy_skips = 0
         self.slot_skips = 0
+        self._slot_wait_s = 0.0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
         # 节拍记账：真实检测频率=det_n/时长，不受推送节流口径误导
@@ -1338,6 +1340,7 @@ class LaneObsWorker:
                 continue
             self._set_focal(focal)
             beat()          # 心跳：性能面板的「每秒几拍」由 core 差分得出
+            self._slot_wait_s = 0.0
             t0 = time.perf_counter()
             try:
                 self._n += 1
@@ -1387,7 +1390,9 @@ class LaneObsWorker:
         h_lane = None if is_pred else _cam_h_from_lines(res["lines"], self._yv)
         return {"fid": fid, "cam_h": round(cam_h, 3),
                 "pred": is_pred,
-                "ms": round((t_done - t0) * 1000.0, 1),
+                # 槽位等待不计入处理耗时：trace 的 ms 是这条帧自己的推理+后处理
+                "ms": round(max(0.0, (t_done - t0 - self._slot_wait_s) * 1000.0),
+                            1),
                 "n_lines": res["n_lines"],
                 "x": None if res["x"] is None else round(res["x"], 3),
                 "theta": None if res["theta"] is None
@@ -1426,12 +1431,16 @@ class LaneObsWorker:
         if not self._use_dml:
             return _prob_from_out(self._sess.run(None, feed))
         seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+        self._slot_wait_s = 0.0
         if time.perf_counter() - t_beat <= SLOT_FRESH_S:
+            t_wait = time.perf_counter()
             # 控制拍在跑：等下一拍（感知放锁）再开工，占槽位而不是抢锁
             if not dml_lock.TICK_BEAT.wait_newer(seq, timeout=SLOT_BEAT_WAIT_S):
+                self._slot_wait_s = time.perf_counter() - t_wait
                 self.slot_skips += 1
                 return None
             seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+            self._slot_wait_s = time.perf_counter() - t_wait
             if time.perf_counter() - t_beat > LANE_SLOT_S:
                 self.slot_skips += 1       # 槽窗已过：让深度先走
                 dml_lock.SLOTS.mark_done(seq)

@@ -595,6 +595,8 @@ class LaneObs:
 
     enabled: bool = False
     weights: str = ""
+    # DML 专用半精度权重：provider=dml 且文件可用时优先；缺失或会话失败回退 weights
+    weights_fp16: str = ""
     hz: float = 0.0
     provider: str = "cpu"
     threads: int = 4
@@ -1228,6 +1230,7 @@ def _read_decision(path: Path) -> DecisionConfig:
         lane_obs=LaneObs(
             enabled=_bool(d, "lane_obs", "enabled", default=False),
             weights=str(d.get("lane_obs", {}).get("weights", "") or ""),
+            weights_fp16=str(d.get("lane_obs", {}).get("weights_fp16", "") or ""),
             hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
             provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
             threads=_int_def(d, "lane_obs", "threads", 4, lo=1),

@@ -54,6 +54,28 @@ def test_tick_beat_wait_newer_times_out():
     assert time.perf_counter() - t0 >= 0.04
 
 
+def test_slot_gate_hands_off_to_next_consumer():
+    gate = dml_lock._SlotGate()
+    got = []
+    th = threading.Thread(target=lambda: got.append(gate.wait_done(3, 1.0)))
+    th.start()
+    time.sleep(0.02)
+    gate.mark_done(3)
+    th.join(1.0)
+    assert got == [True]
+    assert gate.wait_done(3, 0.01) is True
+
+
+def test_slot_gate_timeout_and_monotonic_seq():
+    """过点自行开工；旧拍的完成不得冒充新拍（序号单调）。"""
+    gate = dml_lock._SlotGate()
+    gate.mark_done(5)
+    assert gate.wait_done(5, 0.01) is True
+    assert gate.wait_done(6, 0.05) is False
+    gate.mark_done(4)              # 旧拍的迟到完成
+    assert gate.wait_done(6, 0.01) is False
+
+
 def test_run_watch_marks_inflight_and_clears():
     watch = dml_lock._RunWatch()
     assert watch.snapshot() == (None, "")

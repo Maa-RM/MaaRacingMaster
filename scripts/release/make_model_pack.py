@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """生成可选模型包（深度几何 + 线观测，DLC）。
 
-内容：三个 ONNX 权重 + 许可/安装说明 README + SHA256SUMS，打成一个 zip。
+内容：模型权重组（含线观测 FP16 加速件）+ 许可/安装说明 README + SHA256SUMS，打成一个 zip。
 发布包默认不含权重；用户下载本包后解压到
 ``%APPDATA%\\MaaRacingMaster\\data\\speedrush\\models\\`` 即可使用深度几何与线观测。
 线观测受 BDD100K 非商业/科研许可约束，构建时会一并打入

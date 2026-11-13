@@ -123,3 +123,36 @@ class _TickBeat:
 
 
 TICK_BEAT = _TickBeat()
+
+
+class _SlotGate:
+    """一拍内的 GPU 槽位交接（纯时序原语，不认识业务）。
+
+    控制拍放锁后，前一个 DML 消费者完成或放弃时 ``mark_done(seq)``；
+    后一个消费者用 ``wait_done(seq, timeout)`` 等它。等不到（对方没跑、
+    或已过自己的槽窗）就按超时自行开工——不抢锁，也不被无限拖住。
+    """
+
+    def __init__(self) -> None:
+        self._cv = threading.Condition()
+        self._done = -1
+
+    def mark_done(self, seq: int) -> None:
+        with self._cv:
+            if seq > self._done:
+                self._done = seq
+            self._cv.notify_all()
+
+    def wait_done(self, seq: int, timeout: float) -> bool:
+        """等第 ``seq`` 拍的槽位交接到位；超时或该拍无人登记返回 False。"""
+        deadline = time.perf_counter() + max(0.0, float(timeout))
+        with self._cv:
+            while self._done < seq:
+                rest = deadline - time.perf_counter()
+                if rest <= 0:
+                    return False
+                self._cv.wait(rest)
+            return True
+
+
+SLOTS = _SlotGate()

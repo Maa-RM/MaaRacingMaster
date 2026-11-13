@@ -746,6 +746,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | cv2不支持中文路径                | imread/imwrite在中文路径下失败                        | opencv\_utf8\_patch.py monkey-patch            |
 | YOLO ONNX 导出              | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度                        |
 | ORT-DML 并发崩溃           | 两个 GPU run 同时在飞即崩（onnxruntime #20713），与锁占时长/CPU 并发无关 | 全部 GPU run 走 `dml_lock` 串行持锁                    |
+| GPU 消费者排班             | 多个消费者（感知/线观测/深度）共锁时靠抢锁，碰撞与长尾不可控            | `dml_lock.SLOTS` 槽位交接：前一个消费者放锁后 `mark_done(seq)`，后一个 `wait_done(seq, timeout)` 再开工；纯时序原语，不含业务语义 |
 | ORT-DML 派发税与 capture   | run 是分辨率无关的阻塞调用（MoGe 时代实测 ~40ms 固定税，降分辨率无效）；`enable_graph_capture` 首次 run 即崩 | 降税只有减节点（更小骨干）一条路；capture 路线不可用（证据 commit `73a7164`） |
 | 标注写进像素会毁掉模板 | 落盘帧同时被 PEEP、回放、模板标定三处消费；一旦在上面画字幕/框，裁出来的模板天生带污染。赛季更新后的公告页就是活例：左上角返回按钮被状态行压住，同一张模板从带字帧裁出来分数掉一截，好图被判成废图 | 证据帧与视图帧分离：落盘只写原始像素，标注入 `frames.jsonl` 的 `overlay`（归一化坐标），消费方自己画。禁止在 `_process` 的 save 分支加任何 `cv2.putText`/`rectangle` |
 
