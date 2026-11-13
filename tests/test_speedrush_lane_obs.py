@@ -799,3 +799,38 @@ def test_badge_gate_can_be_disabled(monkeypatch):
     monkeypatch.setattr(la, "HUD_BADGE_GATE", False)
     monkeypatch.setattr(la, "_hud_badge_box", lambda frame: BADGE_BOX)
     assert la._drop_badge_lines([badge], np.zeros((720, 1280, 3), np.uint8)) == [badge]
+
+
+def test_gross_anchor_disagreement_shifts_grid_by_one_lane():
+    """整道级复核：锁定后深度连续差超一整道 → 挪一次道号，锁定不重置。
+
+    半道级分歧是常态噪声（路心相位 p50 0.15 道），拿它复核会把网格摇散；
+    只有整道级、且最近 5 个新鲜锚里至少 3 个如此，才认一次。
+    """
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):                      # 先锁住：x 稳定在 0.4
+        out = tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
+    assert out["x"] == pytest.approx(0.4)
+    assert tr.locked >= la.LINE_LOCK_TICKS
+    # 深度连续 5 拍都说车在 1.5 道（差 1.1 道 = 整道级）
+    for i in range(5):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5)
+    assert tr.gross_reanchor == 1
+    # 只挪整数道：小数部分仍由线自己给（0.4），所以落在 1.4 而不是锚点 1.5
+    assert out["x"] == pytest.approx(1.4)
+    assert abs(out["x"] - 1.5) < 0.5
+    # 锁定没被重置：复核是修正，不是重来
+    assert tr.locked >= la.LINE_LOCK_TICKS
+
+
+def test_half_lane_anchor_disagreement_never_reanchors():
+    """半道级分歧（0.6 道）不触发复核——那是路心噪声，不是整道错判。"""
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):
+        tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
+    for i in range(40):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.0)
+    assert tr.gross_reanchor == 0
+    assert out["x"] == pytest.approx(0.4, abs=0.05)

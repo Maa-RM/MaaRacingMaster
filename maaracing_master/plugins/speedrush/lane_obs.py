@@ -95,6 +95,14 @@ COAST_MAX_TICKS = 10
 # 锁定期道号同时冻结：新线只能等重锁后由深度锚定号，不能靠邻居相对票补位
 # （车跨线后线组换新时，相对票会给整道偏移的号且横位保持连续，锁定不重置）。
 LINE_LOCK_TICKS = 5
+# 整道级复核（2026-11-13）：锁定期深度不许改判道号（见上），但"错得离谱"
+# 必须能纠正。判据=新鲜深度锚与线网格横位**连续差超一整道**（半道级分歧是
+# 噪声，不触发），且最近 ``GROSS_WIN`` 个新鲜锚里至少 ``GROSS_HITS`` 个如此。
+# 触发后解冻一次：道号走正常重锚流程（每线仍需 ANCHOR_CONFIRM 拍确认），
+# 复核完重新累积锁定。计数进 trace 的 gross_reanchor 列，可审计。
+GROSS_LANE = 1.0
+GROSS_HITS = 3
+GROSS_WIN = 5
 LINE_THETA_MAX = 0.35      # 线角（rad）；变道中车头相对道路可达 ~0.2，急变道 0.3+
 LINE_RMS_MAX = 3.0         # 单线拟合残差（px，短段/坏拟合不参与位置原点）
 # 强锁：曾用「双侧都在」的严格条件建立过线锁。此后单侧/一条线也继续作
@@ -648,6 +656,8 @@ class LineTracker:
         self.lock_strong = False   # 曾以双侧严格条件建锁（此后单侧也作原点）
         self.grid_reject = 0
         self.side_reject = 0
+        self.gross_hist: list[bool] = []
+        self.gross_reanchor = 0    # 整道级复核触发次数（trace 审计列）
         self.last_theta: float | None = None
         self.last_lines: list[dict] = []
         self.anchor_src = "none"
@@ -825,6 +835,29 @@ class LineTracker:
             self._commit_tracks(cur, fid)
             return self._out(None, 0, cur, self.anchor_src,
                              relock_src=None, pred=False)
+
+        # ②b 整道级复核：锁定期深度不许改判道号，但"错得离谱"要能纠正。
+        # 只在**新鲜**锚上累积（复用拍是同一份旧证据，不重复计数），且要求
+        # 连续差超一整道——半道级分歧是常态噪声（实测路心相位 p50 0.15 道、
+        # p90 0.43 道），拿它复核会把网格摇散。触发后解冻一次，道号仍走
+        # ③ 的正常重锚流程（每线 ANCHOR_CONFIRM 拍确认），复核完重新累积锁定。
+        if x_anchor is not None and self.x_last is not None:
+            self.gross_hist.append(
+                abs(x_anchor - self.x_last) > GROSS_LANE)
+            del self.gross_hist[:-GROSS_WIN]
+            if (grid_frozen and len(self.gross_hist) >= GROSS_WIN
+                    and sum(self.gross_hist) >= GROSS_HITS):
+                # 一次性整道修正：只挪道号（整数道），不重置锁定、不留解冻窗。
+                # 解冻窗里每根线各自重锚会连着跳好几拍（离线回放：每次触发
+                # 带出 3~4 次横位跳），而整道错判只需要挪一次整数。
+                delta = int(round(x_anchor - self.x_last))
+                if delta:
+                    for tk in self.tracks:
+                        if tk.k is not None:
+                            tk.k += delta
+                    self.x_last += delta
+                    self.gross_reanchor += 1
+                self.gross_hist.clear()
 
         # ③ 颜色/侧别质量门 + 持久道号分配/重锚
         strong_anchor = False
@@ -1030,6 +1063,7 @@ class LineTracker:
         usable = (self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
                   and bool(good) and (both or self.lock_strong))
         return {"state": self.state, "x": x, "theta": self.last_theta,
+                "gross_reanchor": int(self.gross_reanchor),
                 "n_locked": int(n_locked), "relock_src": relock_src,
                 "n_lines": len(lines), "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
