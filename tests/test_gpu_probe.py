@@ -6,12 +6,20 @@
 且抓拍不占盯梢线程。正常短 run 与已结束的 run 都不得触发抓拍。
 """
 import contextlib
+import sys
 import threading
 import time
+
+import pytest
 
 from maaracing_master.core import dml_lock
 from maaracing_master.plugins.speedrush import gpu_probe
 from maaracing_master.plugins.speedrush.gpu_probe import GpuProbe
+
+# 真实线程 CPU 时间读数只有 Windows 有（句柄 API）；非 Windows 恒返回 None、
+# 判读恒「不具判读条件」——那条路径有独立用例（fake thread_times），三个
+# 真计时用例只在 Windows 上跑。
+_WIN_THREAD_TIMES = sys.platform == "win32"
 
 
 def setup_function():
@@ -161,6 +169,8 @@ def _dump_now(p):
     return files[0].read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(not _WIN_THREAD_TIMES,
+                    reason="线程 CPU 时间读数依赖 Windows 句柄 API，非 Windows 恒「不具判读条件」")
 def test_cpu_probe_busy_thread(tmp_path, monkeypatch):
     """持续忙循环：测量窗口里抓拍线程在睡，目标线程独占核 → 判为占用 CPU。"""
     p = _probe(tmp_path, monkeypatch)
@@ -177,6 +187,8 @@ def test_cpu_probe_busy_thread(tmp_path, monkeypatch):
     assert "阶段=原生推理在飞" in text
 
 
+@pytest.mark.skipif(not _WIN_THREAD_TIMES,
+                    reason="线程 CPU 时间读数依赖 Windows 句柄 API，非 Windows 恒「不具判读条件」")
 def test_cpu_probe_blocked_thread(tmp_path, monkeypatch):
     """阻塞等待：CPU 时间几乎不增长，且必须明说分不出阻塞与就绪排队。"""
     p = _probe(tmp_path, monkeypatch)
@@ -187,6 +199,8 @@ def test_cpu_probe_blocked_thread(tmp_path, monkeypatch):
     assert "ETW" in text
 
 
+@pytest.mark.skipif(not _WIN_THREAD_TIMES,
+                    reason="线程 CPU 时间读数依赖 Windows 句柄 API，非 Windows 恒「不具判读条件」")
 def test_cpu_probe_call_ends_midwindow(tmp_path, monkeypatch):
     """调用结束但线程还活着（生产形态：worker 跨观测复用）→ 样本跨越恢复点。"""
     p = _probe(tmp_path, monkeypatch)

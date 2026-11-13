@@ -67,7 +67,9 @@ def _install_fakes(monkeypatch, proc):
         dlls.setdefault(name, _FakeDll())
         return dlls[name]
 
-    monkeypatch.setattr(ctypes, "WinDLL", _win_dll)
+    # raising=False：Linux 的 ctypes 没有 WinDLL 属性，补挂才能让伪对象在两边 CI
+    # 都生效（文件口径：Windows 与 Linux CI 同样确定性，生产侧按 sys.platform 分流）。
+    monkeypatch.setattr(ctypes, "WinDLL", _win_dll, raising=False)
     return dlls
 
 
