@@ -61,7 +61,6 @@ class Clicker:
         self.intent = intent
         self._last_pos: tuple[int, int] | None = None  # 最近一次成功执行的屏幕坐标
         self._gamepad = None  # 手柄导航器（懒创建，绑定 controller 手柄/截图）
-        self._gamepad_nav_cfg = None  # (capture, gpad, model_path)
         self._rebuild_gamepad_cb = None  # 手柄重建回调（宿主注入；None=不支持自愈）
         self._gamepad_lost_streak = 0  # 手柄光标连续丢失计数（approach lost 累加）
         self._rebuild_cooldown_until_ts = 0.0  # 重建冷却截止（monotonic 秒）
@@ -85,7 +84,6 @@ class Clicker:
           手柄后重新走 bind_gamepad 换绑；None=不支持重建（仅快速失败重试）。
         """
         from maaracing_master.core.gamepad_cursor import GamepadClicker
-        self._gamepad_nav_cfg = (capture, gpad, model_path)
         self._gamepad = GamepadClicker(capture, gpad, model_path=model_path)
         if confirm_button is not None:
             self._gamepad.set_confirm_button(confirm_button)

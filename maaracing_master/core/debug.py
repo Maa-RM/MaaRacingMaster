@@ -406,7 +406,6 @@ class NavigationDebugger:
         self._q = _StreamQueue()
         self._thread: threading.Thread | None = None
         self._stop_evt = threading.Event()
-        self._processing = False
         self._last_sample = 0.0
         self._last_sample_fid = -1  # 静止画面不重复采样：WGC 同一帧号不重画不重存
         self._degraded = False
@@ -664,18 +663,14 @@ class NavigationDebugger:
                     peep_on, save_on = self._output_on(seg)
                     if peep_on or save_on:
                         self._maybe_sample(seg)
-                self._processing = True
                 item = self._q.get(0.02)
                 if item is None:
-                    self._processing = False
                     continue
                 try:
                     self._process(item)
                 finally:
                     self._q.done()
-                    self._processing = False
             except Exception:  # noqa: BLE001 —— 调试流故障不得中止执行（I3）
-                self._processing = False
                 self._worker_errors += 1
                 self._degraded = True
 

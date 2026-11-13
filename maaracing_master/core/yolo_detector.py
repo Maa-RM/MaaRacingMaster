@@ -188,11 +188,11 @@ class YOLODetector:
             by_class[cls_name].append((int(cx), int(cy), int(bw), int(bh)))
         return by_class, dets
 
-    def _nms_per_class(self, xyxy, scores, classes, mask,
-                       pad_x, pad_y, scale, ox, oy, orig_w, orig_h):
+    def _nms_per_class(self, xyxy, scores, classes, mask):
         """按类别分别做 NMS，避免跨类抑制（如 car 压掉 bonus_car）
 
-        返回的索引是原始数组下标（供 _to_dets 使用）
+        返回的索引是原始数组下标（供 _to_dets 使用）；
+        坐标还原不在此处——由 _to_dets 统一按 pad/scale/offset 换算。
         """
         classes_arr = classes[mask]
         unique_classes = np.unique(classes_arr)
@@ -341,9 +341,7 @@ class YOLODetector:
         if not np.any(mask):
             return self._empty_by_class(), [], all_raw_dets
 
-        real_indices = self._nms_per_class(
-            xyxy, max_scores, max_classes, mask,
-            pad_x, pad_y, scale, ox, oy, orig_w, orig_h)
+        real_indices = self._nms_per_class(xyxy, max_scores, max_classes, mask)
         if len(real_indices) == 0:
             return self._empty_by_class(), [], all_raw_dets
         by_class, debug_dets = self._to_dets(

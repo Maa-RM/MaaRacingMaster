@@ -506,9 +506,6 @@ def _round_ended_payload(results: dict[str, str]) -> dict:
 class _StdoutGuard:
     """把一切误写 stdout 的输出（第三方库 print 等）转移到 stderr，保证协议通道纯净。"""
 
-    def __init__(self, protocol_stdout):
-        self._protocol = protocol_stdout
-
     def write(self, s: str) -> None:
         _STDERR.write(s)
         _STDERR.flush()
@@ -2410,7 +2407,7 @@ def main() -> None:
     # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
     ensure_perf_sampler_started()
     protocol_stdout = sys.stdout
-    sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
+    sys.stdout = _StdoutGuard()  # 后续一切 print 都走 stderr，协议通道纯净
     try:
         service = SidecarService(protocol_stdout)
     except Exception as exc:

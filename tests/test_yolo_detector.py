@@ -86,6 +86,18 @@ class TestToDets:
         assert len(dets) == 1
 
 
+# 模型资产无关的 fail-fast 校验：显式 classes 时不触发模型加载，无资产也能跑
+class TestPreloadModelContract:
+    def test_class_conf_unknown_name_raises(self):
+        with pytest.raises(ValueError, match="未知类别名"):
+            YOLODetector(str(MODEL), classes=["coin", "car", "bonus_car"],
+                         class_conf={"nope": 0.1})
+
+    def test_empty_classes_raises(self):
+        with pytest.raises(ValueError, match="不能为空"):
+            YOLODetector(str(MODEL), classes={})
+
+
 # onnxruntime-directml（1.24.4）原生缺陷：任一 session 析构后再对另一 session
 # run() 会段错误（CPU provider 无此问题，多 session 全存活亦无）。测试必然创建
 # 多个 detector，故全部保活至进程结束，杜绝 run 之前的任何析构。
@@ -109,16 +121,6 @@ class TestModelDrivenContract:
         det = YOLODetector(str(MODEL), conf=0.5, class_conf={"coin": 0.2})
         _KEEP_ALIVE.append(det)
         assert det._conf_by_id == {0: 0.2}
-
-    def test_class_conf_unknown_name_raises(self):
-        # 显式 classes 时校验在模型加载前 fail-fast：不产生 session，无析构风险
-        with pytest.raises(ValueError, match="未知类别名"):
-            YOLODetector(str(MODEL), classes=["coin", "car", "bonus_car"],
-                         class_conf={"nope": 0.1})
-
-    def test_empty_classes_raises(self):
-        with pytest.raises(ValueError, match="不能为空"):
-            YOLODetector(str(MODEL), classes={})
 
     def test_explicit_classes_override(self):
         det = YOLODetector(str(MODEL), conf=0.4, classes=["a", "b", "c"])
@@ -145,8 +147,7 @@ class TestNmsPerClass:
         scores = np.asarray(scores, float)
         classes = np.zeros(len(scores), int)
         mask = np.ones(len(scores), bool)
-        return det._nms_per_class(xyxy, scores, classes, mask,
-                                  0, 0, 1.0, 0, 0, 1280, 720)
+        return det._nms_per_class(xyxy, scores, classes, mask)
 
     def test_keeps_disjoint_nearby_boxes(self):
         # 0068 帧实例坐标：真框不重叠，误判格式下 IoU≈0.88 被误压

@@ -111,8 +111,8 @@ def _color_dist(c1, c2):
     return math.sqrt((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2 + (c1[2] - c2[2]) ** 2)
 
 
-def radial_profile(frame, cx, cy, n_rays=4, max_r=32):
-    """沿多个方向从质心逐像素采样色值序列（遇到越界立即截断）。"""
+def radial_profile(frame, cx, cy, max_r=32):
+    """沿四个对角方向从质心逐像素采样色值序列（遇到越界立即截断）。"""
     h, w = frame.shape[:2]
     dirs = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
     prof = []

@@ -47,7 +47,7 @@ class NavKitV4:
         self.ctx = ctx
         self._pipeline_dirs = [Path(d) for d in pipeline_dirs]
         # 桥宿主：frame/click/ensure_clicker 复用 NavGraph；模板目录直接
-        # 挂到它的 image_dirs（TemplateRecognizer find_any 的搜索根）。
+        # 挂到它的 image_dirs（模板搜索根）。
         self._graph = NavGraph(ctx)
         self._graph.image_dirs.extend(Path(d) for d in image_dirs)
         self._resource = Resource()

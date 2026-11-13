@@ -154,24 +154,6 @@ def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.
     return best_box, best_val
 
 
-def find_any(frame: np.ndarray, names: list[str], image_dirs: list[Path],
-             threshold: float = 0.7, scales=DEFAULT_SCALES,
-             roi: Box | None = None) -> tuple[Box | None, float, str]:
-    """一张节点挂多张候选图（新旧皮肤同时有效），取最高分。
-
-    返回 (命中框, 置信度, 命中的模板名)。
-    """
-    best_box, best_val, best_name = None, 0.0, ""
-    for name in names:
-        tpl = load_template(name, image_dirs)
-        if tpl is None:
-            continue
-        box, val = find_template(frame, tpl, threshold=threshold, scales=scales, roi=roi)
-        if box is not None and val > best_val:
-            best_box, best_val, best_name = box, val, name
-    return best_box, best_val, best_name
-
-
 # ==================== v4 引擎件（P2a-Q5）：colorspace / 仲裁 / 断言 / 遮挡 ====================
 
 CURSOR_SIZE_NORM = 0.03  # 光标贴图归一化宽（P2b 真机校准前的引擎常量）
