@@ -356,6 +356,22 @@ class Traffic:
 
 
 @dataclass(frozen=True)
+class Collision:
+    """正面撞车事件记录（只读观测，2026-11-13）。
+
+    游戏日志没有碰撞事件（RULES §4.3：碰撞只损失时间、不扣分），能程序化
+    留证的只有观测量。判据 = **YOLO 标为街车的轨道** + **锚点纵深**（不用框高
+    粗估：近场框被截断，粗距最不可靠）+ 纵深落入 ``[0, z_max_m]`` 米 + 横向
+    体积包络重叠（自车与目标各自半宽 + 碰撞余量）。``z_max_m`` 起值 5.0 米是
+    「最后一次可信锚点」的上界窗口——锚点 2 米以下因几何失效被拒，所以它不是
+    物理间隙，真实接触时仪器已看不见。事件按轨道 id 去重，不逐拍重复，也不作
+    控制输入。"""
+
+    enabled: bool = True
+    z_max_m: float = 5.0
+
+
+@dataclass(frozen=True)
 class Validate:
     t_empty_s: float
     t_recover_s: float
@@ -705,6 +721,7 @@ class DecisionConfig:
     planner: Planner
     traffic: Traffic
     motion: Motion = Motion()
+    collision: Collision = Collision()
     grid_xcheck: GridXcheck = GridXcheck()
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
@@ -948,6 +965,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "traffic", "pass_x_unknown_jump_m", 2.8, lo=0),
             metric_ll_veto_enabled=_bool(
                 d, "traffic", "metric_ll_veto_enabled", default=False)),
+        collision=Collision(
+            enabled=_bool(d, "collision", "enabled", default=True),
+            z_max_m=_num_def(d, "collision", "z_max_m", 5.0, lo=0,
+                             lo_open=False)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),

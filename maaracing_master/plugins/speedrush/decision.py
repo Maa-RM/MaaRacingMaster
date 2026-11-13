@@ -2105,6 +2105,14 @@ class DecisionEngine:
         """上一拍对象表（身份/年龄/可见/安全标记）——trace otab 列。"""
         return self._objects.as_trace()
 
+    @property
+    def objects(self):
+        """本拍对象表本身（只读消费：撞车事件观察器按轨道做边沿判定）。
+
+        不改变对象表，也不把事件回灌决策——它只是同一份世界观测的第二个
+        读数面（碰撞留证），不进任何安全/评分消费点。"""
+        return self._objects
+
     def lane_map_trace(self) -> dict | None:
         """上一拍持久车道图（支撑距离/采样点/预测误差）——trace map 列。"""
         return self._map_trace

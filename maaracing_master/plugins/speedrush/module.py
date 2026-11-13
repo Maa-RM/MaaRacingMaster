@@ -81,6 +81,7 @@ from maaracing_master.plugins.speedrush.planner import LateralPlanner
 from maaracing_master.plugins.speedrush.route import PositionLineage
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
+from maaracing_master.plugins.speedrush.collision import CollisionObserver
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
@@ -1768,6 +1769,18 @@ class SpeedRushModule(ActivityModule):
                 "prev_ts": None, "disabled": False,
                 "trace": [], "trace_sink": self._trace,
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
+                # 撞车事件观察器（只读）：按对象表轨道做一次边沿判定，
+                # 本阶段事件列表随 trace/汇总留证；不接控制（见 collision.py）。
+                # 半宽/余量复用既有参数（选择层自车/目标半宽 + 计划碰撞余量），
+                # 不另造第二份数值。
+                "collision_obs": (
+                    CollisionObserver(
+                        z_max_m=cfg.collision.z_max_m,
+                        ego_half_m=cfg.selection.ego_half_lane * cal.lane_w_m,
+                        car_half_m=cfg.selection.car_half_lane * cal.lane_w_m,
+                        margin_m=cfg.motion.collision_margin_m)
+                    if cfg.collision.enabled else None),
+                "collisions": [],
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
                 # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
                 "run_dir": run_dir,
@@ -2041,6 +2054,21 @@ class SpeedRushModule(ActivityModule):
                 # 持久车道图的时间维：前进/横移预测用执行层在线速度
                 ego_speed_mps=planner.state.v_mps,
                 ego_v_lat_lane_s=planner.state.v_lat)
+            # 撞车事件（只读留证）：对象表已在决策 update 里推进，这里读同拍
+            # 轨道做边沿判定——按轨道 id 去重，首次落入近距带才记一条。
+            cevents = ()
+            collision_obs = chain.get("collision_obs")
+            if collision_obs is not None:
+                cevents = collision_obs.update(
+                    chain["engine"].objects.tracks, fid)
+                if cevents:
+                    chain["collisions"].extend(cevents)
+                    for ce in cevents:
+                        _tlog(self,
+                              f"[极速狂飙] 撞车事件：正面街车 track"
+                              f" {ce.track_id} 纵深 {ce.z_m:.2f}m"
+                              f"（{ce.src}）横向余量 {ce.x_clear_m:.2f}m",
+                              "INFO")
             cfg = chain["cfg"]
             # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
             # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
@@ -2541,6 +2569,15 @@ class SpeedRushModule(ActivityModule):
             # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
             "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
                        for e in tevents if e.outcome == OUTCOME_PASS],
+            # 撞车事件（本拍新触发；按轨道 id 去重，空拍=None）：纵深/横位/
+            # 横向包络余量/来源与置信原样留证，供离线按得分与横幅真值对账
+            "collisions": [
+                {"id": e.track_id, "z": round(e.z_m, 2),
+                 "x": round(e.x_m, 2), "xc": round(e.x_clear_m, 2),
+                 "hw": None if e.half_w_m is None else round(e.half_w_m, 2),
+                 "src": e.src, "conf": round(e.conf, 2),
+                 "age": round(e.age_ms, 1)}
+                for e in cevents] or None,
             "fresh": obs.health.frame_fresh,
             "presence": obs.health.target_presence,
             # 原始检出分类计数：目标流枯竭判据只认车；这两列用来区分
@@ -2709,6 +2746,9 @@ class SpeedRushModule(ActivityModule):
                 "phase": phase, "ticks": stats.ticks, "score": stats.score,
                 "rate": stats.rate, "dur_s": stats.dur_s,
                 "conserve_segments": stats.conserve_segments,
+                # 撞车事件数（按轨道 id 去重；详见 trace collisions 列与
+                # 逐事件日志行）。旧汇总行无此键=该版本尚未接线。
+                "collisions": len(chain.get("collisions") or []),
             }
             with open(root / "speedrush_summary.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")

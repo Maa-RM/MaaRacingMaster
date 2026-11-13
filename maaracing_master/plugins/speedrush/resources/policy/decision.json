@@ -206,6 +206,11 @@
     "metric_ll_veto_enabled": false,
     "_note_metric_ema": "决策边界对车米制 x/z 做时间平滑（道路帧 x，自车横移由 executed 抵消）。20261019_184758_p2 实测同车逐拍 x 跳 ±1~1.5m、z 跳 ±4m，与 0.5m 擦车带同量级——规划器在追测量噪声，满舵左-右回摆并侧碰。α 越大越跟手、越小越稳；跟踪层语义不变（v_close/锚点仍吃原始 z）。"
   },
+  "collision": {
+    "enabled": true,
+    "z_max_m": 5.0,
+    "_note": "正面撞车事件记录（2026-11-13，只读观测）：游戏日志与 HUD 都没有碰撞事件，能留证的只有观测量。判据=YOLO 标为街车的轨道（对象表 kind=car）且**锚点纵深**（metric；不用框高粗距 metric_coarse——近场框被自车车身/画面截断，粗距最不可靠）首次落入 [0, z_max_m] 米，且横向体积包络重叠（|x_m| ≤ ego_half_lane×lane_w + 目标实测半宽(缺失回退 car_half_lane×lane_w) + motion.collision_margin_m）。事件按轨道 id 去重一次，进逐拍 trace 的 collisions 列、阶段汇总计数与日志行，不作任何控制输入。z_max_m=5.0 是「最后一次可信锚点」的上界窗口：锚点纵深 2 米以下因几何失效被拒，真实接触到 0 米时仪器已看不见，所以它不是物理间隙。负纵深=已过车头，按掠过不记；无米制横位的轨道无法证明在正面，也不记。"
+  },
   "grid_xcheck": {
     "mode": "master",
     "tol_lane": 0.45,
