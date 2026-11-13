@@ -55,7 +55,7 @@ pipeline 里 ROI 的 JSON 口径一致。
   `tests/test_debug_frame_evidence.py` 会红：它比像素差，也检查底部黑带没有落到磁盘。
 - 旧会话的帧是带绘制的，且没有 `overlay` 字段——Studio 据此判断并提示「旧版落盘，
   裁模板请换新会话」，不假装历史数据是干净的。
-- 遗留入口 `save_frame` 仍会绘制落盘，只服务归档模块；新代码不得接入。
+- 旧入口 `save_frame` 已删除，落盘只走 `_process` 的 save 分支（新代码不得另开落盘通路）。
 
 **被否方案**：
 

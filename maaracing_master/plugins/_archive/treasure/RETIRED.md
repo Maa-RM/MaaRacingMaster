@@ -17,7 +17,7 @@
 - **测试**：回归锁位于本插件 `tests/` 目录，带 `retired` 标记；默认收集（`testpaths = ["tests"]`）不含归档目录，考古时显式运行：
   `.venv\Scripts\python.exe -m pytest maaracing_master/plugins/_archive/treasure/tests -m retired`。
   理由见该标记的说明：避免死模块的回归锁反向约束 core 演进。**复活时若不摘标记，回归锁会静默不跑**。
-- **修复脚本**：脏数据修复工具在 `tools/repair_treasure_settle_data.py`。
+- **修复脚本**：脏数据修复工具在 [tools/repair_treasure_settle_data.py](./tools/repair_treasure_settle_data.py)（随本目录归档）。
 - **随插件下沉的 core 小件**：`core/cpu_time.py`、`core/trace.py`——二者原先在 `maaracing_master/core/`，使用者只有本插件，故随归档按类下沉；复活时随目录回迁，或按需改回 core。
 
 > **为什么归档区仍是一个可导入的包**：`pytest` 在收集阶段就会导入测试模块，退役用例的

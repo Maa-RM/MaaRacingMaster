@@ -100,5 +100,5 @@ D 已废弃 → 删。基线只减不增。
 ## 先例
 
 - `cursor_refactor` 探针 → 事实沉淀 → 生产化为 `core/gamepad_cursor.py` +
-  `core/resources/stick_speed_model.json`（工具本体属"已退役生产资产"，归档 `archive/cursor_refactor/`）。
+  `core/resources/stick_speed_model.json`（工具本体已退役，结论以生产化文件与其 commit 史为准）。
 - 新实验照此路径走：**实验 → 结论入 home 与记忆库 → 仪器提升或随目录退役**。

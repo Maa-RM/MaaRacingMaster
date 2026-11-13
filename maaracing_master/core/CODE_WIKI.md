@@ -116,7 +116,7 @@
 - **索引时间轴**：每条索引事件（帧 / 段边界 / 阶段 / 开关）带 `ts_wall_ns` 与 `ts_mono_ns`；帧行的 `ts_ns` 是采集时刻，事件时间另用双时钟。
 - **导航基线**：当前节点、命中模板与分数、命中框、点击意图、手柄指针、帧龄。由跳转图执行器提供，启动游戏进大厅与模块的 UI 步骤共享同一套视图。
 - **渲染器只服务视图**：模块可安装 `render_peep` 叠加在 PEEP 基线上；落盘通路不再经过任何渲染器（落盘是证据帧）。渲染器异常只丢这一拍的预览、计 `peep_render_failed`，不影响落盘与索引。
-- 旧入口 `save_frame` / `start_session` 保留给归档模块，不再是活跃通路；`save_frame` 仍会把绘制烧进存盘图，新代码不得接入。
+- 旧入口 `save_frame` / `start_session` 已删除；`update_peep` 旧接口仍保留给归档模块（PEEP 兼容缓冲），不参与新协议。
 
 **核心类**：`NavigationDebugger`（流调度 + 基线与旧视图）、`DebugSegment`（段句柄）、`_StreamQueue`（帧/控制事件 FIFO）
 
@@ -589,12 +589,19 @@ core 自带一份 `resources/achievements.json`，`mod_id` 固定为 `core`（�
 
 ```
 core/sidecar.py（JSONL RPC handler）
+  ├── core.opencv_utf8_patch（中文路径补丁，须先于任何 cv2 存图生效）
   ├── core.controller.MaaRacingMasterController
+  ├── core.builtin_steps（启动/关闭游戏内置步骤，§1.17）
+  ├── core.base（声明工具：declares_dashboard / overrides_classmethod）
+  ├── core.config_ui_contract（模块配置表单契约）
+  ├── core.maa_option（框架侧落盘策略，§1.21）
+  ├── core.paths（用户数据目录结构）
+  ├── core.process_priority（进程优先级提升/回退）
+  ├── core.perf_sampler（性能采样器，§1.14）
   ├── core.logger.logger
-  ├── core.window_utils.has_physical_controller
+  ├── core.window_utils（DPI awareness / 物理手柄探测）
   ├── core.remote_meta（远程元数据校验与外链目标表，§1.12）
   ├── core.perf_contract（性能面板声明校验与取值规范化，§1.15）
-  ├── core.thread_probe（线程段：时间/身份/心跳，§1.16）
   ├── core.covers（封面声明 → URL 解析，§1.18）
   ├── core.registry（插件自动扫描注册）
   ├── core.achievement（成就声明索引/引擎/进度存档/事实门面，§1.23）
@@ -700,8 +707,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `get_peep_frame(after_seq)`        | 预览帧 + 元数据；序号未变返回 `state=same`，不重编码 |
 | `status()`                         | 运行编号、当前段/阶段、序号、降级标志与分项计数 |
 | `enabled` / `peep_enabled`         | 运行级开关；切换作为有序事件入队 |
-| `update_peep()` / `get_peep_jpeg()` | 旧入口（归档模块 / 旧测试），不参与新协议 |
-| `save_frame(img, **kwargs)`        | 旧入口：存盘全量绘制 + PEEP 精简绘制 |
+| `update_peep(peep_img)`            | 旧入口：PEEP 兼容缓冲，仅归档模块在用，不参与新协议 |
 
 ### 3.4 基础工具方法速查（core 共享）
 
@@ -711,7 +717,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | ------------------------------- | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------- |
 | `ctx.capture.screenshot()`      | capabilities.py `CaptureAdapter` | 截图 RGB ndarray（**只读 WGC 中心缓存**，无帧返回 None）              | 唯一取帧入口；不得回退同步截图，返回 None 按"采集链路故障"处理，不得当作"画面无变化"         |
 | `ctx.lifecycle.sleep(seconds)`  | capabilities.py `LifecycleAdapter` | 可中断睡眠：≤0.1s 分片检查停止信号，**墙钟时长 ≥ 入参**（deadline 分片+余数补齐）    | 不能用 `int(s/0.1)` 量化迭代：小于 0.1s 的入参会被静默退化为零睡眠忙旋，饿死同进程其它线程；语义由 `tests/test_capabilities_lifecycle_sleep.py` 机检 |
-| `NavigationDebugger(proj_dir)`  | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §3.3；调试模式说明见 §5                     |
+| `NavigationDebugger(debug_root)` | debug.py                         | PEEP 实时预览 / debug 截图标注，支持 template\_rects + detections | §3.3；调试模式说明见 §5                     |
 | `has_physical_controller()`     | window\_utils.py                 | XInput API 遍历 4 端口，任一连接返回 True                         | DLL 回退 xinput1\_4 → xinput9\_1\_0 → xinput1\_3；§4.3 坑点 |
 
 ***
@@ -799,7 +805,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 
 - **`trace.jsonl` 计数必须解析 JSON，不能 grep**：布尔/枚举字段每条记录都带（`device_lost`、`ok` 等），grep 数的是「字段出现次数」而非「为真的次数」（真机 2026-09-17：grep 得 159，解析后实际 2 次）。
 
-- **「光标丢失」的证据面**：丢失按失败链首次必记留痕（带 `原因=光标丢失`），记录里带 `p_frames`（该次点击成功读位的帧数，恒零即从头到尾没读到）。但**判据过程数据尚未落盘**：`last_cands` / `last_cand_sel`（按分数降序的 top-8，含坐标 / 分数 / 状态）每次读位都算好，却只进 `cursor_candidates()` 供 PEEP 叠加层。要定论 §5.2 留下的两支（游戏侧没画 vs 画了但分数低于门槛），需在失败链首次丢失时落一行「种子数 + top3 候选（分数 / 状态 / 中心色 / 半径）+ 取帧失败计数 + `last_pos` / `miss_streak` + 绑定后是否发过手柄输入」，并配一帧存图（复用 [debug.py](./debug.py) 的 `save_frame`）。
+- **「光标丢失」的证据面**：丢失按失败链首次必记留痕（带 `原因=光标丢失`），记录里带 `p_frames`（该次点击成功读位的帧数，恒零即从头到尾没读到）。但**判据过程数据尚未落盘**：`last_cands` / `last_cand_sel`（按分数降序的 top-8，含坐标 / 分数 / 状态）每次读位都算好，却只进 `cursor_candidates()` 供 PEEP 叠加层。要定论 §5.2 留下的两支（游戏侧没画 vs 画了但分数低于门槛），需在失败链首次丢失时落一行「种子数 + top3 候选（分数 / 状态 / 中心色 / 半径）+ 取帧失败计数 + `last_pos` / `miss_streak` + 绑定后是否发过手柄输入」，并配一帧存图（证据帧为 raw 落盘，标注在 Studio 开标注层看，见 ADR-0026）。
 
 ***
 
