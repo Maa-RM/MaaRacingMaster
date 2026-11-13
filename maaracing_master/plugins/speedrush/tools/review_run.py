@@ -131,7 +131,8 @@ class Row:
     def trusted(self, name: str) -> bool:
         return bool(self.f(name).get("trusted"))
 
-    def val(self, name: str):
+    def val(self, name: str) -> int | None:
+        """数值格取值（ mileage / overtake / total_left / 比分 / timer，皆 int）。"""
         return self.f(name).get("value")
 
     def text(self, name: str) -> str:
@@ -224,7 +225,7 @@ def settled_map(rows: list[Row], name: str) -> dict[int, bool]:
     """
     idx = [i for i, r in enumerate(rows) if r.trusted(name)]
     out: dict[int, bool] = {}
-    prev: tuple[int, int] | None = None      # (value, ts_ns) —— 上一个可信采样
+    prev: tuple[int | None, int] | None = None   # (value, ts_ns) —— 上一个可信采样
     for i in idx:
         r = rows[i]
         recorded = r.f(name).get("settled")
@@ -241,9 +242,9 @@ def settled_map(rows: list[Row], name: str) -> dict[int, bool]:
 @dataclass
 class Findings:
     settle: dict[str, dict[int, bool]] = field(default_factory=dict)
-    formula_bad: list[tuple[Row, int, int, int]] = field(default_factory=list)
+    formula_bad: list[tuple[Row, int | None, int | None, int | None]] = field(default_factory=list)
     formula_ok: int = 0
-    nonmono: list[tuple[Row, str, int, int, str]] = field(default_factory=list)
+    nonmono: list[tuple[Row, str, int, int, int]] = field(default_factory=list)
     timer_bad: list[tuple[Row, int, int]] = field(default_factory=list)
     n_exact: int = 0
     n_near: int = 0
@@ -277,11 +278,12 @@ def annotate(sess: Session) -> Findings:
         if not all(r.trusted(n) and f.settle[n].get(i, False) for n in CARD_FIELDS):
             continue
         mi, ov, to = r.val("mileage"), r.val("overtake"), r.val("total_left")
-        if to == mi + OVERTAKE_WEIGHT * ov:
-            f.formula_ok += 1
-        else:
+        if mi is None or ov is None or to is None \
+                or to != mi + OVERTAKE_WEIGHT * ov:
             r.tags.append("mismatch:total")
             f.formula_bad.append((r, mi, ov, to))
+        else:
+            f.formula_ok += 1
 
     # 比分单调：按归属（本机/对手）分列，位置上下互换不影响；两块同判的行**不进检验**
     # （归属不可用，硬算会把两家的值混成一条序列——那正是"51 处假回落"的成因）
@@ -357,9 +359,9 @@ def annotate(sess: Session) -> Findings:
     return f
 
 
-def runs_of(rows: list[Row], idx: list[int], name: str) -> list[tuple[int, int]]:
+def runs_of(rows: list[Row], idx: list[int], name: str) -> list[tuple[int | None, int]]:
     """一段窗口内某字段的**同值连续段**（在给定行序上）。"""
-    out: list[tuple[int, int]] = []
+    out: list[tuple[int | None, int]] = []
     k = 0
     while k < len(idx):
         j = k
@@ -642,9 +644,12 @@ def cmd_timeline(args) -> None:
                 dt = r2.t - r1.t
                 if sd1 != sd2 or dt <= 0 or dt > SETTLE_GAP_S:
                     continue
-                d = r2.val(n) - r1.val(n)
+                v2, v1 = r2.val(n), r1.val(n)
+                if v2 is None or v1 is None:
+                    continue       # 可信但缺值拍：不做增量归因（原实现此处会直接炸）
+                d = v2 - v1
                 if d < 0:
-                    skipped.append(f"seq{r2.seq}({r1.val(n)}→{r2.val(n)})")
+                    skipped.append(f"seq{r2.seq}({v1}→{v2})")
                     continue
                 if shown < 12:
                     rt = _side_rate(r2, sd1) if sd1 == "本机" else None
@@ -780,7 +785,7 @@ def _card(sess: Session, i: int, f: Findings):
     if not src.is_file():
         return None
     img = Image.open(src).convert("RGB")
-    thumb = img.resize((THUMB_W, round(THUMB_W * img.height / img.width)), Image.LANCZOS)
+    thumb = img.resize((THUMB_W, round(THUMB_W * img.height / img.width)), Image.Resampling.LANCZOS)
     left = _zoom_crop(img, PANEL_BOX, ZOOM)
     right = _zoom_crop(img, SCORE_BOX, ZOOM)
     body = max(thumb.height, left.height, right.height)

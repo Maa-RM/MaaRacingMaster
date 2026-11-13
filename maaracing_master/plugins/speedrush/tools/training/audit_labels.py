@@ -178,7 +178,10 @@ def render(report: dict, out_dir: Path, limit: int) -> int:
 
 def main() -> int:
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # sys.stdout 类型声明是 TextIO，reconfigure 是 TextIOWrapper 的方法——经 getattr 取用
+        reconf = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconf):
+            reconf(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
     parser = argparse.ArgumentParser(description="标注审计（只报告，不改标签）")

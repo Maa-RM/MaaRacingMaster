@@ -225,7 +225,10 @@ def summarize(entries: list[dict], near_h: float) -> dict:
 
 def main() -> int:
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # sys.stdout 类型声明是 TextIO，reconfigure 是 TextIOWrapper 的方法——经 getattr 取用
+        reconf = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconf):
+            reconf(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
     parser = argparse.ArgumentParser(description="标注目录 → 会话级训练索引")

@@ -932,6 +932,7 @@ class SpeedRushModule(ActivityModule):
         """停止有两个来源：模块 stop() 落 _running；到限/手动停止置 stop_event
         （经 lifecycle.running 可见）。任一落下即停止，流程出口据此区分停止与失败。
         """
+        assert self.ctx is not None         # 只在流程推进期调用（同 _run_flow 前置）
         return not (self._running and self.ctx.lifecycle.running)
 
     def _run_flow(self, index: int) -> bool:
@@ -3917,10 +3918,12 @@ class _EgoRoadObserver:
             # 只认新鲜证据：复用拍是同一份旧读数，不能重复攒"稳定"。
             if self._fresh_tick:
                 prev = self._anchor_prev
-                stable = (prev is not None and prev[0] == src
-                          and abs(center - prev[1]) <= self.ANCHOR_STABLE_STEP
-                          and (now - prev[3]) <= self.ANCHOR_STABLE_GAP_S)
-                n = prev[2] + 1 if stable else 1
+                if prev is not None and prev[0] == src \
+                        and abs(center - prev[1]) <= self.ANCHOR_STABLE_STEP \
+                        and (now - prev[3]) <= self.ANCHOR_STABLE_GAP_S:
+                    n = prev[2] + 1
+                else:
+                    n = 1
                 self._anchor_prev = (src, float(center), n, now)
                 self.anchor_strict = n >= self.ANCHOR_STABLE_N
         # 线为原点时，走廊中心用线的位置（center_override），深度的墙/记忆只
@@ -4108,10 +4111,10 @@ def _note_hud_scores(chain: dict) -> None:
 
 
 
-# 一局内固定产物目录：同一 (局前缀, 阶段) 只解析一次。缓存是必须的——
+# 一局内固定产物目录：同一 (局前缀, 局戳, 阶段) 只解析一次。缓存是必须的——
 # 同阶段的目录会被 chain 与 hud 两处先后取用，第二次若重新判重会看到刚建好的
 # 目录、误判"撞名"而多加一个序号后缀，同阶段的产物就分家了。
-_run_dirs: dict[tuple[str, int], Path] = {}
+_run_dirs: dict[tuple[str, str, int], Path] = {}
 # 宏组目录：同一局前缀只解析一次——phase 1 建好的组目录若在 phase 2 重新判重，
 # 会被判成"撞名"而分出一个新组，p1/p2 就配不成一组了。
 _macro_groups: dict[str, Path] = {}

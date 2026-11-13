@@ -704,7 +704,7 @@ class AchievementEngine:
                     f"备份含非法数值（{len(issues)} 处），已取消导入：{issues[0]}")
             new_progress = state["progress"]
             new_unlocked = state["unlocked"]
-            new_consumed = OrderedDict(
+            new_consumed: OrderedDict[str, bool] = OrderedDict(
                 (k, True) for k in state["consumed_keys"][-DEDUP_WINDOW:])
             # 先补偿再落盘：补齐「进度达标但缺解锁记录」的条目与元成就，一次提交。
             self._reconcile_locked(new_progress, new_unlocked)

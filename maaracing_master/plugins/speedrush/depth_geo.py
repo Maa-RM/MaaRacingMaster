@@ -564,7 +564,8 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     dml_lock.RUN_WATCH.enter("depthart")
     try:
         t_fwd = time.perf_counter()
-        out = sess.run(None, {sess.get_inputs()[0].name: blob})[0][0, 0]
+        raw = sess.run(None, {sess.get_inputs()[0].name: blob})[0]
+        out = np.asarray(raw)[0, 0]
         LAST_STAGE_MS["forward"] = (time.perf_counter() - t_fwd) * 1000.0
     finally:
         dml_lock.RUN_WATCH.exit()
@@ -1648,8 +1649,10 @@ class DepthRoadObserver:
                max(detections, key=lambda d: (int(d[3]) - int(d[1]))
                    * (int(d[4]) - int(d[2])))[1:5])
         try:
-            pts, fx, fy, evid = infer_points(
+            ret = infer_points(
                 self._sess, frame_rgb, y_v=yh, box=box, with_evidence=True)
+            assert len(ret) == 4    # with_evidence=True 恒返回 4 元组（含证据包）
+            pts, fx, fy, evid = ret
         except dml_lock.Busy:
             raise    # 让锁跳帧是协议行为（DML 互斥），不算推理失败——worker 侧单独计数
         except Exception:
@@ -1712,6 +1715,7 @@ class DepthRoadObserver:
             (time.perf_counter() - t_g) * 1000.0
         for k, v in stage.items():
             self._stage_win[k].append(v)
+        assert evid is not None    # with_evidence=True 且 pts 已非 None：证据包必在
         evid["grid"] = grid
         evid["far_bands"] = far
         if detections and fid is not None and frame_ts_ns is not None:

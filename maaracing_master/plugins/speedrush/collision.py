@@ -135,20 +135,23 @@ class CollisionObserver:
                 continue
             if not self._trigger_ok(t):
                 continue
+            z_m, x_m = t.z_m, t.x_m
+            if z_m is None or x_m is None:
+                continue            # 观测门缺数不挂起（与 _trigger_ok 同口径，这里只做收窄）
             self._seen.add(t.id)
             self._pending[t.id] = _Pending(
                 event=CollisionEvent(
-                    track_id=t.id, fid=fid, settle_fid=fid, z_m=t.z_m,
-                    x_m=t.x_m, x_clear_m=self._x_clear(t),
+                    track_id=t.id, fid=fid, settle_fid=fid, z_m=z_m,
+                    x_m=x_m, x_clear_m=self._x_clear(x_m, t.half_w_m),
                     half_w_m=t.half_w_m, src=t.src, conf=t.conf,
                     age_ms=t.age_ms, v_close_mps=t.v_close_mps,
                     rel_approach=t.rel_approach),
                 ts_ns=ts_ns)
         return tuple(out)
 
-    def _x_clear(self, t: TrackObj) -> float:
-        car_half = self.car_half_m if t.half_w_m is None else t.half_w_m
-        return abs(t.x_m) - (self.ego_half_m + car_half + self.margin_m)
+    def _x_clear(self, x_m: float, half_w_m: float | None) -> float:
+        car_half = self.car_half_m if half_w_m is None else half_w_m
+        return abs(x_m) - (self.ego_half_m + car_half + self.margin_m)
 
     def _trigger_ok(self, t: TrackObj) -> bool:
         if t.src != SRC_ANCHOR:
@@ -158,7 +161,7 @@ class CollisionObserver:
             return False
         if t.x_m is None:
             return False
-        if self._x_clear(t) > 0.0:
+        if self._x_clear(t.x_m, t.half_w_m) > 0.0:
             return False
         return self._approaching(t)
 

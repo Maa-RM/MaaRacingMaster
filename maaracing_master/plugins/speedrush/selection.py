@@ -628,6 +628,7 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
         return x
     half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     worst = None
+    worst_t: float | None = None
     for c in cars:
         if c.src == "grid":
             continue                    # 伪车源不驱动守卫（见 Obj.src 注释）
@@ -635,9 +636,9 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
             continue
         if abs(x - c.x) >= half:
             continue
-        if worst is None or c.t < worst.t:
-            worst = c
-    if worst is None:
+        if worst_t is None or c.t < worst_t:
+            worst, worst_t = c, c.t
+    if worst is None or worst_t is None:
         return x
     side = 1.0 if ego >= worst.x else -1.0
     for s in (side, -side):
@@ -645,7 +646,7 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
         if cand is None:
             continue
         if _pass_window_blocked([c for c in cars if c is not worst],
-                                cand, worst.t, 0.0, p):
+                                cand, worst_t, 0.0, p):
             continue                    # 目标点在那个时刻会被别的车占住
         if all(c is worst or not c.safe or c.t is None
                or not (0.0 < c.t <= _ARRIVAL_GUARD_S)

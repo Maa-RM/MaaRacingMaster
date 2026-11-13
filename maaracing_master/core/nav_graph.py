@@ -460,7 +460,8 @@ class ClickAction(CustomAction):
                     roi = (int(x1 * W), int(y1 * H),
                            int((x2 - x1) * W), int((y2 - y1) * H))
                     best, visible = 0.0, False
-                    for tpl in tpls:
+                    match_tpls = [t for t in tpls if t is not None]  # 上面已拦缺失模板，此行只为收窄
+                    for tpl in match_tpls:
                         box, val = match_template_cs(
                             frame, tpl, colorspace=colorspace,
                             threshold=threshold, roi=roi)

@@ -690,7 +690,7 @@ def cmd_formula(args) -> None:
         _rows, samples = _sample_rows(s, regs, args.every)
         for r, v in samples:
             mi, ov, to = _digits(v["mileage"]), _digits(v["overtake"]), _digits(v["total_left"])
-            if None in (mi, ov, to):
+            if mi is None or ov is None or to is None:
                 continue
             pts.append((s.name, r["seq"], mi, ov, to, to - mi))
     print(f"三者同时有效 {len(pts)} 个采样点\n")

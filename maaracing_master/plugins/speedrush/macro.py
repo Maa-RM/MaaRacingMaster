@@ -30,7 +30,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TextIO
 
 from maaracing_master.core import xinput
 from maaracing_master.core.logger import logger
@@ -394,17 +394,18 @@ class MacroRecorder:
     def _run(self) -> None:
         interval = 1.0 / self.poll_hz
         probe_deadline = time.monotonic() + PAD_SLOT_PROBE_TIMEOUT_S
-        assert self._file is not None   # start() 建线程前已打开文件
+        file = self._file
+        assert file is not None   # start() 建线程前已打开文件
         try:
-            self._loop(interval, probe_deadline)
+            self._loop(file, interval, probe_deadline)
         finally:
             # 文件归线程收尾：stop() 超时放手时，这里是唯一关闭点
             try:
-                self._file.close()
+                file.close()
             except Exception:  # noqa: BLE001
                 pass
 
-    def _loop(self, interval: float, probe_deadline: float) -> None:
+    def _loop(self, file: TextIO, interval: float, probe_deadline: float) -> None:
         while not self._stop.is_set():
             t0 = time.perf_counter()
             st, _countable = self._pad.poll(probe_deadline)
@@ -420,7 +421,7 @@ class MacroRecorder:
             t_ms = (now_ns - self._t0_ns) / 1e6
             with self._lock:
                 try:
-                    self._file.write(_row(t_ms, sample) + "\n")
+                    file.write(_row(t_ms, sample) + "\n")
                 except Exception as exc:  # noqa: BLE001 —— 写盘失败即停止录制
                     self._log(f"[极速狂飙] 宏录写失败，停止录制: {exc!r}", "WARNING")
                     self._stop.set()

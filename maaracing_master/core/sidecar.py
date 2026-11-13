@@ -2290,7 +2290,7 @@ class SidecarService:
     def export_achievements(self, params):
         """导出成就备份：弹系统保存框（路径不从前端进），把存档本体写到用户选的位置。"""
         engine, err = self._achievement_engine_or_error()
-        if err:
+        if err or engine is None:   # helper 不变量：有引擎必无 err，此处只为收窄
             return (False, None, err)
         default_name = f"achievements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         try:
@@ -2314,7 +2314,7 @@ class SidecarService:
         文件期间点开始，只查一次等于把契约写成建议。
         """
         engine, err = self._achievement_engine_or_error()
-        if err:
+        if err or engine is None:   # 同 export：helper 不变量，只为收窄
             return (False, None, err)
         with self._lock:
             refuse = self._refuse_achievement_write()
@@ -2345,7 +2345,7 @@ class SidecarService:
         检查与重置在同一锁区间：与 `start` 抢占同一个运行槽，不允许检查后插入启动。
         """
         engine, err = self._achievement_engine_or_error()
-        if err:
+        if err or engine is None:   # 同 export：helper 不变量，只为收窄
             return (False, None, err)
         with self._lock:
             refuse = self._refuse_achievement_write()
