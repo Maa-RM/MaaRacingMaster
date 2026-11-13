@@ -380,13 +380,16 @@ class Checker:
         if gi.is_file():
             for ln in gi.read_text(encoding="utf-8", errors="replace").splitlines():
                 ln = ln.strip()
-                # 只认目录声明（以 / 结尾）：`docs/trae-dsh-config-share.md` 这类
-                # 文件级忽略项不是目录，取它首段会把 docs/ 整个变成"本机目录"，
-                # 于是所有指向 docs 的正常引用集体误报（模拟检出于 2026-11-06 抓到）。
+                # 只认**单段**目录声明（`build/`、`archive/`）：`docs/plan/` 这类多段
+                # 声明忽略的是顶层目录的子目录，取首段会把 docs/ 整个变成"本机目录"，
+                # 于是所有指向 docs 的正常引用集体误报（git 不可用回退时实测抓到）。
+                # 文件级忽略项（不以 / 结尾）同样不是目录声明。
                 if not ln or ln.startswith("#") or ln.startswith("!") or not ln.endswith("/"):
                     continue
-                head = ln.lstrip("/").split("/")[0].rstrip("/")
-                if head and not head.startswith(".") and "*" not in head:
+                head = ln.lstrip("/").rstrip("/")
+                if not head or "/" in head:
+                    continue
+                if not head.startswith(".") and "*" not in head:
                     declared.add(head)
         tracked = self._tracked_files()
         if not tracked:
