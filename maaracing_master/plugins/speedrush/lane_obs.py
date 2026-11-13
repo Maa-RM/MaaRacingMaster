@@ -35,6 +35,9 @@ from collections import deque
 from maaracing_master.core.perf_sampler import beat
 import time
 from dataclasses import dataclass
+
+from maaracing_master.plugins.speedrush.ranges import (
+    FAR_MAX_M, MID_MAX_M, NEAR_MAX_M)
 from pathlib import Path
 
 import numpy as np
@@ -74,8 +77,10 @@ SLOT_FRESH_S = 1.0        # 最近一拍在 1s 内 = 控制拍在跑，才按槽
 # 放宽后的单点离群由 module 侧 5 拍中位滤除，本带只兜底。
 CAM_H_LO = 1.10
 CAM_H_HI = 2.20
+# 近/中/远三段的**米制边界**住 ranges.py（单一真源）；这里只留无焦距冷启动
+# 时的保守回退（只有近段，行号取历史口径）。有焦距时三段行号按当拍
+# ``v = y_v + focal·cam_h / z`` 反算，随地平线逐帧变化。
 NEAR_Y = (560.0, 720.0)
-FAR_Y = (440.0, 545.0)
 PROB_THRESH = 0.30
 # 灭点行（地平线）估计的三级门（2026-11-11 车道几何探针定案）：步长 1 后远场
 # 虚线碎片变多，稀疏碎片两两交点会给出 300 行的假灭点。俯仰物理门约 ±2°
@@ -146,6 +151,11 @@ class LaneObsConfig:
     threads: int = 4           # 仅 CPU：4 线程实测约 23ms/帧，仍在控制拍内
     detect_every: int = 1      # 每 N 帧做一次完整检测；1=逐拍检测，中间帧只预测
     model_input: tuple[int, int] = (384, 640)
+    # 近/中/远三段的米制边界（真源 ranges.py）。行号与扫描起点按当拍焦距、
+    # 相机高、灭点反算；改这三个数 = 改分段。
+    near_max_m: float = NEAR_MAX_M
+    mid_max_m: float = MID_MAX_M
+    far_max_m: float = FAR_MAX_M
 
 
 @dataclass
@@ -175,14 +185,17 @@ def _prob_from_out(out) -> np.ndarray:
     return (e[1] / e.sum(0)).astype(np.float32)
 
 
-def _row_segments(prob: np.ndarray) -> list[tuple[int, list[dict]]]:
+def _row_segments(prob: np.ndarray,
+                  start: int = 206) -> list[tuple[int, list[dict]]]:
     """逐行扫描概率图成段（步长 1）。
 
     2026-11-11 起步长 1（原 3）：远处分界虚线在图像里是被透视压扁的横条
     （概率图里高 2~5 行），步长 3 只命中 1~2 行，虚线轨迹永远凑不满拟合
-    点数——实验区分解诊断的主死因（见 speedrush_lane_model 实验区）。"""
+    点数——实验区分解诊断的主死因（见 speedrush_lane_model 实验区）。
+
+    ``start`` 默认 206 保持现役口径；实验闸开时可上移（远线恢复）。"""
     rows = []
-    for yc in range(206, 360):
+    for yc in range(int(start), 360):
         row = prob[yc]
         idx = np.flatnonzero(row > PROB_THRESH)
         if len(idx) == 0:
@@ -259,15 +272,45 @@ def _lane_cam_h(cam_h: float | None) -> tuple[float, bool]:
     return float(cam_h), False
 
 
+def _dist_bands(cam_h: float | None, focal: float | None,
+                y_v: float | None,
+                near_max: float = NEAR_MAX_M,
+                mid_max: float = MID_MAX_M,
+                far_max: float = FAR_MAX_M):
+    """按米制边界反算图像行带（近/中/远）与行扫描起点（概率图行）。
+
+    地面点满足 ``v = y_v + focal·cam_h / z``（``y_v`` 为当拍灭点行）。没有
+    有效焦距时返回 None，调用方退回冷启动的保守口径（只拟合近段）。
+    远段（40~80 米）在画面里只有约 12 行，点数少，由 ``min_span`` 单独放宽。
+    """
+    yv = Y_H if y_v is None else float(y_v)
+    if focal is None:
+        return None
+    focal = float(focal)
+    if not (FOCAL_LO <= focal <= FOCAL_HI):
+        return None
+    used_h, _fb = _lane_cam_h(cam_h)
+
+    def row(z: float) -> float:
+        return yv + focal * used_h / float(z)
+
+    near = (row(near_max), 720.0)
+    mid = (row(mid_max), row(near_max))
+    far = (row(far_max), row(mid_max))
+    scan = int(max(150.0, min(359.0, (row(far_max) - 4.0) / 2.0)))
+    return scan, near, mid, far
+
+
 def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
-         focal: float | None = None, y_v: float | None = None):
+         focal: float | None = None, y_v: float | None = None,
+         min_span: float = 40.0):
     use = [q for q in pts if y_lo <= 2.0 * q["yc"] <= y_hi]
     if len(use) < 4:
         return None
     ys = np.array([2.0 * q["yc"] for q in use])
     xs = np.array([2.0 * q["xc"] for q in use])
     wt = np.array([max(0.1, q["p"]) for q in use])
-    if ys.max() - ys.min() < 40:
+    if ys.max() - ys.min() < min_span:
         return None
     A = np.vstack([ys, np.ones_like(ys)]).T
     s, a = np.linalg.lstsq(A * wt[:, None], xs * wt, rcond=None)[0]
@@ -388,26 +431,42 @@ def lane_pos_nearest(cx: float, y_b: float, lines: list[dict],
 
 def _lines_from_prob(prob: np.ndarray, cam_h: float,
                      focal: float | None,
-                     y_v: float | None = None) -> list[dict]:
+                     y_v: float | None = None,
+                     near_max_m: float = NEAR_MAX_M,
+                     mid_max_m: float = MID_MAX_M,
+                     far_max_m: float = FAR_MAX_M) -> list[dict]:
     """概率图 → 线候选（无颜色匹配）。
 
     颜色不参与提取（2026-11-11 维护者叫停）：黄昏场景下白色分界线系统性
     过不了白门、甚至被误判成黄线，而几何门（残差/线角/等间距/离群）已
     足以筛野线；线字段恒 "?"，仅供显示兜底。虚线与实线同待遇，进
-    LineTracker 同一套道号逻辑。"""
+    LineTracker 同一套道号逻辑。
+
+    三段的行号由 ``ranges`` 的米制边界按当拍焦距/相机高/灭点反算；没有有效
+    焦距时退回冷启动口径（只拟合近段，行扫描从 206 起）。"""
+    bands = _dist_bands(cam_h, focal, y_v, near_max_m, mid_max_m, far_max_m)
+    if bands is None:
+        scan_start, near_ys, mid_ys, far_ys = 206, NEAR_Y, None, None
+    else:
+        scan_start, near_ys, mid_ys, far_ys = bands
     lines = []
-    for pts in _build_tracks(_row_segments(prob)):
-        near = _fit(pts, cam_h, *NEAR_Y, focal, y_v)
-        far = _fit(pts, cam_h, *FAR_Y, focal, y_v)
-        f = near or far
+    for pts in _build_tracks(_row_segments(prob, scan_start)):
+        near = _fit(pts, cam_h, *near_ys, focal, y_v)
+        mid = (_fit(pts, cam_h, *mid_ys, focal, y_v)
+               if mid_ys is not None else None)
+        far = (_fit(pts, cam_h, *far_ys, focal, y_v, min_span=10.0)
+               if far_ys is not None else None)
+        # 采纳段优先级：近 > 中 > 远（L/theta 仍来自近场；中/远只补几何）
+        f = near or mid or far
         if f is None:
             continue
         x_near = _near_x(pts)
         # 双线同行插值用：每条线的像素位来自各自的 2D 拟合（s·y+a）。
-        # 近/远两段拟合都带（框底行落在哪段就吃哪段，不外推出拟合范围）。
+        # 三段拟合都带，采纳段排第一（fits[0] 是 _line_in_badge 的口径）。
+        ordered = [f] + [ft for ft in (near, mid, far)
+                         if ft is not None and ft is not f]
         fits = [{"s": ft["s"], "a": ft["a"],
-                 "y0": ft["y0"], "y1": ft["y1"]}
-                for ft in (near, far) if ft is not None]
+                 "y0": ft["y0"], "y1": ft["y1"]} for ft in ordered]
         lines.append({"L": round(f["L"], 3),
                       "theta": None if f["theta"] is None
                       else round(f["theta"], 4),
@@ -1469,5 +1528,9 @@ class LaneObsWorker:
         # 先剔 HUD 距离徽章上的假线，再进 tracker：徽章假线位置正好落在贴脸真线
         # 的目标带内，若进 tracker 会被当成真线锁道号，事后无法区分。
         lines = _drop_badge_lines(
-            _lines_from_prob(prob, cam_h, focal, self._yv), rgb)
+            _lines_from_prob(
+                prob, cam_h, focal, self._yv,
+                near_max_m=float(getattr(self.cfg, "near_max_m", NEAR_MAX_M)),
+                mid_max_m=float(getattr(self.cfg, "mid_max_m", MID_MAX_M)),
+                far_max_m=float(getattr(self.cfg, "far_max_m", FAR_MAX_M))), rgb)
         return {"lines": lines}

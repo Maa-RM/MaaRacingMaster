@@ -36,6 +36,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 
+from maaracing_master.plugins.speedrush.ranges import NEAR_MAX_M
 from maaracing_master.plugins.speedrush.depth_geo import (
     CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN,
     GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
@@ -54,7 +55,7 @@ N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 9
 GREEN_OBS_ROWS_MIN = 3
 # 远场带下界（相机系）：逐箱找边的 16~30m 远箱从这里起进走廊供方向（金标
 # 契约：远箱不进近场车道约束）。NEAR_Z=16 的带 15-18 从此界起算。
-FAR_Z_CAM = 15.0
+FAR_Z_CAM = NEAR_MAX_M       # 近/中分界：与 ranges 的米制分段同源（15 米）
 # 宏观锚取带范围与最小地面点数：16–46m 是地面密度读数最稳的段；更远带
 # 受弯道/建筑污染，近于 15m 的带受自车/前车遮挡。逐带取中点后做中值。
 FAR_MACRO_Z_LO = 15.0

@@ -61,6 +61,50 @@ def test_worker_focal_holds_last_valid():
     assert w._focal == pytest.approx(700.0 + la.FOCAL_EMA * 100.0)
 
 
+def test_distance_bands_single_source():
+    """近/中/远三段的米制边界来自 ranges（15/40/80 米）；行号按当拍标定反算，
+    无焦距时退回冷启动口径（只近段）。"""
+    assert (la.NEAR_MAX_M, la.MID_MAX_M, la.FAR_MAX_M) == (15.0, 40.0, 80.0)
+    cfg = load_decision().lane_obs
+    assert (cfg.near_max_m, cfg.mid_max_m, cfg.far_max_m) == (15.0, 40.0, 80.0)
+    bands = la._dist_bands(1.263, 807.7, 361.2, 15.0, 40.0, 80.0)
+    assert bands is not None
+    scan, near, mid, far = bands
+    assert near[1] == 720.0 and near[0] > mid[0] > far[0]   # 越远行号越小
+    assert near[0] == pytest.approx(361.2 + 807.7 * 1.263 / 15.0, abs=0.6)
+    assert far[0] == pytest.approx(361.2 + 807.7 * 1.263 / 80.0, abs=0.6)
+    assert 150 <= scan <= 200
+    assert la._dist_bands(1.263, None, 361.2) is None
+
+
+def test_lines_from_prob_fits_three_distance_bands():
+    """按距离分三段拟合（近/中/远）：一条贯穿全图的行应有三个拟合段，采纳段
+    （fits[0]）仍是近段——近场 L/theta 不因加段而改变。"""
+    prob = np.zeros((360, 640), dtype=np.float32)
+    for y in range(185, 360):
+        x = int(0.5 * y + 100)
+        prob[y, max(0, x - 2):x + 2] = 0.9
+    lines = la._lines_from_prob(prob, 1.28, 807.7, 361.2)
+    assert len(lines) == 1
+    ys = [f["y0"] for f in lines[0]["fits"]]
+    assert len(ys) == 3
+    assert ys[0] > ys[1] > ys[2]        # 近→中→远（行号递减）
+    assert ys[2] < 390.0                # 远段覆盖到 40 米以外
+
+
+def test_line_evals_picks_segment_covering_row():
+    """框底行落在哪段就用哪段的方程：近/中/远三段各不同，按行切换。"""
+    line = {"L": 0.0, "accepted": True, "rms": 0.5, "theta": 0.0,
+            "fits": [
+                {"s": 0.5, "a": 100.0, "y0": 560.0, "y1": 700.0},
+                {"s": 0.6, "a": 80.0, "y0": 460.0, "y1": 559.0},
+                {"s": 0.7, "a": 60.0, "y0": 380.0, "y1": 459.0},
+            ]}
+    assert la._line_evals(600.0, [line])[0][0] == pytest.approx(400.0)
+    assert la._line_evals(500.0, [line])[0][0] == pytest.approx(380.0)
+    assert la._line_evals(400.0, [line])[0][0] == pytest.approx(340.0)
+
+
 def test_config_defaults_off_and_detect_every_frame():
     assert LaneObsConfig().enabled is False
     assert LaneObsConfig().detect_every == 1

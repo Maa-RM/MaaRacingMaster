@@ -623,6 +623,10 @@ class LaneObs:
     provider: str = "cpu"
     threads: int = 4
     detect_every: int = 1
+    # 近/中/远三段的米制边界（真源 ranges.py）：行号由当拍标定反算。
+    near_max_m: float = 15.0
+    mid_max_m: float = 40.0
+    far_max_m: float = 80.0
 
 
 @dataclass(frozen=True)
@@ -1263,7 +1267,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
             provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
             threads=_int_def(d, "lane_obs", "threads", 4, lo=1),
-            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)),
+            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1),
+            near_max_m=_num_def(d, "lane_obs", "near_max_m", 15.0, lo=1),
+            mid_max_m=_num_def(d, "lane_obs", "mid_max_m", 40.0, lo=1),
+            far_max_m=_num_def(d, "lane_obs", "far_max_m", 80.0, lo=1)),
         step_retry=StepRetry(
             max_retries=_int_def(d, "step_retry", "max_retries", 3, lo=0),
             window_s=_num_def(d, "step_retry", "window_s", 12.0, lo=0, lo_open=False),

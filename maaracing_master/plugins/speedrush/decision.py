@@ -1072,9 +1072,20 @@ class DecisionEngine:
         用簇宽区分。id 负数千位段（与 YOLO/跟踪 id 空间隔离），t=z/在线
         闭速（静态假设），簇高 ≥2 行（0.5m）滤单行噪声。
 
+        **启用条件**（2026-11-13）：视觉模型 2026-11-09 换近场复训权重后，
+        有车流场景的全盲拍降到 6.2%、最长 18 拍（旧模型 15%/109 拍）；
+        无条件补源会让 85% 的伪车与 YOLO 重复记账。调用方只在语义车表整拍
+        为空时才启用本函数——那才是设计上要接的那一拍。
+
+        **距离档**：只收 3~10m。纯盲区伪车抽样 28 帧里，23m 档占近一半且多
+        为空旷路面/远处结构，防撞提前量也够不着；近场档才是「马上撞上」的
+        保护价值区。
+
         横向只认路面内的簇：栅格窗 ±14m 宽于路面，护栏/路肩/路外结构在
         路缘外成窄块时曾按社会车入账（20261109_134818 fid 7012 帧：路外
-        「车」把中心预置顶向邻道真车）。路缘外的阻断带归走廊墙，不是车。"""
+        「车」把中心预置顶向邻道真车）。路缘外的阻断带归走廊墙，不是车。
+        簇宽 <0.5m（两格）不入账：单格宽的多是车道线/标线，曾把黄线合成
+        一排伪车顶在自车正前方（20261113_141622 fid 4849 帧证）。"""
         grid = self._depth_grid
         if grid is None:
             return []
@@ -1085,8 +1096,10 @@ class DecisionEngine:
         zc = GRID_Z_LO + (np.arange(blocked.shape[0]) + 0.5) * GRID_CELL
         v = max(float(self._ego_speed_mps or 0.0), 5.0)
         out: list[CarSource] = []
-        bands = [(3.0, 6.0, 0), (6.0, 10.0, 1), (10.0, 16.0, 2),
-                 (16.0, 30.0, 3)]
+        # 只收 3~10m 近场：这一档才是「盲区里的大车马上撞上」的防撞价值区。
+        # 13/23m 档在纯盲区伪车里占一半，画面多为空旷路面/远处结构，防撞
+        # 提前量也够不着（实机抽样 28 帧：近场档有真车的比例明显更高）。
+        bands = [(3.0, 6.0, 0), (6.0, 10.0, 1)]
         for z0, z1, k in bands:
             rows = blocked[(zc >= z0) & (zc < z1)]
             if not rows.any():
@@ -1096,7 +1109,7 @@ class DecisionEngine:
             for ci, cl in enumerate(splits):
                 w_m = (cl[-1] - cl[0] + 1) * GRID_CELL
                 x_m = -GRID_X_MAX + (cl[0] + cl[-1] + 1) / 2.0 * GRID_CELL
-                if w_m > 3.0 or abs(x_m + off) < 0.4:
+                if w_m > 3.0 or w_m < 0.5 or abs(x_m + off) < 0.4:
                     continue        # 墙（整行宽）与自车格排除
                 z_mid = 0.5 * (z0 + z1)
                 # 路面帧按簇自身纵深处的那条带来判（与场景 in_corridor 同一
@@ -1297,8 +1310,6 @@ class DecisionEngine:
                                  if self.cfg.selection.pass_x_unknown_enabled
                                  else False))
 
-        out.extend(self._grid_car_sources(off, road, origin))
-
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
             bridged = getattr(m, "bridged", False)
@@ -1466,6 +1477,15 @@ class DecisionEngine:
                       age_ms=self._age_ms(b.last_seen_fid), src="line",
                       tid=b.id, near=False, half_w_m=None,
                       seen=(b.last_seen_fid == self._fid))
+        # 栅格伪车补源放在所有语义车源之后：启用条件要看完整车表，放在前面
+        # 只能看到框视图与远场源。视觉模型换近场复训权重后，有车流场景的全盲
+        # 拍从 15%（最长 109 拍）降到 6.2%（最长 18 拍）；无条件补源会让 85%
+        # 的伪车与 YOLO 重复记账（12 场 21496 拍复核）。只在设计初衷的场景
+        # 启用——语义车表整拍为空、深度却看到东西。判据用整车表而不是 near：
+        # 车目标的纵深缺失率约三分之二，near 标记在实机上常年为假，拿它当门
+        # 等于没门（12 场伪车拍里 near 标记 0 条）。
+        if not out:
+            out.extend(self._grid_car_sources(off, road, origin))
         return out
 
     @property
@@ -1806,7 +1826,10 @@ class DecisionEngine:
         self._coarse = choose_lane(
             self._scene.road, cast(Any, self._scene.objs), coarse_ego,
             self._scene.lane_w_m, self._coarse_params,
-            current_lane=None if self._coarse is None else self._coarse.lane)
+            current_lane=None if self._coarse is None else self._coarse.lane,
+            # 回中优先只在本拍视觉检测完全为空时启用：有检测就保持原排序，
+            # 把超车、避让与得分的机会留给选择层，不拿「守中线」去顶掉策略。
+            prefer_center=not (obs.health.raw_cars or 0))
         # 路线承诺（2026-10-23 V1）：用**原始**粗层报告推进一拍，再让选择器读
         # 承诺后的参考道——顺序反了选择器就会吃到上一拍的承诺值。闸关时这一步
         # 照样跑（影子对照面：离线能量化"承诺拦掉了哪些翻面"），只是没人消费。

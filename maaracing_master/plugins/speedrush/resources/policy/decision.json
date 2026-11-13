@@ -294,7 +294,10 @@
     "hz": 0.0,
     "threads": 4,
     "detect_every": 1,
-    "_note": "TwinLiteNet+ Small 线观测：线可用时是供数链的位置原点，也供车道成员插值；权重随可选模型包分发，缺失时自动退回深度/墙，深度档本身不受影响。weights 走 model_assets 解析（用户数据包优先、安装包兜底，带尺寸+SHA256 校验）；模型训练自 BDD100K，随可选模型包按非商业/科研许可分发，商业使用需另行授权。provider=dml 走槽位排班（2026-11-13）：控制拍放锁后线观测槽窗 30ms，超窗让给深度，不再抢锁；weights_fp16 是 DML 专用半精度件（实测 3.7ms/帧、输出与 FP32 等价），缺失或会话创建失败回退 fp32（23ms/帧），CPU provider 只用 fp32。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
+    "near_max_m": 15.0,
+    "mid_max_m": 40.0,
+    "far_max_m": 80.0,
+    "_note": "TwinLiteNet+ Small 线观测：线可用时是供数链的位置原点，也供车道成员插值；权重随可选模型包分发，缺失时自动退回深度/墙，深度档本身不受影响。weights 走 model_assets 解析（用户数据包优先、安装包兜底，带尺寸+SHA256 校验）；模型训练自 BDD100K，随可选模型包按非商业/科研许可分发，商业使用需另行授权。provider=dml 走槽位排班（2026-11-13）：控制拍放锁后线观测槽窗 30ms，超窗让给深度，不再抢锁；weights_fp16 是 DML 专用半精度件（实测 3.7ms/帧、输出与 FP32 等价），缺失或会话创建失败回退 fp32（23ms/帧），CPU provider 只用 fp32。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。near_max_m/mid_max_m/far_max_m 是近/中/远三段的米制边界（真源 ranges.py，2026-11-13）：15/40/80 米分别对应 0.37/1.0/2.0 秒；车道线拟合的行号、行扫描起点都由这三档按当拍焦距/相机高/灭点反算。"
   },
   "route": {
     "control": true,

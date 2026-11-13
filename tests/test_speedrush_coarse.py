@@ -48,6 +48,37 @@ def test_empty_road_returns_to_center_from_right_edge():
     assert rep.reason == "space"
 
 
+def test_prefer_center_tie_ignores_unknown_car():
+    """视觉检测全空时才回中优先：此时没有目标可追/可避，各道净空都是满窗，
+    「有没有挂缺纵深车」信息量接近零（纵深缺失率约三分之二），不该由它
+    决定方向。缺纵深车不截断净空（视作满窗），只做最后同分参考。"""
+    ghost = Car(x_m=0.0, z_m=None, near=False)   # 有车但无纵深：净空不截断
+    rep = choose_lane(_straight(), [ghost], ego_lane=1.0, lane_w_m=LW, p=P,
+                      prefer_center=True)
+    assert rep.lane == 0.0
+    zero = next(c for c in rep.lanes if c.lane == 0.0)
+    assert zero.blocker == "unknown_car" and zero.unknown_car
+    assert zero.free_m == P.lookahead_m
+
+
+def test_has_detection_keeps_unknown_tie_break():
+    """有检测时保持原排序：缺纵深车仍能打破并列，把机会留给超车/得分。
+    回中优先不是常开策略，否则车会一直往中线拽、超车与得分都做不了。"""
+    ghost = Car(x_m=0.0, z_m=None, near=False)
+    rep = choose_lane(_straight(), [ghost], ego_lane=1.0, lane_w_m=LW, p=P,
+                      prefer_center=False)
+    assert abs(rep.lane) == 1.0
+
+
+def test_real_blocker_still_avoided_after_center_bias():
+    """净空有真实差异时仍按净空避开：回中优先只作用于并列，不抢真实避让。"""
+    car = Car(x_m=0.0, z_m=5.0 + DATUM)          # 0 道 5m 处有真车
+    rep = choose_lane(_straight(), [car], ego_lane=0.0, lane_w_m=LW, p=P,
+                      prefer_center=True)
+    assert abs(rep.lane) == 1.0
+    assert rep.reason == "space"
+
+
 def test_green_narrowing_pushes_away_from_wall():
     road = _road([(0, 3, -6, 6), (3, 6, -6, 2.0),
                   (6, 9, -6, 2.0), (9, 12, -6, 2.0)])
@@ -122,10 +153,10 @@ def test_no_depth_near_car_blocks_current_lane():
     assert next(c for c in rep.lanes if c.lane == 0.0).free_m == 0.5
 
 
-def test_unknown_far_car_breaks_tie_against_center_hold():
+def test_unknown_far_car_breaks_tie_without_prefer_center():
+    """未开回中优先（有检测）时，缺纵深远车照旧打破并列、把车推向空侧。"""
     road = _straight()
     car = Car(x_m=0.0, z_m=None, near=False, t_arrive_s=None)
-    # 现任在中心：未知远车不把整道判空，最优仍是空侧
     rep = choose_lane(road, [car], ego_lane=0.0, lane_w_m=LW, p=P,
                       current_lane=0.0)
     assert rep.lane == -1.0

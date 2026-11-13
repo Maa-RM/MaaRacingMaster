@@ -581,6 +581,40 @@ def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():
     assert s.near is True                                   # 4.5m ≤ near_z_m=6m
 
 
+def test_box_size_metric_car_lateral_follows_fresh_pixel():
+    """无纵深粗源期间横位仍随当拍像素尺子更新（平滑走一步 alpha），不得冻结。
+    20261113_163858 fid 6579~6605 复核：该段发布横位可由当拍像素+自车位置
+    套平滑公式重建（最大误差 1.3 毫米），不存在额外的匀速外推。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-0.4, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=8.0, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    a = e._reach_car_sources(0.0)[0].x_m
+    assert a == pytest.approx(-0.4 * e.cal.lane_w_m)
+    e._views = (_cv(tid=1, x=0.0, cy=620, rel=8.0),)
+    b = e._reach_car_sources(0.0)[0].x_m
+    want = a + e.cfg.traffic.metric_x_ema_alpha * (0.0 - a)
+    assert b == pytest.approx(want, abs=0.05)
+    assert b > a                                       # 随像素读数移动，未冻结
+
+
+def test_ego_lane_shift_cancels_in_source_build():
+    """真实自车横移：同一物理车位，自车右移一道时目标在自车系左移一道，
+    车源横位（路心系）保持不变——自车横移不得被当成目标横移。"""
+    e = _eng()
+    lw = e.cal.lane_w_m
+    e._views = (_cv(tid=1, x=-0.5, cy=620, rel=8.0),)
+    a = e._reach_car_sources(0.0)[0].x_m
+    e2 = _eng()
+    e2._views = (_cv(tid=1, x=-1.5, cy=620, rel=8.0),)
+    b = e2._reach_car_sources(1.0)[0].x_m
+    assert a == pytest.approx(-0.5 * lw)
+    assert b == pytest.approx(a)
+
+
 def test_box_size_metric_car_without_lateral_near_enters_as_block():
     """近距无横位 ≠ 无威胁（2026-11-03 帧 0213 帧证）：补给/事件车 12m 内
     横位缺位（框心贴地平线过不了尺子门），旧口径整段跳过=避让层视而不见。
@@ -792,6 +826,76 @@ def test_depth_grid_blocked_cluster_enters_as_pseudo_car():
     assert e._grid_car_sources(0.0) == []
 
 
+def test_depth_grid_single_cell_cluster_ignored():
+    """单格宽（0.25m）簇不是车：车道线/标线在栅格上就是一两格宽，曾把黄线
+    合成一排伪车顶在自车正前方（20261113_141622 fid 4849 帧证）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    state[z_lo_i:z_lo_i + 3, ix] = GRID_BLOCKED      # 单格宽，跨 3 行
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    assert e._grid_car_sources(0.0) == []
+
+
+def test_depth_grid_far_band_cluster_ignored():
+    """伪车只收 3~10m 近场档：13/23m 档在纯盲区伪车里占近一半，画面多为
+    空旷路面/远处结构，防撞提前量也够不着（实机抽样 28 帧）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    for z in (13.0, 23.0):
+        iz = int((z - 3.0) / GRID_CELL)
+        state[iz:iz + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    assert e._grid_car_sources(0.0) == []
+
+
+def test_grid_pseudo_car_suppressed_when_car_table_not_empty():
+    """语义车表非空时不再补栅格伪车：视觉模型换近场复训权重后全盲拍大幅
+    下降，无条件补源会让 85% 的伪车与 YOLO 重复记账（12 场 21496 拍复核）。
+    判据用整车表而不是 near——车目标纵深缺失率高，near 在实机上常年为假。
+    车表为空（盲区）时仍照旧补。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    state[z_lo_i:z_lo_i + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    # 近场已有安全车 → 不补
+    e._views = (_cv(tid=1, x=-1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert src and all(s.src != "grid" for s in src)
+    # 近场空 → 盲区补源照旧生效
+    e._views = ()
+    e._metric_cars = ()
+    src = e._reach_car_sources(0.0)
+    assert any(s.src == "grid" for s in src)
+
+
 def test_depth_grid_pseudo_car_outside_road_dropped():
     """路缘外的深占据簇不是社会车（20261109_134818 fid 7012 帧证）：栅格
     横向窗 ±14m 宽于路面，护栏/路肩在路缘外成的窄块簇按车源入账，选择层
@@ -803,10 +907,10 @@ def test_depth_grid_pseudo_car_outside_road_dropped():
         GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
     from maaracing_master.plugins.speedrush.selection import (
         RoadBand, RoadFrame)
-    # 近带 [3,16) 路缘 ±7m；远带 [16,30) 整体右移（左缘 −2m、右缘 +12m）
+    # 3~6m 带路缘 ±7m；6~10m 带整体右移（左缘 −2m、右缘 +12m）
     road = RoadFrame(
-        (RoadBand(3.0, 16.0, -7.0, 7.0, src="measured", conf=1.0),
-         RoadBand(16.0, 30.0, -2.0, 12.0, src="measured", conf=1.0)),
+        (RoadBand(3.0, 6.0, -7.0, 7.0, src="measured", conf=1.0),
+         RoadBand(6.0, 10.0, -2.0, 12.0, src="measured", conf=1.0)),
         14.0, -7.0, 7.0, True)
     e = _eng()
     state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
@@ -818,8 +922,8 @@ def test_depth_grid_pseudo_car_outside_road_dropped():
 
     _put(4.5, 3.0)      # 近带内
     _put(4.5, -9.0)     # 近带外
-    _put(23.0, 9.0)     # 近带外(+7) 但远带内(+12)：弯道右移，必须保留
-    _put(23.0, -5.0)    # 近带内(−7) 但远带外(−2)：必须丢弃
+    _put(8.0, 9.0)      # 近带外(+7) 但远带内(+12)：弯道右移，必须保留
+    _put(8.0, -5.0)     # 近带内(−7) 但远带外(−2)：必须丢弃
     e._depth_grid = DrivableGrid(state=state, coef=None,
                                  counts=np.ones_like(state), dig_cells=0,
                                  latency_ms=1.0)

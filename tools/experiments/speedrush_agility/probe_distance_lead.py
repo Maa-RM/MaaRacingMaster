@@ -205,18 +205,57 @@ def _fit(zs, ts, win=0.4):
     return mz + slope * (ts[-1] - mt), -slope
 
 
-def t_bias(ticks, bands=((10.0, 20.0), (20.0, 30.0), (30.0, 40.0))):
+def t_bias(ticks, bands=((10.0, 20.0), (20.0, 30.0), (30.0, 40.0)),
+           invalidated: bool = False, clear_s: float = 0.3):
     """以接地距离为真值检验发布 t：中位比、报大 1.5/2 倍占比、报小占比。
 
     真值 = 拟合 z / 拟合闭合速度。只有连续 12 拍都有干净接地读数、且拟合
     残差合格的车拍才入账——样本少但每条都经得起看。
+
+    ``invalidated``（跳变作废影子，2026-11-11）：同 oid 纵向 >5 m/30%、
+    发布 z 跳 >5 m、横向跳 >0.5 道、发布 z 冻结 ≥3 拍或 z=None 的拍判
+    「历史作废」——跳变后 ``clear_s`` 内的极值拍（报大 2 倍/报小）单独记
+    「作废可截」。**不清拟合序列**（那是真值，作废只管发布 t）——回答：
+    报大/报小粗尾里有多少落在跳变后 0.3 s 内、会被作废语义截住。
     """
     series = collections.defaultdict(list)
     st = {b: collections.Counter() for b in bands}
     ratios = {b: [] for b in bands}
+    prev: dict = {}
+    invalid_until: dict = {}
+    frozen_run: collections.Counter = collections.Counter()
     for r in ticks:
         ts = r["ts_mono_ns"] / 1e9
         for oid, x, t, z, src, zg, h, clip, cy in _cars(r):
+            p = prev.get(oid)
+            jump = False
+            if p is not None:
+                if zg is not None and p["zg"] is not None and not clip \
+                        and not p["clip"] \
+                        and abs(zg - p["zg"]) > max(5.0, 0.3 * p["zg"]):
+                    jump = True
+                elif z is not None and p["z"] is not None \
+                        and abs(z - p["z"]) > 5.0:
+                    jump = True
+                elif x is not None and p["x"] is not None \
+                        and abs(x - p["x"]) > 0.5 * LANE_W:
+                    jump = True
+                elif z is None:
+                    jump = True
+                elif z == p["z"]:
+                    frozen_run[oid] += 1
+                    if frozen_run[oid] >= 3:
+                        jump = True       # 冻结 ≥3 拍：测距已死
+                else:
+                    frozen_run[oid] = 0
+            prev[oid] = {"z": z, "zg": zg, "x": x, "clip": clip}
+            if invalidated:
+                if jump:
+                    invalid_until[oid] = ts + clear_s
+                    frozen_run[oid] = 0
+                dead = invalid_until.get(oid, 0) > ts
+            else:
+                dead = False
             seq = series[oid]
             seq.append((ts, None if (zg is None or clip) else zg))
             seq = seq[-40:]
@@ -244,6 +283,9 @@ def t_bias(ticks, bands=((10.0, 20.0), (20.0, 30.0), (30.0, 40.0))):
                             c["t>2倍"] += 1
                         if t < 0.67 * t_true:
                             c["t<0.67倍"] += 1
+                        if dead and (t > 2.0 * t_true or t < 0.67 * t_true):
+                            # 极值拍落在跳变后 clear_s 内：作废语义会把它截住
+                            c["作废可截"] += 1
                     break
     return st, ratios
 
@@ -302,6 +344,19 @@ def analyze(sess: str) -> None:
               f"({c['t>1.5倍'] / max(1, c['有 t']):.0%}) | 报大2倍 "
               f"{c['t>2倍']} | 报小 {c['t<0.67倍']} "
               f"({c['t<0.67倍'] / max(1, c['有 t']):.0%})")
+
+    st2, ratios2 = t_bias(ticks, invalidated=True)
+    print("   跳变作废影子（纵向 >5m/横向 >0.5 道跳变、发布 z 跳/冻结/断供"
+          "后 clear_s 内的极值拍会被作废截住）：")
+    for b, c in st2.items():
+        n = c["有 t"] + c["t None"]
+        if not n:
+            continue
+        cut = c["作废可截"]
+        tot = c["t>2倍"] + c["t<0.67倍"]
+        print(f"   - {b[0]:.0f}~{b[1]:.0f}m 拍 {n}: 报大2倍 {c['t>2倍']}"
+              f" | 报小 {c['t<0.67倍']} | 极值合计 {tot}，"
+              f"其中作废可截 {cut}（{cut / max(1, tot):.0%}）")
 
 
 def main() -> None:

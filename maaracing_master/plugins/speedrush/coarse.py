@@ -126,7 +126,8 @@ def _car_distance(c: _Car, p: CoarseParams) -> tuple[float, bool] | None:
 
 def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
                 lane_w_m: float, p: CoarseParams,
-                current_lane: float | None = None) -> CoarseReport:
+                current_lane: float | None = None,
+                prefer_center: bool = False) -> CoarseReport:
     """在走廊上选连续净空最长的车道。
 
     ``road``：场景帧分带走廊（带边界为场景绝对 x，带 z 为车头系）。
@@ -135,7 +136,10 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
     z=0 的中心线，不再用 planner 路心系的 executed，避免「带中心线 vs
     路心」残差混进方向判定）。``current_lane``：上一拍选定车道（道），
     用于换道迟滞；None=以自车最近车道为现任。
-    """
+
+    ``prefer_center``：本拍语义检测完全为空时才置真——那时没有目标可追/
+    可避，几条道净空又都是满窗，按回中选；有检测时仍走原排序（净空→
+    避缺纵深车→回中），不抢超车与得分的机会。"""
     if not road.ok:
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
     c0 = road.center_at(0.0)
@@ -217,9 +221,17 @@ def choose_lane(road, cars: Sequence[_Car], ego_lane: float,
         return CoarseReport(ego_lane, ego_lane, 0, 0.0, "no_road", ())
 
     def key(c: CoarseLane) -> tuple:
-        # 净空优先；净空相同优先没有「缺纵深车」的道；再回中（预置生效时
-        # 回中项=离远带更开一侧最近）；再少横移；最后比两侧余量。
-        # unknown 车只做同净空排序，不冒充精确距离。
+        # ``prefer_center`` 只在本拍语义检测为空时生效：没有目标可追/可避，
+        # 各道净空又都是满窗（实机并列占 75%），此时「有没有挂上缺纵深车」
+        # 信息量接近零（纵深缺失率约三分之二），方向会由它们的随机分布决定
+        # 并被路线承诺锁死——回中优先把这段偏侧时间砍半。有检测时保持原序，
+        # 不抢超车与得分的机会。
+        if prefer_center:
+            return (c.free_m,
+                    -abs(c.lane - (hint if preposition else 0.0)),
+                    not c.unknown_car,
+                    c.width_margin_m if c.width_margin_m is not None else -1e9,
+                    -abs(c.lane - ego_lane))
         return (c.free_m, not c.unknown_car,
                 -abs(c.lane - (hint if preposition else 0.0)),
                 c.width_margin_m if c.width_margin_m is not None else -1e9,

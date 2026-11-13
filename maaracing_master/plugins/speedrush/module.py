@@ -2428,6 +2428,10 @@ class SpeedRushModule(ActivityModule):
             "ro_anchor_ok": bool(anchor_ok),
             # 本拍深度锚是否满足整道复核准入（同源双侧、中心连续不跳）。
             "ro_anchor_strict": bool(chain["ego_road"].anchor_strict),
+            # 喂给线观测状态机的实际深度锚（道，自车横位右正；None=本拍没给）。
+            # 观测面：离线回放状态机少了这一列就复现不了生产 x。
+            "ro_anchor": None if chain["ego_road"].depth_anchor_ego is None
+            else round(chain["ego_road"].depth_anchor_ego, 4),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
             # 线↔深度路心家族横位分歧（道，线−深度；None=本拍无可比证据）。
