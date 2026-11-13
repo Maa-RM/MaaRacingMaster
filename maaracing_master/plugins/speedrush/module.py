@@ -66,7 +66,8 @@ from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, SKIP_STATS,
-    grid_center_lane, blocked_inner_reading, load_session, region_reading)
+    grid_center_lane, blocked_inner_reading, load_session, region_reading,
+    _row_intervals, REGION_WIDTH_Z_HI)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import (
@@ -3551,6 +3552,13 @@ class _EgoRoadObserver:
             return self._abs_tick(*region_pair, now, grid_off, "region",
                                   bnd, grid, fid)
 
+        def half_c():
+            hc = self._half_center(grid)
+            if hc is None:
+                return None
+            return self._emit(hc[0], hc[1], "half", bnd, grid, fid, now,
+                              grid_off, mem_update=False)
+
         def legacy_region_c():
             rc = self._region_center(grid)
             if rc is None:
@@ -3559,7 +3567,9 @@ class _EgoRoadObserver:
                               grid_off, mem_update=False)
 
         if master:
-            order = (wall_c, region_c, mem_c)
+            # 单侧绿区（half）排在复用旧值之前：一侧可见 + 整道宽度就能定中心，
+            # 比沿用可能已经错的旧值强。它不进 depth_anchor_ego，不给线定道号。
+            order = (wall_c, region_c, half_c, mem_c)
         else:
             # 回放链：墙（新证据）→ 槽 → 区（区兜底只在新鲜拍）→ 朝向记忆
             order = ((wall_c, slot_c, legacy_region_c, mem_c) if new
@@ -3688,6 +3698,46 @@ class _EgoRoadObserver:
         if abs(center) > self.OFF_MAX:
             return None
         return center, reg.right_edge_lane - reg.left_edge_lane
+
+    def _half_center(self, grid) -> tuple[float, float] | None:
+        """单侧绿区读数 + 整道宽度先验 → 路心（2026-11-13）。
+
+        贴护栏/单边遮挡时深度只看得到一侧，旧规则要求双侧才给路心，于是整段
+        退回复用旧值（实测三局：p1 45%、p2 47% 的拍子路心是复用值，你截图那
+        一帧正是如此）。单侧其实也带信息：看到左边、路宽是整道数，中心就定了。
+
+        宽度取**上一份采信宽度的整道化**（3~5 道，缺省 4 道）——本玩法固定
+        4 车道（RULES §3.8），整道宽度是先验里最硬的一条。
+
+        不进入 ``depth_anchor_ego``（src="half"）：单侧外推不配给线网格定道号，
+        只用来让路心在单侧可见时别停在旧值上。
+        """
+        if grid is None or not (self._lane_w_m and self._lane_w_m > 0):
+            return None
+        reg = region_reading(grid, self._lane_w_m)
+        if reg.sides != 1:
+            return None
+        lanes = 4.0
+        if self.width and self.width > 0:
+            lanes = float(min(5, max(3, round(self.width))))
+        # 区读数在单侧时把两侧都置空（触窗那侧是假缘，诚实降级）。这里只取
+        # **没触窗**的那一侧当锚：触窗=被画面边缘截断，它的位置是视锥边界而
+        # 不是路的边界。行域与 region_reading 同源（3~16m 远行），近行会被
+        # 视锥裁成以自车为中心的对称窗（车贴线时报「正中」），不能用来定中心。
+        wide = _row_intervals(grid, REGION_WIDTH_Z_HI)
+        if wide is None:
+            return None
+        lo_w = float(np.ravel(wide[0])[0])
+        hi_w = float(np.ravel(wide[1])[0])
+        if reg.left_clip_frac > 0.34 >= reg.right_clip_frac:
+            center = hi_w / self._lane_w_m - lanes / 2.0
+        elif reg.right_clip_frac > 0.34 >= reg.left_clip_frac:
+            center = lo_w / self._lane_w_m + lanes / 2.0
+        else:
+            return None
+        if abs(center) > self.OFF_MAX:
+            return None
+        return center, lanes
 
     def _build(self, bnd, grid, fid: int | None, center: float,
                width: float, src: str, now: float) -> Corridor:
