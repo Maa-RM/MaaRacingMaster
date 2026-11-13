@@ -1329,6 +1329,9 @@ class LaneObsWorker:
         out["push_n"] = self.push_n
         out["drop_n"] = self.drop_n
         out["cam_h_fb"] = self.cam_h_fb
+        # 循环内异常只记在 self.error（不刷日志）：不随快照出去就等于没有——
+        # 检测龄一路涨而 trace 看不到原因，只能靠事后复现。
+        out["error"] = self.error
         return out
 
     def _loop(self) -> None:
@@ -1339,7 +1342,6 @@ class LaneObsWorker:
             except queue.Empty:
                 continue
             self._set_focal(focal)
-            beat()          # 心跳：性能面板的「每秒几拍」由 core 差分得出
             self._slot_wait_s = 0.0
             t0 = time.perf_counter()
             try:
@@ -1358,7 +1360,7 @@ class LaneObsWorker:
                     # 质量门：线少时两两交点没有中位抗差，单帧假灭点直接进窗口。
                     # 历史为空时放行，否则阶段头永远凑不出第一个样本。
                     if yv is not None and self._yv_hist \
-                            and rec["n_lines"] < YV_MIN_LINES:
+                            and len(rec["lines"]) < YV_MIN_LINES:
                         yv = None
                     if yv is not None:
                         self._yv_raw = float(yv)
@@ -1374,6 +1376,10 @@ class LaneObsWorker:
                 out = self._snapshot(res, fid, cam_h, t0, t_done, pred)
                 with self._lock:
                     self._latest = out
+                # 心跳只在产出结果之后记：面板的「车道观测 频率」必须等于有效
+                # 输出率。原来记在取帧后，异常被吞时线程照样每拍心跳，面板显示
+                # 20Hz 而实际输出 2Hz（2026-11-13 实机局）。
+                beat()
             except Exception as exc:  # noqa: BLE001 —— 单帧失败只记错误
                 self.error = repr(exc)
 

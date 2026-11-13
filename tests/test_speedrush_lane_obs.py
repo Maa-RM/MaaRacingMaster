@@ -687,6 +687,59 @@ def test_predict_advances_x_without_new_identity():
     assert r["pred"] is True
 
 
+def test_vanish_gate_keeps_snapshot_updating(monkeypatch):
+    """灭点质量门曾按 rec["n_lines"] 取键，而 _infer 只返回 lines：灭点历史
+    一旦非空，每帧都在这里抛 KeyError（循环吞掉异常、快照不更新），线观测
+    掉到 2.1Hz、检测龄涨到秒级——2026-11-13 实机一局的现场。"""
+    import threading
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w._sess = object()
+    w._yv_hist.append(200.0)      # 已有灭点历史：质量门这条路必然走到
+    monkeypatch.setattr(la, "_vanish_row", lambda lines: 200.0)
+    monkeypatch.setattr(w, "_infer",
+                        lambda rgb, cam_h, focal: {"lines": [_line(0.5)]})
+    t = threading.Thread(target=w._loop, daemon=True)
+    t.start()
+    try:
+        w.push(np.zeros((16, 16, 3), np.uint8), 1, 1.28, 0.0, 0.05, False)
+        deadline = time.time() + 2.0
+        while w.latest() is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert w.error is None
+        snap = w.latest()
+        assert snap is not None and snap["fid"] == 1
+    finally:
+        w._stop.set()
+        t.join(timeout=2.0)
+
+
+def test_beat_counts_published_results_only(monkeypatch):
+    """面板的「车道观测 频率」= 有效输出率：跳过或出错的拍不记心跳，否则
+    线程空转也会显示 20Hz（2026-11-13 面板与实况对不上的根因）。"""
+    import threading
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w._sess = object()
+    beats = []
+    monkeypatch.setattr(la, "beat", lambda: beats.append(1))
+    mode = {"ret": None}
+    monkeypatch.setattr(w, "_infer", lambda rgb, cam_h, focal: mode["ret"])
+    t = threading.Thread(target=w._loop, daemon=True)
+    t.start()
+    try:
+        w.push(np.zeros((16, 16, 3), np.uint8), 1, 1.28, 0.0, 0.05, False)
+        time.sleep(0.2)
+        assert beats == []            # 没产出结果：不打心跳
+        mode["ret"] = {"lines": [_line(0.5)]}
+        w.push(np.zeros((16, 16, 3), np.uint8), 2, 1.28, 0.0, 0.05, False)
+        deadline = time.time() + 2.0
+        while not beats and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(beats) == 1
+    finally:
+        w._stop.set()
+        t.join(timeout=2.0)
+
+
 def _dash_prob(s: float, a: float) -> np.ndarray:
     """概率图上画一条远场虚线：dash 中心落在全幅直线 x=s·y+a 上（640 尺度落图）。"""
     prob = np.zeros((360, 640), np.float32)
