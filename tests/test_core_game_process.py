@@ -31,10 +31,10 @@ def test_read_ini_section_parses_and_skips_comments(tmp_path):
         "; comment\n"
         "# comment\n"
         "[Info]\n"
-        "GAME_DIR = D:/Game\n"
+        "GAME_DIR = C:/Windows/Game\n"
         "missing=ok\n"))
     out = gp._read_ini_section(ini, "info")  # 小节名与键名大小写不敏感
-    assert out == {"game_dir": "D:/Game", "missing": "ok"}
+    assert out == {"game_dir": "C:/Windows/Game", "missing": "ok"}
 
 
 def test_read_ini_section_missing_file_returns_empty(tmp_path):
