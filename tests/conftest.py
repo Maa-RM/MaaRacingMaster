@@ -20,7 +20,6 @@ sys.dont_write_bytecode = True
 
 _PROJ = Path(__file__).resolve().parent.parent
 
-# 把项目根加入 sys.path，使 `from tools.pipeline...`（P3）在 CI（`pytest` 不带
-# `python -m`）下也可导入——cwd 非 project root 时不自动在 sys.path。
+# 理由见文件头 docstring（仓库内导入在 CI 下也可导入）。
 if str(_PROJ) not in sys.path:
     sys.path.insert(0, str(_PROJ))

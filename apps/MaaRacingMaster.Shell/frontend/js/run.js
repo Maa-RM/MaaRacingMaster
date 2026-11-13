@@ -18,7 +18,6 @@
   // 名称首字——新增模块不必改前端。
   const MODULE_META = {
     speedrush: { icon: '🏎️' },
-    treasure: { icon: '🏺' },
   };
   // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
   MODULE_META.launch_game = { icon: '🚀' };
