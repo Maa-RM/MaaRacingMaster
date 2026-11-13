@@ -81,6 +81,16 @@ VANISH_SPAN_LO, VANISH_SPAN_HI = 60.0, 900.0
 # 的滞后；间隔超过 YV_GAP_S 说明中间断过（丢检/换段），旧样本不再代表当前姿态。
 YV_WIN = 5
 YV_GAP_S = 1.0
+# 发布值的 slew 限速（2026-11-13，六局实测）：中位窗口挡不住**成簇**离群——
+# 连续 3~4 拍偏 5~15px 时中位跟着走，段内发布值极差实测 16~33px（1px 约 40m
+# 处 5% 距离）。地平线是慢变量（俯仰随载重/坡度变，整段真实变化实测 ≤5px），
+# 所以给发布值加每检测拍 0.1px 的限速：单拍噪声被压成缓慢跟随，而 0.5px/s
+# 的真实坡度仍跟得上。断检超过 YV_GAP_S 清史时不受限速（新姿态直接采纳）。
+YV_SLEW_PX = 0.1
+# 单帧样本的质量门：少于这么多条有效线时两两交点只有 1~3 个、没有中位抗差，
+# 实测这些拍是假灭点的主要来源（n_lines=1~2 时 raw 落到 342/379）。
+# 历史为空（阶段头/断检恢复）时不过门，否则冷启动永远没有第一个样本。
+YV_MIN_LINES = 3
 # 相机高反解（线间距法）的物理带与样本门：结果只给视角守卫用（粗门），
 # 与深度链的 1.25 无耦合关系。
 CAM_H_EST_LO, CAM_H_EST_HI = 0.6, 3.0
@@ -550,17 +560,28 @@ def _vanish_row(lines: list[dict]) -> float | None:
     return float(np.median(keep))
 
 
-def _smooth_vanish(hist: deque, raw: float, now: float, last_t: float
-                   ) -> tuple[float, float]:
-    """单帧灭点行 → 发布值（近 YV_WIN 个检测拍的中位）。返回 (发布值, 入史时刻)。
+def _smooth_vanish(hist: deque, raw: float, now: float, last_t: float,
+                   prev: float | None = None) -> tuple[float, float]:
+    """单帧灭点行 → 发布值（近 YV_WIN 个检测拍的中位 + 每拍 slew 限速）。
+    返回 (发布值, 入史时刻)。
 
     长间隔（>YV_GAP_S）先清史：中间断过检就说明这段的俯仰证据不连续，拿旧
-    样本掺进中位会把一次真实的姿态变化当成噪声压掉。单帧离群由中位天然吸收，
-    不需要额外的跳变门（2 个样本时取中位=均值，余量另由物理门 341~381 兜）。"""
+    样本掺进中位会把一次真实的姿态变化当成噪声压掉；清史后 ``prev`` 一并作废，
+    新姿态直接采纳、不受限速（否则换段/复位后要爬很久）。
+
+    slew 限速只作用于**发布值**：中位仍是近 5 拍的抗差估计，物理门 341~381
+    与 MAD 剔除（``_vanish_row``）照旧。``prev``=None 表示无历史发布值。"""
     if hist and now - last_t > YV_GAP_S:
         hist.clear()
+        prev = None
     hist.append(float(raw))
-    return float(np.median(hist)), now
+    med = float(np.median(hist))
+    if prev is None:
+        return med, now
+    step = med - float(prev)
+    if abs(step) > YV_SLEW_PX:
+        med = float(prev) + math.copysign(YV_SLEW_PX, step)
+    return med, now
 
 
 def _cam_h_from_lines(lines: list[dict], y_v: float | None) -> float | None:
@@ -779,7 +800,8 @@ class LineTracker:
 
     def update(self, lines: list[dict], fid: int, dt: float,
                v_lat: float = 0.0, fid_jump: bool = False,
-               anchor: float | None = None) -> dict:
+               anchor: float | None = None,
+               anchor_strict: bool = False) -> dict:
         # 线锁：上一拍起线已连续稳定 LINE_LOCK_TICKS 拍 → 本拍道号为权威，
         # 深度锚只能用于「线丢失后的重建」，不能改判/否决。冻结覆盖短 COAST
         # （locked 保留、未 RELOCK）：断一拍不代表身份可改，只有跳变/RELOCK
@@ -837,11 +859,15 @@ class LineTracker:
                              relock_src=None, pred=False)
 
         # ②b 整道级复核：锁定期深度不许改判道号，但"错得离谱"要能纠正。
-        # 只在**新鲜**锚上累积（复用拍是同一份旧证据，不重复计数），且要求
-        # 连续差超一整道——半道级分歧是常态噪声（实测路心相位 p50 0.15 道、
-        # p90 0.43 道），拿它复核会把网格摇散。触发后解冻一次，道号仍走
-        # ③ 的正常重锚流程（每线 ANCHOR_CONFIRM 拍确认），复核完重新累积锁定。
-        if x_anchor is not None and self.x_last is not None:
+        # 只在**新鲜且严格**的锚上累积：``anchor_strict`` = 同源、双侧都在、
+        # 连续两拍中心不跳（见 _EgoRoadObserver）。单侧/复用/两种定义互相
+        # 打架的锚一律不算证据——实测（2026-11-13 三局）贴左墙段绿区中心
+        # 长期偏约一道，旧口径 3/5 拍就把整张网格平移一道、错误保持数十秒；
+        # 那些锚的共同点是中心逐拍跳 0.4 道以上，严格口径全部拦下。
+        # 复用拍是同一份旧证据，不重复计数；要求连续差超一整道——半道级
+        # 分歧是常态噪声（路心相位 p50 0.15 道、p90 0.43 道），拿它复核会
+        # 把网格摇散。触发后一次性挪整数道，不重置锁定。
+        if x_anchor is not None and self.x_last is not None and anchor_strict:
             self.gross_hist.append(
                 abs(x_anchor - self.x_last) > GROSS_LANE)
             del self.gross_hist[:-GROSS_WIN]
@@ -1188,9 +1214,11 @@ class LaneObsWorker:
     def push(self, rgb: np.ndarray, fid: int, cam_h: float | None,
              v_lat: float, dt: float, fid_jump: bool,
              focal: float | None = None,
-             anchor: float | None = None) -> None:
+             anchor: float | None = None,
+             anchor_strict: bool = False) -> None:
         """入队一帧；``focal`` 是同帧深度读数的全幅焦距（线角用），``anchor``
-        是同帧新鲜深度路心（None=复用/缺供）。
+        是同帧新鲜深度路心（None=复用/缺供），``anchor_strict`` 表示该锚
+        同时看清两侧且中心稳定（线道号整道复核的唯一准入）。
 
         两者都随帧一起入队，保证线观测用的绝对参照/角度尺度与这条帧同拍——
         不拿后一帧的深度去锚或定标前一帧的线。"""
@@ -1213,7 +1241,8 @@ class LaneObsWorker:
             self._q.put_nowait((rgb, int(fid), used_h,
                                 float(v_lat), float(dt), bool(fid_jump),
                                 None if focal is None else float(focal),
-                                None if anchor is None else float(anchor)))
+                                None if anchor is None else float(anchor),
+                                bool(anchor_strict)))
         except queue.Full:
             pass
 
@@ -1261,7 +1290,7 @@ class LaneObsWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                rgb, fid, cam_h, v_lat, dt, jump, focal, anchor = \
+                rgb, fid, cam_h, v_lat, dt, jump, focal, anchor, a_strict = \
                     self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
@@ -1281,12 +1310,18 @@ class LaneObsWorker:
                     if rec is None:      # DML 被占：本帧让路，下一帧再来
                         continue
                     yv = _vanish_row(rec["lines"])
+                    # 质量门：线少时两两交点没有中位抗差，单帧假灭点直接进窗口。
+                    # 历史为空时放行，否则阶段头永远凑不出第一个样本。
+                    if yv is not None and self._yv_hist \
+                            and rec["n_lines"] < YV_MIN_LINES:
+                        yv = None
                     if yv is not None:
                         self._yv_raw = float(yv)
                         self._yv, self._yv_t = _smooth_vanish(
-                            self._yv_hist, yv, time.perf_counter(), self._yv_t)
+                            self._yv_hist, yv, time.perf_counter(), self._yv_t,
+                            self._yv)
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
-                                               jump, anchor)
+                                               jump, anchor, a_strict)
                 t_done = time.perf_counter()
                 if not pred:
                     self._last_det_t = t_done
@@ -1320,6 +1355,10 @@ class LaneObsWorker:
                 "relock_src": res["relock_src"],
                 "anchor_src": res.get("anchor_src"),
                 "grid_reject": res["grid_reject"],
+                # 整道级复核触发次数：文档早已把它列为 trace 审计列，但此前
+                # 没搬进快照——锁定后被偏置深度锚整道翻号时，trace 里看不到
+                # 是这条复核干的（2026-11-13 帧证：三次远锚后 x 整道跳）。
+                "gross_reanchor": int(res.get("gross_reanchor", 0)),
                 "side_reject": res["side_reject"],
                 "usable": bool(res.get("usable", False)),
                 "locked": int(res.get("locked", 0)),

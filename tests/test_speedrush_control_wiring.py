@@ -1177,3 +1177,136 @@ def test_control_tick_carries_lane_agree_gate():
     pad = StubPad()
     m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
     assert "ldis" in chain["trace"][-1]
+
+
+# ---------- 线道号锚共识闸（2026-11-13：绿区 vs 找边对分歧时冻结编号） ----------
+
+def test_anchor_consensus_gate_freezes_on_definition_gap():
+    """两定义差 >0.5 道立即冻结；缺证据保持；一致证据累计 3 拍才恢复。"""
+    g = smod._AnchorConsensusGate()
+    assert g.update(0.3)
+    assert not g.update(0.73), "差超阈值：本拍不许喂锚"
+    assert not g.update(None), "无可比证据保持冻结（不拿缺证据当一致）"
+    assert not g.update(0.2)
+    assert not g.update(None), "证据稀疏时按累计计次，不要求连续"
+    assert not g.update(0.2)
+    assert g.update(0.2), "累计 3 个一致证据拍即恢复"
+    assert g.update(0.0)
+    assert not g.update(0.6), "再次超阈立即冻结"
+
+
+def test_anchor_consensus_gate_releases_after_timeout():
+    """冻结超时后，下一次一致证据即恢复——证据稀疏不得长期剥夺深度纠偏。"""
+    g = smod._AnchorConsensusGate()
+    assert g.update(1.2, now=0.0) is False
+    assert g.update(None, now=1.0) is False
+    assert g.update(None, now=2.9) is False, "未超时：缺证据保持冻结"
+    assert g.update(0.1, now=3.1) is True, "超过 MAX_FROZEN_S 后一个一致证据即恢复"
+    assert g.update(0.1, now=3.2)
+    assert not g.update(0.9, now=3.3), "恢复后再次分歧仍立即冻结"
+
+
+def _master_take(monkeypatch, cur):
+    """master 模式的深度桩：cur['r']=找边读数、cur['g']=绿区栅格，
+    每次 take 都当新证据返回。"""
+    from maaracing_master.plugins.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    st[:, 34:90] = dg.GRID_DRIVABLE          # 绿区整幅路宽 14m，中心 +1.5m
+    grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=0.0)
+    cur["g"] = grid
+
+    def _take(self):
+        return cur["r"], cur["g"], True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+
+
+class _LaneStub:
+    def __init__(self, x: float):
+        self.x = x
+        self.anchors = []
+
+    def latest(self):
+        return {"state": "TRACK", "x": self.x, "theta": 0.0,
+                "n_locked": 2, "usable": True, "det_age_ms": 5.0,
+                "det_fid": 1, "lines": []}
+
+    def push(self, *args, **kwargs):
+        self.anchors.append(kwargs.get("anchor"))
+
+
+def test_interlock_uses_depth_family_not_edge_pair(monkeypatch):
+    """互证闸必须拿线对**深度路心家族**（region/memory）比，不是对单帧
+    找边对：`road_snap` 的键是 source，曾误写成 src，导致从引入起一直
+    走找边对分支（2026-11-13 帧证：ldis 逐位等于 线−找边对）。
+
+    本台架：绿区中心 +0.444 道（off=−0.444）、找边对中心 −0.395 道
+    （ro_edge=+0.395）、线横位 −1.0 → ldis 必须 ≈ −0.556，不是 −1.395。"""
+    cur = {"r": _dgeo_lanes(-1.32, 0.53)}
+    _master_take(monkeypatch, cur)
+    m = _module()
+    chain = m._build_control_chain()
+    lane = _LaneStub(-1.0)
+    chain["lane_obs"] = lane
+    m._control_tick(chain, StubPad(), None, _perc(1), 1, 50_000_000, 10.0, 1)
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "region"
+    assert row["ldis"] == pytest.approx(-1.0 - (-1.5 / chain["lane_w_m"]),
+                                       abs=0.01)
+    assert row["ro_edge"] == pytest.approx(+0.395, abs=0.01)
+    assert row["ldis"] != pytest.approx(-1.0 - row["ro_edge"], abs=0.1), \
+        "若仍走找边对分支，ldis 会等于 线−ro_edge"
+
+
+def test_anchor_gate_blocks_renumbering_until_definitions_agree(monkeypatch):
+    """两定义分歧超阈 → 本拍不给线喂锚（保持现有网格）；一致连续 3 拍后恢复。
+
+    分歧台架：找边对 (−2.35,+1.65)（宽 4.0、中心 −0.35）vs 绿区中心 +0.43，
+    差 0.78。一致台架：找边对 (−1.57,+2.43)（宽 4.0、中心 +0.43），差 ≈0。
+    两种定义都过整幅路宽门才进共识——3.0 道的残段不是另一种路心定义。"""
+    cur = {"r": _dgeo_lanes(-2.35, 1.65)}
+    _master_take(monkeypatch, cur)
+    m = _module()
+    chain = m._build_control_chain()
+    lane = _LaneStub(-1.0)
+    chain["lane_obs"] = lane
+    # 互证闸的喂入记录：闸关期间必须喂 None（深度见证不可用，不得否决线）
+    agree_in = []
+    _orig_agree = chain["lane_agree"].update
+
+    def _rec(d):
+        agree_in.append(d)
+        return _orig_agree(d)
+
+    chain["lane_agree"].update = _rec
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    t1 = tick()
+    assert t1["ro_anchor_gap"] == pytest.approx(0.78, abs=0.03)
+    assert t1["ro_anchor_ok"] is False
+    assert lane.anchors[-1] is None, "分歧期不得喂锚（不许改号）"
+    assert agree_in[-1] is None, "分歧期深度见证不可用，不得喂互证闸"
+
+    cur["r"] = _dgeo_lanes(-1.57, 2.43)      # 两定义一致
+    t2, t3, t4 = tick(), tick(), tick()
+    assert t2["ro_anchor_ok"] is False and t2["ro_anchor_gap"] == \
+        pytest.approx(0.0, abs=0.03)
+    assert t3["ro_anchor_ok"] is False
+    assert t4["ro_anchor_ok"] is True, "连续 3 拍一致才恢复喂锚"
+    assert lane.anchors[-1] == pytest.approx(-1.5 / chain["lane_w_m"],
+                                             abs=0.01)
+    assert agree_in[-1] is not None, "恢复后互证闸重新吃线−深度分歧"

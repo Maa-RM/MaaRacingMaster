@@ -400,6 +400,50 @@ def test_master_width_gate_rejects_car_corridor():
     assert _off(c) == pytest.approx(0.0, abs=0.01)
 
 
+def test_reject_reasons_survive_memory_fallback():
+    """拒绝原因不被后续成功路径覆盖：墙被宽门拒、记忆接棒时，本拍快照
+    仍记录 wall:width_guard（trace ro_reject 的数据源）。旧实现只在拒绝
+    路径写 `last["reject"]`，随后记忆快照整拍覆盖——实拍 trace 恒 None，
+    「为什么退到记忆」无法分账。"""
+    o = _master_wall_observer()                  # 路心 0、W=4.0、记忆=0
+    o.update(_bnd(-0.85, 0.85, edge_pts=_walls(-0.85, 0.85)),
+             now=1001.8, fid=33)
+    assert "wall:width_guard" in o.last["rejects"]
+
+
+def test_reject_reasons_empty_on_clean_accept():
+    """干净接受拍不带拒绝原因（拒绝列只在真有候选被拒时出场）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL))
+    c = o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
+                 now=1000.0, fid=1)
+    assert c is not None and c.src == "wall"
+    assert o.last["rejects"] == []
+
+
+# ---------- 深度锚"严格"判据：整道复核的唯一准入 ----------
+
+def test_anchor_strict_requires_same_source_stable_center():
+    """同源 + 连续两拍中心步长 ≤0.2 道才算严格锚；中心逐拍跳的锚不算
+    （2026-11-13 三局：贴左墙段绿区中心逐拍跳 0.4 道，旧口径据此整道
+    平移线网格）。"""
+    o = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL),
+                              mem_fallback=True)
+    for i in range(4):
+        o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
+                 now=1000.0 + 0.1 * i, fid=i + 1)
+        if i == 0:
+            assert o.anchor_strict is False, "首拍无连续证据，不算严格"
+    assert o.anchor_strict is True, "同源同中心连续拍应转严格"
+
+    o2 = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL),
+                               mem_fallback=True)
+    for i, (l, r) in enumerate(((-2.0, 2.0), (-1.6, 2.4),
+                                (-2.0, 2.0), (-1.6, 2.4))):
+        o2.update(_bnd(l, r, edge_pts=_walls(l, r)),
+                  now=1000.0 + 0.1 * i, fid=i + 1)
+        assert o2.anchor_strict is False, "中心逐拍跳 0.4 道不得算严格"
+
+
 def test_master_width_learning_requires_two_tick_midpoint_agreement():
     """喂宽读数要中点两拍一致：单拍中点跳 0.5 道的对不进统计（锁错结构的
     典型形态），下一拍仍在新位置才进。供数本身不受影响。"""

@@ -1729,6 +1729,8 @@ class SpeedRushModule(ActivityModule):
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                     # 线↔深度互证闸（货车遮挡防线）：每局一份状态机
                     "lane_agree": _LaneAgreeGate(),
+                    # 线道号锚的共识闸（绿区 vs 找边对）：分歧期冻结编号
+                    "anchor_consensus": _AnchorConsensusGate(),
                     # 到达位置谱系（路心读数序列；影子/未来到达门消费）
                     "pos_lineage": PositionLineage(),
                     # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
@@ -1946,12 +1948,36 @@ class SpeedRushModule(ActivityModule):
                                  if line_origin else None),
                 v_lat=planner.state.v_lat)
             road_offset = None if corridor is None else -corridor.center_lane
+            # 本拍 road_offset 的**实际出处**（与 ro_source 分账）：ro_source 是
+            # 深度候选来源，线为主时它只说明深度那一路的状态；拿它统计"多少拍
+            # 的路心是量出来的"会把线测量拍算成复用/缺席。
+            if corridor is None:
+                ro_prov = "none"
+            elif lane_usable:
+                ro_prov = "line"
+            elif line_origin:
+                ro_prov = "line_hold"
+            elif corridor.src in ("wall", "region"):
+                ro_prov = "depth"
+            else:
+                ro_prov = "held"
+            # 线道号锚共识闸（2026-11-13）：本拍绿区中心与找边对中心的分歧
+            # 决定是否允许把深度锚喂给线。None=本拍无可比证据，闸保持原状态。
+            # 闸关闭时深度两个定义自身不一致，也不能拿其中一个去否决线
+            # （下面的互证闸喂 None 冻结状态）——否则会把"不可信的见证"
+            # 当成反证，停掉线的位置权威。
+            anchor_gap = getattr(chain["ego_road"], "anchor_gap", None)
+            anchor_ok = chain["anchor_consensus"].update(
+                anchor_gap, time.perf_counter())
             # 线↔深度互证（2026-11-02 货车段）：深度路心家族本拍读数对线
             # 的新鲜横位；wall 不参与（8750 拍错在 wall）。分歧喂互证闸，
             # 结果并入 lane_pos_ok——线整体错位时规划器不再 0.7 增益跟随。
             depth_ro = None
             road_snap = chain["ego_road"].last or {}
-            if road_snap.get("src") in ("region", "pair_slot", "memory"):
+            # 键名是 "source"（_snapshot 的出口）；曾误写成 "src"，导致本闸
+            # 从引入起一直走下面的找边对分支——用最吵的单帧对去判线的位置
+            # 权威（2026-11-13 帧证：ldis 逐位等于 线−找边对）。
+            if road_snap.get("source") in ("region", "pair_slot", "memory"):
                 depth_ro = road_snap.get("off")
             ldis = None
             if lane is not None and lane.get("x") is not None:
@@ -1965,7 +1991,8 @@ class SpeedRushModule(ActivityModule):
                     # （说 −0.5，标线 −2.08），只有边对还在独立说话。
                     ldis = lx - float(edge_off)
             lane_pos_ok = bool(lane_usable
-                               and chain["lane_agree"].update(ldis))
+                               and chain["lane_agree"].update(
+                                   ldis if anchor_ok else None))
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -2082,12 +2109,15 @@ class SpeedRushModule(ActivityModule):
                 # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
                 # 前的深度候选仍在 depth_anchor_ego 里，用它锚道号即可——既不
                 # 循环，也不剥夺线在短断/重锁时的独立参照。
+                # 共识闸（2026-11-13）：绿区与找边对两个定义差超阈值时不给锚，
+                # 线保持现有网格；等两者一致再恢复。宁可不改，不许静默整道翻号。
                 anchor = (chain["ego_road"].depth_anchor_ego
-                          if road_offset_new else None)
+                          if (road_offset_new and anchor_ok) else None)
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump,
                         focal=chain.get("focal_px"),
-                        anchor=anchor)
+                        anchor=anchor,
+                        anchor_strict=chain["ego_road"].anchor_strict)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -2353,6 +2383,16 @@ class SpeedRushModule(ActivityModule):
             # 走廊中心实际原点：line=线为主（深度只供边界），其余=深度来源。
             # 与 ro_source 分开：线为主时 ro_source 仍显示深度候选的侧效来源。
             "ro_origin": chain["ego_road"].last.get("origin"),
+            # road_offset 的实际出处（测量分账的唯一判据）：line=线当拍测量、
+            # line_hold=线短断外推、depth=深度实测、held=记忆/历史保持、
+            # none=弃权。ro_source 不能替代它——那是深度候选来源。
+            "ro_prov": ro_prov,
+            # 线道号锚共识面：gap=绿区中心−找边对中心（道，None=本拍无可比），
+            # ok=False=分歧冻结（本拍没给线喂深度锚，保持现有网格）。
+            "ro_anchor_gap": None if anchor_gap is None else round(anchor_gap, 3),
+            "ro_anchor_ok": bool(anchor_ok),
+            # 本拍深度锚是否满足整道复核准入（同源双侧、中心连续不跳）。
+            "ro_anchor_strict": bool(chain["ego_road"].anchor_strict),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
             # 线↔深度路心家族横位分歧（道，线−深度；None=本拍无可比证据）。
@@ -2380,7 +2420,11 @@ class SpeedRushModule(ActivityModule):
             else round(chain["ego_road"].last["width"], 4),
             "ro_pair_w": None if chain["ego_road"].last.get("pair_w") is None
             else round(chain["ego_road"].last["pair_w"], 4),
-            "ro_reject": chain["ego_road"].last.get("reject"),
+            # 本拍所有候选的拒绝原因（wall:/region:/pair:/jump 前缀，按首次
+            # 出现去重）。旧口径只留最后一条且会被成功路径覆盖，实拍 trace
+            # 恒 None——要判「为什么退到记忆」必须看这一列。
+            "ro_reject": (";".join(chain["ego_road"].last.get("rejects") or [])
+                          or chain["ego_road"].last.get("reject")),
             # 同定义对照审计面（2026-10-27，只记录不参与任何判定/供数）：
             # ro_region = 本拍绿区读数的触窗比例与绿行数（region_reading 原值，
             # 非新证据拍/坏平面拍=None）；ro_wallbin = 墙双侧同箱且都当拍在场。
@@ -3057,6 +3101,59 @@ class _LaneAgreeGate:
             else:
                 self._agree_t = 0
         return not self._vetoed
+
+
+class _AnchorConsensusGate:
+    """线道号锚的共识闸（2026-11-13）：两个绝对路心定义分歧时冻结编号。
+
+    同帧的「绿区物理边界中心」与「单帧找边对中心」是两种不同定义（前者
+    含路肩/人行道，后者会被弯道、障碍截短），实测可差 0.7~1.4 道。线道号
+    ``k=round(锚+L)`` 只认一个锚；锚在两者之间按「谁先到」切换，会让同一
+    组物理线整道翻号，且没有任何异常标志（20261113_083813：p2 14058 把
+    左侧黄实线标成 k=-1、p1 2241→2243 同两条线 k 由 {-2,-1} 变 {-1,0}）。
+
+    纪律：两者都先过整幅路宽门（不是残段/假缘），相差超 ``ON_GAP`` 立即
+    冻结——本拍不喂任何深度锚，线保持现有网格。None=本拍无可比证据，状态
+    冻结（不拿缺证据当一致）。
+
+    恢复口径（2026-11-13 六局修正）：两定义同时可比的拍实测只占 8~28%，
+    按「连续 3 拍」恢复在证据稀疏时几乎不可能达成（阶段内冻结 24~38% 拍、
+    最长 9.3s），线锁被无谓地长时间剥夺深度的纠偏机会。改为**按证据计次**：
+    累计 ``OFF_EVIDENCE`` 个一致证据拍即恢复（不必连续），分歧证据把计数
+    清零；同时设 ``MAX_FROZEN_S`` 上限，冻结超时后下一次一致证据立即恢复。
+    没有一致证据时保持冻结——两定义一直在分歧，此时不许任何一方改道号。"""
+
+    ON_GAP = 0.5       # 冻结阈值（道）：超过即两种定义已不是同一对象
+    OFF_GAP = 0.4      # 恢复阈值（滞回，避免边界抖动反复开关）
+    OFF_EVIDENCE = 3   # 累计一致证据拍数（不要求连续）
+    MAX_FROZEN_S = 3.0  # 冻结最长时限（s）；超时后一致证据一次即恢复
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._agree_n = 0
+        self._closed_at: float | None = None
+
+    def update(self, gap: float | None, now: float | None = None) -> bool:
+        """``gap``=绿区中心 − 找边对中心（道）。返回 True=允许喂深度锚。"""
+        if gap is None:
+            return not self._closed
+        if abs(gap) > self.ON_GAP:
+            self._closed = True
+            self._agree_n = 0
+            self._closed_at = now
+            return False
+        if not self._closed:
+            return True
+        self._agree_n += 1
+        timeout = (self._closed_at is not None and now is not None
+                   and now - self._closed_at >= self.MAX_FROZEN_S)
+        if self._agree_n >= (1 if timeout else self.OFF_EVIDENCE):
+            self._closed = False
+            self._agree_n = 0
+            self._closed_at = None
+        return not self._closed
+
+
 YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40
@@ -3218,6 +3315,13 @@ class _EgoRoadObserver:
     # memory↔单侧墙来回跳的种子；缩到 0.25s，并按当拍横速做位移补偿
     # （自车右移 Δ → 路心在自车系左移 Δ）。记忆保持最后采信值、不做 EMA。
     MEM_TTL_S = 0.25
+    # 深度锚"严格"判据（线道号整道复核的唯一准入）：同源、双侧都在、
+    # 连续拍中心步长 ≤此值（道）。单侧/换源/中心逐拍跳的锚不算路心证据。
+    # 实测贴左墙段绿区中心逐拍跳 0.4 道以上（12929/12933/12946：+0.24/−0.20/
+    # −0.25），旧口径 3/5 拍就整道平移；严格口径全部拦下。
+    ANCHOR_STABLE_STEP = 0.2
+    ANCHOR_STABLE_N = 2          # 连续稳定拍数（含当拍）
+    ANCHOR_STABLE_GAP_S = 0.6    # 两拍间隔超此值不算连续
     # 平面尺度门（master）：2026-10-29 尺度修正后 bumper 机位 cam_h≈1.26~1.29m
     # （权威口径 1.25m，2026-11-11）；离线 0200 帧拟合出 0.81m（正常 1.26~1.29）而
     # 质量门未拦——坏平面的缘点/绿区整帧不进供数。
@@ -3264,6 +3368,15 @@ class _EgoRoadObserver:
         # 覆盖前的独立深度读数的**自车横位**（右正，与线观测 x=k−L、road_offset
         # 同号）；走廊 center 是路心相对自车，取反后才对齐线观测的锚点口径。
         self.depth_anchor_ego: float | None = None
+        # 本拍两个绝对路心定义的横向差（绿区中心 − 找边对中心，道）：
+        # 线道号锚的共识闸消费面。None=本拍没有可比证据（非新证据拍/
+        # 绿区或找边对缺席）——闸保持原状态，不拿缺证据当一致。
+        self.anchor_gap: float | None = None
+        # 本拍深度锚是否"严格"（同源、双侧都在、连续两拍中心不跳）：
+        # 线道号整道复核的唯一准入。单侧/换源/中心逐拍跳的锚不参与纠偏——
+        # 贴左墙段绿区中心长期偏约一道，旧口径 3/5 拍就把线网格整道平移。
+        self.anchor_strict: bool = False
+        self._anchor_prev: tuple[str, float, int, float] | None = None
         self._v_lat = 0.0                     # 当拍横速（记忆位移补偿用）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
@@ -3303,9 +3416,15 @@ class _EgoRoadObserver:
         self._center_override = center_override  # 线可用时走廊以线为原点
         # 本拍独立深度自车横位（覆盖前），供线观测做道号锚点；线回退/保持值不给。
         self.depth_anchor_ego = None
+        self.anchor_gap = None
+        self.anchor_strict = False
+        self._fresh_tick = bool(new)
         self._v_lat = float(v_lat) if math.isfinite(v_lat) else 0.0
         self._frame_gate_used = False
         self._audit = {}                  # 本拍审计面重置（None=本拍无该证据）
+        # 本拍各路候选的拒绝原因（供数门分账）：只在 update 末尾汇总，
+        # 不被后续成功路径覆盖。
+        self._tick_rejects: list[str] = []
         if new:
             # 共享方向滤波只在新远带证据更新一次；本拍若未建成走廊，
             # 证据留到下一次建成时消费（不因弃权拍丢掉一次更新）。
@@ -3343,15 +3462,38 @@ class _EgoRoadObserver:
                         and reg.left_edge_lane is not None \
                         and reg.right_edge_lane is not None:
                     pair = (reg.left_edge_lane, reg.right_edge_lane)
-            return self._fallback(now, grid, bnd, fid, master=True, new=new,
-                                  grid_off=grid_off, region_pair=pair)
-        if (new and bnd is not None and bnd.sides == 2
+            # 两个绝对路心定义的共识面（只在同拍两者都在时才有值）：
+            # 绿区中心 vs 单帧找边对中心。二者差超阈值时线道号锚冻结
+            # （见 _AnchorConsensusGate）——一帧里两种深度各说各话时，
+            # 不许任何一方改道号（实拍帧证：差 0.73 道即整道翻号）。
+            # 两种定义都要先过整幅路宽门：一条 3.0 道的"找边对"是残段/假缘，
+            # 不是另一种路心定义，拿它去冻结只会把噪声升格成否决。
+            if pair is not None and bnd is not None \
+                    and getattr(bnd, "sides", 0) == 2 \
+                    and bnd.left_edge_lane is not None \
+                    and bnd.right_edge_lane is not None:
+                _ew = bnd.right_edge_lane - bnd.left_edge_lane
+                _rw = pair[1] - pair[0]
+                if abs(_ew - self.W_PRIOR_LANE) <= self.W_GUARD_LANE \
+                        and abs(_rw - self.W_PRIOR_LANE) <= self.W_GUARD_LANE:
+                    self.anchor_gap = (0.5 * (pair[0] + pair[1])
+                                       - 0.5 * (bnd.left_edge_lane
+                                                + bnd.right_edge_lane))
+            out = self._fallback(now, grid, bnd, fid, master=True, new=new,
+                                 grid_off=grid_off, region_pair=pair)
+        elif (new and bnd is not None and bnd.sides == 2
                 and bnd.left_edge_lane is not None
                 and bnd.right_edge_lane is not None):
-            return self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
-                                   now, grid_off, "pair", bnd, grid, fid)
-        return self._fallback(now, grid, bnd, fid, master=master, new=new,
-                              grid_off=grid_off)
+            out = self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
+                                  now, grid_off, "pair", bnd, grid, fid)
+        else:
+            out = self._fallback(now, grid, bnd, fid, master=master, new=new,
+                                 grid_off=grid_off)
+        # 拒绝原因必须在本拍所有候选跑完后统一落快照：失败路径各自写
+        # `last["reject"]`，随后记忆/线成功会整拍覆盖快照——实拍 trace 里
+        # ro_reject 因此恒为 None，供数门分账失去数据源。
+        self.last["rejects"] = list(dict.fromkeys(self._tick_rejects))
+        return out
 
     def _plane_gate(self, bnd) -> bool:
         """平面尺度门：|coef[2]|（=cam_h）在 bumper 机位物理带内；无平面证据
@@ -3380,6 +3522,7 @@ class _EgoRoadObserver:
         off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
         pair_w = er - el               # 本拍对宽（供数门分账审计面，滤波前）
         if abs((el + er) / 2.0) > self.OFF_MAX:
+            self._tick_rejects.append(f"{src}:off_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="off_max")
             return None                 # 垃圾对：不喂、不入槽、不入窗
@@ -3389,6 +3532,7 @@ class _EgoRoadObserver:
         formed = self.width
         if formed is not None and \
                 abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
+            self._tick_rejects.append(f"{src}:width_guard")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="width_guard")
             return None                 # 污染对：不喂、不入槽、不入窗
@@ -3401,6 +3545,7 @@ class _EgoRoadObserver:
             if abs(off_raw - grid_off) > self._xc.tol_lane:
                 self._xc_streak += 1
                 if self._xc_streak < self._xc.bypass_streak:
+                    self._tick_rejects.append(f"{src}:veto")
                     self.last = self._snapshot(now, src, None, off_raw,
                                                grid_off, "veto",
                                                pair_w=pair_w, reject="veto")
@@ -3419,6 +3564,7 @@ class _EgoRoadObserver:
         center = (el + er) / 2.0        # 路心（自车系）
         self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
+            self._tick_rejects.append(f"{src}:center_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
             return None                 # 垃圾信号不喂（中值后复查，宁弃不喂假路心）
@@ -3434,12 +3580,14 @@ class _EgoRoadObserver:
         off_raw = -((el + er) / 2.0)
         pair_w = er - el
         if abs((el + er) / 2.0) > self.OFF_MAX:
+            self._tick_rejects.append("region:off_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="off_max")
             return None
         # master 的宽门锚在规则先验（4 条等宽车道），不随学习中位数漂移：
         # 先验被读数拖偏时，相对门会把真路宽判成污染，形成自锁死循环。
         if abs((er - el) - self.W_PRIOR_LANE) > self.W_GUARD_LANE:
+            self._tick_rejects.append("region:width_guard")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="width_guard")
             return None
@@ -3450,6 +3598,7 @@ class _EgoRoadObserver:
         center = (el + er) / 2.0
         self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
+            self._tick_rejects.append("region:center_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
             return None
@@ -3470,6 +3619,7 @@ class _EgoRoadObserver:
             ok = self._jump_ok(center, advance=not self._frame_gate_used)
             self._frame_gate_used = True
             if not ok:
+                self._tick_rejects.append(f"{src}:jump")
                 self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                            xcheck, pair_w=pair_w,
                                            reject="jump")
@@ -3633,14 +3783,21 @@ class _EgoRoadObserver:
         live_r = {zc: v for zc, v in right.items() if v[2]}
         common = sorted(set(live_l) & set(live_r), key=abs)
         self._audit["wall_same_bin"] = bool(common)   # 双侧同箱且都当拍在场
+        if not left and not right:
+            self._tick_rejects.append("wall:absent")
+        elif not common and (not live_l or not live_r):
+            # 有箱但至少一侧本拍无实测（复用拍/遮挡衰减）——不是宽度矛盾
+            self._tick_rejects.append("wall:stale")
         for zc in common:
             lane_l, _cl, _ = live_l[zc]
             lane_r, _cr, _ = live_r[zc]
             w = lane_r - lane_l
             center = 0.5 * (lane_l + lane_r)
             if abs(center) > self.OFF_MAX:
+                self._tick_rejects.append("wall:off_max")
                 continue
             if not self._width_ok(w, formed):
+                self._tick_rejects.append("wall:width_guard")
                 continue             # 与路宽先验矛盾：不猜哪一侧
             if new:
                 self._feed_width(w, center)
@@ -3652,6 +3809,8 @@ class _EgoRoadObserver:
             # build_corridor 从墙箱/绿区填），不再 ∓W/2 反推路心——单侧反推
             # 的偏差跟方向和遮挡状态走（实测左右墙交替差 0.7 道），正是
             # memory↔wall_occl 来回整道跳的来源。线也丢失时交绿区/记忆/None。
+            if live_l or live_r:
+                self._tick_rejects.append("wall:single")
             return None
         # 回放链（off/veto）保留旧的单侧墙反推，逐位保持旧行为。
         if formed is None:
@@ -3699,6 +3858,17 @@ class _EgoRoadObserver:
         # 整张网格按「自车在路心另一侧」取整，开局就错一道且随线锁固化。
         if src in ("wall", "region", "pair"):
             self.depth_anchor_ego = -float(center)
+            # 严格锚：同源 + 连续拍中心步长 ≤ANCHOR_STABLE_STEP。双侧都在
+            # 已由各来源保证（wall=同箱双实测、region=双侧绿缘、pair=双侧）。
+            # 只认新鲜证据：复用拍是同一份旧读数，不能重复攒"稳定"。
+            if self._fresh_tick:
+                prev = self._anchor_prev
+                stable = (prev is not None and prev[0] == src
+                          and abs(center - prev[1]) <= self.ANCHOR_STABLE_STEP
+                          and (now - prev[3]) <= self.ANCHOR_STABLE_GAP_S)
+                n = prev[2] + 1 if stable else 1
+                self._anchor_prev = (src, float(center), n, now)
+                self.anchor_strict = n >= self.ANCHOR_STABLE_N
         # 线为原点时，走廊中心用线的位置（center_override），深度的墙/记忆只
         # 供边界证据与宽度统计；深度来源跳变不再把走廊中心整道拽走。
         if self._center_override is not None:

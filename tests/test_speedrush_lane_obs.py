@@ -604,14 +604,17 @@ def test_push_without_throttle_queues_every_tick():
 
 
 def test_push_plumbs_same_frame_anchor():
-    """锚点跟帧入队：worker 拿到的深度锚点与这条帧同拍。"""
+    """锚点跟帧入队：worker 拿到的深度锚点与这条帧同拍；严格标记同帧搬运。"""
     w = LaneObsWorker(LaneObsConfig(enabled=True, hz=0.0))
     w._sess = object()
     rgb = np.zeros((4, 4, 3), np.uint8)
     w.push(rgb, 7, 1.4, 0.0, 0.05, False, anchor=0.7)
     item = w._q.get_nowait()
-    assert item[-1] == pytest.approx(0.7)
+    assert item[-2] == pytest.approx(0.7)
+    assert item[-1] is False
     assert item[1] == 7
+    w.push(rgb, 8, 1.4, 0.0, 0.05, False, anchor=0.7, anchor_strict=True)
+    assert w._q.get_nowait()[-1] is True
 
 
 def test_push_throttle_honored_when_configured():
@@ -681,15 +684,30 @@ def test_smooth_vanish_rejects_single_outlier():
 
 
 def test_smooth_vanish_clears_history_after_gap():
-    """断检超过 YV_GAP_S：旧姿态样本不得掺进新中位。"""
+    """断检超过 YV_GAP_S：旧姿态样本不得掺进新中位，且不受 slew 限速。"""
     from collections import deque
     hist = deque(maxlen=la.YV_WIN)
     t = 0.0
     for i in range(5):
         val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t)
     assert val == pytest.approx(361.0)
-    val, t = la._smooth_vanish(hist, 350.0, t + 5.0, t)
+    val, t = la._smooth_vanish(hist, 350.0, t + 5.0, t, val)
     assert val == pytest.approx(350.0)
+
+
+def test_smooth_vanish_slews_continuous_drift():
+    """连续同向漂移只按 YV_SLEW_PX/拍走：成簇离群不得整段拉动发布值。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    val = None
+    t = 0.0
+    for i in range(10):
+        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t, val)
+    assert val == pytest.approx(361.0)
+    for i in range(10, 20):
+        val, t = la._smooth_vanish(hist, 371.0, i * 0.05, t, val)
+    assert 361.0 < val <= 361.0 + 10 * la.YV_SLEW_PX + 1e-6, \
+        f"10 拍 10px 台阶不得整段跟上，只允许按陷速走：{val}"
 
 
 def _vline(k, cam_h=1.25, y_v=361.0, y0=560.0, y1=700.0):
@@ -813,9 +831,9 @@ def test_gross_anchor_disagreement_shifts_grid_by_one_lane():
         out = tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
     assert out["x"] == pytest.approx(0.4)
     assert tr.locked >= la.LINE_LOCK_TICKS
-    # 深度连续 5 拍都说车在 1.5 道（差 1.1 道 = 整道级）
+    # 深度连续 5 拍都说车在 1.5 道（差 1.1 道 = 整道级），且锚严格（同源双侧稳定）
     for i in range(5):
-        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5)
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5, True)
     assert tr.gross_reanchor == 1
     # 只挪整数道：小数部分仍由线自己给（0.4），所以落在 1.4 而不是锚点 1.5
     assert out["x"] == pytest.approx(1.4)
@@ -831,6 +849,28 @@ def test_half_lane_anchor_disagreement_never_reanchors():
     for i in range(8):
         tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
     for i in range(40):
-        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.0)
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.0, True)
     assert tr.gross_reanchor == 0
     assert out["x"] == pytest.approx(0.4, abs=0.05)
+
+
+def test_gross_reanchor_requires_strict_two_sided_anchor():
+    """整道复核只认"同时稳定看清两侧"的锚：单侧/换源/中心逐拍跳的锚
+    即使连续差满一道也不许平移网格（2026-11-13 三局：贴左墙段绿区中心
+    逐拍跳 0.4 道，旧口径 3/5 拍整道平移、错误保持数十秒）。"""
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):
+        tr.update(lines, i + 1, 0.05, 0.0, False, 0.0, True)
+    # 同一远锚，但明确标记为非严格（单侧/不稳定）
+    for i in range(10):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5, False)
+    assert tr.gross_reanchor == 0
+    assert out["x"] == pytest.approx(0.4, abs=0.05)
+    # 非严格锚不计数；切回严格后仍按 3/5 拍从头累积
+    for i in range(2):
+        tr.update(lines, 40 + i, 0.05, 0.0, False, 1.5, True)
+    assert tr.gross_reanchor == 0
+    for i in range(3):
+        out = tr.update(lines, 50 + i, 0.05, 0.0, False, 1.5, True)
+    assert tr.gross_reanchor == 1
