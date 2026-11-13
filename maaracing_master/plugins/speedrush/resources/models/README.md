@@ -7,8 +7,9 @@
 ```
 models/
 ├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
-├── depth/moge2_vits_static_336x598_t1032_q4f16.onnx         # 深度几何（MoGe-2 q4f16，Apache-2.0）
+├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 深度几何（DepthART MNV4-M-slim-SPF，Apache-2.0）
 └── lane/plus_small_384x640.onnx                             # 线观测（TwinLiteNet+ Small，BDD100K 非商业/科研）
+    └── plus_small_fp16_384x640.onnx                         # 同上权重的 FP16 版（DML 专用加速件）
 ```
 
 ## 安装（深度模式与线观测）
@@ -27,19 +28,22 @@ models/
 
 校验值（代码 `model_assets.MODEL_MANIFEST` 同源）：
 
-- `perception/model.onnx`：10,605,615 字节，SHA256
-  `f12b5958637932f3a01f413c93a8a5ceba86693a8133a52fa32224ec8f5e3fe4`
-- `depth/moge2_vits_static_336x598_t1032_q4f16.onnx`：71,913,448 字节，SHA256
-  `2e5c58b4bd6367593a8ed6039ef729a89c4b19f3a64e5954713f10a36ec0f116`
-- `lane/plus_small_384x640.onnx`：543,153 字节，SHA256
-  `45044c268d54ee34cbd097abcf19fb0d53858a8815e0024018db0df6137289e4`
+- `perception/model.onnx`：10,665,412 字节，SHA256
+  `0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af`
+- `depth/relative_mnv4m_slim_spf_448_default.onnx`：24,155,097 字节，SHA256
+  `825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71`
+- `lane/plus_small_384x640.onnx`：543,156 字节，SHA256
+  `bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc`
+- `lane/plus_small_fp16_384x640.onnx`：314,482 字节，SHA256
+  `abdf3d46706c0dc259d178df8a27ae23b9c3ce03f658e75aadc391b035bd9e26`
+  （由上一份权重 `keep_io_types` 转 FP16，仅 DML 使用；缺失或会话失败时回退 FP32）
 
 缺失或校验失败时，深度模式会在连接游戏前终止并提示重新下载；直行与宏录制照常可用。
 
 ## perception/model.onnx —— 物品感知（AGPL-3.0）
 
 - **来源**：由 Ultralytics 官方预训练权重 `yolo11n.pt` + Ultralytics 训练代码
-  在自有标注数据上微调导出（见根目录 `tools/training/train.py`）。
+  在自有标注数据上微调导出（见 `maaracing_master/plugins/speedrush/tools/training/train.py`）。
 - **许可**：按 Ultralytics 的立场，本微调模型视为 AGPL-3.0 衍生作品，随发布包
   再分发需遵循 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.html)。
 - **运行时不含 Ultralytics 代码**：YOLO 推理仅通过 ONNX Runtime 加载本 ONNX 图，
@@ -48,20 +52,21 @@ models/
   [Ultralytics Enterprise License](https://www.ultralytics.com/license)。
 - 上游: <https://github.com/ultralytics/ultralytics>
 
-## depth/moge2_vits_static_336x598_t1032_q4f16.onnx —— 深度几何（Apache-2.0）
+## depth/relative_mnv4m_slim_spf_448_default.onnx —— 深度几何（Apache-2.0）
 
-- **来源**：Microsoft MoGe-2（ViT-S）官方 ONNX 导出权重的 q4f16 量化、
-  720×1280 输入折叠静态图（输出点图 336×598）；量化折叠产物经离线同卷
-  验证与金标回归后入库（2026-10-01 深度几何 v4 换装，取代 DA-S 视差权重）。
-- **许可**：Apache-2.0（上游权重与转换产物同许可），可随发布包自由再分发。
+- **来源**：DepthART（ACM MM 2026）MobileNetV4-M-slim-SPF 相对深度权重，
+  448×448 固定输入；量化与 ONNX 导出产物经离线同卷验证与合成点图回归后入库。
+- **许可**：上游 Hugging Face 模型卡标注 Apache-2.0，可随发布包自由再分发。
 - **运行时不依赖上游仓库代码**：推理仅通过 ONNX Runtime 加载本 ONNX 图；
-  focal/shift 恢复与点图重建的后处理为本仓库复刻（`moge_post.py`，公式
-  对齐官方 geometry_numpy / v2.py）。
-- 上游: <https://github.com/microsoft/MoGe>
+  米制换算（车道线灭点行 + 地面模型 → 合成点图）为本仓库实现（`depth_geo.py`）。
+- 上游: <https://github.com/xuefeng-cvr/DepthART> 、<https://huggingface.co/Fengxue93/DepthART>
 
-## lane/plus_small_384x640.onnx —— 线观测（许可待核对）
+## lane/plus_small_384x640.onnx —— 线观测（BDD100K 非商业/科研）
 
-- **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；离线核验记录见提交历史。
+- **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；在此基础上用**自采
+  游戏帧**做定向微调（只解冻车道头三层，74 张逐张目检样本，Focal+Tversky 区域损失），
+  目的是补上原模型对「贴脸正中粗白虚线」的盲区。微调数据为本项目自采游戏画面，
+  不含第三方标注，许可随上游不变。离线核验记录见仓库提交历史（微调与逐张目检）。
 - **许可**：上游 TwinLiteNet+ 代码为 MIT；BDD100K 数据/标签适用 UC Regents 定制许可——
   教育、科研与非营利目的可复制、修改、分发（须随附版权与许可声明），商业用途仅限
   BDD/BAIR 成员。许可正文未单列“训练所得权重”，本项目按衍生作品处理：随可选模型包

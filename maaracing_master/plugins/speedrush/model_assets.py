@@ -17,6 +17,7 @@ from pathlib import Path
 from maaracing_master.core.paths import data_dir
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL,
+    LANE_FP16_MODEL_REL,
     LANE_MODEL_REL,
     MODELS_DIR,
     PERCEPTION_MODEL_REL,
@@ -27,20 +28,25 @@ PACK_PREFIX = "resources/models/"
 # 深度档必需：缺任一项就不允许启动深度模式
 DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
     PERCEPTION_MODEL_REL: (
-        10605615,
-        "f12b5958637932f3a01f413c93a8a5ceba86693a8133a52fa32224ec8f5e3fe4",
+        10665412,
+        "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
     ),
     DEPTH_MODEL_REL: (
-        71913448,
-        "2e5c58b4bd6367593a8ed6039ef729a89c4b19f3a64e5954713f10a36ec0f116",
+        24155097,
+        "825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71",
     ),
 }
 
-# 线观测可选：缺失时退回深度/墙供数，不影响深度档启动
+# 线观测可选：缺失时退回深度/墙供数，不影响深度档启动。
+# FP16 是 DML 专用加速件，缺失时线观测回退 FP32（不降级成故障）。
 LANE_MANIFEST: dict[str, tuple[int, str]] = {
     LANE_MODEL_REL: (
-        543153,
-        "45044c268d54ee34cbd097abcf19fb0d53858a8815e0024018db0df6137289e4",
+        543156,
+        "bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc",
+    ),
+    LANE_FP16_MODEL_REL: (
+        314482,
+        "abdf3d46706c0dc259d178df8a27ae23b9c3ce03f658e75aadc391b035bd9e26",
     ),
 }
 

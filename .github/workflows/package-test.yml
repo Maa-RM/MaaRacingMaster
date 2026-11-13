@@ -69,6 +69,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rtcache-
 
+      - name: 验证打包筛选与失败阻断
+        shell: pwsh
+        run: |
+          python -m pip install "pytest>=7.0"
+          python -B -m pytest tests/test_release_assembly.py tests/test_release_ship_expiry.py -q
+
       - name: 组装解压即用包
         shell: pwsh
         run: |

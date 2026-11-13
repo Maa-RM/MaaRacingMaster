@@ -21,7 +21,7 @@ def _obs(fid, *, targets=(), far=(), groups=(), metric=(), stage=1):
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=stage,
         health=PerceptionHealth(True, True, True, bool(targets or far), False),
-        boundary=None, targets=tuple(targets), far_targets=tuple(far),
+        targets=tuple(targets), far_targets=tuple(far),
         coin_groups=tuple(groups), metric_cars=tuple(metric),
         fid_rate_hz=FPS)
 

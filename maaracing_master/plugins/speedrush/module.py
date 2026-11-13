@@ -30,7 +30,7 @@ import math
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -42,13 +42,20 @@ from maaracing_master.core import xinput
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
 from maaracing_master.core.logger import logger
-from maaracing_master.core.nav_graph import NavGraph
-from maaracing_master.core.navkit import Command, StepMachine, Verdict
+from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome
+from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.core.paths import debug_dir
+from maaracing_master.core.session_layout import (
+    SESSION_TOKEN_FMT,
+    fresh_session_dir,
+)
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.speedrush import (
     DEPTH_MODEL_REL, IMAGE_DIR, PERCEPTION_MODEL_REL, PIPELINE_DIR)
 from maaracing_master.plugins.speedrush import dashboard_store, model_assets
+from maaracing_master.plugins.speedrush.gpu_probe import GpuProbe
+from maaracing_master.plugins.speedrush.session_layout import (
+    drive_behavior_dir, rebuild_drive_index, upsert_drive_segment)
 from maaracing_master.plugins.speedrush.coin_group import CoinGroupAggregator
 from maaracing_master.plugins.speedrush.config import load_decision
 from maaracing_master.plugins.speedrush.corridor import (
@@ -58,27 +65,26 @@ from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.debugview import (
     DEBUG_INTERVAL_S, DebugPairWriter, render_hud)
 from maaracing_master.plugins.speedrush.depth_geo import (
-    AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, grid_center_lane,
-    blocked_inner_reading, load_session, region_reading,
-    last_slow_forward)
+    AsyncDepthRoadObserver, DepthRoadObserver, DrivableGrid, SKIP_STATS,
+    grid_center_lane, blocked_inner_reading, load_session, region_reading)
 from maaracing_master.plugins.speedrush.wall_track import (
     MEASURED, OCCLUDED, OCCL_MIN_CONF, WallTrack)
 from maaracing_master.plugins.speedrush.hud import (
     HudObserver, load_hud_regions, read_hud_scores)
 from maaracing_master.plugins.speedrush.macro import (
-    MacroError, MacroPlayer, MacroRecorder, list_groups, load_phase, macro_root,
-    resolve_group, valid_group_name)
+    MacroError, MacroPlayer, MacroRecorder, choice_label, list_groups, load_phase,
+    macro_root, resolve_group, valid_group_name)
 from maaracing_master.plugins.speedrush.lane_obs import (
     LaneObsConfig, LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
 from maaracing_master.plugins.speedrush.planner import LateralPlanner
-from maaracing_master.plugins.speedrush.route import (
-    ATTR_SHIFT_HELD, PositionLineage)
+from maaracing_master.plugins.speedrush.route import PositionLineage
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
+from maaracing_master.plugins.speedrush.collision import CollisionObserver
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
-from maaracing_master.plugins.speedrush.evidence import archive_session_evidence
-from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
+from maaracing_master.plugins.speedrush.traffic import (
+    OUTCOME_PASS, OUTCOME_PRESUMED_PASS, TrafficObserver)
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
 from maaracing_master.plugins.speedrush.world_model import KIND_CAR, load_calib
 from maaracing_master.plugins.speedrush.view_guard import ViewGuard
@@ -125,6 +131,19 @@ DRIVE_STAGE_NODE = "speedrush.驾驶页锚点"
 # 阈值 0.7 为截图自匹配（1.0）起的保守起点，**待真机驾驶帧校准**（口径同齿轮锚点 0.5）。
 STORE_BANNER_NODE = "speedrush.商店横幅锚点"
 
+# UI 导航段的存盘策略：**导航要图、驾驶不要图**。
+#
+# 驾驶侧靠 `probe()` 不开调试段，天然没有图（控制链的取证走模块自己的
+# `DebugPairWriter`，10Hz，不受这里影响）；UI 侧（点击步、落地确认、驾驶入口
+# 就绪判据）用 `run(..., save=NAV_SAVE)` 显式声明要图——这些画面正是排查
+# 「按钮在不在、有没有弹窗、页面切没切」的直接证据。
+#
+# 为什么要显式传而不是改 `DEBUG_SAVE`：`DEBUG_SAVE` 是**运行项级**声明（整局
+# 一个值，控制器开 scope 时读一次），改成 `"on"` 会让驾驶期间栈顶的 scope 也
+# 落图，既污染取证又和 writer 双写。落盘频率不在这里定——core 的
+# `NAV_SAVE_FPS`（3Hz）统一管所有 nav 段。
+NAV_SAVE = "on"
+
 # 驾驶阶段等待上限。单局（含两阶段）实测一般 3 分钟、耗满可达 6~7 分钟
 # （RULES.md §4.7），取 10 分钟留余量。
 DRIVE_TIMEOUT_S = 600.0
@@ -133,10 +152,12 @@ DRIVE_TIMEOUT_S = 600.0
 DRIVE_MISS_TOLERANCE = 2
 
 # ---------- 步级重试（大阶段之间的一次 UI 点击） ----------
-# 现状：某个 UI 步 run(node, node) 的 True 只证明「按钮被识别并点了一次」，不含落地页
-# 后置确认；点了没生效只能靠下一步识别不到、白等框架默认 20s 后中止本轮。这里给每个
-# 点击步套 core StepMachine：点击 → 按时间窗轮询落地页确认锚点 → 未落地则有限重发同一
-# 点击（动作节点自带识别闸门，按钮已消失就空跑、不误点）→ 耗尽按现状终止本轮、停止即退。
+# 成功判据 = 画面确实切到落地页：① 源按钮 ROI 消失（ClickAction settle 信号）或 ② 落地锚点
+# 从无到有（进本步时不在、点后命中，且本步发过点击），二者取其一，且落地锚点此刻在位。
+# 只用①：常驻 tab 点完也不消失，该步恒判失败；只用②：锚点在点击前就可见、或没点过就自己
+# 出现（游戏自身切页）时证明不了切换。生效过就不再重发，只等页面到位。
+# 按钮消失得比 2s 观察窗还慢时，由「下一拍按钮已识别不到」反推为生效，
+# 否则会一直重发到按钮已不在、只剩空转识别。
 # 机器唯一持有计数与时间窗，speedrush 只供给「动作 + 每拍 verdict + 驱动时机」。
 # 剂量（max_retries / window_s / poll_s / 分步覆盖 by_stage）在数据面 decision.json 的
 # step_retry 段——_run_step 每步经 load_decision().step_retry.dose(stage) 取，可按阶段调。
@@ -199,40 +220,6 @@ def classify_ro_hop(t0: float, ro0: float, src0: str | None,
     hop = 1 if abs(d) > HOP_V_MAX_LANE_S * gap + HOP_NOISE_LANE else 0
     return {"gap": gap, "d": d, "v": v, "hop": hop,
             "src_chg": int(src0 != src1)}
-
-
-def _note_c_event(chain: dict, kind: str, fid: int, ts_ns: int,
-                  **detail) -> None:
-    """记一次 C 相关事件（阶段收尾据此冻结证据）。首次事件保留现场。"""
-    ev = chain.get("c_evidence")
-    if ev is None:
-        ev = {"first": None, "kinds": {}}
-        chain["c_evidence"] = ev
-    ev["kinds"][kind] = ev["kinds"].get(kind, 0) + 1
-    if ev["first"] is None:
-        ev["first"] = {"kind": kind, "fid": fid, "ts_ns": ts_ns, **detail}
-
-
-def _c_events(eng, position) -> list[tuple[str, dict]]:
-    """本拍是否出现 C 相关事件（只读；不含 blkfin-only 的普通拦截拍）。
-
-    冻结触发面：路线相位/定案/参考道分歧（真正的 C 效果）、选择影子分歧或
-    同输入不一致（下游差异/信任根故障）、换档读数上的完成（C 的目标样本）。
-    """
-    out: list[tuple[str, dict]] = []
-    rv, sv = eng.route_verdict, eng.route_shadow_verdict
-    if rv is not None and sv is not None and (
-            (rv.phase, rv.verdict, rv.lane_ref)
-            != (sv.phase, sv.verdict, sv.lane_ref)):
-        out.append(("route_div", {"prod": rv.verdict, "shadow": sv.verdict}))
-    sst = eng.selection_shadow_trace
-    if sst is not None:
-        out.append(("sel_bug" if sst.get("bug") else "sel_div",
-                    {"layer": sst.get("l"), "req": sst.get("req")}))
-    if rv is not None and rv.verdict == "finish" and position is not None \
-            and getattr(position, "kind", None) == ATTR_SHIFT_HELD:
-        out.append(("c_finish", {"target": rv.lane_ref}))
-    return out
 
 
 # 驾驶页锚点复查间隔。锚点识别走框架（post_task + 等待，单轮毫秒级），不必每帧跑；
@@ -345,6 +332,20 @@ def _build_config_ui(models_ready: bool) -> dict:
                     "description": "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行",
                     "choices": "macro_group",
                     "visible_if": {"key": "drive_mode", "op": "equals", "value": "macro"},
+                    # 下拉是原生控件，选项里塞不进徽章（契约的徽章只给分段用）——
+                    # 「跟随最新」和「锁定这一局」的差别改由说明行按所选值换文案讲清。
+                    "variants": [
+                        {
+                            "when": {"key": "macro_group", "op": "equals", "value": ""},
+                            "description": "跟随最新一局：录完新一局会自动改成回放那一局。"
+                                           "想固定住某一份，直接在列表里选它的时间点。",
+                        },
+                        {
+                            "when": {"key": "macro_group", "op": "not_equals", "value": ""},
+                            "description": "固定回放这一局，录了新局也不会改。"
+                                           "关闭「录制」时生效；缺阶段文件的那一段会降级为全程直行。",
+                        },
+                    ],
                 },
                 {
                     "key": "record_mode", "type": "switch", "label": "录制演示数据",
@@ -476,8 +477,13 @@ class SpeedRushModule(ActivityModule):
 
     @classmethod
     def config_choices(cls) -> dict:
-        """宏组下拉的可选值（空值=最新一组，排在最前）。不创建实例。"""
-        return {"macro_group": [{"value": "", "label": "最新录制的宏"}] + list_groups()}
+        """宏组下拉的可选值（不创建实例）。
+
+        首项空值=跟随最新一局，标签直接把那一局的时间戳写出来；一组都没有就给
+        「无」。用户显式选过的那一份存的是组名，此后不再随新录的宏漂移。"""
+        groups = list_groups()
+        return {"macro_group": [{"value": "", "label": choice_label("", groups)}]
+                + groups}
 
     @classmethod
     def config_summary(cls, config: dict) -> list[str]:
@@ -492,11 +498,15 @@ class SpeedRushModule(ActivityModule):
             out.append("录制: " + ("开" if config.get("record_mode") else "关"))
         out.append("驾驶模式: " + mode_text)
         if mode == "macro" and not config.get("record_mode"):
-            out.append("宏组: " + str(config.get("macro_group") or "最新录制的宏"))
+            out.append("宏组: " + choice_label(str(config.get("macro_group") or ""),
+                                              list_groups()))
         return out
 
     def config_status(self) -> dict | None:
-        """面板状态行：宏录制/回放、演示录制进度；无内容返回 None。"""
+        """面板状态行：宏录制/回放、演示录制进度；无内容返回 None。
+
+        这一行只留给「执行到哪了」——影响本次结果的异常由字段内联提示与卡片徽章
+        承载，没开录制这类正常状态不占行（任务卡摘要已经写了录制开/关），也不染警告色。"""
         mrec = self._macro_rec
         if mrec is not None and mrec.running:
             samples = int(mrec.stats["samples"])
@@ -523,11 +533,8 @@ class SpeedRushModule(ActivityModule):
             return {"text": f"录制中：已写 {st['frames_written']} 帧 · 丢帧 "
                             f"{st['frames_dropped']} · 手柄样本 {st['pad_samples']}；"
                             f"目录 {_record_root()}", "level": "ok"}
-        if self._running:
-            if self._record_mode:
-                return {"text": "运行中：录制已开启，进入驾驶阶段后开始写入", "level": ""}
-            return {"text": "运行中：本次未开启录制（开关改动在下次「开始」时生效）",
-                    "level": "warn"}
+        if self._running and self._record_mode:
+            return {"text": "运行中：录制已开启，进入驾驶阶段后开始写入", "level": ""}
         return None
 
     @classmethod
@@ -598,6 +605,9 @@ class SpeedRushModule(ActivityModule):
         self._macro_group = self.DEFAULT_MACRO_GROUP
         self._macro_rec: MacroRecorder | None = None
         self._macro_player: MacroPlayer | None = None
+        # 回放线程超时未退出标志：驾驶阶段可能覆盖 _macro_player 引用，但卡死的线程
+        # 仍持有手柄租约——收尾必须据标志判失败，控制器据此保留设备（不销毁）
+        self._macro_player_stuck = False
         # 人工驾驶期标记（紧急停止作用域）：录制阶段按键是正常操作，不能当急停
         self._manual_drive = False
         # road_offset 证据源=深度几何区读数（v4 几何主人，供数门优先级链见
@@ -717,8 +727,12 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 生命周期 ----------
 
-    def start(self, start_from: str | None = None) -> None:
-        """启动流程（阻塞；由外层 worker 线程调用）。"""
+    def start(self, start_from: str | None = None) -> bool:
+        """启动流程（阻塞；由外层 worker 线程调用）。
+
+        返回 True = 自然结束（到限自动停止 / 响应停止信号）；False = 启动校验或
+        流程失败——编排层据此判该项 fail，不得把失败的一局记成完成。
+        """
         assert self.ctx is not None, "离线模式（ctx=None）不可调用 start()"
         # 深度模式先过模型包校验：缺失/损坏在连窗口之前就明确终止，
         # 不把用户带进一局没有几何供数的驾驶。
@@ -726,10 +740,10 @@ class SpeedRushModule(ActivityModule):
             pack_error = model_assets.check_pack()
             if pack_error:
                 _tlog(self, f"[极速狂飙] 深度模式无法启动：{pack_error}", "ERROR")
-                return
+                return False
         if not self.ctx.connect():
             logger.log("[极速狂飙] 窗口连接失败，模块终止", "ERROR")
-            return
+            return False
         # 模板与 ROI 均按 720p(16:9) 归一化，其他比例会识别错位
         if not self.ctx.check_window_aspect():
             logger.log(
@@ -737,7 +751,7 @@ class SpeedRushModule(ActivityModule):
                 "其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止",
                 "ERROR",
             )
-            return
+            return False
 
         # 录制模式的输入前提：点击方式为「前台鼠标」时全程不创建虚拟手柄；选了「后台手柄」
         # 的话，导航步骤会创建并常驻一个虚拟手柄（见 nav_graph 的 gamepad 分支），可能与其
@@ -768,7 +782,7 @@ class SpeedRushModule(ActivityModule):
             if not graph.load():
                 _tlog(self, "[极速狂飙] 导航图加载失败，模块终止", "ERROR")
                 self._graph = None   # 未加载成功不留给 cleanup 当已装配图处理
-                return
+                return False
 
             index = resolve_start_index(start_from)
             if start_from and index == 0:
@@ -781,7 +795,7 @@ class SpeedRushModule(ActivityModule):
                 except MacroError as exc:
                     _tlog(self, f"[极速狂飙] 宏不可用：{exc}。"
                                 f"请先录制宏，或切回其他驾驶模式", "ERROR")
-                    return
+                    return False
                 missing = [ph for ph in (1, 2)
                            if not (group_dir / f"p{ph}.jsonl").is_file()]
                 _tlog(self,
@@ -791,7 +805,7 @@ class SpeedRushModule(ActivityModule):
                       "WARNING" if missing else "INFO")
 
             flow_ok = True
-            self._run_flow(index)
+            return self._run_flow(index)
         finally:
             # 契约 §2：进入主流程后无"自然完成"出口（循环至停止），一律落 incomplete；
             # 启动段失败（图加载/断点解析）落 failure——卡片的终态要如实反映失败阶段。
@@ -809,8 +823,9 @@ class SpeedRushModule(ActivityModule):
         if self._graph is not None:
             self._graph.request_stop()
 
-    def cleanup(self) -> None:
-        """幂等释放模块资源。"""
+    def cleanup(self) -> bool:
+        """幂等释放模块资源。返回 False = 框架未收摊或回放线程未退出，
+        对应引用保留不销毁，由调用方隔离持有并拒绝下一轮。"""
         # 预加载线程：置停止位并短等一次；模型加载本身不可中断，超时就放手
         # （daemon 线程会自行结束，_preload_started 保证不会再起第二个）。
         self._preload_stop.set()
@@ -822,9 +837,11 @@ class SpeedRushModule(ActivityModule):
             self._hud.stop("cleanup")
             self._hud = None
         # 宏回放先停（它持有自己的手柄租约）；宏录制次之
+        player_ok = True
         if self._macro_player is not None:
-            self._macro_player.stop()
-            self._macro_player = None
+            player_ok = self._stop_macro_player(self._macro_player)
+            if player_ok:
+                self._macro_player = None
         if self._macro_rec is not None:
             self._macro_rec.stop("cleanup")
             self._macro_rec = None
@@ -833,9 +850,20 @@ class SpeedRushModule(ActivityModule):
             self._recorder.stop("cleanup")
             self._recorder = None
         if self._graph is not None:
-            self._graph.shutdown()
+            if not self._graph.shutdown():
+                return False   # 未收摊：保留图引用，由调用方隔离持有
             self._graph = None
         self._stage_name = None
+        return player_ok and not self._macro_player_stuck
+
+    def _stop_macro_player(self, player) -> bool:
+        """停回放器并记录退出结果。超时未退置 _macro_player_stuck：后续阶段可能
+        覆盖 _macro_player 引用，但卡死线程仍持有手柄租约，收尾须据标志判失败。
+        """
+        ok = player.stop()
+        if not ok:
+            self._macro_player_stuck = True
+        return ok
 
     # ---------- 结构化日志组归属（类上薄包装，与模块级函数同源，treasure 同形态） ----------
 
@@ -900,8 +928,18 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 流程推进 ----------
 
-    def _run_flow(self, index: int) -> None:
-        """按 FLOW 推进；走完一轮回到循环体起点继续，直到收到停止信号。"""
+    def _stop_signal_received(self) -> bool:
+        """停止有两个来源：模块 stop() 落 _running；到限/手动停止置 stop_event
+        （经 lifecycle.running 可见）。任一落下即停止，流程出口据此区分停止与失败。
+        """
+        assert self.ctx is not None         # 只在流程推进期调用（同 _run_flow 前置）
+        return not (self._running and self.ctx.lifecycle.running)
+
+    def _run_flow(self, index: int) -> bool:
+        """按 FLOW 推进；走完一轮回到循环体起点继续，直到收到停止信号。
+
+        返回 True = 停止收场；False = 流程失败（驾驶异常结束 / 步骤重发耗尽）。
+        """
         assert self._graph is not None
         # 模型预加载：UI 导航阶段有数十秒空档，后台先把深度/感知模型加载好，
         # 驾驶页出现时不再付冷启动时间（失败由驾驶阶段懒加载重试）。
@@ -909,13 +947,18 @@ class SpeedRushModule(ActivityModule):
         round_no = 0
         last_stamp = ""
         stamp_dup = 0
+        # 上一步是否刚用「驾驶页锚点」确认过落地页：确认过就不必在驾驶入口
+        # 从零再数两次连击——两处判据隔着一次点击/转场，本就是两次独立识别。
+        # 只随实际执行过的步骤更新：从中间起跑（start_from 直接落在驾驶阶段）
+        # 时没有前置确认，仍走完整就绪等待。
+        drive_ready_confirmed = False
         while self._running:
             round_no += 1  # 场景分层用：录制 meta 要记"这一帧属于第几轮"
             # 每局一个产物前缀：同一局的两个驾驶阶段共用它（p1/p2 才能配对），
             # 不同局必然不同。日志会话编号只标识"一次启动"，同一次启动连跑多局时
             # 它会重复，后一局因此覆盖前一局的图（2026-10-30 实机踩到）。
             # 目录名格式不变，仍是 <前缀>_p<阶段>，历史会话照旧可读。
-            round_stamp = time.strftime("%Y%m%d_%H%M%S")
+            round_stamp = time.strftime(SESSION_TOKEN_FMT)
             if round_stamp == last_stamp:
                 # 同秒内连开两局（快速重开、系统时间回拨）：加序号，不让两局共前缀
                 stamp_dup += 1
@@ -930,51 +973,108 @@ class SpeedRushModule(ActivityModule):
             _open_grp(self, f"[极速狂飙] 第 {round_no} 场开始", "session")
             while index < len(FLOW):
                 if not self._running:
-                    return
+                    return True
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if node is None:
-                    if not self._drive(phase, round_no, round_stamp):
+                    ok = self._drive(phase, round_no, round_stamp,
+                                     ready_confirmed=drive_ready_confirmed)
+                    drive_ready_confirmed = False   # 一次性证据，消费即清
+                    if self._macro_player_stuck:
+                        # 回放线程卡死仍持有手柄租约：中止本轮，不进下一阶段——
+                        # 否则新回放器会与残留线程争用同一虚拟手柄
+                        _tlog(self, f"[极速狂飙] 「{stage}」回放线程未按时退出，"
+                                    f"中止本轮（避免与残留线程争用手柄）", "ERROR")
+                        return False
+                    if not ok:
                         _tlog(self, f"[极速狂飙] 「{stage}」未正常结束，本轮中止", "WARNING")
-                        return
-                elif not self._run_step(node, stage):
-                    return
+                        return self._stop_signal_received()
+                else:
+                    if not self._run_step(node, stage):
+                        return self._stop_signal_received()
+                    drive_ready_confirmed = (
+                        STEP_CONFIRM.get(stage) == DRIVE_STAGE_NODE)
                 index += 1
             index = LOOP_START_INDEX
+            drive_ready_confirmed = False
+        return True
 
     def _run_step(self, action_node: str, stage: str) -> bool:
-        """发一次 UI 点击并按「落地页确认锚点」做有限重发（步级重试）。
+        """发一次 UI 点击并做有限重发（步级重试）。
 
-        返回 True = 该步已落地（确认锚点命中）；False = 停止或重发耗尽（调用方中止本轮）。
+        返回 True = 该步已落地；False = 停止或重发耗尽（调用方中止本轮）。
 
-        speedrush 一步 = 一次尝试：点击是阻塞式完成、没有独立"送达"信号，故整步算一次
-        （点击发出即 `arm`，只重置时间窗）。确认后喂 SUCCESS、未落地喂 PENDING；停止由
-        循环守卫 `self._running / lifecycle.running` 直接退出，不喂 STOP（对应机器"停止能力
-        可选"，treasure 式逐帧自管与 speedrush 式阻塞自管共用同一转移表）。耗尽按现状终止
-        本轮，**不做回合级自动重开**（步失败不证明画面回到可重开处）。
+        **成功判据 = 画面确实切到了落地页**，两条证据取其一，外加落地锚点此刻在位：
+        ① 源按钮消失（settle 信号 `graph.last_click_landed`，观察窗 2s）；
+        ② 落地锚点从无到有（进本步时不在、点后命中），且本步发过点击。
+        只用①：左侧模式列表这类常驻 tab 点完也不消失，该步会判成永远失败（页面其实换了）。
+        只用②：落地锚点在点击前就可见、或没点过就自己出现（阶段结束游戏自动进商店）时，
+        命中证明不了画面是我们切走的。
+        「生效」还有一条反推：上一拍点过后，这一拍源按钮已识别不到（`last_click_sent` 为假）
+        = 那时点击确实生效，只是按钮消失慢过 2s 观察窗——否则会陷入
+        「只识别不点击」的空转（按钮已不在，重发永远点不到东西）。
+        窗口只决定「多久重发一次」；慢转场由窗口内的确认轮询吸收，总覆盖=(max_retries+1)×window_s。
+
+        speedrush 一步 = 一次尝试：点击发出即 `arm`，只重置时间窗。生效并到位喂 SUCCESS，
+        其余喂 PENDING；一旦生效过就不再重发（按钮多半已不在），只继续等落地页。停止由循环
+        守卫 `self._running / lifecycle.running` 直接退出，不喂 STOP。耗尽按现状终止本轮，
+        **不做回合级自动重开**。
         """
         assert self._graph is not None      # 调用方 _run_flow 已建图
         assert self.ctx is not None         # 运行期编排层总是注入实 ctx
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
             # 漏配确认锚点：退回旧的单步语义（不新增行为，也不把整条流程带崩）。
-            return self._graph.run(action_node, action_node)
+            return self._graph.run(action_node, action_node, save=NAV_SAVE)
         max_retries, window_s, poll_s = load_decision().step_retry.dose(stage)
         machine = StepMachine(max_retries=max_retries, window_s=window_s,
                               clock=time.monotonic)
         send_click = True
+        landed_ever = False      # 任一次点击的源按钮消失过（真·生效），跨重发保持
+        clicked_once = False     # 本步发过至少一次点击（按钮后来不在才可反推「上一拍已生效」）
+        # 进入本步时落地锚点在不在。不在 → 「点后命中」本身就是画面切走的证据：
+        # 左侧模式列表这类常驻 tab 点完也不消失，settle 对它恒为「被吞」，只能看落地页
+        # 从无到有；已在 → 命中证明不了切换，退回「源按钮消失」这条判据。
+        confirm_pre = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
         while self._running and self.ctx.lifecycle.running:
             if send_click:
                 machine.arm()                                   # 一次尝试发出：只重置窗口、不动计数
-                self._graph.run(action_node, action_node)       # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
+                self._graph.last_click_landed = None            # 清上一拍信号；动作未执行则保持 None
+                self._graph.last_click_sent = False
+                self._graph.run(action_node, action_node, save=NAV_SAVE)  # 点击；动作节点自带识别闸门→按钮不在则空跑不误点
                 send_click = False
+                landed = getattr(self._graph, "last_click_landed", None)
+                click_sent = bool(getattr(self._graph, "last_click_sent", False))
+                if landed is True:
+                    landed_ever = True
+                elif (landed is None and clicked_once and not click_sent):
+                    # 上一拍点过，这一拍按钮已认不出来（识别未命中→动作桥没进）= 那次点击
+                    # 生效了，只是按钮消失得比 2s 观察窗还慢（据此判不了，只能等下一拍）。
+                    # 没点过时不能这么反推：那也可能只是页面本来就没这个按钮。
+                    landed_ever = True
+                if click_sent:
+                    clicked_once = True
+            # 成功 = 画面确实切到落地页：源按钮消失（settle）**或**落地锚点从无到有，
+            # 但凡其中一条成立，再要求落地锚点此刻在位。只看按钮消失会把「点了不消失的
+            # 常驻 tab」判成永远失败；只看落地页会在弹窗出现前的空商店页上提前通过。
+            # 「从无到有」还须本步真发过点击：游戏自身切页（阶段结束自动进商店）同样让
+            # 锚点出现，没点过就命中证明不了弹窗已被我们关掉。
+            page_ok = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
+            page_changed = page_ok and not confirm_pre and clicked_once
+            confirm_pre = page_ok
             cmd = machine.observe(
-                Verdict.SUCCESS if self._graph.run(confirm_node, confirm_node) else Verdict.PENDING
+                Verdict.SUCCESS if (page_ok and (landed_ever or page_changed)) else Verdict.PENDING
             )
             if cmd is Command.DONE:
                 return True
             if cmd is Command.RETRY:
-                send_click = True                               # 重发同一动作（下一次点击即新窗口）
+                if landed_ever:
+                    # 已生效过就不再重发（按钮多半已经不在，重发只会空跑）——用 arm() 折叠
+                    # 「重发在途」资格并重置窗口，继续等落地页；否则机器会一直返回 RETRY
+                    # （在途未送达）导致原地空转。
+                    machine.arm()
+                else:
+                    send_click = True
                 continue
             if cmd is Command.WAIT:
                 if not self.ctx.lifecycle.sleep(poll_s):        # 窗内轮询；睡眠兼作停止信号
@@ -982,14 +1082,18 @@ class SpeedRushModule(ActivityModule):
                 continue
             if cmd is Command.FAIL:
                 _tlog(self, f"[极速狂飙] 步骤「{stage}」重发 {max_retries} 次仍未落地"
-                            f"（确认锚点「{confirm_node}」始终未命中），本轮中止", "WARNING")
+                            f"（源按钮未消失且落地锚点「{confirm_node}」未从无到有），本轮中止", "WARNING")
                 return False
             return False                                        # ABORT 或未知命令：保守退出
         return False                                            # 停止（_running / lifecycle 已假）
 
     def _drive(self, phase: int, round_no: int = 1,
-               stamp: str | None = None) -> bool:
+               stamp: str | None = None, *,
+               ready_confirmed: bool = False) -> bool:
         """驾驶阶段（phase = 1/2）——驾驶控制方案的接口点。
+
+        ``ready_confirmed``：紧邻的上一 UI 步已用驾驶页锚点确认过落地页，
+        入口不必再从零数两次连击（见 _wait_drive_ready）。
 
         三条驾驶模式共用本入口：深度几何/全程直行（``_resolve_drive_mode``）、
         宏录制（采集玩家操作）与宏回放（按时间轴下发）。宏模式不加载感知/深度，
@@ -1043,7 +1147,7 @@ class SpeedRushModule(ActivityModule):
         try:
             if self._record_mode:
                 _tlog(self, "[极速狂飙] 人工驾驶阶段：紧急停止的按键检测暂停", "INFO")
-            if not self._wait_drive_ready(phase):
+            if not self._wait_drive_ready(phase, confirmed=ready_confirmed):
                 return False
 
             recorder = None
@@ -1092,8 +1196,8 @@ class SpeedRushModule(ActivityModule):
                     macro_group=group_name)
             finally:
                 if macro_player is not None:
-                    macro_player.stop()
-                    self._macro_player = None
+                    if self._stop_macro_player(macro_player):
+                        self._macro_player = None
                 if macro_rec is not None:
                     macro_rec.stop("phase_end" if self._running else "stopped")
                     self._macro_rec = None
@@ -1111,26 +1215,41 @@ class SpeedRushModule(ActivityModule):
             # 停止信号打断的阶段归 incomplete，正常结束按组内 WARNING/ERROR 自动推导。
             _end_grp(self, "incomplete" if not self._running else None)
 
-    def _wait_drive_ready(self, phase: int) -> bool:
-        """等到驾驶页稳定出现；连续命中 ``DRIVE_READY_HITS`` 次才算就绪（去抖）。
+    def _wait_drive_ready(self, phase: int, *, confirmed: bool = False) -> bool:
+        """等到驾驶页出现；``confirmed`` 时**直接放行**，其余情况连续命中去抖。
+
+        ``confirmed``=紧邻的上一 UI 步刚用同一锚点（`DRIVE_STAGE_NODE`）确认过落地页，
+        两次之间只有函数返回、没有点击或转场，画面不可能跳走——再查一次是纯重复确认。
+        而起步倒计时期间车辆**已经可以接受输入**（玩家实测），多等一次识别就是白扔
+        起步时间，所以这里不查、直接进控制链。
+
+        从中间起跑（`start_from` 直接落在驾驶阶段）没有这份前置证据，仍按
+        ``DRIVE_READY_HITS`` 次连续命中判定，并受 ``DRIVE_READY_TIMEOUT_S`` 兜底。
 
         每次轮询都取一次帧（只为拿帧号，不落盘）：判定成立/超时的日志里带 ``frame=``，
         事后才能在录制帧里复查"判早了还是判晚了"。
         """
         assert self.ctx is not None
         assert self._graph is not None
+        if confirmed:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
+                  f"（复用上步落地确认，跳过就绪判据）", "INFO")
+            return True
+        hits_needed = DRIVE_READY_HITS
         _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：等待进入驾驶页", "INFO")
         hits = 0
         deadline = time.monotonic() + DRIVE_READY_TIMEOUT_S
         fid, age_ms = 0, 0.0
         while self._running and time.monotonic() < deadline:
             _, fid, _, age_ms = self.ctx.capture.frame_with_age()
-            if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+            if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE, save=NAV_SAVE):
                 hits += 1
-                if hits >= DRIVE_READY_HITS:
+                if hits >= hits_needed:
                     _tlog(self,
                           f"[极速狂飙] 驾驶阶段 {phase}：已进入驾驶页"
-                          f"（{_frame_note(fid, age_ms)}）", "INFO")
+                          f"（{_frame_note(fid, age_ms)}"
+                          f"{'，复用上步落地确认' if confirmed else ''}）", "INFO")
                     return True
             else:
                 if hits:
@@ -1290,6 +1409,8 @@ class SpeedRushModule(ActivityModule):
                 straight_chain["hud_ref"] = drive_hud
         # 阶段边界入流水（受保护通道）：无论接管与否，每阶段起止各一条
         self._trace.begin_stage(phase)
+        gpu_probe = GpuProbe()
+        gpu_probe.start()
 
         # 只有两个正常出口置 True；停止/超时/视角未确认/异常一律 False。
         completed = False
@@ -1430,8 +1551,16 @@ class SpeedRushModule(ActivityModule):
                     now = time.monotonic()
                     if now >= next_anchor:
                         next_anchor = now + DRIVE_ANCHOR_CHECK_S
-                        if self._graph.run(DRIVE_STAGE_NODE, DRIVE_STAGE_NODE):
+                        # 只读页面查询：不进导航动作路径、不开 nav 调试段（本段取证
+                        # 归 DebugPairWriter）。NOT_READY 表示框架还在收摊、这一拍
+                        # 没查成——不计失配，否则连续几次未就绪会被误判成「离开对局」。
+                        anchor = self._graph.probe(DRIVE_STAGE_NODE)
+                        if anchor is ProbeOutcome.HIT:
                             miss = 0
+                        elif anchor is ProbeOutcome.NOT_READY:
+                            logger.log(
+                                f"[极速狂飙] 驾驶阶段 {phase}：锚点复查未就绪，本拍跳过"
+                                f"（{_frame_note(fid, age_ms)}）", "DEBUG")
                         else:
                             miss += 1
                             # 每次失配都记（DEBUG）：连续的失配序列正是"过场动画被误判为结束"
@@ -1449,8 +1578,8 @@ class SpeedRushModule(ActivityModule):
                         # 阶段 1 结束前弹「进入策略商店」横幅（齿轮仍在、画面还在驾驶）：
                         # 命中即提前结束本阶段，不等齿轮消失后的失配滞后——省掉那段滞后里
                         # 喂进感知/决策链与录制器的过场帧。横幅文案专指阶段 2，故只查阶段 1。
-                        if phase == 1 and self._graph.run(STORE_BANNER_NODE,
-                                                          STORE_BANNER_NODE):
+                        if phase == 1 and self._graph.probe(
+                                STORE_BANNER_NODE) is ProbeOutcome.HIT:
                             _tlog(self,
                                   f"[极速狂飙] 驾驶阶段 {phase}：检测到进商店横幅，"
                                   f"提前结束本阶段（{_frame_note(fid, age_ms)}）", "INFO")
@@ -1469,6 +1598,8 @@ class SpeedRushModule(ActivityModule):
                         # 偏移，混用会把睡眠读成负值、空隙虚高同量级（首局实证）
                         prev_sleep = time.perf_counter() - t_sl
         finally:
+            # 显卡采样先停（尾行入队并 flush），再收流水阶段边界
+            gpu_probe.stop()
             # 阶段收边界（先于其余收口：此后不再有数据行）
             self._trace.end_stage(phase)
             self._trace.flush(1.0)
@@ -1476,6 +1607,8 @@ class SpeedRushModule(ActivityModule):
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
+                    _finish_drive_segment(_run_dir(stamp, phase), stamp, phase,
+                                          round_no)
                 self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
             elif straight and straight_chain is not None:
@@ -1486,6 +1619,8 @@ class SpeedRushModule(ActivityModule):
                 dbg = chain.get("debug")
                 if dbg is not None:
                     dbg.stop("chain_end")
+                    _finish_drive_segment(_run_dir(stamp, phase), stamp, phase,
+                                          round_no)
                 self._flush_control_trace(chain, phase, completed=completed)
                 self._stop_depth_observer(chain, phase)
             elif macro_chain is not None:
@@ -1493,10 +1628,6 @@ class SpeedRushModule(ActivityModule):
             if drive_hud is not None:
                 drive_hud.stop("phase_end" if self._running else "stopped")
                 self._hud = None
-            # 证据冻结放在最后：trace 已 flush、汇总已写、深度观察器已停，
-            # 复制出来的是这一阶段的完整素材。失败显式告警（WARNING）。
-            if chain is not None and chain.get("c_evidence"):
-                self._archive_c_evidence(chain, phase)
         self._log_loop_pace(phase, frames, loop_start)
         if not self._running:
             return False
@@ -1537,8 +1668,11 @@ class SpeedRushModule(ActivityModule):
         wt = WallTrack(cal)  # 墙实体（第 5 步）：逐箱跨帧假设，ego_road 持有
         t_start = time.time()
         manual = run_dir is not None   # 人工驾驶阶段（语料目录已由录制器建好）
-        run_dir = run_dir or _run_dir(stamp or time.strftime("%Y%m%d_%H%M%S"), phase)
+        stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
+        run_dir = run_dir or _run_dir(stamp, phase)
         dbg_on = self._debug_enabled()
+        if dbg_on and not manual:
+            _register_drive_segment(run_dir, stamp, phase, round_no)
         lane_obs = LaneObsWorker(
             # config.LaneObs 与 lane_obs.LaneObsConfig 字段同构（worker 只读
             # enabled/weights/hz/provider/threads/detect_every），两份配置类
@@ -1560,7 +1694,11 @@ class SpeedRushModule(ActivityModule):
                                    box_bridge_enabled=cfg.box_bridge.enabled,
                                    box_bridge_trace_only=cfg.box_bridge.trace_only,
                                    anchor_box_gate_enabled=cfg.box_bridge.anchor_gate,
-                                   lane_line_enabled=cfg.lane_line.enabled),
+                                   lane_line_enabled=cfg.lane_line.enabled,
+                                   demerge_enabled=cfg.demerge.enabled,
+                                   demerge_jump=cfg.demerge.jump_max_lane,
+                                   demerge_coloc=cfg.demerge.coloc_lane,
+                                   demerge_gap=cfg.demerge.gap_ticks),
                 "agg": CoinGroupAggregator(),
                 # conf_floor：宽度有效性门的置信地板（真源=scoring.conf_floor，
                 # 传入不抄第二份）
@@ -1568,7 +1706,8 @@ class SpeedRushModule(ActivityModule):
                                                conf_floor=cfg.scoring.conf_floor),
                 # lane_w_m 供栅格区域读数的米→道换算（world_model 同源锚）
                 "lane_w_m": cal.lane_w_m,
-                # 线角相机的全幅焦距（gate0 标定；不是 MoGe 逐帧 fx 的口径）
+                # 线角相机的全幅焦距（gate0 标定；与合成点云的固定投影焦距
+                # 不是同一个量，见 gate0 _notes）
                 "focal_px": cal.focal_px,
                 "wall_track": wt,
                 "ego_road": _EgoRoadObserver(
@@ -1593,6 +1732,8 @@ class SpeedRushModule(ActivityModule):
                     "engine": DecisionEngine(cfg), "planner": LateralPlanner(cfg.planner),
                     # 线↔深度互证闸（货车遮挡防线）：每局一份状态机
                     "lane_agree": _LaneAgreeGate(),
+                    # 线道号锚的共识闸（绿区 vs 找边对）：分歧期冻结编号
+                    "anchor_consensus": _AnchorConsensusGate(),
                     # 到达位置谱系（路心读数序列；影子/未来到达门消费）
                     "pos_lineage": PositionLineage(),
                     # 轨迹计划（motion.mode=off 时恒不调用）：候选时稳门随阶段重建
@@ -1622,12 +1763,28 @@ class SpeedRushModule(ActivityModule):
                                if cfg.view_guard.enabled and not self._view_ok
                                and self._control_mode and self._drive_mode != "straight"
                                else None),
+                # 线反解相机高的近 5 个检测拍中位（喂线几何）：不再用合成
+                # 点图的平面 c（v5 下恒 1.25）。单点反解会飘到 0.73~2.93，
+                # 中位滤掉它；真机位切换是持续值，仍能收敛过去。
+                "lane_cam_h_hist": deque(maxlen=5),
                 "abort_phase": False,
                 "prev_ts": None, "disabled": False,
                 "trace": [], "trace_sink": self._trace,
-                # 跨会话残留的慢 forward 锁存不写进新会话（同钟起点过滤）
-                "slow_seen_ns": int(time.perf_counter() * 1e9),
                 "bad_frames": {"next_at": 0.0, "saved": 0, "dir": None},
+                # 撞车事件观察器（只读）：按对象表轨道做一次边沿判定，
+                # 本阶段事件列表随 trace/汇总留证；不接控制（见 collision.py）。
+                # 半宽/余量复用既有参数（选择层自车/目标半宽 + 计划碰撞余量），
+                # 不另造第二份数值。
+                "collision_obs": (
+                    CollisionObserver(
+                        z_max_m=cfg.collision.z_max_m,
+                        ego_half_m=cfg.selection.ego_half_lane * cal.lane_w_m,
+                        car_half_m=cfg.selection.car_half_lane * cal.lane_w_m,
+                        margin_m=cfg.motion.collision_margin_m,
+                        pass_window_s=cfg.collision.pass_window_s,
+                        recede_m=cfg.collision.recede_m)
+                    if cfg.collision.enabled else None),
+                "collisions": [],
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
                 # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
                 "run_dir": run_dir,
@@ -1637,19 +1794,39 @@ class SpeedRushModule(ActivityModule):
 
     # ---------- 开局视角守卫（2026-10-23） ----------
 
-    def _tick_view_guard(self, chain: dict, gpad, dgeo, dgeo_new: bool) -> None:
-        """喂一拍相机高度；坏视角按 RB。异常一律吞掉，守卫不炸驾驶链。"""
+    def _tick_view_guard(self, chain: dict, gpad, lane: dict | None) -> None:
+        """喂一拍相机高度；坏视角按 RB。异常一律吞掉，守卫不炸驾驶链。
+
+        **判据来自车道线反解**（``lane["cam_h_lane"]``，线间距法），不再读深度
+        路面平面的 c：v5 合成点图把贴地像素高度钉死在 Y≡cam_h，平面 c 恒等于
+        1.25，读它等于读常数、守卫永远放行（2026-11-12 逐帧核对）。
+        无判据时按「无法判定」放行并留 WARNING——拿不到证据不等于视角错了，
+        不能因此中止阶段（守卫中止会白丢一个阶段）。"""
         vg = chain.get("view_guard")
         if vg is None:
             return
         try:
-            cam_h = None
-            if dgeo is not None and dgeo.coef is not None:
-                try:
-                    cam_h = abs(float(dgeo.coef[2]))
-                except (TypeError, ValueError, IndexError):
-                    cam_h = None
-            action = vg.update(time.perf_counter(), cam_h, bool(dgeo_new))
+            now = time.perf_counter()
+            if chain.get("lane_obs") is None:
+                chain["view_guard"] = None
+                self._view_ok = True
+                _tlog(self, "[极速狂飙] 线观测未启用，视角守卫没有判据——"
+                            "按未验证放行（不切视角、不中止阶段）", "WARNING")
+                return
+            if vg.first_sample_at is None and now - vg.t0 > vg.cfg.arm_timeout_s:
+                chain["view_guard"] = None
+                self._view_ok = True
+                _tlog(self, f"[极速狂飙] 线观测 {vg.cfg.arm_timeout_s:.0f}s 内没给出"
+                            "可判的相机高——按未验证放行（不切视角、不中止阶段）",
+                      "WARNING")
+                return
+            cam_h = None if lane is None else lane.get("cam_h_lane")
+            # 样本按线观测的真实检测帧计：同一帧被多拍读到只算一次
+            fid = None if lane is None else lane.get("fid")
+            new = fid is not None and fid != chain.get("vg_fid")
+            if new:
+                chain["vg_fid"] = fid
+            action = vg.update(now, cam_h, new)
             if action == ViewGuard.WAIT:
                 return
             if action == ViewGuard.OK:
@@ -1709,8 +1886,8 @@ class SpeedRushModule(ActivityModule):
             last_fid = chain.get("last_fid")
             fid_jump = last_fid is not None and fid - last_fid > 2
             chain["last_fid"] = fid
-            # 深度几何（几何主人，v4 2026-10-01：MoGe 逐帧焦距点云 3D 找边当
-            # road_offset 供数源；黄线 2D 链路整体退役）。异步解耦协议同前：
+            # 深度几何（几何主人，v5 2026-11-11：车道线灭点行 + DepthART 相对
+            # 深度合成点云，3D 找边当 road_offset 供数源）。异步解耦协议同前：
             # 本帧交 worker 后台推理，take() 只消费过了 age 闸的最新结果——
             # 控制拍不再付 observe 成本。协议本身不抛，异常闸按观测件惯例
             # 保留（fail-safe）。push/take 前移到 tracker 之前：锚点清单随
@@ -1720,6 +1897,13 @@ class SpeedRushModule(ActivityModule):
             dgrid = None
             dgeo_new = False
             anchor_sheet = None
+            # 线观测快照先取（深度生产者要用它的灭点行做米制骨架）。线是慢
+            # 变量、灭点行更是，允许比本帧滞后一拍；缺值时深度层回退标定值。
+            lw = chain.get("lane_obs")
+            lane = lw.latest() if lw is not None else None
+            lane_usable = (lane is not None and bool(lane.get("usable"))
+                           and (lane.get("det_age_ms") or 0.0)
+                           <= LANE_POS_AGE_MS)
             try:
                 # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图
                 # 的决策带，供人工逐帧核对"大脑当时拿了什么"。不可变小 dict，
@@ -1736,6 +1920,7 @@ class SpeedRushModule(ActivityModule):
                     frame, object_mask=mask,
                     frame_ts_ns=ts_ns,
                     detections=boxes, fid=fid, cap_pre=cap_ts,
+                    y_v=None if lane is None else lane.get("y_v"),
                     note={"fid": last.get("frame_id"), "state": last.get("state"),
                           "reason": last.get("reason"), "steer": last.get("steer"),
                           "elane": last.get("executed_lane"),
@@ -1749,17 +1934,9 @@ class SpeedRushModule(ActivityModule):
             except Exception as exc:  # noqa: BLE001 —— 观测件故障不碰主循环
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             if chain.get("view_guard") is not None and gpad is not None:
-                self._tick_view_guard(chain, gpad, dgeo, dgeo_new)
-            # 线观测先取（供数也要用）：线严格可用时它就是走廊中心原点，
-            # 深度只填边界/宽度。用上一拍的执行位（本拍 planner.update 还没跑），
-            # 与决策拿到的 executed 同源，场景参考系因此一致。
-            # 读取前移到 tracker.update 之前（车道线定道 phase 1）：同一拍
-            # 快照供跟踪层做框底行车道成员插值。
-            lw = chain.get("lane_obs")
-            lane = lw.latest() if lw is not None else None
-            lane_usable = (lane is not None and bool(lane.get("usable"))
-                           and (lane.get("det_age_ms") or 0.0)
-                           <= LANE_POS_AGE_MS)
+                self._tick_view_guard(chain, gpad, lane)
+            # 线观测快照已在深度 push 前取过（同一对象、同一拍）：这里只判语义门
+            # ——线严格可用时它就是走廊中心原点，深度只填边界/宽度。
             obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
                                           anchors=anchor_sheet,
                                           lane=lane if lane_usable else None)
@@ -1788,12 +1965,36 @@ class SpeedRushModule(ActivityModule):
                                  if line_origin else None),
                 v_lat=planner.state.v_lat)
             road_offset = None if corridor is None else -corridor.center_lane
+            # 本拍 road_offset 的**实际出处**（与 ro_source 分账）：ro_source 是
+            # 深度候选来源，线为主时它只说明深度那一路的状态；拿它统计"多少拍
+            # 的路心是量出来的"会把线测量拍算成复用/缺席。
+            if corridor is None:
+                ro_prov = "none"
+            elif lane_usable:
+                ro_prov = "line"
+            elif line_origin:
+                ro_prov = "line_hold"
+            elif corridor.src in ("wall", "region"):
+                ro_prov = "depth"
+            else:
+                ro_prov = "held"
+            # 线道号锚共识闸（2026-11-13）：本拍绿区中心与找边对中心的分歧
+            # 决定是否允许把深度锚喂给线。None=本拍无可比证据，闸保持原状态。
+            # 闸关闭时深度两个定义自身不一致，也不能拿其中一个去否决线
+            # （下面的互证闸喂 None 冻结状态）——否则会把"不可信的见证"
+            # 当成反证，停掉线的位置权威。
+            anchor_gap = getattr(chain["ego_road"], "anchor_gap", None)
+            anchor_ok = chain["anchor_consensus"].update(
+                anchor_gap, time.perf_counter())
             # 线↔深度互证（2026-11-02 货车段）：深度路心家族本拍读数对线
             # 的新鲜横位；wall 不参与（8750 拍错在 wall）。分歧喂互证闸，
             # 结果并入 lane_pos_ok——线整体错位时规划器不再 0.7 增益跟随。
             depth_ro = None
             road_snap = chain["ego_road"].last or {}
-            if road_snap.get("src") in ("region", "pair_slot", "memory"):
+            # 键名是 "source"（_snapshot 的出口）；曾误写成 "src"，导致本闸
+            # 从引入起一直走下面的找边对分支——用最吵的单帧对去判线的位置
+            # 权威（2026-11-13 帧证：ldis 逐位等于 线−找边对）。
+            if road_snap.get("source") in ("region", "pair_slot", "memory"):
                 depth_ro = road_snap.get("off")
             ldis = None
             if lane is not None and lane.get("x") is not None:
@@ -1807,7 +2008,8 @@ class SpeedRushModule(ActivityModule):
                     # （说 −0.5，标线 −2.08），只有边对还在独立说话。
                     ldis = lx - float(edge_off)
             lane_pos_ok = bool(lane_usable
-                               and chain["lane_agree"].update(ldis))
+                               and chain["lane_agree"].update(
+                                   ldis if anchor_ok else None))
             # 供数门撤销（80e9a1c 曾 pair-only，13:29 局证伪）：单侧/slot 合成虽带
             # 半宽记忆噪声，但挡掉它们=制造供数黑视——死亡螺旋段 87/118 拍被挡，
             # 陈旧重基（planner ⑥b）与跳变门都吃"喂入"，黑视让两把安全锁同时失效。
@@ -1856,6 +2058,25 @@ class SpeedRushModule(ActivityModule):
                 # 持久车道图的时间维：前进/横移预测用执行层在线速度
                 ego_speed_mps=planner.state.v_mps,
                 ego_v_lat_lane_s=planner.state.v_lat)
+            # 撞车事件（只读留证）：对象表已在决策 update 里推进，这里读同拍
+            # 轨道做边沿判定——按轨道 id 去重，首次落入近距带才记一条。
+            cevents = ()
+            collision_obs = chain.get("collision_obs")
+            if collision_obs is not None:
+                pass_ids = {e.track_id for e in tevents
+                            if e.outcome in (OUTCOME_PASS,
+                                             OUTCOME_PRESUMED_PASS)}
+                cevents = collision_obs.update(
+                    chain["engine"].objects.tracks, fid,
+                    ts_ns=ts_ns, pass_ids=pass_ids)
+                if cevents:
+                    chain["collisions"].extend(cevents)
+                    for ce in cevents:
+                        _tlog(self,
+                              f"[极速狂飙] 撞车事件：正面街车 track"
+                              f" {ce.track_id} 纵深 {ce.z_m:.2f}m"
+                              f"（{ce.src}）横向余量 {ce.x_clear_m:.2f}m",
+                              "INFO")
             cfg = chain["cfg"]
             # 承诺期切换时清候选时稳门：否则并线第一拍可能把上一拍的
             # 机会层候选按“短暂不可行宽限”保持进来，等于承诺期静默改道。
@@ -1876,7 +2097,9 @@ class SpeedRushModule(ActivityModule):
                     cfg.motion, cfg.selection, cfg.planner, chain["gate"],
                     # 唯一意图：决策本拍的目标（planner 车道系）。计划不再自己
                     # 挑机会——它只回答"怎么安全地去"，避免两套目标轮流打方向。
-                    intent_lane=out.x_target)
+                    intent_lane=out.x_target,
+                    # 贴边/让位是计分几何：交付死区按窄档，不吃回中的宽死区。
+                    precise=out.intent_precise)
                 chain["last_plan_ego"] = plan_ego
             else:
                 chain["last_plan_ego"] = None
@@ -1907,19 +2130,30 @@ class SpeedRushModule(ActivityModule):
                                  else int(lane.get("n_locked") or 0),
                                  plan=(plan if cfg.motion.mode == "live" else None))
             if lw is not None:
-                cam_h = (None if dgeo is None or dgeo.coef is None
-                         else abs(float(dgeo.coef[2])))
+                # 相机高只认车道线反解（与视角守卫同源）。合成点图的平面 c
+                # 恒等于标称相机高，拿它当输入等于读常数：机位被打回追尾时
+                # 线几何仍按保险杠高度换算横位，静默错 1~2 道。反解只在检测
+                # 拍进历史、取中位（单点会飘到 0.73~2.93）；预测拍沿用当前
+                # 中位，首个检测拍之前传 None → lane_obs 回退标定值。
+                # 守卫吃的是未平滑的原始反解，两者独立、不互相污染。
+                if lane is not None and lane.get("cam_h_lane") is not None:
+                    chain["lane_cam_h_hist"].append(float(lane["cam_h_lane"]))
+                hist = chain["lane_cam_h_hist"]
+                cam_h = float(np.median(hist)) if hist else None
                 # 线观测的绝对锚点=同帧新鲜**独立深度**读数换算的自车横位
                 # （复用/历史拍不给，让线退回上一拍横位做子道细化，不让旧深度
                 # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
                 # 前的深度候选仍在 depth_anchor_ego 里，用它锚道号即可——既不
                 # 循环，也不剥夺线在短断/重锁时的独立参照。
+                # 共识闸（2026-11-13）：绿区与找边对两个定义差超阈值时不给锚，
+                # 线保持现有网格；等两者一致再恢复。宁可不改，不许静默整道翻号。
                 anchor = (chain["ego_road"].depth_anchor_ego
-                          if road_offset_new else None)
+                          if (road_offset_new and anchor_ok) else None)
                 lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
                         fid_jump,
                         focal=chain.get("focal_px"),
-                        anchor=anchor)
+                        anchor=anchor,
+                        anchor_strict=chain["ego_road"].anchor_strict)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -1990,12 +2224,6 @@ class SpeedRushModule(ActivityModule):
         ctrl_ms = _seg(_cap.get("det"), _now)
         _dbg = chain.get("debug")
         _dst = _dbg.stats() if _dbg is not None else {}
-        _slow = last_slow_forward()
-        if _slow is not None and _slow.get("ts_ns", 0) > chain.get(
-                "slow_seen_ns", 0):
-            chain["slow_seen_ns"] = _slow["ts_ns"]
-        else:
-            _slow = None
         _plan_ego = chain.get("last_plan_ego")   # plan 非 None 时必为本拍 EgoState
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
@@ -2191,6 +2419,20 @@ class SpeedRushModule(ActivityModule):
             # 走廊中心实际原点：line=线为主（深度只供边界），其余=深度来源。
             # 与 ro_source 分开：线为主时 ro_source 仍显示深度候选的侧效来源。
             "ro_origin": chain["ego_road"].last.get("origin"),
+            # road_offset 的实际出处（测量分账的唯一判据）：line=线当拍测量、
+            # line_hold=线短断外推、depth=深度实测、held=记忆/历史保持、
+            # none=弃权。ro_source 不能替代它——那是深度候选来源。
+            "ro_prov": ro_prov,
+            # 线道号锚共识面：gap=绿区中心−找边对中心（道，None=本拍无可比），
+            # ok=False=分歧冻结（本拍没给线喂深度锚，保持现有网格）。
+            "ro_anchor_gap": None if anchor_gap is None else round(anchor_gap, 3),
+            "ro_anchor_ok": bool(anchor_ok),
+            # 本拍深度锚是否满足整道复核准入（同源双侧、中心连续不跳）。
+            "ro_anchor_strict": bool(chain["ego_road"].anchor_strict),
+            # 喂给线观测状态机的实际深度锚（道，自车横位右正；None=本拍没给）。
+            # 观测面：离线回放状态机少了这一列就复现不了生产 x。
+            "ro_anchor": None if chain["ego_road"].depth_anchor_ego is None
+            else round(chain["ego_road"].depth_anchor_ego, 4),
             "ro_off": None if chain["ego_road"].last.get("off") is None
             else round(chain["ego_road"].last["off"], 4),
             # 线↔深度路心家族横位分歧（道，线−深度；None=本拍无可比证据）。
@@ -2218,7 +2460,11 @@ class SpeedRushModule(ActivityModule):
             else round(chain["ego_road"].last["width"], 4),
             "ro_pair_w": None if chain["ego_road"].last.get("pair_w") is None
             else round(chain["ego_road"].last["pair_w"], 4),
-            "ro_reject": chain["ego_road"].last.get("reject"),
+            # 本拍所有候选的拒绝原因（wall:/region:/pair:/jump 前缀，按首次
+            # 出现去重）。旧口径只留最后一条且会被成功路径覆盖，实拍 trace
+            # 恒 None——要判「为什么退到记忆」必须看这一列。
+            "ro_reject": (";".join(chain["ego_road"].last.get("rejects") or [])
+                          or chain["ego_road"].last.get("reject")),
             # 同定义对照审计面（2026-10-27，只记录不参与任何判定/供数）：
             # ro_region = 本拍绿区读数的触窗比例与绿行数（region_reading 原值，
             # 非新证据拍/坏平面拍=None）；ro_wallbin = 墙双侧同箱且都当拍在场。
@@ -2253,35 +2499,30 @@ class SpeedRushModule(ActivityModule):
             # （age 起点之外、此前不可见的段；内段 cap_pick/rec/det/mask/copy_ms
             # =拾取/录制/检测/掩码/入队拷贝，同钟伸缩 Σ内段≡cap，2026-10-08
             # 性能第二批插桩）、queue=入队→worker 开工、
-            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=MoGe 四段快照。
+            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=生产者三段快照
+            # （pre/forward/points）+ 后处理三段（plane/edges/grid）。
             # 仅新证据拍记录（驻留复用拍重复无信息），见 _timing_segments
             "dgeo_seg": None if not (dgeo is not None and dgeo_new)
             else chain["depth_geo"].last_segments,
-            # dgeo_slow=worker 慢 forward 锁存（>200ms，同钟 ts_ns/pre/forward）：
-            # latest-only 会覆盖卡住帧的 dgeo_seg，这列保证那次尝试仍可见。
-            "dgeo_slow": _slow,
             "dgeo_rejects": None if dgeo is None or not dgeo.rejects
             else ";".join(dgeo.rejects),
-            # 尺度观测三列（尺度审计 2026-10-10：ms 瞬态段 1.3~1.7× 名义值静默
-            # 通过平面门，先落盘可见再谈防护，只写不读）：MoGe 尺度头原始输出
-            # + 全幅焦距 + 平面 c（=cam_h，名义 ~1.9m，瞬态段 3.9~5.7）。
-            # 列名 dgeo_metric（2026-10-10 焦距治理修正）：曾与上方耗时列重名
-            # dgeo_ms——同 dict 后键胜出，耗时列被静默覆盖。
-            "dgeo_metric": None if dgeo is None or dgeo.metric_scale is None
-            else round(dgeo.metric_scale, 3),
+            # 焦距与相机高观测两列：焦距是固定投影焦距（RULES §3.8）；cam_h
+            # 是平面 c——v5 合成点图把贴地像素钉在 Y≡cam_h，这列**恒等于 1.25**，
+            # 只作「点图确实按合成骨架生成」的存在性审计，不能当视角判据读
+            # （视角判据=线观测的 cam_h_lane，见 lane_obs 块）。
             "dgeo_focal": None if dgeo is None or dgeo.fx is None
             else round(dgeo.fx, 1),
-            # 焦距求解器诊断（焦距漂移治理 2026-10-10，观测面只写不读）：
-            # shift=深度偏移解、resid=逐样本平均残差（uv² 单位，跨帧可比）、
-            # nsol=64×64 采样有效样本数（GPT 审查 P0：残差必须随 n 归一）
-            "dgeo_shift": None if dgeo is None or not dgeo.solver
-            else round(float(dgeo.solver.get("shift", float("nan"))), 4),
-            "dgeo_resid": None if dgeo is None or not dgeo.solver
-            else round(float(dgeo.solver.get("resid_mean", float("nan"))), 6),
-            "dgeo_nsol": None if dgeo is None or not dgeo.solver
-            else int(dgeo.solver.get("n", -1)),
             "dgeo_cam_h": None if dgeo is None or dgeo.coef is None
             else round(abs(dgeo.coef[2]), 3),
+            # 本帧米制骨架用的地平线行与来源（lane=车道线中位 / fallback=标定
+            # 回退）。回退拍的距离系统性偏 25~40%，归因这一批必须能逐拍看见。
+            "dgeo_yv": None if dgeo is None or dgeo.y_v is None
+            else round(dgeo.y_v, 1),
+            "dgeo_yv_src": None if dgeo is None else dgeo.y_v_src,
+            # 地面模型拟合弃权累计（MAD>0.06 整帧弃用）：逐拍可见才能算
+            # 「弃帧率 / 深度出工次数」，阶段汇总另有终值。全局计数跨阶段
+            # 累加，按阶段取差值。
+            "dgeo_mad_skips": SKIP_STATS.get("mad", 0),
             # 走廊审计两列（第 6 步）：供数走廊宽 + 平面健康面——实机对账
             # 与影子重放的验收面（带来源明细在 debugview/offline 重放）。
             # cor_w=当拍滤波对宽（走廊表示面），与对宽门判据（master=规则
@@ -2340,7 +2581,19 @@ class SpeedRushModule(ActivityModule):
             # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
             "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
                        for e in tevents if e.outcome == OUTCOME_PASS],
-            "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
+            # 撞车事件（本拍落定；按轨道 id 去重，空拍=None）：触发/落定拍号、
+            # 纵深/横位/横向包络余量/来源与置信原样留证，供离线按得分与横幅真值对账
+            "collisions": [
+                {"id": e.track_id, "fid": e.fid, "settle": e.settle_fid,
+                 "z": round(e.z_m, 2),
+                 "x": round(e.x_m, 2), "xc": round(e.x_clear_m, 2),
+                 "hw": None if e.half_w_m is None else round(e.half_w_m, 2),
+                 "src": e.src, "conf": round(e.conf, 2),
+                 "v": None if e.v_close_mps is None else round(e.v_close_mps, 2),
+                 "rel": round(e.rel_approach, 3),
+                 "age": round(e.age_ms, 1)}
+                for e in cevents] or None,
+            "fresh": obs.health.frame_fresh,
             "presence": obs.health.target_presence,
             # 原始检出分类计数：目标流枯竭判据只认车；这两列用来区分
             # “空街”与“有币但没跟踪”（2026-10-20 阶段 1 误冻结归因）。
@@ -2352,10 +2605,6 @@ class SpeedRushModule(ActivityModule):
             # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
             # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
             "oage": round(age_ms, 1)}
-        # C 相关事件标记（只记账，阶段收尾据此冻结证据）：路线相位/定案分歧、
-        # 选择影子分歧/同输入不一致、换档读数上的完成。
-        for _kind, _detail in _c_events(eng, position_evidence):
-            _note_c_event(chain, _kind, fid, ts_ns, **_detail)
         chain["trace"].append(_row)
         _ts = chain.get("trace_sink")
         if _ts is not None:
@@ -2432,6 +2681,13 @@ class SpeedRushModule(ActivityModule):
         if not rows:
             return
         stats = dashboard_store.summarize_trace_rows(rows)
+        gates = chain.get("hud_score_gates")
+        pair_rejected = gates[1].rejected if gates else 0
+        if stats.gate_rejected or pair_rejected:
+            _tlog(self,
+                  f"[极速狂飙] 驾驶阶段 {phase}：比分合理性门拒假读"
+                  f"（我方 {stats.gate_rejected} / 对手 {pair_rejected}），"
+                  "原始值留在 hud 证据里", "WARNING")
         self._record_round_phase(chain, phase, stats, completed)
         try:
             self._write_game_summary(chain, phase, rows, stats=stats)
@@ -2446,40 +2702,6 @@ class SpeedRushModule(ActivityModule):
                       f"{bf['saved']} 张 → {bf['dir']}", "INFO")
         except Exception as exc:  # noqa: BLE001 —— trace 落盘失败不阻断对局收尾
             _tlog(self, f"[极速狂飙] 驾驶阶段 {phase}：控制 trace 落盘失败: {exc!r}", "WARNING")
-
-    @staticmethod
-    def _cfg_view(chain: dict) -> dict | None:
-        """冻结用的配置快照；不可序列化就放弃——配置缺失不阻断证据保存。"""
-        cfg = chain.get("cfg")
-        if cfg is None:
-            return None
-        try:
-            return asdict(cfg)
-        except (TypeError, ValueError):
-            return None
-
-    def _archive_c_evidence(self, chain: dict, phase: int) -> None:
-        """C 相关事件证据冻结（logs 之外的 evidence 目录）。
-
-        失败必须显式告警：归档触发不等于素材已保存。日志写盘未开时没有源
-        文件，同样按失败处理——不能让"以为存了"进入后续分析。
-        """
-        ev = chain.get("c_evidence") or {}
-        root = logger.session_dir
-        if root is None:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件 {ev.get('first')} "
-                  "但日志写盘未开，无素材可冻结", "WARNING")
-            return
-        res = archive_session_evidence(root, phase, ev, config=self._cfg_view(chain))
-        if res["ok"]:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件证据已冻结 → "
-                  f"{res['trace']}（{res['bytes']} B）", "INFO")
-        else:
-            _tlog(self,
-                  f"[极速狂飙] 驾驶阶段 {phase}：C 事件证据冻结失败: "
-                  f"{res['error']}", "WARNING")
 
     def _record_round_phase(self, chain: dict, phase: int,
                             stats: dashboard_store.PhaseStats,
@@ -2539,6 +2761,9 @@ class SpeedRushModule(ActivityModule):
                 "phase": phase, "ticks": stats.ticks, "score": stats.score,
                 "rate": stats.rate, "dur_s": stats.dur_s,
                 "conserve_segments": stats.conserve_segments,
+                # 撞车事件数（按轨道 id 去重；详见 trace collisions 列与
+                # 逐事件日志行）。旧汇总行无此键=该版本尚未接线。
+                "collisions": len(chain.get("collisions") or []),
             }
             with open(root / "speedrush_summary.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -2573,7 +2798,8 @@ class SpeedRushModule(ActivityModule):
                 f"/让锁跳帧 {h['busy_skips']}"
                 f"/时效 p50 {h['age_p50']:.0f} p95 {h['age_p95']:.0f}ms"
                 f"（预算 {h['max_age_ms']:.0f}ms）"
-                f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms")
+                f"/耗时 p50 {h['dur_p50']:.0f} p95 {h['dur_p95']:.0f}ms"
+                f"/MAD 弃帧 {h['mad_skips']}")
         if h.get("forward_p50"):
             line += (f"/分段 p50 前向 {h['forward_p50']:.0f} 找边 {h['edges_p50']:.0f}"
                      f" 栅格 {h['grid_p50']:.0f}ms")
@@ -2930,6 +3156,59 @@ class _LaneAgreeGate:
             else:
                 self._agree_t = 0
         return not self._vetoed
+
+
+class _AnchorConsensusGate:
+    """线道号锚的共识闸（2026-11-13）：两个绝对路心定义分歧时冻结编号。
+
+    同帧的「绿区物理边界中心」与「单帧找边对中心」是两种不同定义（前者
+    含路肩/人行道，后者会被弯道、障碍截短），实测可差 0.7~1.4 道。线道号
+    ``k=round(锚+L)`` 只认一个锚；锚在两者之间按「谁先到」切换，会让同一
+    组物理线整道翻号，且没有任何异常标志（20261113_083813：p2 14058 把
+    左侧黄实线标成 k=-1、p1 2241→2243 同两条线 k 由 {-2,-1} 变 {-1,0}）。
+
+    纪律：两者都先过整幅路宽门（不是残段/假缘），相差超 ``ON_GAP`` 立即
+    冻结——本拍不喂任何深度锚，线保持现有网格。None=本拍无可比证据，状态
+    冻结（不拿缺证据当一致）。
+
+    恢复口径（2026-11-13 六局修正）：两定义同时可比的拍实测只占 8~28%，
+    按「连续 3 拍」恢复在证据稀疏时几乎不可能达成（阶段内冻结 24~38% 拍、
+    最长 9.3s），线锁被无谓地长时间剥夺深度的纠偏机会。改为**按证据计次**：
+    累计 ``OFF_EVIDENCE`` 个一致证据拍即恢复（不必连续），分歧证据把计数
+    清零；同时设 ``MAX_FROZEN_S`` 上限，冻结超时后下一次一致证据立即恢复。
+    没有一致证据时保持冻结——两定义一直在分歧，此时不许任何一方改道号。"""
+
+    ON_GAP = 0.5       # 冻结阈值（道）：超过即两种定义已不是同一对象
+    OFF_GAP = 0.4      # 恢复阈值（滞回，避免边界抖动反复开关）
+    OFF_EVIDENCE = 3   # 累计一致证据拍数（不要求连续）
+    MAX_FROZEN_S = 3.0  # 冻结最长时限（s）；超时后一致证据一次即恢复
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._agree_n = 0
+        self._closed_at: float | None = None
+
+    def update(self, gap: float | None, now: float | None = None) -> bool:
+        """``gap``=绿区中心 − 找边对中心（道）。返回 True=允许喂深度锚。"""
+        if gap is None:
+            return not self._closed
+        if abs(gap) > self.ON_GAP:
+            self._closed = True
+            self._agree_n = 0
+            self._closed_at = now
+            return False
+        if not self._closed:
+            return True
+        self._agree_n += 1
+        timeout = (self._closed_at is not None and now is not None
+                   and now - self._closed_at >= self.MAX_FROZEN_S)
+        if self._agree_n >= (1 if timeout else self.OFF_EVIDENCE):
+            self._closed = False
+            self._agree_n = 0
+            self._closed_at = None
+        return not self._closed
+
+
 YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40
@@ -3091,9 +3370,16 @@ class _EgoRoadObserver:
     # memory↔单侧墙来回跳的种子；缩到 0.25s，并按当拍横速做位移补偿
     # （自车右移 Δ → 路心在自车系左移 Δ）。记忆保持最后采信值、不做 EMA。
     MEM_TTL_S = 0.25
-    # 平面尺度门（master）：2026-10-29 尺度修正后 bumper 机位 cam_h≈1.26~1.29m；
-    # 离线 0200 帧拟合出 0.81m（正常 1.26~1.29）而质量门未拦——坏平面的缘点/
-    # 绿区整帧不进供数。
+    # 深度锚"严格"判据（线道号整道复核的唯一准入）：同源、双侧都在、
+    # 连续拍中心步长 ≤此值（道）。单侧/换源/中心逐拍跳的锚不算路心证据。
+    # 实测贴左墙段绿区中心逐拍跳 0.4 道以上（12929/12933/12946：+0.24/−0.20/
+    # −0.25），旧口径 3/5 拍就整道平移；严格口径全部拦下。
+    ANCHOR_STABLE_STEP = 0.2
+    ANCHOR_STABLE_N = 2          # 连续稳定拍数（含当拍）
+    ANCHOR_STABLE_GAP_S = 0.6    # 两拍间隔超此值不算连续
+    # 平面尺度门（master）：2026-10-29 尺度修正后 bumper 机位 cam_h≈1.26~1.29m
+    # （权威口径 1.25m，2026-11-11）；离线 0200 帧拟合出 0.81m（正常 1.26~1.29）而
+    # 质量门未拦——坏平面的缘点/绿区整帧不进供数。
     PLANE_CAM_H_LO = 1.10
     PLANE_CAM_H_HI = 1.60
     # 来源切换/单帧跳变门：绝对路心帧间跳超 0.4 道视为可疑，连续 2 拍同向
@@ -3137,6 +3423,15 @@ class _EgoRoadObserver:
         # 覆盖前的独立深度读数的**自车横位**（右正，与线观测 x=k−L、road_offset
         # 同号）；走廊 center 是路心相对自车，取反后才对齐线观测的锚点口径。
         self.depth_anchor_ego: float | None = None
+        # 本拍两个绝对路心定义的横向差（绿区中心 − 找边对中心，道）：
+        # 线道号锚的共识闸消费面。None=本拍没有可比证据（非新证据拍/
+        # 绿区或找边对缺席）——闸保持原状态，不拿缺证据当一致。
+        self.anchor_gap: float | None = None
+        # 本拍深度锚是否"严格"（同源、双侧都在、连续两拍中心不跳）：
+        # 线道号整道复核的唯一准入。单侧/换源/中心逐拍跳的锚不参与纠偏——
+        # 贴左墙段绿区中心长期偏约一道，旧口径 3/5 拍就把线网格整道平移。
+        self.anchor_strict: bool = False
+        self._anchor_prev: tuple[str, float, int, float] | None = None
         self._v_lat = 0.0                     # 当拍横速（记忆位移补偿用）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
         self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
@@ -3176,9 +3471,15 @@ class _EgoRoadObserver:
         self._center_override = center_override  # 线可用时走廊以线为原点
         # 本拍独立深度自车横位（覆盖前），供线观测做道号锚点；线回退/保持值不给。
         self.depth_anchor_ego = None
+        self.anchor_gap = None
+        self.anchor_strict = False
+        self._fresh_tick = bool(new)
         self._v_lat = float(v_lat) if math.isfinite(v_lat) else 0.0
         self._frame_gate_used = False
         self._audit = {}                  # 本拍审计面重置（None=本拍无该证据）
+        # 本拍各路候选的拒绝原因（供数门分账）：只在 update 末尾汇总，
+        # 不被后续成功路径覆盖。
+        self._tick_rejects: list[str] = []
         if new:
             # 共享方向滤波只在新远带证据更新一次；本拍若未建成走廊，
             # 证据留到下一次建成时消费（不因弃权拍丢掉一次更新）。
@@ -3216,19 +3517,48 @@ class _EgoRoadObserver:
                         and reg.left_edge_lane is not None \
                         and reg.right_edge_lane is not None:
                     pair = (reg.left_edge_lane, reg.right_edge_lane)
-            return self._fallback(now, grid, bnd, fid, master=True, new=new,
-                                  grid_off=grid_off, region_pair=pair)
-        if (new and bnd is not None and bnd.sides == 2
+            # 两个绝对路心定义的共识面（只在同拍两者都在时才有值）：
+            # 绿区中心 vs 单帧找边对中心。二者差超阈值时线道号锚冻结
+            # （见 _AnchorConsensusGate）——一帧里两种深度各说各话时，
+            # 不许任何一方改道号（实拍帧证：差 0.73 道即整道翻号）。
+            # 两种定义都要先过整幅路宽门：一条 3.0 道的"找边对"是残段/假缘，
+            # 不是另一种路心定义，拿它去冻结只会把噪声升格成否决。
+            if pair is not None and bnd is not None \
+                    and getattr(bnd, "sides", 0) == 2 \
+                    and bnd.left_edge_lane is not None \
+                    and bnd.right_edge_lane is not None:
+                _ew = bnd.right_edge_lane - bnd.left_edge_lane
+                _rw = pair[1] - pair[0]
+                if abs(_ew - self.W_PRIOR_LANE) <= self.W_GUARD_LANE \
+                        and abs(_rw - self.W_PRIOR_LANE) <= self.W_GUARD_LANE:
+                    self.anchor_gap = (0.5 * (pair[0] + pair[1])
+                                       - 0.5 * (bnd.left_edge_lane
+                                                + bnd.right_edge_lane))
+            out = self._fallback(now, grid, bnd, fid, master=True, new=new,
+                                 grid_off=grid_off, region_pair=pair)
+        elif (new and bnd is not None and bnd.sides == 2
                 and bnd.left_edge_lane is not None
                 and bnd.right_edge_lane is not None):
-            return self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
-                                   now, grid_off, "pair", bnd, grid, fid)
-        return self._fallback(now, grid, bnd, fid, master=master, new=new,
-                              grid_off=grid_off)
+            out = self._pair_tick(bnd.left_edge_lane, bnd.right_edge_lane,
+                                  now, grid_off, "pair", bnd, grid, fid)
+        else:
+            out = self._fallback(now, grid, bnd, fid, master=master, new=new,
+                                 grid_off=grid_off)
+        # 拒绝原因必须在本拍所有候选跑完后统一落快照：失败路径各自写
+        # `last["reject"]`，随后记忆/线成功会整拍覆盖快照——实拍 trace 里
+        # ro_reject 因此恒为 None，供数门分账失去数据源。
+        self.last["rejects"] = list(dict.fromkeys(self._tick_rejects))
+        return out
 
     def _plane_gate(self, bnd) -> bool:
         """平面尺度门：|coef[2]|（=cam_h）在 bumper 机位物理带内；无平面证据
-        （coef=None/异常）不冒充坏帧——深度层的质量门已管那一档。"""
+        （coef=None/异常）不冒充坏帧——深度层的质量门已管那一档。
+
+        **v5 起这道门结构上不会触发**：合成点图把贴地像素钉在 Y≡cam_h，平面 c
+        恒等于 1.25。坏帧的拦截已上移到生产者（地面拟合 MAD 门，超限整帧不出
+        读数）——那一道比尺度门早一拍且更直接。此处保留是因为 master 链的
+        「整帧隔离」分支（缘点/绿区/远带一起作废）还要一条统一入口，不要把它
+        当活门读。"""
         coef = getattr(bnd, "coef", None) if bnd is not None else None
         if coef is None:
             return True
@@ -3247,6 +3577,7 @@ class _EgoRoadObserver:
         off_raw = -((el + er) / 2.0)   # 本拍原始对（滤波前），debug 数据面
         pair_w = er - el               # 本拍对宽（供数门分账审计面，滤波前）
         if abs((el + er) / 2.0) > self.OFF_MAX:
+            self._tick_rejects.append(f"{src}:off_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="off_max")
             return None                 # 垃圾对：不喂、不入槽、不入窗
@@ -3256,6 +3587,7 @@ class _EgoRoadObserver:
         formed = self.width
         if formed is not None and \
                 abs((er - el) - formed) > self.W_GUARD_FRAC * formed:
+            self._tick_rejects.append(f"{src}:width_guard")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="width_guard")
             return None                 # 污染对：不喂、不入槽、不入窗
@@ -3268,6 +3600,7 @@ class _EgoRoadObserver:
             if abs(off_raw - grid_off) > self._xc.tol_lane:
                 self._xc_streak += 1
                 if self._xc_streak < self._xc.bypass_streak:
+                    self._tick_rejects.append(f"{src}:veto")
                     self.last = self._snapshot(now, src, None, off_raw,
                                                grid_off, "veto",
                                                pair_w=pair_w, reject="veto")
@@ -3286,6 +3619,7 @@ class _EgoRoadObserver:
         center = (el + er) / 2.0        # 路心（自车系）
         self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
+            self._tick_rejects.append(f"{src}:center_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
             return None                 # 垃圾信号不喂（中值后复查，宁弃不喂假路心）
@@ -3301,12 +3635,14 @@ class _EgoRoadObserver:
         off_raw = -((el + er) / 2.0)
         pair_w = er - el
         if abs((el + er) / 2.0) > self.OFF_MAX:
+            self._tick_rejects.append("region:off_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="off_max")
             return None
         # master 的宽门锚在规则先验（4 条等宽车道），不随学习中位数漂移：
         # 先验被读数拖偏时，相对门会把真路宽判成污染，形成自锁死循环。
         if abs((er - el) - self.W_PRIOR_LANE) > self.W_GUARD_LANE:
+            self._tick_rejects.append("region:width_guard")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="width_guard")
             return None
@@ -3317,6 +3653,7 @@ class _EgoRoadObserver:
         center = (el + er) / 2.0
         self._feed_width(er - el, center)
         if abs(center) > self.OFF_MAX:
+            self._tick_rejects.append("region:center_max")
             self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                        pair_w=pair_w, reject="center_max")
             return None
@@ -3337,6 +3674,7 @@ class _EgoRoadObserver:
             ok = self._jump_ok(center, advance=not self._frame_gate_used)
             self._frame_gate_used = True
             if not ok:
+                self._tick_rejects.append(f"{src}:jump")
                 self.last = self._snapshot(now, src, None, off_raw, grid_off,
                                            xcheck, pair_w=pair_w,
                                            reject="jump")
@@ -3500,14 +3838,21 @@ class _EgoRoadObserver:
         live_r = {zc: v for zc, v in right.items() if v[2]}
         common = sorted(set(live_l) & set(live_r), key=abs)
         self._audit["wall_same_bin"] = bool(common)   # 双侧同箱且都当拍在场
+        if not left and not right:
+            self._tick_rejects.append("wall:absent")
+        elif not common and (not live_l or not live_r):
+            # 有箱但至少一侧本拍无实测（复用拍/遮挡衰减）——不是宽度矛盾
+            self._tick_rejects.append("wall:stale")
         for zc in common:
             lane_l, _cl, _ = live_l[zc]
             lane_r, _cr, _ = live_r[zc]
             w = lane_r - lane_l
             center = 0.5 * (lane_l + lane_r)
             if abs(center) > self.OFF_MAX:
+                self._tick_rejects.append("wall:off_max")
                 continue
             if not self._width_ok(w, formed):
+                self._tick_rejects.append("wall:width_guard")
                 continue             # 与路宽先验矛盾：不猜哪一侧
             if new:
                 self._feed_width(w, center)
@@ -3519,6 +3864,8 @@ class _EgoRoadObserver:
             # build_corridor 从墙箱/绿区填），不再 ∓W/2 反推路心——单侧反推
             # 的偏差跟方向和遮挡状态走（实测左右墙交替差 0.7 道），正是
             # memory↔wall_occl 来回整道跳的来源。线也丢失时交绿区/记忆/None。
+            if live_l or live_r:
+                self._tick_rejects.append("wall:single")
             return None
         # 回放链（off/veto）保留旧的单侧墙反推，逐位保持旧行为。
         if formed is None:
@@ -3566,6 +3913,19 @@ class _EgoRoadObserver:
         # 整张网格按「自车在路心另一侧」取整，开局就错一道且随线锁固化。
         if src in ("wall", "region", "pair"):
             self.depth_anchor_ego = -float(center)
+            # 严格锚：同源 + 连续拍中心步长 ≤ANCHOR_STABLE_STEP。双侧都在
+            # 已由各来源保证（wall=同箱双实测、region=双侧绿缘、pair=双侧）。
+            # 只认新鲜证据：复用拍是同一份旧读数，不能重复攒"稳定"。
+            if self._fresh_tick:
+                prev = self._anchor_prev
+                if prev is not None and prev[0] == src \
+                        and abs(center - prev[1]) <= self.ANCHOR_STABLE_STEP \
+                        and (now - prev[3]) <= self.ANCHOR_STABLE_GAP_S:
+                    n = prev[2] + 1
+                else:
+                    n = 1
+                self._anchor_prev = (src, float(center), n, now)
+                self.anchor_strict = n >= self.ANCHOR_STABLE_N
         # 线为原点时，走廊中心用线的位置（center_override），深度的墙/记忆只
         # 供边界证据与宽度统计；深度来源跳变不再把走廊中心整道拽走。
         if self._center_override is not None:
@@ -3724,8 +4084,11 @@ def _note_hud_scores(chain: dict) -> None:
     """把本拍可读的（我方, 对手）比分对收进本阶段的小环。
 
     速度行缺失即弃权（第二局段 1 那条双方 trusted 但串位的假读没有速度行）。
-    假读不在这里猜：阶段收尾时以汇总末分为锚，选「我方分不超过末分 + 一个
-    采样余量」的最大一对——串位虚高的比分（实测 4878 / 888）自然被排除。
+    单步假读（实测单样本 21 万的尖峰）由 ``dashboard_store.ScoreGate`` 在此
+    拦下：我方/对手各一道门，任一道拒了整对不收——对手锚选面拿到的对都已是
+    序列合理的。被拒原始值留在 hud.jsonl 与 trace 行里，此处只计数（阶段收尾
+    统一留痕）。假读不在这里猜：阶段收尾时以汇总末分为锚，选「我方分不超过
+    末分 + 一个采样余量」的最大一对。
     """
     hud = chain.get("hud_ref")
     if hud is None:
@@ -3737,16 +4100,21 @@ def _note_hud_scores(chain: dict) -> None:
         return
     if scores.ego_score is None or scores.opponent_score is None:
         return
-    chain.setdefault("hud_pairs", deque(maxlen=64)).append(
-        (scores.ego_score, scores.opponent_score))
+    gates = chain.setdefault("hud_score_gates", dashboard_store.new_pair_gates())
+    ts_ns = int(latest.get("ts_ns") or 0)
+    ego_ok = gates[0].feed(ts_ns, scores.ego_score)
+    opp_ok = gates[1].feed(ts_ns, scores.opponent_score)
+    if ego_ok and opp_ok:
+        chain.setdefault("hud_pairs", deque(maxlen=64)).append(
+            (scores.ego_score, scores.opponent_score))
 
 
 
 
-# 一局内固定产物目录：同一 (局前缀, 阶段) 只解析一次。缓存是必须的——
+# 一局内固定产物目录：同一 (局前缀, 局戳, 阶段) 只解析一次。缓存是必须的——
 # 同阶段的目录会被 chain 与 hud 两处先后取用，第二次若重新判重会看到刚建好的
 # 目录、误判"撞名"而多加一个序号后缀，同阶段的产物就分家了。
-_run_dirs: dict[tuple[str, int], Path] = {}
+_run_dirs: dict[tuple[str, str, int], Path] = {}
 # 宏组目录：同一局前缀只解析一次——phase 1 建好的组目录若在 phase 2 重新判重，
 # 会被判成"撞名"而分出一个新组，p1/p2 就配不成一组了。
 _macro_groups: dict[str, Path] = {}
@@ -3763,42 +4131,73 @@ def _macro_group_dir(stamp: str) -> Path:
 
 
 def _fresh_session_dir(path: Path) -> Path:
-    """已存在且非空的目录换一个带序号的名字，绝不给既有会话续写。
+    """已存在的目录换一个带序号的名字，绝不给既有会话续写。
 
     目录名按局前缀生成，正常不会重名；同秒重启、或人工改过系统时间时仍可能撞。
     撞上时**换名**而不是复用：复用会让新一局覆盖旧图、索引被追加成两局混合
-    （2026-10-30 实机踩到，第一局的图被第二局整批覆盖）。"""
-    if not path.exists() or not any(path.iterdir()):
-        return path
-    for i in range(2, 100):
-        cand = path.with_name(f"{path.name}_{i}")
-        if not cand.exists() or not any(cand.iterdir()):
-            logger.log(f"[极速狂飙] 会话目录 {path.name} 已存在且非空，"
-                       f"改写到 {cand.name}", "WARNING")
-            return cand
-    raise RuntimeError(f"会话目录 {path.name} 的重名后缀已用尽")
+    （2026-10-30 实机踩到，第一局的图被第二局整批覆盖）。编号格式与序号规则
+    由 core 的会话布局契约给出，与 logs/debug 会话目录同一套；换名记一笔
+    WARNING，不静默。"""
+    target = Path(path)
+    picked = fresh_session_dir(target.parent, target.name)
+    if picked != target:
+        logger.log(f"[极速狂飙] 会话目录 {target.name} 已存在，改写到 {picked.name}",
+                   "WARNING")
+    return picked
 
 
 def _run_dir(stamp: str, phase: int) -> Path:
-    """一局一产物目录（2026-10-12 布局收口，paths.py 五类契约）：debug/<module>/<会话>/。
+    """一局一阶段产物目录：`debug/<会话>/speedrush/drive/<局前缀>_p<阶段>/`。
 
-    speedrush 帧证据（证据包/hud/badframes/索引）全在
-    ``debug/speedrush/<局前缀>_p<阶段>/``——一局一目录，清当批=删一个目录；
-    逐拍流水与局汇总随日志会话走（ADR-0010），在
-    ``logs/<会话>/trace/``。``data/`` 放用户资产与业务数据（宏、DB），不放调试
-    产物。整个目录受 debug 开关管辖（关=零产物）；帧证据包密度另受 debug_dump
-    三态闸（off/events/full）。
+    帧证据（证据包/hud/badframes/索引）全在行为目录的子段里；行为清单
+    ``drive/manifest.json`` 列出每局每阶段的目录与起止。逐拍流水与局汇总随
+    日志会话走（ADR-0010），在 ``logs/<会话>/trace/``。``data/`` 放用户资产与
+    业务数据（宏、DB），不放调试产物。整个目录受 debug 开关管辖（关=零产物）；
+    帧证据包密度另受 debug_dump 三态闸（off/events/full）。
 
     局前缀由调用方按**局**生成（``_run_flow`` 每轮一个），同一局的两个驾驶阶段
-    共用它、不同局必然不同。不能用日志会话编号：它标识的是"一次启动"，同一次
-    启动连跑多局时重复，后一局会覆盖前一局的图。"""
-    key = (stamp, phase)
+    共用它、不同局必然不同。不能用会话编号代替：它标识"一次启动"，同一次启动
+    连跑多局时重复，后一局会覆盖前一局的图。"""
+    session = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
+    key = (session, stamp, phase)
     hit = _run_dirs.get(key)
     if hit is not None:
         return hit
-    path = _fresh_session_dir(debug_dir() / "speedrush" / f"{stamp}_p{phase}")
+    path = _fresh_session_dir(
+        drive_behavior_dir(debug_dir() / session) / f"{stamp}_p{phase}")
     _run_dirs[key] = path
     return path
+
+
+def _register_drive_segment(run_dir: Path, stamp: str, phase: int,
+                            round_no: int | None) -> None:
+    """debug 开启时登记本阶段段：建行为目录清单，回放据此列局与阶段。"""
+    behavior = drive_behavior_dir(run_dir.parents[2])
+    try:
+        upsert_drive_segment(behavior, round_no=int(round_no or 0),
+                             phase=phase, stamp=stamp)
+    except Exception as exc:  # noqa: BLE001 —— 取证清单失败不阻断驾驶
+        logger.log(f"[极速狂飙] 驾驶取证清单登记失败: {exc!r}", "WARNING")
+
+
+def _finish_drive_segment(run_dir: Path, stamp: str, phase: int,
+                          round_no: int | None) -> None:
+    """阶段收尾：从 meta 取结束时刻并重建行为级帧索引。无清单时静默跳过。"""
+    behavior = drive_behavior_dir(run_dir.parents[2])
+    if not (behavior / "manifest.json").is_file():
+        return
+    ended = None
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        ended = meta.get("ended_at")
+    except (OSError, ValueError):
+        pass
+    try:
+        upsert_drive_segment(behavior, round_no=int(round_no or 0), phase=phase,
+                             stamp=stamp, ended_at=ended)
+        rebuild_drive_index(behavior)
+    except Exception as exc:  # noqa: BLE001
+        logger.log(f"[极速狂飙] 驾驶取证清单收尾失败: {exc!r}", "WARNING")
 
 
 def resolve_start_index(start_from: str | None) -> int:

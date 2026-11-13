@@ -2,7 +2,7 @@
 """启动链真源的静态闸（ADR-0018）。
 
 看护四件事：
-1. 真源本身能过 check_truth（引用闭合、rect 归一、分层红线）；
+1. 真源本身能过 truth（引用闭合、rect 归一、分层红线）；
 2. 汇聚与确认链的候选顺序：弹窗 → 登录 → 大厅，且四处前缀逐字一致
    （MaaFW 无节点继承，同一份前缀只能重复四遍，漏改一处就是静默丢一条弹窗）；
 3. 终点节点有 `_end` 且被引用——成功条件必须是可审计的图结构；
@@ -15,12 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.navkit import check_truth as ct
+from tools.pipeline import truth as ct
 
 REPO = Path(__file__).resolve().parents[1]
 STARTUP_DIR = REPO / "maaracing_master" / "core" / "resources" / "startup"
 PIPELINE = STARTUP_DIR / "pipeline.json"
 IMAGE_DIR = STARTUP_DIR / "image"
+CORE_IMAGE_DIR = REPO / "maaracing_master" / "core" / "resources" / "image"
 
 POPUPS = [
     "startup.popup.claim_daily",
@@ -28,6 +29,7 @@ POPUPS = [
     "startup.popup.continue",
     "startup.popup.close_reward",
     "startup.popup.close_marketing",
+    "startup.popup.close_x",
 ]
 LOGIN = "startup.login.engine_start"
 CONFIRMS = ["startup.hall.confirm.1", "startup.hall.confirm.2", "startup.hall.confirm.3"]
@@ -62,7 +64,7 @@ def test_truth_passes_checker():
 def test_nodes_are_startup_scoped_and_complete():
     graph, origin = _graph()
     nodes = _startup_nodes(graph, origin)
-    assert nodes, "启动链节点未被 check_truth 发现（发现范围失效？）"
+    assert nodes, "启动链节点未被 truth 发现（发现范围失效？）"
     assert all(n.startswith("startup.") for n in nodes)
 
 
@@ -127,6 +129,11 @@ def test_templates_resolve_and_do_not_shadow_plugins():
                      for p in (d.parent / "image").glob("*.png")}
     for name, node in _startup_nodes(graph, origin).items():
         for tpl in _templates(node):
+            if tpl.startswith("common_"):
+                # 通用控件（关闭叉 / 返回箭头）住全局模板目录：跨页跨模块只有这一份，
+                # 启动链与模块图都按文件名直接引用，不在这里复制副本。
+                assert (CORE_IMAGE_DIR / tpl).is_file(), f"{name} 引用的全局模板不存在: {tpl}"
+                continue
             assert (IMAGE_DIR / tpl).is_file(), f"{name} 引用的模板不存在: {tpl}"
             assert tpl.startswith("startup_"), f"启动链模板必须带 startup_ 前缀: {tpl}"
             assert tpl not in plugin_images, f"启动链模板与插件模板重名: {tpl}"

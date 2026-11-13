@@ -1,9 +1,11 @@
 # MaaRacingMaster — Code Wiki · 鉴宝域
 
+> ⚠️ **历史快照**：本插件已退役归档（`plugins/_archive/treasure/`），本文保留归档时的实现描述，不作为现役知识依据。当前状态、依赖边界与复活步骤见 [RETIRED.md](./RETIRED.md)。
+
 > 《巅峰极速》"巅峰鉴宝"活动 —— **出价 / 估值 / OCR 全自动模块（treasure\_\*）** 专属文档。
 > 聚焦鉴宝核心：阶段状态机（真源 = `resources/policy/treasure.policy.json` `perception.stages.order`）/ 准星意图 / 出价策略（bid\_strategy）/ 异步 OCR / ROI 三段分类。
 >
-> **信源等级**：L2 —— 可作「鉴宝域现在怎么工作、改它要注意什么」的直接依据；不得作为游戏规则（L0，见 RULES.md）与节点/策略取值（L0，见 `resources/`）的最终依据。
+> **信源等级**：L4（历史快照）—— 描述归档时的形态，不作现役依据；游戏规则见 RULES.md，节点/策略取值见 `resources/`。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../../../../AGENTS.md)；本文只补充本域特有约束。
 >
 > **先读**：[RULES.md](./RULES.md) —— 游戏规则事实（成交条件 / 分红机制 / 计分目标 / 对手行为约束）。
@@ -61,7 +63,7 @@
 
 - **资源随插件**：鉴宝模板位于同目录 `resources/image/`；识别与 ROI 的唯一真源为 `resources/policy/treasure.policy.json`（`perception.spec` 锚点 + `policy` 段），detector/module/ocr/eggs 一律读它。插件以 `__init__.py` 的 `IMAGE_DIR`/`PIPELINE_DIR`/`POLICY_PATH`/`nav_source()` 统一引用，不依赖主程序 `assets/`。
 
-- **NavKit 底座**：`core/navkit` = v4 数据面 loader（v4\_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；`tools/navkit` 是 MPE 桥入口 + 策略表薄页 + check\_truth 校验闸门。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
+- **NavKit 底座**：本插件 `core/` 内含 v4 数据面 loader（v4\_source：policy.json → NavSource/DetectionPlan）+ 决策引擎（policy.py）+ trace 落盘记录器；原 navkit 包已随本插件归档拆解。`tools/pipeline` 是 MPE 桥入口 + 回放 / ROI 工作台 + 真源校验闸门（策略表页已随 v5 下线）。固定坐标点击件不强制配模板，必须由 spec 锚点 `guarded_by` 担保（D2）。
 
 **阶段链路（policy.json** **`perception.stages`** **序，仍与** **`STAGE_ORDER`** **保持 GUI 断点兼容）**：
 
@@ -107,7 +109,6 @@
 - 惰性锚点真源 = spec 的 `egg_claim_red_btn`/`egg_claim_title`/`egg_panel_tabbar`/`egg_task_tab3`/`act_get_silver_btn`/`hall_back_btn`/`hall_home_btn`/`claim_coin_medal`/`claim_score_medal` 族（= `TreasureModule.EGG_CHAIN_ANCHORS`，测试直接 import 该常量、不再手抄副本），**不进 transitions/stages.active/global\_anchors**（detector 零扫描、不参阶段判定；`tests/test_treasure_egg_claim.py` 机检这条惰性）。链尾确认「已回大厅」另用全局锚点 `EGG_CHAIN_LOBBY_ANCHOR`（`hall_peak_appraise_card`，检测面本就每帧扫描），与惰性清单语义分开、不混。GUI 底部阶段条在收尾期间（约 30s）不更新——链不是阶段，以「\[彩蛋收尾]」日志补偿；日后要可视化按 §10.1 升级路径补 dwell+stage，属独立改动。
 
 - 蛋落盘语义：`games` 蛋列退役（不再写、列保留）；`daily_summary.egg_red/yellow/blue` = 「今日领取数」，写入点=链内弹窗数蛋成功；`egg` 数蛋锚点 rect 已搬家到聚合奖励弹窗蛋卡行（旧结算链业务上不再产蛋；真帧实测红/黄/蓝蛋 0.837–0.920 命中、币章卡被中心 S≈7 判色拒掉）。
-- GUI 看板读侧契约（`core/sidecar.get_today_stats`）：新列的 ALTER 迁移由鉴宝模块（写侧）惰性建连时补，升级后天然存在「GUI 开着、模块没跑过」的窗口——读侧**按 PRAGMA 实有列取交集查询、缺列兜底 0/None**，绝不硬编码全列 SELECT（真机实证：曾 378 次/83min `no such column: egg_coin` 看板全灭）。回归锁 `tests/test_sidecar_today_stats.py`。
 
 **回合出价**（`第N回合出价` 阶段，`_run_bidding_choice`）：
 
@@ -140,7 +141,7 @@
 
   - 写侧不变量：io 三项只由观察线程写、ocr/tick 项只由 Tasker 线程写（各为单写者），`read_perf_snapshot` 可被 sidecar handler 线程直读不加锁。回归锁见 `tests/test_treasure_perf_instrument.py`（含变异检验：退回全局口径会恰使两条校准测试变红）。
 
-  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](../../../core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），core 只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该文件只依赖标准库，CI 上真实执行（不像鉴宝测试整文件跳过）。
+  - **进程 CPU 占用**：原语在 [core/cpu\_time.py](./core/cpu_time.py)（ctypes `GetProcessTimes`，零依赖、非 Windows 返回 None），模块只给无状态累计秒数，**差分留在本域仪表**（`_sample_cpu` 每 tick 采一次，相邻差 ÷ 墙钟差 → 滑窗 p50/p95/max；多核可 >100%）。取不到时快照 `cpu.available=False`，GUI 按"无此项"渲染，**绝不拿 0% 冒充空闲**。单位坑（FILETIME tick = 100ns = 1e-7 秒，写成 `100e-7` 会放大 100 倍）由 `tests/test_cpu_time.py` 与 `time.process_time()` 对拍锁住——该测试随插件归档，默认不跑，考古时显式执行。
 
   - 空汇总噪音已消除：场次边界的汇总**只认 OCR 活动**（预热期常只有几帧落盘、OCR 全 0），但计数无条件在边界清零，防串场。
 
@@ -210,7 +211,7 @@
 
 - 按优先级（`stage_priority`）扫描 policy.json `perception` 数据面编译的 `DetectionPlan.detect_anchors`
 
-- 同 ROI 多模板聚合匹配——统一走 `core.template_match`（TM\_CCOEFF\_NORMED 多尺度，默认阈值 0.75），**色彩空间按锚点声明**（`spec.<锚点>.colorspace`：默认 rgb；round\_big\_banner/result\_banner 等高成本锚点声明 gray，标定依据对拍报告 commit `0554f58`，脚本 `tools/navkit/colorspace_audit/`）
+- 同 ROI 多模板聚合匹配——统一走 `core.template_match`（TM\_CCOEFF\_NORMED 多尺度，默认阈值 0.75），**色彩空间按锚点声明**（`spec.<锚点>.colorspace`：默认 rgb；round\_big\_banner/result\_banner 等高成本锚点声明 gray，标定依据对拍报告 commit `0554f58`，脚本与其报告见 commit `0554f58`）
 
 - 匹配强度弱告警节流（同 ROI 每 30s 一次）
 
@@ -224,7 +225,7 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 **结算后弹窗链的区分口径**：领取分红后可能依次弹出 ①今日最高积分上涨 ②鉴宝等级提升 ③奖励结算（彩蛋），弹几个是随机的（也可能一个不弹）。弹窗会遮满全屏 → 弹窗存在期间检测器一定匹配不到大厅，弹窗全关后大厅才可见，因此"看到大厅"就是"弹窗已关"的可靠证据。三者中只有 ①② 有 ROI，**具体是哪个弹窗由 detector 的** **`_last_hit_roi_key`** **区分**：`daily_high_banner`=今日最高 / `egg_reward_title`=彩蛋 / 无命中=等级提升盲点。这三页在阶段表里合并为单一「结算弹窗」，`_accept_stage` 为此放行「结算弹窗→大厅」的回退。
 
-**结算双阶段 = 同一视觉页的两个状态**（2026-09-15 定案，勿再按"配置错误"处理）：「中标结算」与「领取分红」在 policy 里的感知集与 OCR 集**完全相等**（active 同为 settle\_title/result\_banner/daily\_high\_banner/egg\_reward\_title，ocr 同为 settle\_\* 四个金额信号）——结算页是一块连续画面，阶段语义由本帧命中的转移锚点裁决（`result_banner`（竞拍结果横幅）命中 → 中标结算；`settle_title`（结算页标题）命中 → 领取分红，判定归 detector 优先级扫描，两页切换由 transitions 表 `stage` 列约束）。**调共用锚点的 rect/阈值 = 同时改两页**，标定前两侧画面都要复验。锚点与阶段的 `page` 字段（如 settle/payout）只是 ROI Studio 的**视觉页分组真源**（分组展示 + E09 新增校验 + `check_truth.page_checks` 闭合机检），不参与运行时归属——「哪个阶段扫哪些信号/锚点」唯一真源 = `stages.definitions[*].active/ocr`（ADR-0002），代码中不得另存第二份。
+**结算双阶段 = 同一视觉页的两个状态**（2026-09-15 定案，勿再按"配置错误"处理）：「中标结算」与「领取分红」在 policy 里的感知集与 OCR 集**完全相等**（active 同为 settle\_title/result\_banner/daily\_high\_banner/egg\_reward\_title，ocr 同为 settle\_\* 四个金额信号）——结算页是一块连续画面，阶段语义由本帧命中的转移锚点裁决（`result_banner`（竞拍结果横幅）命中 → 中标结算；`settle_title`（结算页标题）命中 → 领取分红，判定归 detector 优先级扫描，两页切换由 transitions 表 `stage` 列约束）。**调共用锚点的 rect/阈值 = 同时改两页**，标定前两侧画面都要复验。锚点与阶段的 `page` 字段（如 settle/payout）只是 ROI Studio 的**视觉页分组真源**（分组展示 + E09 新增校验 + `truth.page_checks` 闭合机检），不参与运行时归属——「哪个阶段扫哪些信号/锚点」唯一真源 = `stages.definitions[*].active/ocr`（ADR-0002），代码中不得另存第二份。
 
 ***
 
@@ -266,13 +267,13 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 
 ## 6. 校准与编辑工具（v4 形态）
 
-- **画布编辑**：`tools/navkit/mpe.cmd` 起 mpelb（root=仓库根）并在浏览器打开 MPE——节点/ROI/模板引用直接编辑 v4 真源 `resources/pipeline/treasure.json`（round-trip 保真 P3a 实证）。
+- **画布编辑**：`tools/pipeline/mpe.cmd` 起 mpelb（root=仓库根）并在浏览器打开 MPE——节点/ROI/模板引用直接编辑 v4 真源 `resources/pipeline/treasure.json`（round-trip 保真 P3a 实证）。
 
 - **策略表**：`mpe.cmd` 同批打开 Studio 壳页（127.0.0.1:26530），切到「策略表」标签编辑 `resources/policy/treasure.policy.json`。
 
-- **ROI 校准台 / 模板截取**：`tools/navkit/studio.cmd` 一次起 mpelb + Studio 服务（两者均隐藏窗口，零控制台弹窗），壳页三标签互切——ROI 校准台离线回放会话帧（`debug/treasure/<ts>/raw/`），拖框改 spec 锚点 rect / pipeline 节点 rect / `tuning` rect，保存时 `check_truth` 各闸（图自洽/分层红线/交叉互洽/几何/页面清单等集/页面归属闭合 `page_checks`）随管线执行；锚点 `page` 是 Studio 侧视觉页分组真源（分组展示 + E09 新增校验），闭合性由 `page_checks` 机检（惰性锚点如 egg\_task 族可用独立页面，被阶段表/转移引用的不得逃逸）；模板截取页从截图裁模板图落 `resources/image/`。
+- **ROI 工作台（v5）**：`tools/pipeline/studio.cmd` 一次起 mpelb + Studio 服务（两者均隐藏窗口），Studio 只保留回放与 ROI 两页——回放只读 v5 会话清单与帧索引，ROI 直接改写节点 JSON 的 `custom_recognition_param.rect` 并在保存前后跑同一图校验器；策略表页、模板截取页与旧保存管线已随 v5 下线。归档鉴宝的旧会话不参与 v5 回放，需要样本时重录。
 
-- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改 core/navkit/policy.py）；编辑后用 `tools/navkit/check_truth.py` 机检。
+- **运行时数据面**：detector/决策栈/ROI/感知裁剪全部读 `resources/policy/treasure.policy.json` 数据面（P4b 起）；决策引擎消费的域白名单、推导与副作用形收在同文件 `engine_contract` 段（改鉴宝事实/等待 key/tuning 键 = 改契约段，不改本插件 `core/policy.py`）；编辑后用 `tools/pipeline/truth.py` 机检。
 
 - **校准截图来源**：`debug/treasure/<ts>/raw/`（GUI debug 图落盘），匹配行为离线验证可用 `tools/experiments/` 系列脚本。两条离线判据留在这一层：① **模板区分力必须两个口径都看**——收紧 ROI 与整幅画面各量一次，ROI 决定区分力（实例：聊天框不限 ROI 时大厅误命中 0.963），大厅三张模板（待机位聊天图标 / 控制器指引面板 / 弹窗关闭 X）的裁法与入册见 commit `a1a6424`；② **锚点误命中要逐帧看分**——逐帧打出该节点（含 Or 引用的锚点节点）的最高匹配分，与「这帧会被判成哪个页面」的回放工具分工：一个答「判成什么」，一个答「为什么、差多少」，据此重选区或加守卫（commit `01a4a6e`）。
 
@@ -382,5 +383,5 @@ P4c 起 detector 内不再有独立匹配实现与常量兜底：真源 = policy
 | **观察线程的启动判据**（2026-09-15 定案） | 观察线程（`treasure-observer`）是**阶段判定的唯一生产者**：`_judge_stage_into_slot` 写 `_obs_slot`，决策段 `_consume_stage_slot`（`module.py:4344`）读它并 `set_stage`——这是 `set_stage` 唯一的自动调用者，所以线程不起 = 阶段永不推进。它的启动判据**不得**绑 `debug.enabled` / `peep_enabled`：旧写法 `if debug or peep: _start_io_worker(); _start_observer()` 会让两个出口全关的会话阶段判定彻底停摆（`_obs_slot` 恒 None → 决策段直接 return），与同文件 `_observe_interval_s` 声明的 C6「阶段判定消费者恒在」直接冲突——**节拍判据改了新门，启动判据还守着旧门**。现口径收在 `_start_session_workers()`：观察线程无条件起、IO worker 仍按出口开关起；会话**中途**打开出口由观察循环 `_ensure_io_worker()` 每 tick 补启（否则要重开会话才有帧）。教训一般化：凡「某线程/组件是某职责的唯一生产者」，其启停判据必须盯那个职责，而不是盯历史上顺带服务的出口开关。真机证据 `MaaRM_20260915_173823`（全关会话无「观察通路已启动」行）与 `MaaRM_20260915_173229`（途中开 PEEP 全程无预览）；回归锁 `tests/test_treasure_observer.py` 四条——注意原有七条是**方法级**契约，照不到「线程有没有被启动」这条判据，所以修复前全绿  |
 | **报价槽固化状态必须随场次清空**（2026-09-15 定稿） | 报价槽 `_bid_slots` 的回合级重置只认「回合号变了」（`_consume_ocr_result` 比对 `_bid_slots_round`），于是**新一场的第 1 回合与上一场最后一回合同为 1 时该条件不成立**，槽沿用上一场四槽——本场 R1 的报价一次都不读（`_bid_dynamic_ocr_keys` 已把固化槽剔除），R1 快照直接用上一场数字。真机 `20260915_211002` 实证：第 2 场 R1 开局（21:11:21）四槽仍是第 1 场的 `150900/208800/550000/178000`、`OCR 199次` 冻结不再增长，快照 `epoch#1 R1 H=216,600 我方=150,900 对手=(208800, 550000, 178000)`——H 是本场的、四槽是上一场的；该会话 5 场里第 2、3 场中招，第 3 场打到 R3 后第 4、5 场的 R1 因回合号不等而自行恢复。**教训一般化：「按局内序号重置」这类判据在场次边界会失效**——凡状态机的重置键取自局内序号（回合号 / epoch / 序号），跨场必须由场次边界显式清空，`_reset_round_state` 是那个唯一出口；清的时候复用既有 `_reset_bid_slots()` 而非清成空 dict，维持「四槽恒在」约定（消费侧 `_bid_slots[pid]` 按下标直取）。该缺陷在报价读数可读之前不可达（那时没有任何槽会固化），是随「出价页页面令牌补第二类证据」生效后暴露的既有问题。回归锁 `tests/test_treasure_bid_phase_recovery.py::test_reset_round_state_clears_locked_bid_slots`（已在旧行为下验红：`assert 1 is None`）  |
 | 点击日志的留痕判据（模块侧） | 槽忙跳过按帧节流（`SLOT_BUSY_LOG_EVERY`），每次点击导航仍留 1~2 行（点击与避让各一）——这是**预期行为**不是异常；点击失败按**失败链**判定：某 key 连续失败链首次必记、其后按帧节流、点击成功清链（真机 2026-09-17 帧 24/46 的两次失败曾被纯帧号节流整段吞掉）。帧级日志的产出判据与取证口径见 [core §5.5](../../../core/CODE_WIKI.md) |
-| **结算页金额的定值判据与利润派生**（2026-09-17 定稿） | 结算页四行金额（最终竞拍价/合计/利润/我的收入）是**滚动计数动画**，「连续 N 帧一致」拦不住它：动画值能连稳 ≥3 帧（会话 `20260917_210330` 第 15 场合计 31,013→31,361→320,605、利润 −445,987→−445,639→−156,395）。**定值判据 = 跳过动画后「领取」按钮出现**（用户权威 + 日志双证），代码里即 `_settle_collect_clicked_once`（本就是策略两次点击「跳过动画 ↔ 真领取」的交接点，不新增事实字段）：点击前一律不固化，点击后读数才是真值；`_settle_field_stable` 降为定值之后的第二道去抖。收入同样受此闸——2026-09-16 事故就是动画期收入被读成 `0`（合法终值）而提前点了真领取。**利润是派生量**：`利润 = 拍品总价 − 最终竞拍价`（RULES §3/§7；库内 430/485 场精确相等，且动画期该关系同样成立——利润行只是合计行的函数，不含独立信息）。故不再独立落值，OCR 利润行改为**交叉校验哨兵**（与派生值不符即告警，用于发现 ROI 漂移）。旧护栏「利润绝对值不低于 Hmax/20」前提为假——薄利赢单的利润本就远小于 Hmax/20，真值被当裁位残缺丢弃、动画中间值反而被固化（库内 55 场，当日 #12/#14 两场拍中即由此把 −362,521 写上看板，真值 +146,323）。**配套**：策略侧 `settle_ready_click` 的判据由 `settle_income >= 0` 改为 `neq null`（=「已读出」）——拍中者收入 = 利润可为负（库内 122 场亏本拍中），值域判据会让这些场永远点不出领取，配上定值闸就是死路。**看板口径**：银币盈亏 = `income_sum`（我方本场收入，含未中场分红，RULES §3）+ `egg_coin`；`profit_sum` 只累加我方拍中场的利润（未中场的利润是中标者的钱）。历史脏数据用 `scripts/repair_treasure_settle_data.py` 按同一套规则回填（推不出的不猜）。回归锁 `tests/test_treasure_settle_stability.py`、`tests/test_treasure_store_summary.py`、`tests/test_repair_treasure_settle_data.py` |
+| **结算页金额的定值判据与利润派生**（2026-09-17 定稿） | 结算页四行金额（最终竞拍价/合计/利润/我的收入）是**滚动计数动画**，「连续 N 帧一致」拦不住它：动画值能连稳 ≥3 帧（会话 `20260917_210330` 第 15 场合计 31,013→31,361→320,605、利润 −445,987→−445,639→−156,395）。**定值判据 = 跳过动画后「领取」按钮出现**（用户权威 + 日志双证），代码里即 `_settle_collect_clicked_once`（本就是策略两次点击「跳过动画 ↔ 真领取」的交接点，不新增事实字段）：点击前一律不固化，点击后读数才是真值；`_settle_field_stable` 降为定值之后的第二道去抖。收入同样受此闸——2026-09-16 事故就是动画期收入被读成 `0`（合法终值）而提前点了真领取。**利润是派生量**：`利润 = 拍品总价 − 最终竞拍价`（RULES §3/§7；库内 430/485 场精确相等，且动画期该关系同样成立——利润行只是合计行的函数，不含独立信息）。故不再独立落值，OCR 利润行改为**交叉校验哨兵**（与派生值不符即告警，用于发现 ROI 漂移）。旧护栏「利润绝对值不低于 Hmax/20」前提为假——薄利赢单的利润本就远小于 Hmax/20，真值被当裁位残缺丢弃、动画中间值反而被固化（库内 55 场，当日 #12/#14 两场拍中即由此把 −362,521 写上看板，真值 +146,323）。**配套**：策略侧 `settle_ready_click` 的判据由 `settle_income >= 0` 改为 `neq null`（=「已读出」）——拍中者收入 = 利润可为负（库内 122 场亏本拍中），值域判据会让这些场永远点不出领取，配上定值闸就是死路。**看板口径**：银币盈亏 = `income_sum`（我方本场收入，含未中场分红，RULES §3）+ `egg_coin`；`profit_sum` 只累加我方拍中场的利润（未中场的利润是中标者的钱）。历史脏数据用 `tools/repair_treasure_settle_data.py` 按同一套规则回填（推不出的不猜）。回归锁 `tests/test_treasure_settle_stability.py`、`tests/test_treasure_store_summary.py`、`tests/test_repair_treasure_settle_data.py` |
 | 帧边界与终止可见化 | `_tick_once` 只是边界壳，帧工作在 `_tick_frame_body`：`ClickRetryExhaustedError` → 一条 ERROR + `ctx.lifecycle.request_stop()`（置 `_frame_abort` 后后续帧不再执行帧工作）；其他异常 → 计数并按 `FRAME_ERROR_LOG_EVERY` 节流记 traceback，**不中断**。快照路径不得触发决策（`_treasure_kwargs` 只读决策段发布的 `_last_intent`），代价是 PEEP 准星滞后一帧 |

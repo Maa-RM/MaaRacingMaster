@@ -106,8 +106,14 @@ class _FakeGraph:
         self.banner_seq = list(banner_seq) if banner_seq is not None else [False]
         self.calls = 0
         self.banner_calls = 0
+        # 步级机读的 settle 信号：假图没有真实 settle，动作一律按「点击生效」记。
+        self.last_click_landed: bool | None = None
+        self.last_click_sent = False
 
-    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+    def run(self, entry: str | None = None, reached: str | None = None,
+            *, save: str | None = None) -> bool:
+        self.last_click_landed = True
+        self.last_click_sent = True
         if entry == sr.STORE_BANNER_NODE:
             v = self.banner_seq[min(self.banner_calls, len(self.banner_seq) - 1)]
             self.banner_calls += 1
@@ -115,6 +121,15 @@ class _FakeGraph:
         v = self.seq[min(self.calls, len(self.seq) - 1)]
         self.calls += 1
         return v
+
+    def probe(self, node: str, **kwargs):
+        """只读页面查询：驾驶主循环改调它（`run` 仍用于就绪判据与导航）。
+
+        计数口径不变——probe 内部复用 run 的分流逻辑，`calls` / `banner_calls`
+        仍是「该节点被问了几次」。
+        """
+        hit = self.run(node, node)
+        return sr.ProbeOutcome.HIT if hit else sr.ProbeOutcome.MISS
 
 
 @pytest.fixture
@@ -169,6 +184,34 @@ def test_ready_returns_false_when_stopped(env) -> None:
     _set_graph(mod, [False])
     mod._running = False
     assert mod._wait_drive_ready(1) is False
+
+
+def test_ready_confirmed_skips_recognition_entirely(env) -> None:
+    """上一步刚用同一锚点确认过落地页 → 入口**一次识别都不跑**，直接进控制链。
+
+    两次之间只有函数返回、没有点击或转场，画面不可能跳走；而起步倒计时期间
+    车辆已可接受输入，再查一次就是白扔起步时间。
+    """
+    mod, _, _ = env
+    g = _set_graph(mod, [False])          # 桩恒失配：若还查图，必然判不就绪
+    assert mod._wait_drive_ready(1, confirmed=True) is True
+    assert g.calls == 0
+
+
+def test_ready_without_confirm_still_debounces(env) -> None:
+    """断点续跑（无前置确认）仍要走完整去抖：两次连续命中才算就绪。"""
+    mod, _, _ = env
+    g = _set_graph(mod, [True, True])
+    assert mod._wait_drive_ready(1) is True
+    assert g.calls == sr.DRIVE_READY_HITS
+
+
+def test_ready_without_confirm_restarts_on_miss(env) -> None:
+    """去抖语义不变：中间一次失配就重新计数。"""
+    mod, _, _ = env
+    g = _set_graph(mod, [True, False, True, True])
+    assert mod._wait_drive_ready(1) is True
+    assert g.calls == 4
 
 
 # ---------- 结束判据 ----------
@@ -687,7 +730,7 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
     seen: list[tuple[int, bool]] = []
     stamps: list[str] = []
 
-    def drive(phase, round_no=1, stamp=None):
+    def drive(phase, round_no=1, stamp=None, *, ready_confirmed=False):
         seen.append((round_no, mod._view_ok))
         stamps.append(stamp)
         mod._view_ok = True
@@ -711,20 +754,30 @@ def test_view_guard_rearms_at_each_round(env, monkeypatch) -> None:
 
 
 class _StepGraph:
-    """按节点名分流：``action_node`` 走动作（点击，恒 ``action_returns``），
-    其余 entry 视为落地页确认探针，按 ``confirm_seq`` 返回（用尽后重复末值）。"""
+    """按节点名分流：``action_node`` 走动作（点击，恒 ``action_returns``，并写
+    ``last_click_landed``），其余 entry 视为落地页确认探针（按 ``confirm_seq`` 返回）。
+
+    ``landed`` 模拟点击后源按钮是否消失（settle 信号）：True=生效 / False=被吞 /
+    None=动作没执行（闸门未命中）。
+    """
 
     def __init__(self, action_node: str, confirm_seq: list[bool],
-                 action_returns: bool = True) -> None:
+                 action_returns: bool = True, landed: bool | None = True) -> None:
         self.action_node = action_node
         self.confirm_seq = list(confirm_seq)
         self.action_returns = action_returns
+        self.landed = landed
+        self.last_click_landed: bool | None = None
+        self.last_click_sent = False
         self.action_calls = 0
         self.confirm_calls = 0
 
-    def run(self, entry: str | None = None, reached: str | None = None) -> bool:
+    def run(self, entry: str | None = None, reached: str | None = None,
+            *, save: str | None = None) -> bool:
         if entry == self.action_node:
             self.action_calls += 1
+            self.last_click_sent = self.landed is not None
+            self.last_click_landed = self.landed
             return self.action_returns
         v = self.confirm_seq[min(self.confirm_calls, len(self.confirm_seq) - 1)]
         self.confirm_calls += 1
@@ -753,19 +806,149 @@ def test_step_advances_when_confirm_hits(env, monkeypatch) -> None:
     g = _StepGraph(_ACT, [True])
     mod._graph = g
     assert mod._run_step(_ACT, _STAGE) is True
-    assert g.action_calls == 1 and g.confirm_calls == 1
+    assert g.action_calls == 1
+    assert g.confirm_calls == 2     # 进本步先探一次「锚点原本在不在」，点后再探一次
 
 
 def test_step_retries_same_click_then_fails_loudly(env, monkeypatch) -> None:
-    """确认始终未命中 → 按上限重发**同一动作**，达上限后再等一窗显式终止本轮（非静默）。"""
+    """点击被吞（源按钮未消失）→ 按上限重发**同一动作**，达上限后显式终止本轮（非静默）。"""
     mod = _tight_step(env, monkeypatch, retry_max=1)
     sink = _LogSink()
     monkeypatch.setattr(sr, "logger", sink)
-    g = _StepGraph(_ACT, [False])
+    g = _StepGraph(_ACT, [False], landed=False)   # 每次点击都被吞
     mod._graph = g
     assert mod._run_step(_ACT, _STAGE) is False
-    assert g.action_calls == 2          # 首点 + 1 次重发 = STEP_RETRY_MAX + 1
+    assert g.action_calls == 2          # 首点 + 1 次重发 = max_retries + 1
     assert sink.texts("仍未落地")        # 耗尽有显式 WARNING，不得静默卡死
+
+
+def test_step_landed_but_page_never_arrives_waits_without_reclick(env, monkeypatch) -> None:
+    """点击已生效但落地页始终不到 → 不再重发（按钮多半已不在），等满预算后显式终止。"""
+    mod = _tight_step(env, monkeypatch, retry_max=2)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [False], landed=True)    # 按钮消失了，但确认锚点一直不命中
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 1          # 已生效就不再点第二下
+    assert sink.texts("仍未落地")
+
+
+def test_step_confirm_hit_without_click_effect_is_not_success(env, monkeypatch) -> None:
+    """落地页命中但按钮从未消失（点击没生效/弹窗未点）→ **不算成功**，必须重发。
+
+    锁 2026-11-08 的提前通过：空商店页在奖励弹窗出现前就能命中「售卖区」锚点，
+    只认落地页会让「关闭奖励弹窗」在弹窗尚未出现时判成功、从未点过弹窗。
+    """
+    mod = _tight_step(env, monkeypatch, retry_max=1)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [True], landed=None)     # 落地页一直命中，但点击闸门从未命中
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 2          # 仍然重发，绝不因落地页命中而提前推进
+    assert sink.texts("仍未落地")
+
+
+def test_step_self_appeared_landing_page_without_click_is_not_success(env, monkeypatch) -> None:
+    """落地锚点自己从无到有、但本步一次点击都没发出 → 不算成功。
+
+    锁 2026-11-09 实机竞态：阶段结束游戏自动切进商店，「售卖区」锚点先于奖励弹窗
+    到位；没点过弹窗就凭锚点出现放行，弹窗随后盖住商店，下一步永远点不到确认上阵。
+    """
+    mod = _tight_step(env, monkeypatch, retry_max=1)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    g = _StepGraph(_ACT, [False, True], landed=None)  # 首探不在、随后自己到位；闸门从未命中
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is False
+    assert g.action_calls == 2          # 不因页面自己出现而提前推进，仍走重发
+    assert sink.texts("仍未落地")
+
+
+def test_step_late_popup_clicked_on_retry_after_store_self_appeared(env, monkeypatch) -> None:
+    """商店先于弹窗到位的竞态：首拍没点、页面自己出现时不放行；重试窗弹窗可见后点到即成功。"""
+    mod = _tight_step(env, monkeypatch, retry_max=2)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+
+    class _LatePopup(_StepGraph):
+        def __init__(self) -> None:
+            super().__init__(_ACT, [False, True])
+            self.clicks = 0
+
+        def run(self, entry=None, reached=None, *, save=None):
+            if entry == self.action_node:
+                self.action_calls += 1
+                if self.action_calls == 1:      # 弹窗还没到：闸门未命中，没发出点击
+                    self.last_click_sent = False
+                    self.last_click_landed = None
+                    return False
+                self.clicks += 1                # 重试窗弹窗已可见：点到且生效
+                self.last_click_sent = True
+                self.last_click_landed = True
+                return True
+            return super().run(entry, reached, save=save)
+
+    mod._graph = _LatePopup()
+    g = mod._graph
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.action_calls == 2 and g.clicks == 1   # 首拍页面自己出现没放行，第二拍才真点
+    assert not sink.texts("仍未落地")
+
+
+def test_step_slow_vanish_counts_as_landed_without_reclick(env, monkeypatch) -> None:
+    """按钮消失慢过 settle 兜底（实机约 2s）→ 下一拍认不到按钮即反推上次点击生效。
+
+    锁「只识别不点击」的空转：首点生效但按钮撑过 800ms 兜底，重发时按钮已不在
+    （识别未命中、动作桥不进），若不反推就会一直重发到上限、整步从未再点过。
+    """
+    mod = _tight_step(env, monkeypatch, retry_max=5)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+
+    class _SlowVanish(_StepGraph):
+        def __init__(self) -> None:
+            super().__init__(_ACT, [False])
+            self.clicks = 0
+
+        def run(self, entry=None, reached=None, *, save=None):
+            if entry == self.action_node:
+                self.action_calls += 1
+                if self.action_calls == 1:      # 首拍：点到了，但按钮 800ms 内没消失
+                    self.clicks += 1
+                    self.last_click_sent = True
+                    self.last_click_landed = False
+                    return True
+                self.last_click_sent = False    # 重发时按钮已不在：动作桥根本没进
+                self.last_click_landed = None
+                return False
+            self.confirm_calls += 1
+            return self.action_calls >= 2       # 落地页要等首拍点击生效后才到
+
+    mod._graph = _SlowVanish()
+    g = mod._graph
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.clicks == 1 and g.action_calls == 2   # 只真点一次，第二拍是空跑的探针
+    assert not sink.texts("仍未落地")
+
+
+def test_step_persistent_button_advances_on_landing_anchor(env, monkeypatch) -> None:
+    """常驻 tab 点完不消失（settle 恒为「被吞」）→ 落地锚点从无到有即算切换成功。
+
+    锁 2026-11-08 实机卡点：点左侧「娱乐玩法」tab 后页面内容确实换了（卡片 0.32→0.99），
+    但 tab 还在（换页后仍有帧匹配到 0.83），按「按钮消失」判会一路重发到中止。
+    """
+    mod = _tight_step(env, monkeypatch, retry_max=5)
+    sink = _LogSink()
+    monkeypatch.setattr(sr, "logger", sink)
+    # 进本步时落地锚点不在；点一次后到位，而源按钮始终没消失
+    g = _StepGraph(_ACT, [False, True], landed=False)
+    mod._graph = g
+    assert mod._run_step(_ACT, _STAGE) is True
+    assert g.action_calls == 1          # 第一次就成功，不重发
+    assert g.confirm_calls == 2         # 进本步一次 + 点后一次
+    assert not sink.texts("仍未落地")
 
 
 def test_step_hit_after_miss_advances_without_retry(env, monkeypatch) -> None:
@@ -788,9 +971,11 @@ def test_step_exits_on_stop_without_retry_or_fail(env, monkeypatch) -> None:
     mod._graph = g
     orig_run = g.run
 
-    def run_then_stop(entry=None, reached=None):
-        r = orig_run(entry, reached)
-        if entry != _ACT:               # 首次确认探针后即模拟 stop() 落停止标志
+    def run_then_stop(entry=None, reached=None, **kwargs):
+        r = orig_run(entry, reached, **kwargs)
+        # 第一步（进入本步）的确认探针不落停止，免得测试锁住"停止发生在点击之前"这种
+        # 另一条路径；点击后的首次确认探针才模拟 stop() 落停止标志。
+        if entry != _ACT and g.action_calls > 0:
             mod._running = False
         return r
 
@@ -813,6 +998,152 @@ def test_step_confirm_nodes_exist_in_pipeline() -> None:
         (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
     for stage, dest in sr.STEP_CONFIRM.items():
         assert dest in graph, f"阶段「{stage}」的确认锚点 {dest} 不在真源"
+
+
+def test_action_nodes_skip_framework_default_pace() -> None:
+    """动作节点不得吃框架默认节拍（1s 地板 + 前后各 200ms 隐式等待），入口识别要有短上限。
+
+    2026-11-06 实机日志里 p1→p2 两次点击步分别耗 4s / 2s，按默认值推算其中
+    约 2.4s 是这三项固定等待。rate_limit 取 100ms 而不是 0：0 会让未命中的入口
+    全速截图找图空转。timeout 取 1000ms：入口识别在按钮缺席时吃满框架默认 20s
+    （2026-11-08 会话 20261108_145933：点继续 15:02:53→15:03:13 整 20s，期间
+    步级重试窗口一次都没轮到），短上限把"等按钮晚出现"交回 Python 侧窗口。
+    唯一例外是奖励弹窗：入场动画期间点击必被游戏吞掉，该步带 1500ms 前摇
+    （实测依据见 build_truth 的 NODE_OVERRIDES）。
+    """
+    graph = json.loads(
+        (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
+    pre_delay_exempt = {"关闭奖励弹窗", "关闭奖励弹窗2"}
+    for stage, node, _phase in sr.FLOW:
+        if node is None:
+            continue
+        data = graph[node]
+        assert data.get("rate_limit") == 100, f"「{stage}」吃回框架默认节拍或全速空转"
+        if stage in pre_delay_exempt:
+            assert data.get("pre_delay") == 1500, f"「{stage}」前摇与实测值漂移"
+        else:
+            assert data.get("pre_delay") == 0, f"「{stage}」带隐式前置等待"
+        assert data.get("post_delay") == 0, f"「{stage}」带隐式后置等待"
+        assert 0 < data.get("timeout", 20000) <= 1000, \
+            f"「{stage}」入口识别超时没收敛（未命中会吃满框架默认 20s）"
+
+
+def test_action_settle_spec_is_same_source_as_recognition() -> None:
+    """点击后条件等待的判据必须与节点 recognition 同源。
+
+    2026-11-06 实机（nav 帧 894→895）：按钮 ROI 分数 0.814→0.250 与驾驶页齿轮
+    0.882 出现在同一帧，检测零滞后；滞后来自点击后固定的 800ms 睡眠让节点挂着。
+    条件等待用「源按钮认不出来」当边沿判据，规格直接复制 recognition——阈值若
+    两处漂移，判据会在按钮还在时提前收工或按钮已走时白等。
+    """
+    graph = json.loads(
+        (Path(sr.PIPELINE_DIR) / "speedrush.json").read_text(encoding="utf-8"))
+    for stage, node, _phase in sr.FLOW:
+        if node is None:
+            continue
+        param = graph[node]["action"]["param"]
+        assert param["custom_action"] == "MaaRM_Click", f"「{stage}」不是点击节点"
+        reco = graph[node]["recognition"]["param"]["custom_recognition_param"]
+        settle = param["custom_action_param"]["settle"]
+        for key in ("rect", "templates", "threshold", "colorspace"):
+            assert settle[key] == reco[key], f"「{stage}」settle.{key} 与识别规格漂移"
+        assert 0.0 < settle["threshold"] <= 1.0
+        # 点击后观察「源按钮是否消失」的窗口：2s 与生态先例同量级（MAA 确认流程
+        # 点完每 500ms 认一次、连续约 2 秒还在才重点），短了会误判慢转场、长了白等。
+        assert param["custom_action_param"].get("wait_after_ms") == 2000, \
+            f"「{stage}」点击后观察窗不是 2s"
+
+
+def test_step_retry_dose_matches_calibrated_timing() -> None:
+    """步级重试剂量锁维护者定档：识别间隔 1s、重试间隔 3s、重试 5 次。
+
+    窗口只决定重发间隔；慢转场（寻找对手→奖励弹窗约 10~11s）由窗口内的确认轮询吸收，
+    故锁**总覆盖** (max_retries+1)×window_s≥18s，而不是单窗。判据是「画面切到落地页」——
+    源按钮消失或落地锚点从无到有：被吞点击每 3s 重发、5 次后显式失败；已生效点击不重发、
+    只等页面到位。
+    """
+    from maaracing_master.core.step_machine import Command, StepMachine, Verdict
+
+    policy = json.loads((Path(sr.__file__).parent / "resources" / "policy"
+                         / "decision.json").read_text(encoding="utf-8"))
+    dose = policy["step_retry"]
+    assert dose["poll_s"] == 1.0, "识别间隔 1s"
+    assert dose["window_s"] == 3.0, "重试间隔 3s"
+    assert dose["max_retries"] == 5, "重试 5 次"
+    assert dose["by_stage"] == {}, "判据统一后不再分步覆盖"
+    assert (dose["max_retries"] + 1) * dose["window_s"] >= 18.0
+
+    def simulate(landed: bool, page_s: float) -> tuple[int, float]:
+        """返回 (重发次数, 结束时刻)；重发次数=-1 = 判失败。纯假钟。"""
+        now = [0.0]
+        machine = StepMachine(max_retries=dose["max_retries"],
+                              window_s=dose["window_s"], clock=lambda: now[0])
+        machine.arm()                       # 首点发出
+        now[0] += 0.8                       # 点击 + settle 上限
+        resends = 0
+        for _ in range(100000):
+            ok = landed and now[0] >= page_s
+            cmd = machine.observe(Verdict.SUCCESS if ok else Verdict.PENDING)
+            if cmd is Command.DONE:
+                return resends, now[0]
+            if cmd is Command.FAIL:
+                return -1, now[0]
+            if cmd is Command.RETRY:
+                if landed:
+                    machine.arm()       # 已生效不再重发：折叠在途资格、重置窗口
+                else:
+                    resends += 1
+                    now[0] += 0.8
+                    machine.arm()
+            else:
+                now[0] += dose["poll_s"]
+        return -2, now[0]
+
+    n, end = simulate(True, 11.0)           # 点击生效、慢转场 11s
+    assert n == 0 and end <= 18.0, "已生效的点击不该重发，慢转场由轮询吸收"
+    n, _ = simulate(True, 25.0)             # 点击生效但页面始终不到
+    assert n == -1, "页面始终不到须显式失败"
+    n, end = simulate(False, 0.0)           # 点击被吞（按钮从未消失）
+    assert n == -1 and 18.0 <= end <= 24.0, "被吞点击须按 3s 重发、约 18~23s 耗尽"
+
+
+# ---------- 阶段切换：落地确认只复用紧邻的那一次 ----------
+
+
+def _flow_probe(env, monkeypatch, start_from: str):
+    """跑一小段 FLOW，记录驾驶入口拿到的 ready_confirmed。"""
+    mod, _, _ = env
+    monkeypatch.setattr(sr, "_open_grp", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "_start_preload", lambda: None)
+    _set_graph(mod, [True])
+    seen = []
+
+    def fake_step(node, stage):
+        seen.append(("step", stage))
+        return True
+
+    def fake_drive(phase, round_no=1, stamp=None, *, ready_confirmed=False):
+        seen.append(("drive", phase, ready_confirmed))
+        mod._running = False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", fake_step)
+    monkeypatch.setattr(mod, "_drive", fake_drive)
+    mod._run_flow(sr.resolve_start_index(start_from))
+    return seen
+
+
+def test_flow_reuses_adjacent_drive_confirm(env, monkeypatch) -> None:
+    """紧邻上一步的落地确认锚点就是驾驶页锚点 → 驾驶入口复用它。"""
+    seen = _flow_probe(env, monkeypatch, "确认上阵2")
+    assert ("step", "确认上阵2") in seen
+    assert ("drive", 2, True) in seen
+
+
+def test_flow_starting_at_drive_stage_debounces(env, monkeypatch) -> None:
+    """断点续跑直接落在驾驶阶段时没有前置确认 → 仍走完整去抖。"""
+    seen = _flow_probe(env, monkeypatch, "驾驶阶段2")
+    assert seen and seen[0] == ("drive", 2, False)
 
 
 # ---------- 路心读数参考系跳变标注（classify_ro_hop，仅记录） ----------

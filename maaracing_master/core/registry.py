@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import datetime
 from pathlib import Path
 
+from maaracing_master.core import achievement
 from maaracing_master.core.base import ActivityContext, ActivityModule, declares_dashboard
 from maaracing_master.core.logger import logger
 from maaracing_master.core.module_validity import in_window, is_expired, parse_endpoint
@@ -42,6 +44,46 @@ def _parse_validity(raw, plugin: str, field: str) -> datetime | None:
     if err:
         logger.log(f"[registry] 插件 {plugin}: {err}，按未声明处理", "WARNING")
     return dt
+
+
+def _register_achievements(mod_id: str, plugin_dir: Path, manifest) -> None:
+    """读 manifest 的 ACHIEVEMENTS 指针，加载 catalog 入成就声明索引（尽力而为）。
+
+    成就注册与模块注册解耦：本函数任何失败只记 WARNING，不撤销已成功的模块注册。
+    路径闸：仅插件目录内的相对 JSON，resolve 后仍须落在插件目录内（防穿越）。
+    """
+    try:
+        rel = getattr(manifest, "ACHIEVEMENTS", None)
+        if rel is None:
+            return
+        if mod_id == achievement.CORE_MOD_ID:
+            # 保留命名空间：core 成就目录由 sidecar 从包内资源注册，插件不得占用。
+            logger.log(f"[registry] 插件 {mod_id}: mod_id 为成就保留命名空间，跳过成就声明", "WARNING")
+            return
+        if not isinstance(rel, str) or not rel:
+            logger.log(f"[registry] 插件 {mod_id} ACHIEVEMENTS 声明非法，跳过成就", "WARNING")
+            return
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            logger.log(f"[registry] 插件 {mod_id} ACHIEVEMENTS 须为插件内相对路径，跳过", "WARNING")
+            return
+        path = (plugin_dir / rel_path).resolve()
+        if not path.is_relative_to(plugin_dir.resolve()):
+            logger.log(f"[registry] 插件 {mod_id} ACHIEVEMENTS 路径越界，跳过", "WARNING")
+            return
+        if not path.is_file():
+            logger.log(f"[registry] 插件 {mod_id} 成就目录缺失: {rel}，跳过", "WARNING")
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        normalized, warnings = achievement.register_catalog(mod_id, raw)
+        for w in warnings:
+            logger.log(f"[registry] 插件 {mod_id} 成就: {w}", "WARNING")
+        if normalized is None:
+            logger.log(f"[registry] 插件 {mod_id} 成就目录不可用，跳过", "WARNING")
+        else:
+            logger.log(f"[registry] 已注册插件成就: {mod_id}", "DEBUG")
+    except Exception as exc:  # noqa: BLE001 —— 成就旁路，不阻断模块注册
+        logger.log(f"[registry] 插件 {mod_id} 成就注册失败，跳过: {exc!r}", "WARNING")
 
 
 def _discover_plugins() -> None:
@@ -71,6 +113,7 @@ def _discover_plugins() -> None:
                 _parse_validity(getattr(manifest, "VALID_UNTIL", None), entry.name, "VALID_UNTIL"),
             )
             logger.log(f"[registry] 已注册插件模块: {mod_id}", "DEBUG")
+            _register_achievements(mod_id, entry, manifest)
         except Exception as exc:  # noqa: BLE001 —— 缺依赖等按插件隔离，不影响其它插件
             logger.log(f"[registry] 插件 {entry.name} 加载失败，跳过: {exc!r}", "WARNING")
 
@@ -116,7 +159,7 @@ def get_module_info(module_id: str) -> dict:
         "requires": sorted(cls.REQUIRES),
         "requires_gamepad_exclusive": cls.REQUIRES_GAMEPAD_EXCLUSIVE,
         "required_assets": tuple(getattr(cls, "REQUIRED_ASSETS", ())),
-        # 资格位：显式 HAS_DASHBOARD / 新契约（版本 > 0） / 旧今日统计钩子。
+        # 资格位：显式 HAS_DASHBOARD / 新契约（版本 > 0）。
         "has_dashboard": declares_dashboard(cls),
         "valid_from": valid_from.isoformat() if valid_from else None,
         "valid_until": valid_until.isoformat() if valid_until else None,

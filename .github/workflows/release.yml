@@ -25,9 +25,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 校验 v4 真源自洽（图闭合 + 数据面装配 + 交叉互洽）
+      - name: 校验节点真源自洽（图闭合 + 几何 + 分层红线）
         # 与 test.yml 同一守卫（纯标准库，零依赖）。
-        run: python tools/navkit/check_truth.py
+        run: python tools/pipeline/truth.py
 
       - name: 安装 pytest 与轻量测试依赖
         # 同 test.yml：不采用 `.[test]`（会连带安装 Windows-only 主依赖，Linux runner
@@ -229,6 +229,12 @@ jobs:
               Write-Host "ERR $u  $($_.Exception.Message)"
             }
           }
+
+      - name: 验证打包筛选与失败阻断
+        shell: pwsh
+        run: |
+          python -m pip install "pytest>=7.0"
+          python -B -m pytest tests/test_release_assembly.py tests/test_release_ship_expiry.py -q
 
       - name: 组装解压即用包（runtime + publish + 白名单 + 自检 + zip + sha256）
         shell: pwsh

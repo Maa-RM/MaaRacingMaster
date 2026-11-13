@@ -1,6 +1,6 @@
 """speedrush 导航图真源生成器。
 
-把 templates_roi.json 里的模板与 ROI 规格，装配成 NavKit v4 的 pipeline 真源
+把 templates_roi.json 里的模板与 ROI 规格，装配成 pipeline 真源
 （`plugins/speedrush/resources/pipeline/speedrush.json`）。
 
 架构取舍（与 treasure 的差异，2026-09-16）：
@@ -10,7 +10,7 @@
       - 动作节点：识别（MaaRM_Template）+ 点击（MaaRM_Click），点完一律 next 回汇聚
       - 纯锚点节点：`_anchor_only`，零路由，页面感知规格——消费通道分两种：被模块
         代码按节点名直驱的标 `_module_driven`（真源机检承认的第二条消费通道）；
-        无人消费的不许入表（孤儿真源会被 check_truth 当场拦下）
+        无人消费的不许入表（孤儿真源会被 truth 当场拦下）
     出口方向统一为"回到 __boot 重判"，不各自维护下一跳（符合项目"入口锚点点击后
     一律交汇聚重判"的既有纪律）。
 
@@ -71,7 +71,48 @@ NODE_OVERRIDES: dict[str, dict] = {
         "timeout": 50,
         "threshold": 0.7,
     },
+    "speedrush_reward_hint": {
+        # 奖励弹窗有入场动画，动画期间游戏吞点击（2026-11-08 会话 20261108_145933：
+        # 「点击屏幕继续」提示一出现就点，两次首点都无效、800ms 后按钮仍在；而同一次
+        # 弹窗在 1.1s 后才完全铺开，重试点击 47~63ms 内消失）。留 1500ms 让入场走完，
+        # 否则首点必被吞、要靠步级窗重发兜底。
+        "pre_delay": 1500,
+    },
 }
+
+# 动作节点的节拍覆盖：框架默认 rate_limit=1000ms、pre/post_delay 各 200ms
+# （官方 3.1 任务流水线协议；本机 maafw 5.12.3 的 JPipelineData 同值），是
+# 「每轮识别最低消耗」与进出节点的隐式等待，不是「等按钮出现」的时间。原子动作
+# 节点识别命中即点一下收图，这层地板纯属固定开销：2026-11-06 实机日志里 p1→p2
+# 两次点击步分别耗 4s / 2s，按默认值推算其中约 2.4s 落在这三项上。
+# **timeout 取 1000ms**：入口节点自己那轮识别在按钮缺席时会吃满框架默认 20s
+# （2026-11-08 会话 20261108_145933：点继续 15:02:53→15:03:13 整 20s，期间步级
+# 重试窗口一次都没轮到）。等按钮晚出现由 Python 侧步级窗口负责，这里只留一帧级
+# 余量：命中即点，未命中约 1s 收尾。
+# **rate_limit 为什么是 100 而不是 0**：0 会让未命中的入口在 timeout 内全速截图
+# 找图（不失败，但白烧 CPU 与日志）。100ms 既去掉 1s 地板，又给识别循环留出节流；
+# 相对游戏转场（实测 ≥1s）可忽略，不改变落地耗时或重发次数。
+# pre/post_delay 保持 0：它们是进出节点的纯固定开销，没有空转风险（商店弹窗那一步
+# 的前摇在 NODE_OVERRIDES 里按模板单独开，不放这里）。
+# 就地赋、不进 NODE_OVERRIDES：那是按模板键生效的例外表，而这里是一整类节点的
+# 共同节拍；确认探针与动作节点复用同一批模板，按模板写会把两者绑在一起。
+ACTION_NODE_PACE = {"rate_limit": 100, "pre_delay": 0, "post_delay": 0, "timeout": 1000}
+
+# 同一节点可挂多张候选模板：同一个按钮在不同页面上皮肤不同。只留一张时另一页整段
+# 失配——2026-11-08 会话 20261108_145933 里回合结果页的「继续」是实心灰圆，旧模板
+# 只对段位分结算页的细环成立（真实得分 0.78 < 阈值 0.8），整步白等 20s 后中止。
+# 键 = ACTIONS/CONFIRMS 里登记的主模板（搜索区与阈值都取主模板的），值 = 追加候选。
+# **只给动作节点加**：确认探针（`__confirm`）靠"这一页独有的标记"判落地，若也挂上
+# 另一页的皮肤，确认会在错误页面提前通过。
+EXTRA_TEMPLATES: dict[str, list[str]] = {
+    "speedrush_continue_btn": ["speedrush_result_continue_btn"],
+}
+
+# 点击后观察「源按钮是否消失」的上限（毫秒）。core 的 MaaRM_Click 在此上限内按
+# 50ms 轮询单 ROI，认不到按钮即判点击生效、提前收工。取 2000ms 与生态先例同量级
+# （MAA 的确认流程：点完每 500ms 认一次，连续约 2 秒还在才重点）；短于此值的转场
+# 一次就能判出，慢于它的由步级重发的「按钮已不在」反推兜底。
+SETTLE_BUDGET_MS = 2000
 
 # (节点名, 模板名, page, 标签)
 ACTIONS: list[tuple[str, str, str, str]] = [
@@ -101,7 +142,7 @@ ANCHORS: list[tuple[str, str, str, str]] = [
 ]
 
 # 声明「本锚点由模块代码按节点名直驱」——图级引用分析看不见这条消费通道，
-# 真源机检（check_truth validate_graph）凭本声明豁免「孤儿真源」判定。
+# 真源机检（truth validate_graph）凭本声明豁免「孤儿真源」判定。
 MODULE_DRIVEN: frozenset[str] = frozenset({
     f"{MODULE}.驾驶页锚点",
     f"{MODULE}.商店横幅锚点",
@@ -110,7 +151,7 @@ MODULE_DRIVEN: frozenset[str] = frozenset({
 # 落地页确认探针（步级重试的"后置条件"）——(确认节点名, 复用模板, 说明)。
 #
 # 为什么确认节点复用**动作节点已在用的模板**却不触发第 6 条「跨锚点重复识别」：
-# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/navkit/check_truth.py`
+# 校验器对节点名含 `.__confirm.` 的节点直接豁免该判定（`tools/pipeline/truth.py`
 # validate_graph 第 6 条）。这是仓库为"确认节点"预留的标准扩展点——确认要认的是
 # "落地页上此刻有哪个标记"，标记往往就是下一步要点的按钮本身（线性流程里第 N 步的
 # 目的地页正显示着第 N+1 步的按钮），复用同图同区最省、也无需另采素材。
@@ -135,8 +176,14 @@ CONFIRMS: list[tuple[str, str, str]] = [
 CONFIRM_PROBE_TIMEOUT_MS = 400
 
 
-def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
-    """MaaRM_Template 识别规格（v2 归一形）。"""
+def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD, *,
+          with_extras: bool = False) -> dict:
+    """MaaRM_Template 识别规格（v2 归一形）。
+
+    with_extras：动作节点传 True，把 EXTRA_TEMPLATES 里该主模板的候选皮肤一并挂上
+    （搜索区/阈值仍取主模板的）；确认探针保持单模板，见 EXTRA_TEMPLATES 的说明。
+    """
+    names = [tpl, *(EXTRA_TEMPLATES.get(tpl, []) if with_extras else [])]
     return {
         "type": "Custom",
         "param": {
@@ -145,10 +192,32 @@ def recog(tpl: str, rect: list[float], threshold: float = THRESHOLD) -> dict:
                 "mode": "template",
                 "colorspace": "rgb",
                 "rect": rect,
-                "templates": [f"{tpl}.png"],
+                "templates": [f"{n}.png" for n in names],
                 "threshold": threshold,
             },
         },
+    }
+
+
+def settle_from(reco: dict) -> dict:
+    """点击后条件等待的判据规格 = 本节点 recognition 规格的**同源副本**。
+
+    core 的 MaaRM_Click 拿它在 wait_after_ms（`SETTLE_BUDGET_MS`=2s）上限内轮询：
+    「源按钮在它自己的 ROI 里认不出来」= 画面已切走，立即收工。判据只答「当前页是否
+    已离开」，落地页是否到位仍由 __confirm 探针 + 步级重试窗口裁决。
+
+    为什么不另写一张「动作节点 → 落地页标记」映射：那会和 module.py 的
+    STEP_CONFIRM 形成第二份真源，且每个按钮都要人工配一次。按钮消失与页面切换在
+    同一帧发生（2026-11-06 实机 nav 帧 894→895：按钮 0.814→0.250、齿轮 0.882），
+    用现成的识别规格当边沿判据既零滞后也零维护。规格从 reco 复制，阈值改一处
+    两边同步，不给「手工改一处忘了另一处」留缝。
+    """
+    spec = reco["param"]["custom_recognition_param"]
+    return {
+        "rect": spec["rect"],
+        "templates": spec["templates"],
+        "threshold": spec["threshold"],
+        "colorspace": spec.get("colorspace", "rgb"),
     }
 
 
@@ -179,6 +248,12 @@ def main() -> None:
     missing += [t for _, t, _ in CONFIRMS if t not in roi]
     if missing:
         raise SystemExit(f"以下模板缺少 ROI 数据：{missing}")
+    img_dir = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                            "..", "resources", "image"))
+    missing_imgs = [n for extras in EXTRA_TEMPLATES.values() for n in extras
+                    if not os.path.exists(os.path.join(img_dir, f"{n}.png"))]
+    if missing_imgs:
+        raise SystemExit(f"以下候选模板缺少图片：{missing_imgs}")
 
     graph: dict[str, dict] = {}
 
@@ -191,6 +266,7 @@ def main() -> None:
     # 借此豁免机检的「无出口节点」告警——告警本身不 fail，但十个节点一起报会淹没
     # CI 输出。语义注释见 _label。
     for name, tpl, page, label in ACTIONS:
+        reco = recog(tpl, roi[tpl]["rect"], _threshold_for(tpl), with_extras=True)
         graph[name] = _with_overrides({
             "attach": {
                 "_page": page,
@@ -198,8 +274,13 @@ def main() -> None:
                 "_owner": MODULE,
                 "_anchor_only": True,
             },
-            "recognition": recog(tpl, roi[tpl]["rect"], _threshold_for(tpl)),
-            "action": {"type": "Custom", "param": {"custom_action": "MaaRM_Click"}},
+            "recognition": reco,
+            "action": {"type": "Custom", "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"settle": settle_from(reco),
+                                        "wait_after_ms": SETTLE_BUDGET_MS},
+            }},
+            **ACTION_NODE_PACE,
         }, tpl)
 
     # 纯锚点节点：零路由，页面感知规格；模块直驱的按声明补 _module_driven

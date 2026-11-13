@@ -1,6 +1,6 @@
 # ADR-0007（contract-log）：日志记录为唯一事实源，文件与 GUI 是投影
 
-- **状态**：`accepted`（决策 3 中「无组散行 = 裸行」的**承载**部分由 [ADR-0017](0017-arch-shell-无组散行收进其他日志容器卡.md) 取代；唯一事实源、双投影与「前端不得从文本推导状态」仍生效）
+- **状态**：`amended by ADR-0017`（决策 3 中「无组散行 = 裸行」的**承载**部分由 [ADR-0017](0017-arch-shell-无组散行收进其他日志容器卡.md) 取代；唯一事实源、双投影与「前端不得从文本推导状态」仍生效）
 - **日期**：2026-09-21
 - **决策者**：用户（契约批准与方案 A 裁定）
 - **相关**：`core/CODE_WIKI.md` §1.5.2（实现现状）；契约冻结 `81c2eb2`；落地链 `3671551`→`9199527`→`ed0cd25`→`92f03b6`→`774b1b6`→`b47ef41`；[ADR-0012](0012-contract-log-日志归属强制与内容定界.md)（归属强制与内容定界的后续裁定）
@@ -28,5 +28,5 @@ GUI 运行日志长期从**渲染后的文本行**反推结构：前端用措辞
 ## 证据
 
 - 一手核查：Chrome DevTools Console API（group/groupEnd 层级）、GitHub Actions workflow commands（`::group::` 与 `%` 转义）、OpenTelemetry Logs Data Model（severity/body/attributes 分层、生产者声明语义）——出处清单见契约冻结件 `81c2eb2`。
-- 机检：`tests/test_logger_records.py`（19 项：并发/重复 end/野 id/异常穿透/shutdown 补 incomplete/截断/净化/投影转义）、`tests/test_fetch_logs_contract.py`（游标单进/字节兼容）、`tests/test_treasure_log_groups.py` 与 `tests/test_speedrush_log_groups.py`（结构锁双向）、`tests/test_frontend_remote_render.py`（渲染静态锁）。
+- 机检：`tests/test_logger_records.py`（19 项：并发/重复 end/野 id/异常穿透/shutdown 补 incomplete/截断/净化/投影转义）、`tests/test_fetch_logs_contract.py`（游标单进/字节兼容）、`plugins/_archive/treasure/tests/test_treasure_log_groups.py` 与 `tests/test_speedrush_log_groups.py`（结构锁双向）、`tests/test_frontend_remote_render.py`（渲染静态锁）。
 - 实证：桥接桩探针（stub `window.chrome.webview` + 真 `rpc.js`/`log.js`）——徽章/计数/裸行/回顶换向/复制形状逐项 DOM 断言通过；全量套件 1031 passed / 4 skipped。

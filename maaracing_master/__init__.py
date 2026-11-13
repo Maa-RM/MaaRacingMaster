@@ -3,7 +3,7 @@
 """
 MaaRacingMaster
 巅峰极速 · 活动自动化平台
-MAA Framework + YOLOv8 ONNX + vgamepad
+MAA Framework + ONNX Runtime（模型权重由各插件自带）+ vgamepad
 """
 
 from __future__ import annotations

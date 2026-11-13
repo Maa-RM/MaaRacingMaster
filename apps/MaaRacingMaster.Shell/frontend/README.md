@@ -18,11 +18,12 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
 - **动态文本只走 `textContent` / DOM API**（用 `mkEl()` 建元素再填文本），不得拼字符串进
   `innerHTML`。远程渲染路径上唯一允许 `innerHTML` 的位置是 `appendIcon()`——它只喂本仓库
   静态 SVG 串。回归锁：[`tests/test_frontend_remote_render.py`](../../../tests/test_frontend_remote_render.py)。
-- **外链只报逻辑目标名**：`openTarget('home' | 'issue' | 'docs' | 'announcement' | 'download')`，
-  地址由 sidecar 侧白名单给出（[`core/remote_meta.py`](../../../maaracing_master/core/remote_meta.py)
-  的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
-- `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
-  里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
+- **外链只报逻辑目标名**：`openTarget('home' | 'issue' | 'docs' | 'announcement' | 'download')`。
+  静态目标查 [`core/remote_meta.py`](../../../maaracing_master/core/remote_meta.py) 的
+  `EXTERNAL_TARGETS`；`announcement` / `download` 用本进程最近一次校验通过的远程地址
+  （`download` 无地址时回退 release 页）；前端不持有、也不传递可打开的 URL。
+- `index.html` 里 `data-link` 的属性值**就是目标名**。新增 `data-link` 静态入口必须同时在
+  `EXTERNAL_TARGETS` 里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
 - **更新源是偏好，不是 URL**：关于页单个来源按钮展开 CNB / GitHub 菜单，只向 `check_update` 传 `source`
   枚举（默认 `cnb`，选择存 `localStorage`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
   不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径（实心版），CNB 图标 `cnb.svg` 取自
@@ -69,7 +70,7 @@ RPC 层不信任调用方给的地址。
 
 - **焦点环**：style.css 顶部一条全局 `:focus-visible { outline: 2px solid var(--maarm-primary) }`
   覆盖所有交互元素；`:focus-visible` 只在键盘/程序化导航时命中，鼠标点击不出环，
-  所以**控件类里不要再写 `outline: none`**（旧四处已删）。特例只允许改偏移：
+  所以**控件类里不要再写 `outline: none`**。特例只允许改偏移：
   窗控按钮贴屏幕边缘用 `outline-offset: -2px` 内收。
 - **模态焦点陷阱**：`openModal`（js/modal.js）自带——开卡聚焦卡内第一个可聚焦元素、
   Tab/Shift+Tab 卡内回环、关闭归还焦点、`role=dialog + aria-modal + aria-labelledby`。
@@ -96,6 +97,9 @@ RPC 层不信任调用方给的地址。
 - 时序：同卡保存串行，保存中再改合并成 pending；列表重建时 `configPanel.reset()` 递增代际，
   旧卡在途回调作废、不写已卸载节点。纯逻辑在 `js/config-panel-state.js`，由
   `tests/js/config_panel_state.test.mjs`（node --test）覆盖。
+- 反馈承载：状态行只放「执行到哪了」与影响本次结果的异常——保存成功静默回落到 `_status`，
+  不闪回执；失败走行内红字停留。模块的 `config_status()` 不得用 `warn` 级报正常状态。
+  判据见 ADR-0022。
 - 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
   不再二次解释模块内容。
 - 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
@@ -183,10 +187,18 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 - **组卡只来自组事件**：`group_start` 建卡（徽章「进行中」脉冲蓝），`group_end` 按
   `outcome` 落终态徽章（成功/警告/失败/未完成）——**前端不按行数自行推导状态**。
-- **散行进「其他日志」容器卡**（承载规则见 [ADR-0017](../../../docs/adr/0017-arch-shell-无组散行收进其他日志容器卡.md)）：
+  结局驱动的自动展开（[ADR-0024](../../../docs/adr/0024-arch-shell-日志面板读侧叙事视图.md)、
+  [ADR-0025](../../../docs/adr/0025-arch-shell-自动展开收窄为真异常.md)）：
+  仅 `failure` 收尾且有正文的卡自动展开；`warning` / `incomplete` / `success` 保持折叠，
+  信号由徽章承载。展开由 outcome 驱动，空身卡不展开（与「可点性=内容存在」同口径）。
+- **散行进「其他日志」容器卡**（承载规则见 [ADR-0017](../../../docs/adr/0017-arch-shell-无组散行收进其他日志容器卡.md)，
+  展开默认值由 [ADR-0022](../../../docs/adr/0022-arch-shell-界面反馈只承载阶段进度与影响结果的异常.md) 修订、
+  叙事视图渲染门槛见 [ADR-0024](../../../docs/adr/0024-arch-shell-日志面板读侧叙事视图.md)）：
   无 `group_id` 的散行不铺成裸文本——相邻的合并进一张容器卡，开出任何组卡（含无头组匿名卡）
-  即断开、后续散行另起一张。容器卡不挂徽章、不按内容推导状态、**默认展开**（散行多为告警与
-  异常，折叠等于把「发生即红」藏进点击里）。能归组的行必须在后端归组，容器卡不是漏归组的兜底。
+  即断开、后续散行另起一张。容器卡不挂徽章、不按内容推导状态。
+  叙事视图：纯 INFO 容器不落 DOM（设置回显、注册表优化这类家务行只进复制与文件），
+  卡体收到首条 WARNING+ 时整卡连此前缓冲行按原时序插入，含 ERROR 或截断提示才展开；
+  级别色仍由正文行承载，展开回看细节。能归组的行必须在后端归组，容器卡不是漏归组的兜底。
   一个位置一种承载：卡头看词（徽章），正文看色；无关键词着色、无彩点、无色条。
 - **可点性与内容一致**：首条正文落进卡体时 `addRow` 才挂 `.log-section--expandable`
   （指针光标 + 悬停底色 + 「N 条」计数胶囊）；空卡不给可点承诺，也不显示展开箭头。
@@ -204,6 +216,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   `tests/test_frontend_remote_render.py`）。**复制文本由 `_records` 记录拼装**
   （`#seq ts LEVEL [g=id] msg`，fields 逐行 `key: value`，组开合标 GROUP-START/END），
   与文件日志的 `::group::` 标记和环形序号可对照；旧 sidecar 回退 `dataset.raw`。
+  复制不受叙事视图渲染门槛影响：被隐藏的家务行照常进复制事实源（ADR-0024）。
 - 浏览器侧验证（无 WebView2 桥）：定义 `window.chrome.webview` 桩（`postMessage` 收
   `{type:'call',callId,method}`、异步派发 `{type:'response',callId,ok,data}`）+ 脚本化
   `fetch_logs` 批次，即可用真 `rpc.js`/`log.js` 渲染审计（探针手法同 `冒烟验证` 节）。
@@ -223,7 +236,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   捕获阶段。
 - **拐角是 squircle（指数 4 的超椭圆），由 CSS 画**：`border-radius: 20px` +
   `corner-shape: squircle`。半径 20 不是随手取的——它让 squircle 与原 G2@10 的轮廓等效
-  （最大偏差 0.46px，浏览器实测），所以这次换的是**实现**不是观感。照片、红光、压暗层、
+  （最大偏差 0.46px，浏览器实测）。照片、红光、压暗层、
   描边越界的那 1px 全部由卡片自带的 `overflow:hidden` 原生裁切，**不再用 clip-path**
   （clip-path 会把 border / box-shadow 一起裁掉，且每改一次半径就要重算一遍路径）。
 - **描边是画出来的，不是 border**：CSS 没有「从底边中点长到顶边中点」的能力，所以路径
@@ -258,8 +271,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
   所以按 1/0.69 ≈ 1.45 补：卡片面 **16px**（等效 11px）、弹窗 **20px**（等效 14px）、
   日志条目 **12px**（等效 8.3px——它是卡片里嵌的小条目，收一档形成内外两级）。
-  **只看 border-radius 的数值会误判**：`superellipse(3)` 配 12px 实际只有 5.2px 的圆润度，
-  比原来的 8px 还小，这就是「越改越方」的原因。
+  **只看 border-radius 的数值会误判**：`superellipse(3)` 配 12px 实际只有 5.2px 的圆润度。
 - **位置**：`style.css` 末尾的 `@supports (corner-shape: squircle)` 块，作用于
   `.card`（页面卡片）、`.about-hero`（关于页头卡）、`.task-item`（任务卡）、
   `.log-section`（日志卡）、`.maarm-modal-card`（弹窗），以及
@@ -268,7 +280,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **未纳入**：按钮、输入框、徽章、选项卡仍是圆弧（小尺寸下差异不明显）。
 - **边界**：静态锁 `tests/test_frontend_corner_shape.py`——必须在 `@supports` 内、半径
   必须按等效圆补、不得出现全站选择器、选卡描边必须仍是自算路径且不得自己裁轮廓。
-- **漂移复测**：`tools/measure_corner_shape.py`。它把 CSS 渲染的轮廓与理论超椭圆逐点
+- **漂移复测**：`apps/MaaRacingMaster.Shell/tools/measure_corner_shape.py`。它把 CSS 渲染的轮廓与理论超椭圆逐点
   比对（垂直距离 < 0.5px、面积比 1±0.05）。浏览器升级后跑一次就知道形状有没有变；
   指数一旦不是 4，`js/gallery-shape.js` 的 `EXPONENT` 必须跟着改，否则描边会漂离边缘。
 
@@ -296,13 +308,14 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 
 - **候选集**：`state.queue.order` 中 `kind === 'module'` 且 `has_dashboard === true` 的模块，按任务列表顺序排列；内置步骤永不入列，未加入列表的模块不出现。
 - **选中**：会话内显式状态，由左右箭头翻页；队列增删/排序只校正被移出的选中项（夹到原位置的相邻项），不隐式切换。
-- **边界**：只有一个看板时左右箭头保留并置灰（1 / 1）；没有候选时槽位显示空态，下方实时预览保持原位。
-- **运行态**：运行中的模块若在候选集内，通往它的箭头上打绿点；当前看板就是运行中模块时，页码前打绿点并转绿。
+- **边界**：只有一个看板时翻页器隐藏，卡头只留「看板中心」与模块名胶囊；没有候选时槽位显示空态，下方实时预览保持原位。
+- **运行态**：有多个候选时，通往运行中模块的箭头上打绿点，当前看板就是运行中模块时页码转绿；只有一个候选时翻页器隐藏，改由模块胶囊前的绿点提示当前看板正在运行。
 - **生命周期**：只挂载并轮询当前看板；数据页不可见时不拉数，切换看板即丢弃在途响应。
+- **版式**：卡头固定为「看板中心」+ 当前模块名胶囊；主体顶部一行日期说明（取 payload 的 `subtitle`）；统计为一行四列窄条；列表行为「时间 / 正文 / 状态 / 结果」四列，列表上下边界用 8px 不透明度淡出、行间保留细分隔线；卡片高度随内容收缩。
 
 内容统一走 `get_module_dashboard` 的版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。
 `dashBlockHtml` 是唯一渲染入口，所有文本经 `escHtml` 转义；标准动作按钮只把后端白名单里的动作名交回 RPC。
-冻结的鉴宝使用 `today_stats` 兼容块，由同一入口的 `todayStatsBlockHtml` 解释其原始今日统计。
+`text` 块渲染为弱化说明，极速狂飙的载荷不含底部说明。
 
 前端渲染器与后端 `BLOCK_TYPES` 的对齐、候选集口径与统一路由由
 `tests/test_frontend_dashboard_center.py` 静态锁定。
@@ -352,6 +365,20 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **关闭回响**：`openModal` 新增可选 `onClose`（按钮/点空白/Esc 三条关闭路径都触发、
   仅一次）；守则关闭后状态栏绿点连闪两下（呼应第 5 条"如果你看到它闪了两下"）。
 
+## 成就提示条与成就管理页（`js/achievement-toast.js` / `js/achievement.js`）
+
+**提示条**只消费壳侧推送 `{ type: 'achievement', data }`，载荷自足——`title` / `description` / `tier` / `hint` / `unlocked_ts` 都在里面，不回查 `get_achievements`（解锁瞬间的查询会与推送竞争）。形态是圆点入场 → 胶囊 → 详情卡，多条堆叠、队首 5 秒串行推进，点空白处或闲置 9 秒收回。四档视觉由 `data-tier` 驱动（`normal` / `rare` / `precious` / `hidden`），第四档的彩色环与彩虹标题复用页首的 `.maarm-text-scan--rave`；隐藏档解锁时额外放礼花，`prefers-reduced-motion` 下不放。
+
+**管理页**是 `#ach-sheet` 子页，入口在设置页快捷工具（`data-tool="achievements"`）。它占据标题栏之下、底栏之上（顶栏与底栏常驻，窗口按钮与拖动区照旧），页头是返回 + 面包屑，筛选贴最右（页头不再单设关闭按钮，返回与 Esc 同效），正文按「左分组拉伸 / 右栏固定 340px」排：左边每组一张通用卡（卡头是组名与同组进度），右边是总览、解锁提示开关、备份与重置。右栏设 `min-width: 0`，操作结果（如导出路径）只占一行省略、完整路径进 `title`——否则一串绝对路径会把右栏顶宽、把左边挤窄。数据只来自 `get_achievements`（隐藏项后端已遮蔽标题/描述/提示与 `agg` / `target` / `progress`，锁定态不画进度条）与 `get_initial_state`（只取模块显示名），卡片三态是已解锁日期 / 进度条 / 隐藏遮蔽。只读态（`state === 'frozen'`）显示警示条并把进度写成「进度暂不可用」、导入与重置置灰——不把 0/1 画出来当真实进度；`frozen_reason === 'corrupt'` 是损坏且无法留备份（原文件未动），其余按版本过高说明。`repaired_backup` 非空时用同一条警示条告知「已自动修复，原文件备份为 X」，页面保持可读写。
+
+**卡片动效**：照 reactbits TiltedCard 的写法重做——倾斜、放大、按下、翻面走同一条二阶弹簧（`v += (ω²(target−x) − 2ζω·v)·h`，240Hz 子步防大 dt 失稳），参数同它的默认值：tilt ω=20·0.2^smoothness、ζ=1−0.3·smoothness（0.6 → 7.62 / 0.82），翻面 ω=9.5、ζ=0.72（略欠阻尼，到位回弹约 6°），按下 ω=26、ζ=0.8。角度全部由 js 逐帧写进 CSS 变量，样式里不设 transform transition——CSS 缓动会和弹簧叠成二次延迟。静止后移出动画队列，不空转。扫光仍由指针即时驱动（不参与弹簧），`prefers-reduced-motion` 下倾斜目标恒为 0、翻面走临界阻尼。未解锁的卡不倾斜也不放大（只有按下回弹），不做 `will-change` 提层——提层会让文字从次像素抗锯齿退化成灰度。
+
+**翻面看触发条件**：每张卡是 `role=button` + `tabindex=0`，点一下（或 Enter/空格）翻到背面看 `hint`，同屏只翻一张；Esc 先收背面、再按一次才离开，点正文空白也收。翻的是卡本身（`--flip` 并进同一个 rotateY）；卡只做三维舞台，底/描边/裁切都在两个面上，这样框和内容一起转、扫光也被圆角裁住。看背面时不接倾斜。隐藏项未解锁时后端已把 `hint` 抹空，背面写「？？？」；卡高不变——背面是绝对定位的整卡覆盖层。
+
+**层级**：成就页 9000 < `#ach-fx`（礼花画布，全窗、`pointer-events: none`）9400 < `#ach-island` 9500 < 模态 9999。解锁提示是全局通知，必须压在成就页之上——成就页打开时解锁的东西不能看不见；岛底距 100px，避开 `#error-toast` 的 56px。
+
+**文案安全**：标题、描述、触发条件都来自插件 catalog（不可信输入），一律写 `textContent`；`innerHTML` 只用于静态骨架与本仓库 `MaaRMIcons.svg()` 的静态串。徽标图标 `trophy` / `lock` 在 `icons.js` 的 LUCIDE 分区。
+
 ## 冒烟验证
 
 无构建链也能验证：仓库根起临时 HTTP 服务指向本目录，浏览器打开
@@ -369,7 +396,7 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
   （多条动画用逗号对齐顺序，如 `-3s, -2s` 分别钉光束与色相），页面一加载就停在该相位。
 - **量化颜色**：把同一套类与变量铺成实心条带（`background-clip: border-box` 覆盖），
   逐列做 sRGB→OKLab 换算后统计感知亮度极差／彩度均值，用数字判断「明度是否真的平」，
-  比目视可靠——本次彩虹配色就是这么从 RGB／HSL 换到 OKLCH 的。
+  比目视可靠。
 - **查语法与特性支持**：`--dump-dom` 跑一个用 `CSS.supports()` 逐条打印结果的页面，
   拿到的是当前引擎的真实判定（比猜版本号可靠）。
 
@@ -390,4 +417,4 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
 - **读法**：payload 在卡片 `innerHTML` 里应呈现为 `&lt;img …&gt;`（转义文本）、`__xss`
   保持 undefined、外链调用只有 `open_external_url {"target":"…"}` 形态。
 
-探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 红线 4）。
+探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 作业纪律 2）。

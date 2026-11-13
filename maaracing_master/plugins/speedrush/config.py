@@ -81,6 +81,29 @@ class Selection:
     # 闸关=逐位回今天。
     pass_hold_enabled: bool = False
     pass_hold_s: float = 0.5
+    # 贴边意图保持闩（2026-11-10，行为口径）：pass/graze 选中后按车 id 续住，
+    # 下层（center/commit/coin）不再逐拍打断；pass 保持原选侧。依据：手动局
+    # 49 个极限超车事件，判定前 3s 里选中 pass/graze 的拍只占 23~44%，选中段
+    # 中位 2 拍，判定前 1.2s 落到 center/commit 后再贴已进「1.2s 门内/慢档
+    # 来不及」。policy 已开；代码缺省关（隔离 A/B 可回退）。
+    pass_latch_enabled: bool = False
+    # 贴边侧别锁定（2026-11-10，行为口径）：一次贴边开始时锁一次侧，同一辆
+    # 车整个贴边期不再按「自车此刻在车哪一侧」重算。邻道贴边每拍重推侧别，
+    # 自车/目标车横位一抖目标就从车一侧跳到另一侧（≈1.36 道＝横穿车本身）；
+    # 三批 trace 复算 56 次同车换边里 46 次原侧可行且无占用。policy 口径见
+    # decision.json；代码缺省关（隔离 A/B 可回退）。
+    pass_side_pin_enabled: bool = False
+    # 贴边目标保持（2026-11-10）：命中车读数不可信（横位相邻拍跳 >lane、
+    # 纵深断供/跳 >z_jump）时沿用上一次有效目标，不按坏读数重算。三局
+    # 影子复算：贴边目标翻面 72→33，t<1 s 内生效 53 拍。policy 已开；
+    # 代码缺省关（隔离 A/B 可回退）。
+    pass_target_hold_enabled: bool = False
+    pass_target_hold_lane: float = 0.5
+    pass_target_hold_z_jump_m: float = 5.0
+    pass_target_hold_miss_ticks: int = 5
+    # 横位未知态（2026-11-10）：判据与消费见 selection.SelectionParams 同名
+    # 注释；闸关=逐位回今天。
+    pass_x_unknown_enabled: bool = False
     pass_min_gap_lane: float = 0.6
     # 并线承诺期擦边放行 + 擦边候选视界放宽（2026-11-02，帧级证据见
     # selection.py 同名注释）。闸关=逐位回今天。
@@ -96,6 +119,9 @@ class Selection:
     pass_graze_adjacent_enabled: bool = False
     pass_reach_lane: float = 1.3
     pass_lean_min_s: float = 2.0
+    # 隔离 A/B 闸（2026-11-09，默认关=回基线）：躲避 bundle 净负，加闸归因。
+    pass_no_surrender_enabled: bool = False
+    arrival_guard_enabled: bool = False
     # 通过时窗占用（2026-11-04 帧证与判据见 selection.SelectionParams 同名
     # 注释）：贴边通过全程（到站→脱离车尾）通过线被占=不可行。
     pass_clear_len_m: float = 10.0
@@ -175,6 +201,8 @@ class Planner:
     # （a_lat_gain/tau_align 的积分、v_lat_max 饱和、两路横速融合）已删除。
     speed_ref_mps: float       # 固定参考车速（m/s，自车运动换算单一参考，2026-11-01 裁决）
     k_lat_lane_s: float        # 闭环带宽：期望横速 = 此值 × 车道误差（道/s）
+    merge_klat_scale: float    # 并线承诺期带宽倍率（台架 bench_merge_stick：
+                               # 1.0 一道约 1.75 s，2.0 到位 1.15 s、超调 0.10 道）
     k_psi: float               # 车头角误差 → 杆值（杆/rad）
     k_r: float                 # 角速度阻尼（杆/(rad/s)）
     tau_heading_s: float       # 车头角响应时间常数（执行链并入模型）
@@ -249,6 +277,19 @@ class Planner:
     # 0.25s；代价=预测横向误差² + 转向变化² + 终点误差 + 换向惩罚。
     # 参数见 policy `planner.preview_*`，台架与实机证据见 `_sources`。
     preview_horizon_s: float = 0.0
+    # 预瞄扩到 pass/机动态（2026-11-09）：只对交付型意图（pass/graze）且
+    # 计划 layer=2、无碰撞代价的拍接管；安全/并线/避让仍走连续律。
+    preview_maneuver_enabled: bool = False
+    # 预瞄全段覆盖（2026-11-09，试验后不采用，默认关）：起点是人工满杆在
+    # 各门桶内都是 12~13%，据此把计划层/意图限制拿掉（并线、金币、奖励、
+    # 换道、回中全接），只保留安全链。实机两局否掉：横向速度过零 31→55/分、
+    # 换向 60→111/分、均值杆 0.15→0.30，分数未改善。根因是决策目标自身在
+    # 抖（x_target 反向 228 次/分），旧连续律的阻尼一直在吸收它；要再开须先
+    # 在目标侧稳定轨迹。进入仍需 0.2s 驻留。
+    preview_coverage_enabled: bool = False
+    # 机动态预瞄的转向变化/动作惩罚缩放（维护态保持 1.0）：人工满舵是
+    # 瞬时跳变，维护态的平滑惩罚会把幅度压到 0.6、满杆占比为 0。
+    preview_maneuver_penalty_scale: float = 0.25
     preview_obs_lag_s: float = 0.25
     preview_err_w: float = 1.0
     preview_term_w: float = 20.0
@@ -304,6 +345,36 @@ class Traffic:
     # 米制纵深跳变门：超过此值视为真实通过/换锚，直接重置；小抖动才走 EMA。
     # 70m/s 通过时 0.05s 真实变化可达 3.5m，旧 EMA 会把并列车拖成 13m 前方。
     metric_z_jump_max_m: float = 6.0
+    # 横位未知判据（2026-11-10 真值小集）：发布横位相邻跳超过它=并号/锚错挂
+    # （真实横移单拍上限 ~0.43 道×3.5m），该拍标 x_unknown 关贴边得分入口。
+    # 与 selection.pass_x_unknown_enabled 配套；闸关时不判。
+    pass_x_unknown_jump_m: float = 2.8
+    # 远场车道线互证闸（2026-11-09，默认关）：尺子缺席时以车道线中位与米制
+    # 互证。实测车道线与米制远场误差打平、收益未证，加闸隔离；近场尺子重锚
+    # 不受此闸影响。
+    metric_ll_veto_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class Collision:
+    """正面撞车事件记录（只读观测，2026-11-13）。
+
+    游戏日志没有碰撞事件（RULES §4.3：碰撞只损失时间、不扣分），能程序化
+    留证的只有观测量。判据 = **YOLO 标为街车的轨道** + **锚点纵深**（不用框高
+    粗估：近场框被截断，粗距最不可靠）+ 纵深落入 ``[0, z_max_m]`` 米 + 横向
+    体积包络重叠（自车与目标各自半宽 + 碰撞余量）。``z_max_m`` 起值 5.0 米是
+    「最后一次可信锚点」的上界窗口——锚点 2 米以下因几何失效被拒，所以它不是
+    物理间隙，真实接触时仪器已看不见。事件按轨道 id 去重，不逐拍重复，也不作
+    控制输入。
+
+    ``pass_window_s`` 是候选事件的观察窗：窗内同一 track 产生 pass（超车完成）
+    即否决该候选（擦过/超车不算撞车）。``recede_m`` 是判「拉远」的纵深回升量；
+    窗内纵深回升超过它、或闭速/相对接近率不再为正，同样否决。"""
+
+    enabled: bool = True
+    z_max_m: float = 5.0
+    pass_window_s: float = 1.5
+    recede_m: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -359,6 +430,12 @@ class Motion:
     # 就怎么执行——第二套生成律会让「计划说能到、车到不了」。
     # 半程回正候选的最小档位：低于此值的档位 2s 扫不过一道，回正没意义。
     reverse_min_rad: float = 0.03
+    # 高挡短脉冲候选（2026-11-09）：人工满舵是 0.10~0.12s 的短脉冲，
+    # 半程回正的 1s 保持对高挡会冲过头。开启后在意图候选之后追加
+    # |档位|≥short_pulse_min_rad 的短脉冲（保持 short_pulse_s 后回零）。
+    short_pulse_enabled: bool = False
+    short_pulse_s: float = 0.18
+    short_pulse_min_rad: float = 0.09
     # 硬不可行回退的侵入分桶：同一桶内按价值/动作选，不为厘米级差异满杆。
     corridor_escape_tol_m: float = 0.05
     # 反应时内到站的车：横向动作已无法改变结果，不计入硬约束（防贴身会车
@@ -383,6 +460,13 @@ class Motion:
     # 防无机会时的画龙（旧选择层同口径 0.3 道 / 0.45 杆幅）。
     center_band_lane: float = 0.3
     center_heading_rad: float = 0.03   # 维护态车头角上限（≈1.7°）：决定横速
+    # 得分/让位意图（选择层 graze/pass）的交付死区：比中心带窄一个量级。
+    # 中心带 0.3 道是给「回中」的稳态留的（车道内物理可偏 0.17 道，带内不
+    # 修正防画龙）；同一个带套在贴边目标上会把最后 0.1~0.15 道免费放过，
+    # 掠过时刻横距落在 0.79 道（计分带上界 0.77）——2026-11-09 新模型场次
+    # 21 次真掠过 8 次进带。交付精度是计分动作的唯一入口，死区按
+    # 0.05 道收（计分带 [0.54, 0.77] 中点 0.68 ± 0.09 仍有余量）。
+    precision_band_lane: float = 0.05
     max_obj_age_s: float = 0.25      # 对象超龄丢弃
     corridor_age_max_s: float = 0.4  # 走廊超龄标 stale（实测深度年龄 p99≈0.34s）
     frame_delta_max_m: float = 0.2
@@ -503,12 +587,11 @@ class Route:
     merge_max_s: float = 4.0
     soft_car: bool = False
     reject_shift_arrival: bool = False
-    urgent_ttc_s: float = 1.0        # 紧急逃生时间门：当前道最近到站时间≤此值
     urgent_blind_m: float = 6.0      # 无到站时间时的近距离盲区（米）
+    ttc_hold_s: float = 0.3          # 时间表证据的丢样宽限（秒，见 RouteParams）
     merge_safe_ttc_s: float = 0.8    # 逃生目标道上车的最早到站时间下限（秒）
     pass_hold: bool = True           # 超车动作进行中不抢方向（见 RouteParams）
     overtake: bool = True            # 提前超车并线（见 RouteParams）
-    overtake_ttc_s: float = 2.5      # 提前超车的到站时间上界（秒）
     # 请求证据/动作两位（6c）：证据按时长累计、丢检冻结，起意只认当拍可达来源。
     request_hold: bool = False
     request_gap_s: float = 0.2       # 无读数冻结上限（秒）
@@ -534,10 +617,16 @@ class LaneObs:
 
     enabled: bool = False
     weights: str = ""
+    # DML 专用半精度权重：provider=dml 且文件可用时优先；缺失或会话失败回退 weights
+    weights_fp16: str = ""
     hz: float = 0.0
     provider: str = "cpu"
     threads: int = 4
     detect_every: int = 1
+    # 近/中/远三段的米制边界（真源 ranges.py）：行号由当拍标定反算。
+    near_max_m: float = 15.0
+    mid_max_m: float = 40.0
+    far_max_m: float = 80.0
 
 
 @dataclass(frozen=True)
@@ -567,6 +656,24 @@ class BoxBridge:
     enabled: bool = False
     trace_only: bool = True
     anchor_gate: bool = False
+
+
+@dataclass(frozen=True)
+class Demerge:
+    """并号拆分（跟踪器匹配读拒绝，2026-11-10 离线复算过筛）。
+
+    语义：`enabled` 开闸后，匹配对「相邻拍横位跳 > jump_max_lane 道
+    （拍距 ≤ gap_ticks，超出是断号重挂的领域）且新位置 coloc_lane 道内
+    有另一活跃轨道（与旧位置可分）」即拒绝——旧轨道不跟过去，让位给已
+    在新位置的并存号。治的是并号（一号先后挂两辆物理车，真值小集 same
+    事件 50% 链内横跳超限的机理）；纯读数伪跳（90% 拆点已目视排除，
+    自车横移/近距出画/远场小位移）无并存证据、门不触发，归横位未知态。
+    判据与拆号复算同门（0.8 道 / 0.35 道 / 4 拍）。"""
+
+    enabled: bool = False
+    jump_max_lane: float = 0.8
+    coloc_lane: float = 0.35
+    gap_ticks: int = 4
 
 
 @dataclass(frozen=True)
@@ -624,6 +731,7 @@ class DecisionConfig:
     planner: Planner
     traffic: Traffic
     motion: Motion = Motion()
+    collision: Collision = Collision()
     grid_xcheck: GridXcheck = GridXcheck()
     # （lane_scoring 段已退役删除 20261015：被 corridor_reach 取代）
     corridor_reach: CorridorReach = CorridorReach()
@@ -634,6 +742,7 @@ class DecisionConfig:
     metric_cars: MetricCars = MetricCars()
     metric_bridge: MetricBridge = MetricBridge()
     box_bridge: BoxBridge = BoxBridge()
+    demerge: Demerge = Demerge()
     lane_line: LaneLine = LaneLine()
     view_guard: ViewGuardConfig = ViewGuardConfig()
     debug_dump: DebugDump = DebugDump()
@@ -765,12 +874,20 @@ def _read_decision(path: Path) -> DecisionConfig:
             speed_ref_mps=_num(d, "planner", "speed_ref_mps",
                                lo=1.0, lo_open=True),
             k_lat_lane_s=_num(d, "planner", "k_lat_lane_s", lo=0),
+            merge_klat_scale=_num_def(
+                d, "planner", "merge_klat_scale", 1.0, lo=0.1),
             k_psi=_num(d, "planner", "k_psi", lo=0),
             k_r=_num(d, "planner", "k_r", lo=0, lo_open=False),
             heading_lead_s=_num_def(d, "planner", "heading_lead_s", 0.0,
                                     lo=0),
             preview_horizon_s=_num_def(
                 d, "planner", "preview_horizon_s", 0.0, lo=0),
+            preview_maneuver_enabled=_bool(
+                d, "planner", "preview_maneuver_enabled", default=False),
+            preview_coverage_enabled=_bool(
+                d, "planner", "preview_coverage_enabled", default=False),
+            preview_maneuver_penalty_scale=_num_def(
+                d, "planner", "preview_maneuver_penalty_scale", 0.25, lo=0),
             preview_obs_lag_s=_num_def(
                 d, "planner", "preview_obs_lag_s", 0.25, lo=0),
             preview_err_w=_num_def(
@@ -853,7 +970,17 @@ def _read_decision(path: Path) -> DecisionConfig:
             metric_x_jump_hold_ticks=_int_def(
                 d, "traffic", "metric_x_jump_hold_ticks", 3, lo=1),
             metric_z_jump_max_m=_num_def(
-                d, "traffic", "metric_z_jump_max_m", 6.0, lo=0)),
+                d, "traffic", "metric_z_jump_max_m", 6.0, lo=0),
+            pass_x_unknown_jump_m=_num_def(
+                d, "traffic", "pass_x_unknown_jump_m", 2.8, lo=0),
+            metric_ll_veto_enabled=_bool(
+                d, "traffic", "metric_ll_veto_enabled", default=False)),
+        collision=Collision(
+            enabled=_bool(d, "collision", "enabled", default=True),
+            z_max_m=_num_def(d, "collision", "z_max_m", 5.0, lo=0,
+                             lo_open=False),
+            pass_window_s=_num_def(d, "collision", "pass_window_s", 1.5, lo=0),
+            recede_m=_num_def(d, "collision", "recede_m", 0.5, lo=0)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),
@@ -881,6 +1008,12 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "corridor_soft_cost_per_m", 120.0, lo=0),
             reverse_min_rad=_num_def(
                 d, "motion", "reverse_min_rad", 0.03, lo=0),
+            short_pulse_enabled=_bool(
+                d, "motion", "short_pulse_enabled", default=False),
+            short_pulse_s=_num_def(
+                d, "motion", "short_pulse_s", 0.18, lo=0),
+            short_pulse_min_rad=_num_def(
+                d, "motion", "short_pulse_min_rad", 0.09, lo=0),
             corridor_escape_tol_m=_num_def(
                 d, "motion", "corridor_escape_tol_m", 0.05, lo=0),
             collision_min_lead_s=_num_def(
@@ -899,6 +1032,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "motion", "cost_collision_depth_m", 120.0, lo=0),
             center_band_lane=_num_def(
                 d, "motion", "center_band_lane", 0.3, lo=0),
+            precision_band_lane=_num_def(
+                d, "motion", "precision_band_lane", 0.05, lo=0),
             center_heading_rad=_num_def(
                 d, "motion", "center_heading_rad", 0.03, lo=0),
             max_obj_age_s=_num_def(d, "motion", "max_obj_age_s", 0.25, lo=0),
@@ -991,6 +1126,20 @@ def _read_decision(path: Path) -> DecisionConfig:
             pass_hold_enabled=_bool(
                 d, "selection", "pass_hold_enabled", default=False),
             pass_hold_s=_num_def(d, "selection", "pass_hold_s", 0.5, lo=0),
+            pass_latch_enabled=_bool(
+                d, "selection", "pass_latch_enabled", default=False),
+            pass_side_pin_enabled=_bool(
+                d, "selection", "pass_side_pin_enabled", default=False),
+            pass_target_hold_enabled=_bool(
+                d, "selection", "pass_target_hold_enabled", default=False),
+            pass_target_hold_lane=_num_def(
+                d, "selection", "pass_target_hold_lane", 0.5, lo=0),
+            pass_target_hold_z_jump_m=_num_def(
+                d, "selection", "pass_target_hold_z_jump_m", 5.0, lo=0),
+            pass_target_hold_miss_ticks=int(_num_def(
+                d, "selection", "pass_target_hold_miss_ticks", 5, lo=1)),
+            pass_x_unknown_enabled=_bool(
+                d, "selection", "pass_x_unknown_enabled", default=False),
             pass_min_gap_lane=_num_def(
                 d, "selection", "pass_min_gap_lane", 0.6, lo=0),
             pass_in_commit_enabled=_bool(
@@ -999,6 +1148,10 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_horizon_s", 0.0, lo=0),
             pass_graze_adjacent_enabled=_bool(
                 d, "selection", "pass_graze_adjacent_enabled", default=False),
+            pass_no_surrender_enabled=_bool(
+                d, "selection", "pass_no_surrender_enabled", default=False),
+            arrival_guard_enabled=_bool(
+                d, "selection", "arrival_guard_enabled", default=False),
             pass_reach_lane=_num_def(
                 d, "selection", "pass_reach_lane", 1.3, lo=0),
             pass_lean_min_s=_num_def(
@@ -1046,14 +1199,12 @@ def _read_decision(path: Path) -> DecisionConfig:
             soft_car=_bool(d, "route", "soft_car", default=False),
             reject_shift_arrival=_bool(
                 d, "route", "reject_shift_arrival", default=False),
-            urgent_ttc_s=_num_def(d, "route", "urgent_ttc_s", 1.0, lo=0),
             urgent_blind_m=_num_def(d, "route", "urgent_blind_m", 6.0, lo=0),
+            ttc_hold_s=_num_def(d, "route", "ttc_hold_s", 0.3, lo=0),
             merge_safe_ttc_s=_num_def(
                 d, "route", "merge_safe_ttc_s", 0.8, lo=0),
             pass_hold=_bool(d, "route", "pass_hold", default=True),
             overtake=_bool(d, "route", "overtake", default=True),
-            overtake_ttc_s=_num_def(
-                d, "route", "overtake_ttc_s", 2.5, lo=0),
             request_hold=_bool(
                 d, "route", "request_hold", default=False),
             request_gap_s=_num_def(
@@ -1081,6 +1232,11 @@ def _read_decision(path: Path) -> DecisionConfig:
             enabled=_bool(d, "box_bridge", "enabled", default=False),
             trace_only=_bool(d, "box_bridge", "trace_only", default=True),
             anchor_gate=_bool(d, "box_bridge", "anchor_gate", default=False)),
+        demerge=Demerge(
+            enabled=_bool(d, "demerge", "enabled", default=False),
+            jump_max_lane=_num_def(d, "demerge", "jump_max_lane", 0.8, lo=0),
+            coloc_lane=_num_def(d, "demerge", "coloc_lane", 0.35, lo=0),
+            gap_ticks=_int_def(d, "demerge", "gap_ticks", 4, lo=1)),
         lane_line=LaneLine(
             enabled=_bool(d, "lane_line", "enabled", default=False),
             consume=_bool(d, "lane_line", "consume", default=False)),
@@ -1107,10 +1263,14 @@ def _read_decision(path: Path) -> DecisionConfig:
         lane_obs=LaneObs(
             enabled=_bool(d, "lane_obs", "enabled", default=False),
             weights=str(d.get("lane_obs", {}).get("weights", "") or ""),
+            weights_fp16=str(d.get("lane_obs", {}).get("weights_fp16", "") or ""),
             hz=_num_def(d, "lane_obs", "hz", 0.0, lo=0, lo_open=False),
             provider=str(d.get("lane_obs", {}).get("provider", "cpu") or "cpu"),
             threads=_int_def(d, "lane_obs", "threads", 4, lo=1),
-            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1)),
+            detect_every=_int_def(d, "lane_obs", "detect_every", 1, lo=1),
+            near_max_m=_num_def(d, "lane_obs", "near_max_m", 15.0, lo=1),
+            mid_max_m=_num_def(d, "lane_obs", "mid_max_m", 40.0, lo=1),
+            far_max_m=_num_def(d, "lane_obs", "far_max_m", 80.0, lo=1)),
         step_retry=StepRetry(
             max_retries=_int_def(d, "step_retry", "max_retries", 3, lo=0),
             window_s=_num_def(d, "step_retry", "window_s", 12.0, lo=0, lo_open=False),

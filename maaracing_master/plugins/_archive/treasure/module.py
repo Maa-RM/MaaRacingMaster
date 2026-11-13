@@ -37,8 +37,11 @@ import cv2
 import numpy as np
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
-from maaracing_master.core.cpu_time import logical_core_count, process_cpu_seconds
-from maaracing_master.core.stage_tracker import StageTracker
+from maaracing_master.plugins._archive.treasure.core.cpu_time import (
+    logical_core_count,
+    process_cpu_seconds,
+)
+from maaracing_master.plugins._archive.treasure.core.stage_tracker import StageTracker
 from maaracing_master.plugins._archive.treasure.store import TreasureStore
 from maaracing_master.plugins._archive.treasure.strategy import (
     BALANCE_UNKNOWN,
@@ -56,15 +59,14 @@ from maaracing_master.core.template_match import (
     load_template,
     match_template_cs,
 )
-from maaracing_master.core.navkit import (
-    ROUND_PHASE_STAGE,
+from maaracing_master.plugins._archive.treasure.core.v4_source import ROUND_PHASE_STAGE
+from maaracing_master.plugins._archive.treasure.core.policy import (
     DecisionFacts,
     DecisionSnapshot,
-    FrameTrace,
     StateSnapshot,
-    TraceWriter,
     compile_plan,
 )
+from maaracing_master.plugins._archive.treasure.core.trace import FrameTrace, TraceWriter
 from maaracing_master.plugins._archive.treasure.eggs import (
     EggRewardRecognizer,
     derive_count_rect,
@@ -496,7 +498,7 @@ class TreasureModule(ActivityModule):
     REQUIRES = frozenset({"capture"})
 
     # 阶段清单与显示顺序：真源 = policy.json 的 perception.stages.order（与图 dwell 的
-    # attach._stage 声明、stages.definitions 三方等集，由 check_truth.stage_face_checks 机检）。
+    # attach._stage 声明、stages.definitions 三方等集，由 truth.stage_face_checks 机检）。
     # 代码不再手抄第二份——漂移实证：commit a1a6424 新增「待机」「控制器指引弹窗」两条
     # dwell 时阶段表仍是 13 项，新页面在 GUI 无处可显。
     # 类定义期取不到真源即失败（fail-closed），与 detector「plan 缺失不做常量兜底」同调；
@@ -511,15 +513,6 @@ class TreasureModule(ActivityModule):
     del _NAV
 
     REQUIRES_GAMEPAD_EXCLUSIVE = False
-
-    @classmethod
-    def read_today_stats(cls) -> dict:
-        """今日看板读法（模块自述契约，见 ActivityModule.read_today_stats）。
-
-        表结构、日界与兜底语义在 store（落盘子域）；core 路由只认本钩子，不持有
-        本模块的任何 schema 字段。"""
-        from maaracing_master.plugins._archive.treasure.store import read_today_stats
-        return read_today_stats()
 
     # 两套点击方式的日志/peep 标签（与 core.clicker.CLICK_MODES 对齐）
     CLICK_MODE_LABELS = {"real": "前台鼠标", "gamepad": "后台手柄+A"}
@@ -537,7 +530,7 @@ class TreasureModule(ActivityModule):
                                    # 验证完 OCR 尖峰修复后再考虑瘦身（如恢复 20 帧一次）
     FRAME_ERROR_LOG_EVERY = 50     # 帧边界非 fatal 异常的重记节流：首个异常全量记录，此后每 N 帧一条
     SLOT_BUSY_LOG_EVERY   = 10     # 槽忙跳过（点击/避让）的节流：每 N 帧一条（与前台校验告警同口径）
-    # 观察通路节律（与决策段解耦；见 docs/plan/observe-split-plan.md）：存图挡取 150ms 是为
+    # 观察通路节律（与决策段解耦；见 commit `bc21495`）：存图挡取 150ms 是为
     # 了与拆分前真机观测密度（~150ms/帧）一致，零观感回归；仅预览时可提到 20fps——不写盘，
     # 队列满自然丢帧降密（IO_QUEUE_MAX），不需要额外降挡逻辑。
     OBSERVE_INTERVAL_MS   = 150.0
@@ -1319,7 +1312,7 @@ class TreasureModule(ActivityModule):
         `_tick_once`，帧节律 = policy_loop.rate_limit=300ms），本线程退化为
         健康守护——常驻图意外退出时告警并重启。"""
         from pathlib import Path as _Path
-        from maaracing_master.core.nav_graph import NavKitV4
+        from maaracing_master.plugins._archive.treasure.core.nav_kit_v4 import NavKitV4
         from maaracing_master.plugins._archive.treasure.policy_bridge import (
             POLICY_ACTION_NAME, PolicyBridge,
         )
@@ -4772,7 +4765,7 @@ class TreasureModule(ActivityModule):
         # --------- 2+3. 发布 HUD 状态快照（产帧与落盘已移交观察通路） ---------
         # 帧号唯一主人 = 观察线程（_observe_tick_once）。决策段在此只把「当帧状态」固化成
         # 一份新建 dict 并整体替换引用发布：观察线程只读引用、不迭代活容器，两侧无需加锁
-        # （不变量 I2，见 docs/plan/observe-split-plan.md）。
+        # （不变量 I2，见 commit `bc21495`）。
         # 快照内的帧号由观察线程覆盖；厅类阶段没有决策帧时，观察线程用最小快照照常出图。
         self._last_debug_kwargs = self._treasure_kwargs(
             extra_note=("画面变化" if significant_change else ""))

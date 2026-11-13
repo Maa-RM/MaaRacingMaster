@@ -51,7 +51,7 @@ PROTOCOL_VERSION = 1
 
 # 业务行合并进协议头时被丢弃的保留键（fid 单独处理：行内提供即采用）。
 RESERVED_KEYS = frozenset({
-    "v", "mod", "run_id", "stage_id", "seq", "seq_to",
+    "v", "mod", "session", "round", "run_id", "stage_id", "seq", "seq_to",
     "ts_wall_ns", "ts_mono_ns", "type", "token",
 })
 
@@ -144,11 +144,12 @@ class _Session:
     文件句柄由 worker 线程独占；其余线程只操作队列与计数。
     """
     __slots__ = ("token", "path", "writer", "queue", "protected", "pending_drops",
-                 "dropped_raw", "next_seq", "confirmed", "written_count",
+                 "dropped_raw", "next_seq", "begin_seq", "confirmed", "written_count",
                  "close_requested", "close_deadline", "terminal", "result",
                  "write_error", "flush_drop_mark")
 
-    def __init__(self, token: str, path: Path, writer: TextIO):
+    def __init__(self, token: str, path: Path, writer: TextIO,
+                 start_seq: int = 0):
         self.token = token
         self.path = path
         self.writer = writer
@@ -156,8 +157,11 @@ class _Session:
         self.protected: deque[_Entry] = deque()
         self.pending_drops: list[list[int]] = []   # 升序、互不重叠、已合并连续
         self.dropped_raw: list[int] = []           # 逐序号丢弃流水（flush/收尾统计用）
-        self.next_seq = 1                          # seq 0 预留给 session_begin
-        self.confirmed = -1                        # ≤该序号的记录已写行或已落 gap
+        # 首次绑定从 seq 0 起（session_begin 占 0）；同一文件重开时接着上次序号，
+        # 否则追加的第二段 begin 会倒序，校验器与回放都拼不起来。
+        self.begin_seq = int(start_seq)
+        self.next_seq = self.begin_seq + 1
+        self.confirmed = self.begin_seq - 1        # ≤该序号的记录已写行或已落 gap
         self.written_count = 0
         self.close_requested = False
         self.close_deadline: float | None = None   # monotonic 绝对时刻
@@ -193,6 +197,10 @@ class TraceSink:
         self._close_grace_s = close_grace_s
         self._writer_factory = writer_factory
         self._run_id: str | None = None
+        self._round: int | None = None
+        self._session_token: str | None = None
+        self._seq_base = 0          # 同一会话文件重开时接着写，不重置序号
+        self._last_path: Path | None = None
         self._stage_id: Any = None
         self._lk = threading.Lock()
         self._cond = threading.Condition(self._lk)
@@ -207,6 +215,8 @@ class TraceSink:
     def set_run_id(self, run_id: str | None) -> None:
         """当前运行身份（行头字段，不参与排序、不重置序号）。"""
         self._run_id = run_id
+        m = re.search(r"_r(\d+)$", run_id or "")
+        self._round = int(m.group(1)) if m else None
 
     def begin_stage(self, stage_id: Any) -> AppendResult:
         """阶段开始：可回放控制记录（受保护通道）。"""
@@ -237,6 +247,7 @@ class TraceSink:
             sess.next_seq += 1
             fid_eff = fid if fid is not None else row.get("fid")
             record = {"v": PROTOCOL_VERSION, "mod": self.module,
+                      "session": self._session_token, "round": self._round,
                       "run_id": self._run_id, "stage_id": self._stage_id,
                       "seq": seq, "fid": fid_eff,
                       "ts_wall_ns": now_wall, "ts_mono_ns": now_mono}
@@ -314,6 +325,13 @@ class TraceSink:
 
     # ---------- 会话生命周期（管理器调用面，非模块面） ----------
 
+    def bind_if_unbound(self, session_dir: Path, token: str) -> None:
+        """中途注册补绑：仅当本汇尚无活动会话时绑定（不打断已在写的会话）。"""
+        with self._lk:
+            if self._session is not None:
+                return
+        self.bind_session(session_dir, token)
+
     def bind_session(self, session_dir: Path, token: str) -> None:
         """会话开启：建 trace/<模块>.jsonl 并起 worker（不可被拒绝）。"""
         with self._lk:
@@ -335,7 +353,11 @@ class TraceSink:
             return
         with self._lk:
             self._bind_error = None
-            self._session = _Session(token, path, writer)
+            self._session_token = token
+            if self._last_path is not None and Path(path) != self._last_path:
+                self._seq_base = 0    # 换了文件 = 换了会话，序号从头
+            self._last_path = Path(path)
+            self._session = _Session(token, path, writer, self._seq_base)
             sess = self._session
         threading.Thread(target=self._worker, args=(sess,),
                          daemon=True, name=f"trace-{self.module}").start()
@@ -398,6 +420,7 @@ class TraceSink:
             sess.next_seq += 1
             line = json.dumps(
                 {"v": PROTOCOL_VERSION, "type": etype, "mod": self.module,
+                 "session": self._session_token, "round": self._round,
                  "run_id": self._run_id, "stage_id": stage_id, "seq": seq,
                  "ts_wall_ns": now_wall, "ts_mono_ns": now_mono},
                 ensure_ascii=False, separators=(",", ":"), default=_json_fallback)
@@ -465,7 +488,8 @@ class TraceSink:
         """写线程：独占文件句柄；按逻辑序号归并写出数据、控制记录与 gap。"""
         begin_line = json.dumps(
             {"v": PROTOCOL_VERSION, "type": "session_begin", "mod": self.module,
-             "token": sess.token, "seq": 0,
+             "token": sess.token, "session": sess.token, "round": self._round,
+             "seq": sess.begin_seq,
              "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns()},
             ensure_ascii=False, separators=(",", ":"))
         try:
@@ -560,7 +584,8 @@ class TraceSink:
         try:
             sess.writer.write(json.dumps(
                 {"v": PROTOCOL_VERSION, "type": "end", "mod": self.module,
-                 "token": sess.token, "seq": end_seq,
+                 "token": sess.token, "session": sess.token, "round": self._round,
+                 "seq": end_seq,
                  "written": sess.written_count, "dropped": [list(iv) for iv in dropped],
                  "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns()},
                 ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -612,6 +637,7 @@ class TraceSink:
 
     def _publish(self, sess: _Session, res: CloseResult) -> None:
         with self._lk:
+            self._seq_base = sess.next_seq
             sess.terminal = True
             sess.result = res
             sess.close_deadline = None
@@ -638,17 +664,18 @@ class TraceSinkManager:
         return sink
 
     def _ensure_bound(self) -> None:
-        if self._bound:
-            return
         from maaracing_master.core.logger import logger
-        logger.add_session_listener(self)
-        self._bound = True
-        # 模块中途注册：当前已有会话则立即补绑
+        if not self._bound:
+            logger.add_session_listener(self)
+            self._bound = True
+        # 模块中途注册：当前已有会话则立即补绑。幂等（bind_if_unbound 只补
+        # 尚未绑定的汇），每次注册都查——首个汇注册后本方法早退分支曾让
+        # 后续中途注册永远错过补绑（2026-11-07 显卡汇首驾零行实证）。
         if logger.session_dir is not None and logger.session_token:
             with self._lk:
                 sinks = list(self._sinks.values())
             for s in sinks:
-                s.bind_session(logger.session_dir, logger.session_token)
+                s.bind_if_unbound(logger.session_dir, logger.session_token)
 
     # ---- 会话生命周期回调（logger 生命周期锁内、记录锁外执行） ----
 
@@ -774,8 +801,11 @@ def validate_trace_file(path: str | Path) -> list[str]:
         bad = [x for x in missing if x not in excused]
         if bad:
             errs.append(f"缺失序号未由 gap/收尾统计覆盖: {_merge_seq_list(bad)[:8]}")
-    # 尾部标记必须居尾
+    # 尾部标记必须居尾；同一会话文件可因中途开关分成多段，段尾 end 之后
+    # 只能紧跟下一段的 session_begin。
     for idx, rec in enumerate(records[:-1]):
         if rec.get("type") in ("end", "close_incomplete"):
-            errs.append(f"第 {idx} 行尾部标记不在文件末尾")
+            nxt = records[idx + 1]
+            if nxt.get("type") != "session_begin":
+                errs.append(f"第 {idx} 行尾部标记不在文件末尾")
     return errs

@@ -1,7 +1,7 @@
 # docs — 信源文档根
 
 > **本文是什么**：`docs/` 的目录索引与**文档写作规范**——有哪些文档、各是什么信源等级、新文档怎么写（文档头 / 指针纪律 / 数值禁令 / plan 规范）。
-> **本文不是什么**：不是项目导航（见 [CODE_WIKI.md](./CODE_WIKI.md)）；不是协作守则与信源路由（见 [AGENTS.md](../AGENTS.md)）；不是架构决策的理由（见 [adr/](./adr/README.md)）。
+> **本文不是什么**：不是项目导航（见 [CODE_WIKI.md](./CODE_WIKI.md)）；不是协作守则与知识路由（见 [AGENTS.md](../AGENTS.md)）；不是架构决策的理由（见 [adr/](./adr/README.md)）。
 > **信源等级**：L1（写作规范部分）/ L3（索引部分）—— 可作「文档怎么写、该放哪」的直接依据；不得作为技术事实的依据（回其 home）。
 > **继承**：通用协作与信源规则见 [`AGENTS.md`](../AGENTS.md)；本文只补充文档写作特有的约束。
 
@@ -11,13 +11,13 @@
 |---|---|---|
 | [CODE_WIKI.md](./CODE_WIKI.md) | L3 | 项目地图与导航（含「我要改 X，应该去哪里」） |
 | [MAAFW_GUIDE.md](./MAAFW_GUIDE.md) | L2 | MaaFW 能力签名、协议口径与红线 |
-| [NAVKIT_V4_PLAN.md](./NAVKIT_V4_PLAN.md) | §1 = L1；§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
+| [PIPELINE_V4.md](./PIPELINE_V4.md) | §1 = L1；§0、§9–§12 = L4 | 版本宪法（最高规则）+ v4 规格 + 迁移史 |
 | [SELF_CHECK.md](./SELF_CHECK.md) | L3 | 环境与启动的分步验收清单 |
 | [adr/](./adr/README.md) | L1 | 架构决策与状态（准入条件、状态机见其 README） |
 | [announcement.md](./announcement.md) | L1 | 公告通知卡规范 |
+| [latest_release.json](./latest_release.json) | L0 | 版本标记投放数据（客户端更新源之一；字段口径见 `core/remote_meta.py` `parse_release`） |
 | [update_log.md](./update_log.md) | L4 | 面向玩家的更新说明（Release 正文由此抽取） |
 | [plan/](./plan/) | — | 一次性**工作台**（gitignore 不入库；只能向上产出，禁止被正式文档引用；完成即删） |
-| [design/](./design/) | — | 前端设计稿（pages / token） |
 
 项目级导航（跨 `docs/`、`apps/`、`tools/` 的入口）见 [CODE_WIKI.md](./CODE_WIKI.md)；等级定义与冲突判据唯一载于 [AGENTS.md](../AGENTS.md)「知识路由」。
 
@@ -41,6 +41,9 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 
 凡能被 JSON / 代码单向算出的值（阶段数、计数、清单长度），prose 只写**指向真源的路径**，不写数值本身；枚举清单同样换成指向，写指针时也不带数量。手抄数字没有守卫就必然腐坏。
 机检形态：[`tests/test_doc_no_copied_numbers.py`](../tests/test_doc_no_copied_numbers.py)。
+CODE_WIKI 正文的过程残留（日期 / 会话戳 / 轮次 / 阶段代号 / step / 迁移期号 / 计数快照）另由
+[`tools/check_repo_hygiene.py`](../tools/check_repo_hygiene.py) **R11** 棘轮守卫：存量入基线、
+新增即红，历史证据指向 commit。归档区 CODE_WIKI（历史快照）与 ADR / update_log 的合法历史叙述不在面内。
 
 ### Why 归属
 
@@ -92,4 +95,4 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 - **只能向上产出**：plan → ADR / CODE_WIKI / 指南 / 实验 / issue / 生产实现。长期价值只存在于被提炼的产出里；plan 本身不是任何知识的住户。
 - **禁止反向引用**：正式文档（L0~L3）与生产/运维代码不得引用 `docs/plan/` 下的具体文件（机检 R3）；实验引用 plan 只作过程指针、不作事实依据。
 - **不设 `plan/archive/`**：gitignored 的"归档"既不可追溯又暗示"仍属项目知识"，是第二个垃圾场；plan 的历史若重要，应把结果留在它产出的 issue / commit / 最终文档里。
-- 较大改动的 plan 以行为契约开头：依次写「目标行为 / 不变量 / 验收条件」，先定行为再谈技术方案；跨层、新模块、并发与资源类改动必写。
+- 较大改动的 plan 以行为契约开头：先定行为再谈技术方案，段次、骨架与每格准入判据见 [`templates/plan/BEHAVIOR_CONTRACT_TEMPLATE.md`](../templates/plan/BEHAVIOR_CONTRACT_TEMPLATE.md)；跨层、新模块、并发与资源类改动必写。

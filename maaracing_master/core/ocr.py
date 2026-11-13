@@ -2,10 +2,9 @@
 # -*- coding: utf-8 -*-
 """RapidOCR 文字识别引擎（core 公共层）：单 ROI 抠图识别 + 硬测出来的引擎调参。
 
-**为什么住在 core**：这是插件间共享的识别底座——speedrush 的 HUD 读数、treasure 的出价/结算
-读数（该活动已退役，见 `plugins/_archive/treasure/RETIRED.md`）、`tools/navkit/studio_server.py` 的 ROI
-校准台都在用它。插件自包含契约禁止插件互相 import（见 `plugins/_archive/treasure/__init__.py`），
-故公共层只能在 core。
+**为什么住在 core**：这是插件间共享的识别底座——speedrush 的 HUD 读数与插件自带的
+离线探针都在用它。插件自包含契约禁止插件互相 import
+（见 `plugins/__init__.py`），故公共层只能在 core。
 **本模块是这套调参的唯一真源**：出现第二份副本，ORT 线程数与绑核那套实测定下的值就会分叉。
 
 **本模块只做引擎**：抠图 → 预处理 → 推理 → 交出文本。
@@ -37,6 +36,7 @@ from maaracing_master.core.logger import logger
 
 __all__ = [
     "OcrText",
+    "OcrBlock",
     "RapidOcrEngine",
     "USE_DET",
     "USE_CLS",
@@ -57,6 +57,22 @@ USE_DET = False
 # 是否启用方向分类(cls)。固定 HUD 文字框方向恒定，cls 属冗余计算
 # （每 ROI 多 1 次方向分类推理；关闭后 18 ROI 每帧省 30~50ms）。保留开关便于回滚。
 USE_CLS = False
+
+# --------- 整帧文本块检测（`recognize_blocks` 专用，与上面 HUD 路径各用各的实例） ---------
+# 两条路径的预算完全不同，参数不能共用：
+#   • HUD 路径（`recognize`）：每帧多 ROI、感知/决策同时在跑，必须压到 12ms/区，
+#     所以关 det、单线程、绑 P-core。
+#   • 整帧路径（`recognize_blocks`）：只在「没有任何已知页面匹配」时调用一次，
+#     回答的是「下一个按钮在哪」（位置未知，必须开 det 才有框），启动/导航阶段
+#     本来就以秒为节拍在等游戏，1s 可以接受。
+# 实测（2026-11-12，1280×720 赛季弹窗帧，intra=1 关 det 对照组为 12ms/ROI）：
+#   全帧 det 默认尺寸 intra=1      → 2900~4800ms（不可用）
+#   全帧 det limit_side_len=480    → 2700~3500ms（仍慢，瓶颈是线程自旋）
+#   全帧 det limit_side_len=480 且 intra=4/inter=2 → 1000~1300ms（可用）
+# 缩放到 0.5x 再喂没有收益——det 内部按 limit_side_len 归一，输入尺寸不改变计算量。
+BLOCK_DET_LIMIT_SIDE = 480
+BLOCK_DET_INTRA_OP_THREADS = 4
+BLOCK_DET_INTER_OP_THREADS = 2
 
 # onnxruntime 推理线程数。档位重标定（2026-10-08，真实 HUD ROI × 产线预处理链
 # 受控复现，2Hz 节奏 30 轮）：一轮墙钟 P50 = 229 / 132 / 86ms（intra=1/2/4），
@@ -101,7 +117,7 @@ def _pin_to_p_cores() -> None:
         # 必须 WARNING：这里曾记 DEBUG，导致「绑核从未生效」静默存在了近一个月
         # （psutil 当时不在依赖里 → 每个跑 OCR 的会话都失败一次而无人看见）。
         # 后果：E-core 漂移防护缺位，OCR 尾部耗时在高负载下更易被拉爆；
-        # 兜底消除方式：按 core/cpu_time.py 的口径改走无依赖实现。
+        # 兜底消除方式：按既有的 Win32 直调口径（零依赖）实现。
         logger.log(
             f"[OCR] CPU 亲和性未生效({e})——E-core 漂移防护缺位，"
             "OCR 尾部耗时可能偏高", "WARNING")
@@ -163,12 +179,27 @@ class OcrText:
         return "".join(self.lines)
 
 
+@dataclass(frozen=True)
+class OcrBlock:
+    """整帧检测到的**一个文字块**：文本 + 归一化外框。
+
+    与 `OcrText` 的分工：`OcrText` 回答「这块固定区域里写着什么」（先验知道字在哪，
+    只要内容）；`OcrBlock` 回答「画面里哪里有字、写的是什么」（先验不知道字在哪，
+    要位置）。后者必须开文本检测——这也是代价所在，见 `recognize_blocks` 的说明。
+    """
+
+    text: str
+    rect: tuple[float, float, float, float]  # (x1, y1, x2, y2)，归一化，左上原点
+
+
 class RapidOcrEngine:
     """RapidOCR 引擎封装（懒加载 + 加载失败降级：返回 None，不抛）。"""
 
     def __init__(self) -> None:
         self._engine = None          # RapidOCR 实例（懒加载）
         self._engine_failed = False  # 加载失败后不再重试
+        self._block_engine = None    # 整帧检测专用实例（参数见 BLOCK_DET_*）
+        self._block_engine_failed = False
 
     # ---------------- 引擎（懒加载） ----------------
     def _get_engine(self):
@@ -206,9 +237,9 @@ class RapidOcrEngine:
         patch」——所有已知消费者（treasure 的 policy 锚点、studio 校准台的手拖选区、
         后续 speedrush 的 HUD 格子）手里都是归一化 rect，抠图与边界夹紧因此只有这一份实现。
 
-        坐标语义同 `core/roi_config.py`：top-left 原点、归一化到 [0,1]、x2/y2 排他。
+        坐标语义：top-left 原点、归一化到 [0,1]、x2/y2 排他。
         像素边界**刻意沿用历史口径**（x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，不是
-        roi_config 的 floor/ceil）：边界差一个像素就换掉喂给模型的像素，识别文本会漂移，
+        floor/ceil 式换算）：边界差一个像素就换掉喂给模型的像素，识别文本会漂移，
         而这条路径的输出被下游当作稳定读数用（固化的出价金额等）。
 
         返回 `OcrText`（lines 逐块 / text 合并）；引擎不可用、矩形退化到无像素或推理
@@ -232,3 +263,71 @@ class RapidOcrEngine:
             return None
         txts = getattr(output, "txts", None) or []
         return OcrText(lines=tuple(str(t) for t in txts))
+
+    # ---------------- 整帧文本块（位置未知时的唯一通路） ----------------
+    def _get_block_engine(self):
+        if self._block_engine_failed:
+            return None
+        if self._block_engine is None:
+            try:
+                from rapidocr import RapidOCR
+                _pin_to_p_cores()
+                self._block_engine = RapidOCR(params={
+                    "Global.use_det": True,
+                    "Global.use_cls": USE_CLS,
+                    "Det.limit_type": "max",
+                    "Det.limit_side_len": BLOCK_DET_LIMIT_SIDE,
+                    "EngineConfig.onnxruntime.intra_op_num_threads": BLOCK_DET_INTRA_OP_THREADS,
+                    "EngineConfig.onnxruntime.inter_op_num_threads": BLOCK_DET_INTER_OP_THREADS,
+                })
+                logger.log(
+                    f"[OCR] 整帧检测引擎已加载(limit_side={BLOCK_DET_LIMIT_SIDE}, "
+                    f"intra_op={BLOCK_DET_INTRA_OP_THREADS})——按需启用，"
+                    "约 1s/帧，勿用于高频循环", "DEBUG")
+            except Exception as e:  # noqa: BLE001 —— 与 HUD 路径同策略：降级不抛
+                self._block_engine_failed = True
+                logger.log(f"[OCR] 整帧检测引擎加载失败({e})，位置未知时的文字兜底已禁用",
+                           "WARNING")
+        return self._block_engine
+
+    def recognize_blocks(self, frame_rgb: np.ndarray,
+                         *, min_score: float = 0.5) -> list[OcrBlock] | None:
+        """整帧检测：返回画面里所有文字块（文本 + 归一化外框）。
+
+        必须开 det 才有框，因此比 `recognize` 贵两个数量级（见 BLOCK_DET_* 实测）。
+        调用方只在「已知页面全都不匹配」时用它，且一次调用只应产生一次点击决定。
+
+        返回 None = **引擎不可用**（未装/加载失败），与「画面里没有文字」（空列表）
+        必须区分：前者要告警并降级，后者只是这一帧确实没字。
+        """
+        engine = self._get_block_engine()
+        if engine is None:
+            return None
+        H, W = frame_rgb.shape[:2]
+        if H <= 0 or W <= 0:
+            return None
+        try:
+            output = engine(to_bgr(frame_rgb))
+        except Exception as e:  # noqa: BLE001
+            logger.log(f"[OCR] 整帧检测异常: {e}", "DEBUG")
+            return None
+        boxes = getattr(output, "boxes", None)
+        txts = getattr(output, "txts", None) or []
+        scores = getattr(output, "scores", None) or []
+        blocks: list[OcrBlock] = []
+        for i, txt in enumerate(txts):
+            text = str(txt or "").strip()
+            if not text:
+                continue
+            if i < len(scores) and float(scores[i]) < min_score:
+                continue
+            if boxes is None or i >= len(boxes):
+                continue
+            arr = np.asarray(boxes[i], dtype=float).reshape(-1, 2)
+            if arr.size < 8:
+                continue
+            xs, ys = arr[:, 0], arr[:, 1]
+            rect = (float(xs.min()) / W, float(ys.min()) / H,
+                    float(xs.max()) / W, float(ys.max()) / H)
+            blocks.append(OcrBlock(text=text, rect=rect))
+        return blocks

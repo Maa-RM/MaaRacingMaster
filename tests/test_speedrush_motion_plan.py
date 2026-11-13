@@ -59,6 +59,105 @@ def test_frame_symbols_and_units():
     assert s.ego_lane == pytest.approx(1.0 / LW)
 
 
+def _curve_road():
+    """弯道走廊：带中点 3m/20m/40m 处中心 0/1.0/4.5m，中点间线性插值。"""
+    return RoadFrame(
+        (RoadBand(0.0, 6.0, -4.0, 4.0, src="measured"),
+         RoadBand(16.0, 24.0, -3.0, 5.0, src="measured"),
+         RoadBand(36.0, 44.0, 0.5, 8.5, src="measured")),
+        8.0, -4.0, 4.0, True)
+
+
+_Z_SWITCH = 30.06          # 20261113_163858 fid 6605→6607 货车换源拍的纵深
+
+
+def test_scene_fresh_pixel_lateral_update_flows_through():
+    """正常场景：同源同纵深的相邻拍，横位随当拍测量原样变化，不被压制。"""
+    road = _curve_road()
+    a = _scene(road=road, cars=[CarSource(2.0, 1.0, z_m=20.0, src="metric")])
+    b = _scene(road=road, cars=[CarSource(2.5, 1.0, z_m=20.0, src="metric")])
+    assert b.objs[0].x_m - a.objs[0].x_m == pytest.approx(0.5)
+
+
+def test_scene_origin_shift_is_local_translation():
+    """场景帧的 origin 平移是局部的：源与原点同量平移，发布值不变。
+    （真实自车横移的完整链路见 decision 用例
+    test_ego_lane_shift_cancels_in_source_build。）"""
+    road = _curve_road()
+    a = _scene(road=road, origin=1.0,
+               cars=[CarSource(3.0, 1.0, z_m=20.0, src="metric")])
+    b = _scene(road=road, origin=2.0,
+               cars=[CarSource(4.0, 1.0, z_m=20.0, src="metric")])
+    assert a.objs[0].x_m == pytest.approx(b.objs[0].x_m)
+
+
+def test_scene_curve_correction_applied_with_depth():
+    """现状对照（修复后需重写）：有纵深按目标处道路中心回正，无纵深原样
+    发布自车站帧值——两侧口径不同，正是换源回跳的根。"""
+    road = _curve_road()
+    corr = road.center_at(_Z_SWITCH - 1.79)
+    assert corr > 2.0
+    with_z = _scene(road=road,
+                    cars=[CarSource(3.3, 1.0, z_m=_Z_SWITCH, src="metric")])
+    assert with_z.objs[0].x_m == pytest.approx(3.3 - corr)
+    no_z = _scene(road=road, cars=[CarSource(3.3, 1.0, src="metric_coarse")])
+    assert no_z.objs[0].x_m == pytest.approx(3.3)
+
+
+def test_scene_curve_approach_tracks_local_center():
+    """已知真值：车始终在当地路心上，随接近正确回正从约 2.6 米降到 0.9 米。
+    两条都是正确值——任何“保持旧回正”式修法在这里必须仍然给 0（不得把
+    正在变化的回正量冻住）。"""
+    road = _curve_road()
+    errs, corrs = [], []
+    for z in (40.0, 20.0):
+        corr = road.center_at(z - 1.79)
+        corrs.append(corr)
+        s = _scene(road=road, cars=[CarSource(corr, 1.0, z_m=z, src="metric")])
+        errs.append(s.objs[0].x_m)
+    assert corrs[0] - corrs[1] > 1.0           # 回正确实在变，不是常数
+    assert errs[0] == pytest.approx(0.0, abs=0.05)
+    assert errs[1] == pytest.approx(0.0, abs=0.05)
+
+
+def test_scene_new_depth_adopts_full_correction():
+    """接收正确纠错：纵深到达带来新的道路中心证据时，发布值必须立即采用
+    完整回正，不得为求连续而保留旧值（修正错估优先于平滑）。"""
+    road = _curve_road()
+    corr = road.center_at(_Z_SWITCH - 1.79)
+    s = _scene(road=road,
+               cars=[CarSource(3.3, 1.0, z_m=_Z_SWITCH, src="metric")])
+    assert s.objs[0].x_m == pytest.approx(3.3 - corr, abs=0.05)
+    assert abs(s.objs[0].x_m - 3.3) > 1.0      # 确实采纳了纠正，不是保持旧值
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "同一物理车位、同一测量基准，仅纵深由缺转有，粗源与米制源表达的不是"
+    "同一个量（自车站帧 vs 目标处路心帧），发布横位差 2.6m"
+    "（20261113_163858 fid 6605→6607 实测）；修复后删标记"))
+def test_scene_source_switch_to_depth_does_not_jump():
+    """回归：同一物理车位、测量基准一致时，单纯换源不得制造额外位移。"""
+    road = _curve_road()
+    before = _scene(road=road,
+                    cars=[CarSource(3.3, 1.0, src="metric_coarse")])
+    after = _scene(road=road,
+                   cars=[CarSource(3.3, 1.0, z_m=_Z_SWITCH, src="metric")])
+    assert abs(after.objs[0].x_m - before.objs[0].x_m) < 0.5
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "纵深丢失拍道路中心修正归零，同车横位瞬移（同一坐标链另一侧）；"
+    "修复后删标记"))
+def test_scene_depth_loss_does_not_jump():
+    """回归：测量值不变、仅纵深由有转缺，发布横位不得跳。"""
+    road = _curve_road()
+    before = _scene(road=road,
+                    cars=[CarSource(3.3, 1.0, z_m=_Z_SWITCH, src="metric")])
+    after = _scene(road=road,
+                   cars=[CarSource(3.3, 1.0, src="metric")])
+    assert abs(after.objs[0].x_m - before.objs[0].x_m) < 0.5
+
+
 def test_frame_shift_moves_scene_to_planner_center():
     s = _scene(origin=5.0, ego_m=1.0, frame_shift_m=2.0,
                rewards=[BonusSource(10.0, 1.0, 0.9, age_ms=0.0)])
@@ -197,7 +296,7 @@ def _obs(fid, groups=(), targets=(), metric_cars=()):
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=1,
         health=PerceptionHealth(True, True, True, bool(groups or targets), False),
-        boundary=None, targets=targets, far_targets=(), coin_groups=groups,
+        targets=targets, far_targets=(), coin_groups=groups,
         metric_cars=tuple(metric_cars), fid_rate_hz=20.0)
 
 
@@ -268,9 +367,35 @@ def test_candidates_and_determinism():
     n_base = len(CFG.motion.heading_levels) + 1          # 绝对档位 + 当前朝向
     n_rev = sum(1 for u in CFG.motion.heading_levels
                 if abs(u) >= CFG.motion.reverse_min_rad) + 1  # 半程回正（含当前）
-    assert len(a.cand_x) == n_base + n_rev + 1   # + 意图跟踪候选
+    n_pulse = (sum(1 for u in CFG.motion.heading_levels
+                   if abs(u) >= CFG.motion.short_pulse_min_rad)
+               if CFG.motion.short_pulse_enabled else 0)
+    assert len(a.cand_x) == n_base + n_rev + 1 + n_pulse  # + 意图跟踪 + 短脉冲
     assert (a.chosen, a.score_key, a.x_preview_m) == \
         (b.chosen, b.score_key, b.x_preview_m)
+
+
+def test_short_pulse_candidate_caps_the_hold():
+    """高挡短脉冲候选：保持 short_pulse_s 后回零，总横移小于同档恒朝向与
+    半程回正——人工满舵是 0.10~0.12s 短脉冲，不是 1s 保持。"""
+    motion = replace(CFG.motion, short_pulse_enabled=True,
+                     short_pulse_s=0.18, short_pulse_min_rad=0.09)
+    p = _plan(_scene(road=_wide_road()), motion=motion)
+    n_base = len(motion.heading_levels) + 1
+    n_rev = sum(1 for u in motion.heading_levels
+                if abs(u) >= motion.reverse_min_rad) + 1
+    first = n_base + n_rev + 1                 # 意图候选之后
+    assert len(p.cand_x) == first + sum(
+        1 for u in motion.heading_levels
+        if abs(u) >= motion.short_pulse_min_rad)
+    idx14 = first + 3                          # 档位序：-0.14 -0.09 0.09 0.14
+    xs = p.cand_x[idx14]
+    total = abs(xs[-1] - xs[0])
+    const_total = abs(p.cand_x[12][-1] - p.cand_x[12][0])   # +0.14 恒朝向
+    half_total = abs(p.cand_x[21][-1] - p.cand_x[21][0])    # +0.14 半程
+    assert total > 0.0
+    assert total < const_total
+    assert total < half_total
 
 
 def test_reverse_candidate_brakes_toward_center():
@@ -282,6 +407,21 @@ def test_reverse_candidate_brakes_toward_center():
     assert p.psi_feedforward < 0.4                      # 不是继续右打
     end = p.cand_x[p.chosen][-1]
     assert abs(end) < 1.0                             # 末端回到路心 1m 内
+
+
+def test_precision_band_lands_on_scoring_intent():
+    """交付型意图（贴边/让位）不套回中的宽死区：0.5 道外的目标必须落到
+    目标位本身，不能停在带内（掠过横距会系统性偏大半档）。"""
+    s = _scene(road=_wide_road(), ego_m=0.0)
+    ego = EgoState(0.0, 0.0, 45.0, 0.0)
+    intent_m = 1.7                                   # ≈0.5 道 @3.38m
+    coarse = _plan(s, ego=ego, intent_lane=intent_m / LW)
+    precise = plan_motion(s, ego, CFG.motion, CFG.selection, CFG.planner,
+                          None, intent_lane=intent_m / LW, precise=True)
+    assert abs(precise.cand_x[precise.chosen][-1] - intent_m) <= 0.1
+    # 宽死区下候选择在带内任意处（本场景停在目标外 0.4m+）——行为差异是
+    # 本闸存在的理由，锁住它防回退
+    assert abs(coarse.cand_x[coarse.chosen][-1] - intent_m) > 0.25
 
 
 def test_scene_opportunities_do_not_steer_the_plan():
@@ -370,6 +510,25 @@ def test_late_timed_car_blocks_lane_change_toward_it():
               ego=EgoState(0.0, 0.0, 45.0, 0.0), intent_lane=0.85)
     assert p.psi_feedforward < base.psi_feedforward
     assert p.psi_feedforward <= 0.05
+
+
+def test_late_car_far_laterally_does_not_pin_wheel():
+    """临门门的横距上限（fid 8082）：车在 5m 外、0.18s 到站、只是已经并排，
+    不是挡在前面——朝路心的回正不得被它钉死。缩到 2m 内（真往它身上并）
+    仍要拦：满舵到它到站那一刻也够得着。"""
+    ego_x = -1.319                       # 8082 实测自车横位（场景米）
+    ego = EgoState(ego_x / LW, 0.0, 41.0, 0.0)
+    base = _plan(_scene(road=_wide_road(), ego_m=ego_x),
+                 ego=ego, intent_lane=0.28)
+    assert base.psi_feedforward >= 0.05
+    far = CarSource(ego_x + 5.09, 0.184, z_m=20.0, age_ms=0.0, src="metric")
+    p = _plan(_scene(road=_wide_road(), ego_m=ego_x, cars=[far]),
+              ego=ego, intent_lane=0.28)
+    assert p.psi_feedforward == pytest.approx(base.psi_feedforward, abs=0.01)
+    near = CarSource(ego_x + 2.0, 0.184, z_m=20.0, age_ms=0.0, src="metric")
+    p2 = _plan(_scene(road=_wide_road(), ego_m=ego_x, cars=[near]),
+               ego=ego, intent_lane=0.28)
+    assert p2.psi_feedforward < base.psi_feedforward
 
 
 def test_metric_x_hard_jump_is_held_until_confirmed():

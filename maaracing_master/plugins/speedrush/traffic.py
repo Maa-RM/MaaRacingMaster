@@ -13,10 +13,14 @@ planner 不读本层。
   游戏语义：街车从屏幕下沿出画 = 我们越过了它。
 - **推定超越（presumed_pass）**：track 死亡时最后一次**真实**读数已贴身
   （cy ≥ presumed_cy_px）且在邻道内（|x_lane| ≤ presumed_lane_max）且仍在
-  下滑（rel > 0，消失方向指向下缘）——判"正在被超越时消失"。动机：检测
-  下界（cy≈575，自车遮挡+画角裁切）高于 636 判据线，真检永远到不了下带，
-  51/51 pass 全靠遮挡外推跨线、慢速超越系统性记 lost（2026-10-08 取证，
-  设计稿 §4A；判据预演 26 lost 晋升 16、远车零泄漏、pass 组 51/51 自洽）。
+  下滑（rel > 0，消失方向指向下缘）——判"正在被超越时消失"。动机：真检
+  到不了下带（画面下缘−margin≈640 判据线），慢速超越会系统性记 lost
+  （2026-10-08 取证，设计稿 §4A；判据预演 26 lost 晋升 16、远车零泄漏、
+  pass 组 51/51 自洽）。**下带为什么到不了**随视角变了：追车机位是自车
+  遮挡，保险杠机位自车不进画面，只剩画角裁切与贴脸框不稳（六局 637 条
+  轨迹复测：15.9% 最后可见行已到 636 以下、5.2% 落在 575~636，下带不是
+  全死区；430~575 区间占 22.6%，presumed 仍覆盖这一段）。方向性判据
+  （rel>0）是主要保护，430 这个值尚未按新视角的误判率重新标定。
 - **没超成（lost）**：其余位置消失——**保守不得分**（错判的 d_min 会污染 §二 的
   期望收益与 C4 标定面；漏判不损失任何东西，密度排序自然会再选中别的目标车）。
 - **鬼影（ghost）**：长寿命、相对速率近零、最后却"从下面消失"（雨测 191 帧收敛点
@@ -70,6 +74,9 @@ class CarView:
     x_memb: float | None = None
     w_m: float | None = None
     w_m_age: int | None = None
+    # 车道线定道读数（2026-11-09 车道归属）：远场尺子被 min_denom 门控成
+    # None 时的互证目标，track 逐拍透传；闸关/无线恒 None。
+    x_lane_line: float | None = None
     # 最后一次真实读数帧号（0=旧构造未带）。决策层用它算"观测新鲜度"；
     # age_ticks 是轨道生命期（first_fid 起算），不是新鲜度——拿它当龄会
     # 让一辆持续被检出的车在 0.25s 后从场景里蒸发。
@@ -185,7 +192,8 @@ class TrafficObserver:
                                  rel_approach=t.rel_approach, d_min=rec.d_min,
                                  age_ticks=fid - rec.first_fid, v_lat=rec.v_lat,
                                  x_memb=memb, w_m=w_m, w_m_age=w_m_age,
-                                 last_seen_fid=t.last_seen_fid))
+                                 last_seen_fid=t.last_seen_fid,
+                                 x_lane_line=getattr(t, "x_lane_line", None)))
 
         events: list[PassEvent] = []
         for tid in sorted(set(self._live) - seen):

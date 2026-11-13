@@ -444,7 +444,8 @@ def test_listener_logging_during_close_no_deadlock(tmp_path):
     assert lg.lifecycle_state == "closed"
 
 
-def test_same_second_reopen_isolates_tokens(tmp_path):
+def test_reopen_reuses_session_identity(tmp_path):
+    """v5：一次启动一个会话；中途再开日志回到同一目录，不新开会话。"""
     lg = Logger(tmp_path)
     mgr = TraceSinkManager()
     lg.add_session_listener(mgr)
@@ -452,14 +453,58 @@ def test_same_second_reopen_isolates_tokens(tmp_path):
     lg.set_file_logging(True)
     tok1 = lg.session_token
     sink.append({"x": 1})
-    lg.set_file_logging(True)                        # 同秒再开 = 换会话
-    tok2 = lg.session_token
-    assert tok1 != tok2
-    assert (tmp_path / tok1).is_dir() and (tmp_path / tok2).is_dir()
-    # 旧会话经完整关闭流程：文件有 end 标记
-    rows1 = _read(tmp_path / tok1 / "trace" / "demo.jsonl")
-    assert rows1[-1]["type"] == "end"
     lg.set_file_logging(False)
+    lg.set_file_logging(True)                        # 中途再开 = 同一会话
+    tok2 = lg.session_token
+    assert tok1 == tok2
+    assert sorted(p.name for p in tmp_path.iterdir()) == [tok1]
+    # 同一文件接着写：第一段有 end，第二段 begin 序号继续，不倒退
+    rows = _read(tmp_path / tok1 / "trace" / "demo.jsonl")
+    assert rows[0]["type"] == "session_begin"
+    begins = [r for r in rows if r.get("type") == "session_begin"]
+    assert len(begins) == 2
+    assert begins[1]["seq"] > 0
+    lg.set_file_logging(False)
+    assert validate_trace_file(tmp_path / tok1 / "trace" / "demo.jsonl") == []
+
+
+class _OpenSessionView:
+    """喂 _ensure_bound 的只读会话视图：替代真单例（会话已开）。"""
+
+    def __init__(self, lg):
+        self.session_dir = lg.session_dir
+        self.session_token = lg.session_token
+
+    def add_session_listener(self, cb) -> None:
+        pass
+
+
+def test_mid_session_registration_binds_current_session(tmp_path, monkeypatch):
+    """会话开启后才注册的汇必须补绑当前会话。
+
+    2026-11-07 实证：_ensure_bound 首个汇注册后早退，中途注册的显卡汇整个
+    会话零落盘（生产首驾 gpu.jsonl 缺失）。回归锁：早退分支删除后，
+    beta（会话中注册）必须与 alpha（会话前注册）同会话同语义落盘。
+    """
+    lg = Logger(tmp_path)
+    mgr = TraceSinkManager()
+    lg.add_session_listener(mgr)
+    early = mgr.get("alpha")                         # 会话开启前注册
+    lg.set_file_logging(True)
+    early.append({"x": 1})
+    monkeypatch.setattr("maaracing_master.core.logger.logger",
+                        _OpenSessionView(lg))
+    late = mgr.get("beta")                           # 会话进行中注册 → 必须补绑
+    late.append({"x": 2})
+    lg.set_file_logging(False)
+    for name, v in (("alpha", 1), ("beta", 2)):
+        p = (tmp_path / lg.last_session_close_status[-1]["token"]
+             / "trace" / f"{name}.jsonl")
+        rows = _read(p)
+        assert rows[0]["type"] == "session_begin"
+        assert any("type" not in r and r.get("x") == v for r in rows)
+        assert rows[-1]["type"] == "end"
+        assert validate_trace_file(p) == []
 
 
 def test_open_during_closing_waits(tmp_path):
@@ -480,7 +525,7 @@ def test_open_during_closing_waits(tmp_path):
     t_open.join(3.0)
     assert not t_open.is_alive()
     assert lg.lifecycle_state == "open"
-    assert lg.session_token != closing_token
+    assert lg.session_token == closing_token
     lg.set_file_logging(False)
 
 

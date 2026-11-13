@@ -11,13 +11,11 @@ env/
 venv/
 
 # 数据集（大文件）
-dataset/images/
-dataset/labels/
 runs/
 tools/*.pt
 
-# 训练数据暂存（仅项目根）
-/training/
+# 标注工作区与训练索引（本机数据，不进发布包；打包侧另有 robocopy 排除）
+/maaracing_master/plugins/speedrush/data/
 
 # 日志
 logs/
@@ -39,6 +37,8 @@ debug.txt
 .zcode/
 .workbuddy-ai/
 AGENTS.local.md
+# 隐私扫描本地词表（check_repo_hygiene R7 的补充正则；只留本机，不上云）
+tools/repo_privacy_terms.local.txt
 .trae/
 .trae-cn/
 .claude/
@@ -110,18 +110,27 @@ cursor_refactor/captures/
 cursor_refactor/models/
 cursor_refactor/__pycache__/
 
-# NavKit 本地工具与历史产物目录（mpelb 二进制 / MPE dist / 旧控制台缓存等；不入库）
-tools/navkit/dev/
-tools/navkit/out/
-tools/navkit/frontend/
+# pipeline 工具的本机二进制（mpelb 等；不入库）
+tools/pipeline/dev/
 
 # 实验区的待试权重：来源与许可未声明、体积大，一律不入库（实验 README 注明取法）。
 # 插件正式分发的权重不在此列——它们在 plugins/*/resources/models/ 随包入库。
 tools/experiments/**/weights/
+tools/experiments/**/upstream/
+# 离线教师权重（HuggingFace 公开模型，体积 100MB+，取法与许可记在实验 README）
+tools/experiments/**/teachers/
 
 # 探针输出目录（命名约定 *_out/）：一次性报告的落点，读数归实验 README，文件本身可重跑。
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
 tools/experiments/**/*_out/
 
+# 实验区内 .NET/C# 构建产物（编译输出与 NuGet 还原缓存，可由源码重建，不入库；
+# 工具源码真源仍随目录入库，清理走回收站）
+tools/experiments/**/bin/
+tools/experiments/**/obj/
+
 # 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
 # （教育/科研/非营利可分发，商业用途需另行授权）
+
+tools/experiments/speedrush_lane_model/bdd100k/
+tools/experiments/speedrush_lane_model/fine_tune_out/

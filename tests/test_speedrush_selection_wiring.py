@@ -42,7 +42,7 @@ def _obs(fid, *, groups=(), targets=(), presence=None):
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=1,
         health=PerceptionHealth(True, True, True, presence, False),
-        boundary=None, targets=targets, far_targets=(), coin_groups=groups,
+        targets=targets, far_targets=(), coin_groups=groups,
         fid_rate_hz=20.0)
 
 

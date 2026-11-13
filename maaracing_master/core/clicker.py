@@ -61,7 +61,6 @@ class Clicker:
         self.intent = intent
         self._last_pos: tuple[int, int] | None = None  # 最近一次成功执行的屏幕坐标
         self._gamepad = None  # 手柄导航器（懒创建，绑定 controller 手柄/截图）
-        self._gamepad_nav_cfg = None  # (capture, gpad, model_path)
         self._rebuild_gamepad_cb = None  # 手柄重建回调（宿主注入；None=不支持自愈）
         self._gamepad_lost_streak = 0  # 手柄光标连续丢失计数（approach lost 累加）
         self._rebuild_cooldown_until_ts = 0.0  # 重建冷却截止（monotonic 秒）
@@ -85,7 +84,6 @@ class Clicker:
           手柄后重新走 bind_gamepad 换绑；None=不支持重建（仅快速失败重试）。
         """
         from maaracing_master.core.gamepad_cursor import GamepadClicker
-        self._gamepad_nav_cfg = (capture, gpad, model_path)
         self._gamepad = GamepadClicker(capture, gpad, model_path=model_path)
         if confirm_button is not None:
             self._gamepad.set_confirm_button(confirm_button)
@@ -378,7 +376,7 @@ class Clicker:
                         self._shoo_repeat_count += 1
                         if self._shoo_repeat_count == self.SHOO_REPEAT_WARN_AFTER:
                             logger.log(
-                                f"[鉴宝点击] 避让空转：已连续 {self._shoo_repeat_count} 次导航到 "
+                                f"避让空转：已连续 {self._shoo_repeat_count} 次导航到 "
                                 f"({px_:.2f},{py_:.2f}) 光标仍压住 [{hit_key}]（当前位 "
                                 f"({nx:.2f},{ny:.2f})）——游戏可能不接受该落点，需人工核查",
                                 "WARNING")
@@ -502,24 +500,6 @@ class Clicker:
         if not self.submit_click(cx, cy, box=box, tol_px=tol_px,
                                  down_up_gap_ms=down_up_gap_ms,
                                  move_pause_s=move_pause_s):
-            return False
-        while True:
-            if should_abort is not None and should_abort():
-                self.cancel()
-                time.sleep(0.02)
-                continue
-            res = self.consume_result()
-            if res is not None:
-                return bool(res.get("ok"))
-            time.sleep(0.02)
-
-    def move_only(self, cx: float, cy: float, *,
-                  on_progress=None, should_abort=None, box=None, tol_px=None) -> bool:
-        """同步兼容壳（已弃用）：submit_move + 自旋 consume_result，只移动不点击。
-
-        推荐改用 submit_move + consume_result 异步协议。
-        """
-        if not self.submit_move(cx, cy, box=box, tol_px=tol_px):
             return False
         while True:
             if should_abort is not None and should_abort():

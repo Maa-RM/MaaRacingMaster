@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "achievements": [
+    {
+      "id": "first_start",
+      "title": "哦，对的对的",
+      "description": "欢迎您使用MaaRM！",
+      "category": "核心",
+      "tier": "normal",
+      "hint": "第一次按下开始运行",
+      "hidden": false,
+      "rule": {"fact": "core.ui.start_click", "agg": "count", "target": 1}
+    },
+    {
+      "id": "cancel_countdown",
+      "title": "嗯，不对不对",
+      "description": "是不是哪里没调整好？",
+      "category": "核心",
+      "tier": "rare",
+      "hint": "第一次在开始的三秒倒计时内打断",
+      "hidden": false,
+      "rule": {"fact": "core.ui.start_cancel", "agg": "count", "target": 1}
+    },
+    {
+      "id": "start_twice",
+      "title": "哎呀，对的对的！",
+      "description": "刚刚是我看岔眼了！",
+      "category": "核心",
+      "tier": "precious",
+      "hint": "一分钟内第二次按下开始",
+      "hidden": false,
+      "rule": {"fact": "core.ui.start_repeat_fast", "agg": "count", "target": 1}
+    },
+    {
+      "id": "cancel_twice",
+      "title": "对...对吗？",
+      "description": "真是纠纠又结结啊...",
+      "category": "核心",
+      "hint": "一分钟内第二次打断倒计时",
+      "hidden": true,
+      "rule": {"fact": "core.ui.cancel_repeat_fast", "agg": "count", "target": 1}
+    }
+  ]
+}

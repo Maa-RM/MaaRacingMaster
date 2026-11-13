@@ -33,8 +33,7 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None,
-         raw_coins=0):
+         transition=False, fid_hz=None, raw=None, raw_coins=0):
     if presence is None:
         presence = bool(groups or targets)
     if raw is None:
@@ -42,10 +41,12 @@ def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
-        health=PerceptionHealth(alive, fresh, geometry, presence, transition,
+        health=PerceptionHealth(perception_alive=alive, frame_fresh=fresh,
+                                target_presence=presence,
+                                stage_transition=transition,
                                 raw_cars=int(bool(raw)),
                                 raw_coins=raw_coins),
-        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
+        targets=targets, far_targets=(), coin_groups=groups,
         fid_rate_hz=fid_hz)
 
 
@@ -153,10 +154,10 @@ def test_watch_stale_during_transition_not_fatal():
 
 
 def test_watch_empty_needs_conjunction():
-    """枯竭计时要求 alive∧fresh∧geometry∧¬transition 全立——空旷/过渡/半死不计时。"""
+    """枯竭计时要求 alive∧fresh∧¬transition 全立——半死（未存活）/过渡不计时。"""
     w = ValidationWatch(CFG)
     for _ in range(int(CFG.validate.t_empty_s / DT)):
-        assert w.check(_obs(presence=False, geometry=False), DT).fatal is None
+        assert w.check(_obs(presence=False, alive=False), DT).fatal is None
     # 合取恢复后从头计时（旧账不追溯）
     for i in range(int(CFG.validate.t_empty_s / DT) - 1):
         assert w.check(_obs(presence=False, raw=True), DT).fatal is None
@@ -292,16 +293,36 @@ def test_conserve_output_holds_and_forbids_moves():
     assert out.x_target is None                    # 保持≠回中（§二）
 
 
+def test_intent_precise_marks_graze_and_pass_only():
+    """交付型意图位：贴边/让位置位（计划改窄死区），回中不置位。
+    接线断掉会让贴边重新吃回中的 0.3 道死区，掠过横距系统性偏大半档。"""
+    from maaracing_master.plugins.speedrush.selection import (
+        SelectionReport, Waypoint)
+    e = _eng()
+    rep = SelectionReport(2, (Waypoint(1.0, 0.3, "pass"),), 0.3, "graze",
+                          True, True)
+    e.selector.update = lambda *a, **k: rep
+    out = e.update(_obs(fid=1, presence=True), DT, executed_lane=0.0,
+                   corridor=_corridor(-5.0, 5.0))
+    assert out.reason == "sel:graze" and out.intent_precise is True
+    rep = SelectionReport(4, (Waypoint(1.0, 0.0, "center"),), 0.0, "center",
+                          True, False)
+    e.selector.update = lambda *a, **k: rep
+    out = e.update(_obs(fid=2, presence=True), DT, executed_lane=0.0,
+                   corridor=_corridor(-5.0, 5.0))
+    assert out.reason == "sel:center" and out.intent_precise is False
+
+
 def test_conserve_recovers_with_full_reset():
     e = _eng()
     e._enter_conserve()                            # fatal 触发保守态（直接进入）
     e.update(_obs(fid=2, fresh=False), DT)         # 过旧拍：保守态续留
     e.update(_obs(fid=3, presence=True), DT)
     f = 4
-    out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
+    out = e.update(_obs(fid=f, presence=True), DT)
     while out.reason != "conserve_recovered" and f < 200:
         f += 1
-        out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
+        out = e.update(_obs(fid=f, presence=True), DT)
     assert out.state is DecisionState.CRUISE
     # 首个非致命拍=fid 3：恢复计数从这拍起，不许秒回
     assert f - 2 >= int(CFG.validate.t_recover_s / DT)
@@ -369,8 +390,7 @@ def _traffic(views=(), events=()):
 # ---------- 对称性原则（维护者裁定 2026-09-22：决策默认左右对称，禁用方向需显式证据） ----------
 
 def _corridor(left_m=None, right_m=None):
-    """单带走廊（_side_has_space 消费面）：米制入参，obs.boundary 通道
-    v4 恒 None 已退役（第 6 步侧别检查改吃走廊带）。"""
+    """单带走廊（_side_has_space 消费面）：米制入参；侧别检查吃走廊带。"""
     from maaracing_master.plugins.speedrush.corridor import (
         BandBoundary, Corridor, CorridorBand, UNKNOWN)
     band = CorridorBand(
@@ -561,6 +581,40 @@ def test_box_size_metric_car_uses_pixel_lateral_and_no_ttc():
     assert s.near is True                                   # 4.5m ≤ near_z_m=6m
 
 
+def test_box_size_metric_car_lateral_follows_fresh_pixel():
+    """无纵深粗源期间横位仍随当拍像素尺子更新（平滑走一步 alpha），不得冻结。
+    20261113_163858 fid 6579~6605 复核：该段发布横位可由当拍像素+自车位置
+    套平滑公式重建（最大误差 1.3 毫米），不存在额外的匀速外推。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-0.4, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=8.0, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    a = e._reach_car_sources(0.0)[0].x_m
+    assert a == pytest.approx(-0.4 * e.cal.lane_w_m)
+    e._views = (_cv(tid=1, x=0.0, cy=620, rel=8.0),)
+    b = e._reach_car_sources(0.0)[0].x_m
+    want = a + e.cfg.traffic.metric_x_ema_alpha * (0.0 - a)
+    assert b == pytest.approx(want, abs=0.05)
+    assert b > a                                       # 随像素读数移动，未冻结
+
+
+def test_ego_lane_shift_cancels_in_source_build():
+    """真实自车横移：同一物理车位，自车右移一道时目标在自车系左移一道，
+    车源横位（路心系）保持不变——自车横移不得被当成目标横移。"""
+    e = _eng()
+    lw = e.cal.lane_w_m
+    e._views = (_cv(tid=1, x=-0.5, cy=620, rel=8.0),)
+    a = e._reach_car_sources(0.0)[0].x_m
+    e2 = _eng()
+    e2._views = (_cv(tid=1, x=-1.5, cy=620, rel=8.0),)
+    b = e2._reach_car_sources(1.0)[0].x_m
+    assert a == pytest.approx(-0.5 * lw)
+    assert b == pytest.approx(a)
+
+
 def test_box_size_metric_car_without_lateral_near_enters_as_block():
     """近距无横位 ≠ 无威胁（2026-11-03 帧 0213 帧证）：补给/事件车 12m 内
     横位缺位（框心贴地平线过不了尺子门），旧口径整段跳过=避让层视而不见。
@@ -635,32 +689,77 @@ def test_coin_group_far_time_is_later_than_near():
 
 
 def test_metric_x_ruler_disagreement_takes_urgent_reading():
-    """米制 x ↔ 尺子互证（20261103 雨 p2 车5 帧证）：米制横位在 16.8m 处
-    报 4-6 道（真值 2-3 道），决策按"路外无关车"放行到重叠前 0.2s。
-    持续分歧 >0.6 道 3 拍 → 按更急的读数入账；贴回 0.3 道 2 拍恢复。"""
+    """米制 x ↔ 尺子互证（20261103 雨 p2 车5 帧证）：0.6~1 道分歧 3 拍接管、
+    贴回 0.3 道 2 拍恢复；>1 道按重锚单拍接管（2026-11-09 车道归属，不走
+    EMA 慢拖）。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     e = _eng()
-    # 尺子 −1.0 道（邻道逼近），米制 −3.0 道（错得远）：持续 3 拍触发
+    # 0.8 道分歧（0.6~1 带）：前 2 拍不接管，第 3 拍按尺子入账
     e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
     for _ in range(2):
         e._metric_cars = (MetricCarState(
-            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.8 * 3.5,
             v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
         src = e._reach_car_sources(0.0)
         assert len(src) == 1
-        assert src[0].x_m == pytest.approx(-3.0 * 3.5, abs=0.4), "未满持续拍数不接管"
+        assert src[0].x_m == pytest.approx(-1.8 * 3.5, abs=0.4), "未满持续拍数不接管"
     e._metric_cars = (MetricCarState(
-        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.8 * 3.5,
         v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
     src = e._reach_car_sources(0.0)
-    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), "持续分歧后按更急的尺子读数入账"
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), "持续分歧后按尺子读数入账"
     # 贴回 1 拍不恢复，2 拍恢复
     e._metric_cars = (MetricCarState(
         target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.05 * 3.5,
         v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
     assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4)
     assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.05 * 3.5, abs=0.4), "贴回 2 拍恢复米制"
+
+
+def test_metric_x_large_disagreement_reanchors_immediately():
+    """>1 道分歧单拍重锚（2026-11-09）：尺子在场且与米制差 >1 道时立即以
+    尺子入账，不等 3 拍、不被 EMA 拖住（oid67 远场错 1.7 道案）。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    src = e._reach_car_sources(0.0)
+    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.1), "首拍即重锚到尺子"
+
+
+def test_far_field_lane_line_median_veto():
+    """远场尺子缺席（x_lane=None）时车道线顶替互证（2026-11-09）：最近线
+    随框抖振荡，取中位去抖后与米制互证，>1 道两拍重锚。米制错 3 道、车道线
+    真值 ~1.2 夹一个 2.5 离群，中位收敛后按车道线入账。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    import dataclasses
+    e = DecisionEngine(dataclasses.replace(
+        CFG, traffic=dataclasses.replace(
+            CFG.traffic, metric_ll_veto_enabled=True)))
+    ll_seq = [1.2, 2.5, 1.2, 1.2, 1.2]
+    last = None
+    for ll in ll_seq:
+        v = CarView(id=1, x_lane=None, cy=380, rel_approach=8.0,
+                    d_min=1.2, age_ticks=10, x_lane_line=ll)
+        e._views = (v,)
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=60.0, x_m=3.0 * 3.5,
+            v_close_mps=20.0, t_meet_s=3.0, anchor_age_ms=50.0),)
+        last = e._reach_car_sources(0.0)[0].x_m
+    assert last == pytest.approx(1.2 * 3.5, abs=0.3), "中位去抖后按车道线重锚"
+    # 闸关（默认）：车道线不参与互证，远场无尺子时信米制
+    e2 = _eng()
+    e2._views = (CarView(id=1, x_lane=None, cy=380, rel_approach=8.0,
+                         d_min=1.2, age_ticks=10, x_lane_line=1.2),)
+    e2._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=60.0, x_m=3.0 * 3.5,
+        v_close_mps=20.0, t_meet_s=3.0, anchor_age_ms=50.0),)
+    assert e2._reach_car_sources(0.0)[0].x_m == pytest.approx(3.0 * 3.5, abs=0.3)
 
 
 def test_metric_x_agreement_keeps_metric():
@@ -725,3 +824,278 @@ def test_depth_grid_blocked_cluster_enters_as_pseudo_car():
                                  counts=np.ones_like(state), dig_cells=0,
                                  latency_ms=1.0)
     assert e._grid_car_sources(0.0) == []
+
+
+def test_depth_grid_single_cell_cluster_ignored():
+    """单格宽（0.25m）簇不是车：车道线/标线在栅格上就是一两格宽，曾把黄线
+    合成一排伪车顶在自车正前方（20261113_141622 fid 4849 帧证）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    state[z_lo_i:z_lo_i + 3, ix] = GRID_BLOCKED      # 单格宽，跨 3 行
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    assert e._grid_car_sources(0.0) == []
+
+
+def test_depth_grid_far_band_cluster_ignored():
+    """伪车只收 3~10m 近场档：13/23m 档在纯盲区伪车里占近一半，画面多为
+    空旷路面/远处结构，防撞提前量也够不着（实机抽样 28 帧）。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    for z in (13.0, 23.0):
+        iz = int((z - 3.0) / GRID_CELL)
+        state[iz:iz + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    assert e._grid_car_sources(0.0) == []
+
+
+def test_grid_pseudo_car_suppressed_when_car_table_not_empty():
+    """语义车表非空时不再补栅格伪车：视觉模型换近场复训权重后全盲拍大幅
+    下降，无条件补源会让 85% 的伪车与 YOLO 重复记账（12 场 21496 拍复核）。
+    判据用整车表而不是 near——车目标纵深缺失率高，near 在实机上常年为假。
+    车表为空（盲区）时仍照旧补。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+    z_lo_i = int((3.0 - 3.0) / GRID_CELL)
+    ix = int((3.5 + 14.0) / GRID_CELL - 0.5)
+    state[z_lo_i:z_lo_i + 3, ix:ix + 2] = GRID_BLOCKED
+    e._depth_grid = DrivableGrid(
+        state=state, coef=None, counts=np.ones_like(state),
+        dig_cells=0, latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    # 近场已有安全车 → 不补
+    e._views = (_cv(tid=1, x=-1.2, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=4.5, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert src and all(s.src != "grid" for s in src)
+    # 近场空 → 盲区补源照旧生效
+    e._views = ()
+    e._metric_cars = ()
+    src = e._reach_car_sources(0.0)
+    assert any(s.src == "grid" for s in src)
+
+
+def test_depth_grid_pseudo_car_outside_road_dropped():
+    """路缘外的深占据簇不是社会车（20261109_134818 fid 7012 帧证）：栅格
+    横向窗 ±14m 宽于路面，护栏/路肩在路缘外成的窄块簇按车源入账，选择层
+    的中心预置读它「左侧有车」→ 目标被顶向邻道真车。给路面帧后只认簇自身
+    纵深处那条带内的簇（与场景 in_corridor 同规则；弯道远近带不同心，用
+    z=0 路缘判会把远近带判错）；无路面帧（离线/旧调用）逐位回今天行为。"""
+    import numpy as np
+    from maaracing_master.plugins.speedrush.depth_geo import (
+        GRID_BLOCKED, GRID_CELL, GRID_NX, GRID_NZ, DrivableGrid)
+    from maaracing_master.plugins.speedrush.selection import (
+        RoadBand, RoadFrame)
+    # 3~6m 带路缘 ±7m；6~10m 带整体右移（左缘 −2m、右缘 +12m）
+    road = RoadFrame(
+        (RoadBand(3.0, 6.0, -7.0, 7.0, src="measured", conf=1.0),
+         RoadBand(6.0, 10.0, -2.0, 12.0, src="measured", conf=1.0)),
+        14.0, -7.0, 7.0, True)
+    e = _eng()
+    state = np.zeros((GRID_NZ, GRID_NX), dtype=np.int8)
+
+    def _put(z, x):
+        iz = int((z - 3.0) / GRID_CELL)
+        ix = int((x + 14.0) / GRID_CELL - 0.5)
+        state[iz:iz + 3, ix:ix + 2] = GRID_BLOCKED
+
+    _put(4.5, 3.0)      # 近带内
+    _put(4.5, -9.0)     # 近带外
+    _put(8.0, 9.0)      # 近带外(+7) 但远带内(+12)：弯道右移，必须保留
+    _put(8.0, -5.0)     # 近带内(−7) 但远带外(−2)：必须丢弃
+    e._depth_grid = DrivableGrid(state=state, coef=None,
+                                 counts=np.ones_like(state), dig_cells=0,
+                                 latency_ms=1.0)
+    e._ego_speed_mps = 40.0
+    assert len(e._grid_car_sources(0.0)) == 4       # 无路面帧：逐位回今天
+    kept = e._grid_car_sources(0.0, road, 0.0)
+    xs = sorted(round(c.x_m, 1) for c in kept)
+    assert xs == pytest.approx([3.0, 9.0], abs=0.6)
+
+
+def test_z_regression_arrival_time_catches_bogus_v_close():
+    """纵深回归到站时间（2026-11-09）：v_close 估计窗未开时 t 会虚高到
+    十几秒（实测 seq 393~414：真值 0.6s 时还报 7~70s）。纵深斜率是同一件
+    事的第二份估算，只用来把到站时间**提前**，不推迟。"""
+    e = _eng()
+    e._fps = 20.0
+    # 8 拍、每拍 -3m：斜率 -60m/s，最后一拍 z=19m → t≈0.317s
+    e._car_z_hist[1] = [(100 + k, 40.0 - 3.0 * k) for k in range(8)]
+    assert e._z_regress_t(1) == pytest.approx(19.0 / 60.0, rel=0.05)
+    # 远离/静止：不给提前量
+    e._car_z_hist[2] = [(100 + k, 20.0 + 0.5 * k) for k in range(8)]
+    assert e._z_regress_t(2) is None
+    # 历史太短/跨度不足：不给
+    e._car_z_hist[3] = [(100, 40.0), (101, 37.0), (102, 34.0)]
+    assert e._z_regress_t(3) is None
+    # 无历史的 id：不给
+    assert e._z_regress_t(99) is None
+
+
+# 20261109_184127 p2 车22 的发布 z 序列（fid, 米）；框高比桥接下的真实
+# 阶梯：0.4s 内 49.85→57.93 回跳、50.2 平台三拍，单对差分与最小二乘都会被
+# 带偏。这段锚点 v_close 报 1.46 m/s（t≈36s），实测闭速 ~20 m/s。
+_BOX_BRIDGE_Z_SERIES = (
+    (7668, 58.15), (7670, 53.68), (7672, 49.85), (7674, 57.93),
+    (7676, 53.79), (7678, 50.20), (7679, 50.20), (7681, 50.20),
+    (7683, 52.80), (7686, 52.77), (7687, 50.78), (7690, 51.63),
+    (7692, 49.73), (7693, 49.72), (7696, 42.85), (7698, 42.83),
+    (7699, 42.82), (7701, 40.31), (7703, 39.19), (7705, 35.65),
+)
+
+
+def test_z_regression_survives_box_bridge_steps():
+    """桥接阶梯不得让到站时间退回几十秒（fid 7633~7816 帧证）：50m 处
+    稳健斜率必须给出与真值同量级（1.8~2.6s）的到站时间，而不是 36s；
+    平台段的估值上限也远低于旧的 20~36s 量级。"""
+    e = _eng()
+    e._fps = 38.0
+    for fid in (7681, 7683, 7690, 7696, 7701, 7703, 7705):
+        e._car_z_hist[22] = [p for p in _BOX_BRIDGE_Z_SERIES if p[0] <= fid]
+        t = e._z_regress_t(22)
+        assert t is not None
+        assert t < 10.0, (fid, t)      # 旧口径同段报 26~36s
+    e._car_z_hist[22] = [p for p in _BOX_BRIDGE_Z_SERIES if p[0] <= 7681]
+    assert e._z_regress_t(22) == pytest.approx(2.16, abs=0.25)   # z=50.2m
+    e._car_z_hist[22] = list(_BOX_BRIDGE_Z_SERIES)
+    assert e._z_regress_t(22) == pytest.approx(2.13, abs=0.25)   # z=35.65m
+    # 6 拍（< 最少样本 7）：不给提前量
+    e._car_z_hist[23] = list(_BOX_BRIDGE_Z_SERIES[:6])
+    assert e._z_regress_t(23) is None
+
+
+def test_box_bridged_z_does_not_reset_anchor_baseline():
+    """桥接 z 只平滑，不进锚点跳变门（2026-11-09）：8m 阶梯不得把 x 平滑
+    重新起跑，也不得清空纵深历史；锚点口径的大跳变仍按换锚重置。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+
+    def tick(z, x_m, box, fid):
+        e._fid = fid
+        e._views = (_cv(tid=1, x=x_m / e.cal.lane_w_m, cy=620, rel=8.0),)
+        e._metric_cars = (MetricCarState(
+            target_id=1, source=DistanceSource.ANCHOR, z_m=z, x_m=x_m,
+            v_close_mps=20.0, t_meet_s=z / 20.0, anchor_age_ms=50.0,
+            z_box_bridged=box),)
+        e._reach_car_sources(0.0)
+
+    e = _eng()
+    e._fps = 20.0
+    tick(50.0, 0.0, True, 100)
+    tick(42.0, 1.0, True, 101)         # 8m 桥接跳变 + 1m 横移
+    assert e._car_xf[1] == pytest.approx(0.35, abs=0.03)   # EMA，不重锚
+    assert len(e._car_z_hist[1]) == 2                      # 历史不清空
+    assert 1 not in e._car_za            # 桥接值不进锚点基线
+    tick(39.0, 1.0, False, 102)        # 锚点口径、3m 正常移动
+    assert e._car_za[1] == pytest.approx(39.0)
+    assert len(e._car_z_hist[1]) == 3
+    tick(30.0, 2.0, False, 103)        # 锚点口径 9m 跳变=换锚 → x 重锚
+    assert e._car_xf[1] == pytest.approx(2.0)
+    assert e._car_za[1] == pytest.approx(30.0)
+
+
+def test_route_ttc_horizon_covers_overtake_threshold(monkeypatch):
+    """路线时间面视界必须盖过超车门（执行层横移时间换算，≈3.4s）：否则
+    窗外的车永远进不了表，提前超车看不到（旧 2.0s 视界把它截成 1~2s）。"""
+    from types import SimpleNamespace as NS
+    import maaracing_master.plugins.speedrush.decision as dmod
+    from maaracing_master.plugins.speedrush.route import overtake_need_s
+
+    seen = {}
+
+    def fake_map(scene, c0, horizon_s):
+        seen["h"] = horizon_s
+        return {}
+
+    monkeypatch.setattr(dmod, "_lane_ttc_map", fake_map)
+    e = _eng()
+    e._scene = NS(lane_w_m=3.5, objs=())
+    e._tick_route(c0=0.0, executed=0.0)
+    assert seen["h"] == pytest.approx(
+        max(e.cfg.motion.horizon_s, overtake_need_s(e._route_params)))
+
+
+def test_pass_x_unknown_marks_jump_zreset_and_gate():
+    """横位未知判据（2026-11-10）：发布横位相邻跳 >pass_x_unknown_jump_m
+    或锚点口径换锚（z_reset）的拍标 x_unknown；正常 EMA 横移不误标；
+    开关关恒 False（逐位回今天）。"""
+    import dataclasses
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+
+    def mc(z, x):
+        return (MetricCarState(target_id=1, source=DistanceSource.ANCHOR,
+                               z_m=z, x_m=x, v_close_mps=-10.0,
+                               t_meet_s=None, anchor_age_ms=0.0),)
+
+    def eng(on, ema=1.0, jmax=0.0):
+        return DecisionEngine(dataclasses.replace(
+            CFG,
+            traffic=dataclasses.replace(
+                CFG.traffic, metric_x_ema_alpha=ema,
+                metric_x_jump_max_m=jmax),
+            selection=dataclasses.replace(
+                CFG.selection, pass_x_unknown_enabled=on)))
+
+    def _no_ruler_view():
+        # x_lane=None：横向互证无像素证人，x 直接吃 MetricCarState.x_m
+        return (CarView(id=1, x_lane=None, cy=500, rel_approach=20.0,
+                        d_min=0.0, age_ticks=10),)
+
+    # 新轨首拍即换锚（无纵深历史）→ 标：邻道贴边要到站时间，首拍本就
+    # 进不了候选，语义是「横位无历史不可信」
+    e = eng(True)
+    e._views = _no_ruler_view()
+    e._metric_cars = mc(20.0, 0.0)
+    assert e._reach_car_sources(0.0)[0].x_unknown is True
+    # 拍 2：z 连续、发布横位跳 3.5m >2.8m 门 → 标
+    e._metric_cars = mc(20.0, 3.5)
+    assert e._reach_car_sources(0.0)[0].x_unknown is True
+    # 拍 3：读数回到连续 → 重新武装不标
+    e._metric_cars = mc(20.0, 3.5)
+    assert e._reach_car_sources(0.0)[0].x_unknown is False
+
+    # 锚点口径换锚（z 跳 8m >6m）即使横位只跳 0.3m 也标（弯道修正项会跳）
+    e2 = eng(True)
+    e2._views = _no_ruler_view()
+    e2._metric_cars = mc(20.0, 0.0)
+    e2._reach_car_sources(0.0)
+    e2._metric_cars = mc(28.0, 0.3)
+    assert e2._reach_car_sources(0.0)[0].x_unknown is True
+
+    # 生产 EMA（0.35）下的正常横移 1m：EMA 后 0.35m ≤门，不误标
+    e3 = eng(True, ema=0.35, jmax=1.5)
+    e3._views = _no_ruler_view()
+    e3._metric_cars = mc(20.0, 0.0)
+    e3._reach_car_sources(0.0)
+    e3._metric_cars = mc(20.0, 1.0)
+    assert e3._reach_car_sources(0.0)[0].x_unknown is False
+
+    # 开关关：跳超限也不标（逐位回今天）
+    e4 = eng(False)
+    e4._views = _no_ruler_view()
+    e4._metric_cars = mc(20.0, 0.0)
+    e4._reach_car_sources(0.0)
+    e4._metric_cars = mc(20.0, 3.5)
+    assert e4._reach_car_sources(0.0)[0].x_unknown is False

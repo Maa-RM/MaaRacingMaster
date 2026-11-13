@@ -88,13 +88,6 @@ def test_text_is_truncated_and_control_chars_rejected():
     assert any("控制字符" in warning for warning in warnings)
 
 
-def test_today_stats_compat_block_passes_data_through():
-    data = {"bucket": "2026-11-02", "summary": None, "games": []}
-    normalized, warnings = normalize_dashboard(_payload({"type": "today_stats", "data": data}))
-    assert warnings == ()
-    assert normalized["blocks"][0] == {"type": "today_stats", "data": data}
-
-
 def test_invalid_tones_fall_back_to_neutral():
     normalized, warnings = normalize_dashboard(_payload(
         {"type": "stats", "items": [

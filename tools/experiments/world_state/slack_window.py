@@ -35,7 +35,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "maaracing_master" / "plugins" / "speedrush" / "tools"))
 from speedrush_trace_reader import iter_rows  # noqa: E402
 
 import baseline_replay as B  # noqa: E402

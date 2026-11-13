@@ -61,14 +61,61 @@ def test_worker_focal_holds_last_valid():
     assert w._focal == pytest.approx(700.0 + la.FOCAL_EMA * 100.0)
 
 
+def test_distance_bands_single_source():
+    """近/中/远三段的米制边界来自 ranges（15/40/80 米）；行号按当拍标定反算，
+    无焦距时退回冷启动口径（只近段）。"""
+    assert (la.NEAR_MAX_M, la.MID_MAX_M, la.FAR_MAX_M) == (15.0, 40.0, 80.0)
+    cfg = load_decision().lane_obs
+    assert (cfg.near_max_m, cfg.mid_max_m, cfg.far_max_m) == (15.0, 40.0, 80.0)
+    bands = la._dist_bands(1.263, 807.7, 361.2, 15.0, 40.0, 80.0)
+    assert bands is not None
+    scan, near, mid, far = bands
+    assert near[1] == 720.0 and near[0] > mid[0] > far[0]   # 越远行号越小
+    assert near[0] == pytest.approx(361.2 + 807.7 * 1.263 / 15.0, abs=0.6)
+    assert far[0] == pytest.approx(361.2 + 807.7 * 1.263 / 80.0, abs=0.6)
+    assert 150 <= scan <= 200
+    assert la._dist_bands(1.263, None, 361.2) is None
+
+
+def test_lines_from_prob_fits_three_distance_bands():
+    """按距离分三段拟合（近/中/远）：一条贯穿全图的行应有三个拟合段，采纳段
+    （fits[0]）仍是近段——近场 L/theta 不因加段而改变。"""
+    prob = np.zeros((360, 640), dtype=np.float32)
+    for y in range(185, 360):
+        x = int(0.5 * y + 100)
+        prob[y, max(0, x - 2):x + 2] = 0.9
+    lines = la._lines_from_prob(prob, 1.28, 807.7, 361.2)
+    assert len(lines) == 1
+    ys = [f["y0"] for f in lines[0]["fits"]]
+    assert len(ys) == 3
+    assert ys[0] > ys[1] > ys[2]        # 近→中→远（行号递减）
+    assert ys[2] < 390.0                # 远段覆盖到 40 米以外
+
+
+def test_line_evals_picks_segment_covering_row():
+    """框底行落在哪段就用哪段的方程：近/中/远三段各不同，按行切换。"""
+    line = {"L": 0.0, "accepted": True, "rms": 0.5, "theta": 0.0,
+            "fits": [
+                {"s": 0.5, "a": 100.0, "y0": 560.0, "y1": 700.0},
+                {"s": 0.6, "a": 80.0, "y0": 460.0, "y1": 559.0},
+                {"s": 0.7, "a": 60.0, "y0": 380.0, "y1": 459.0},
+            ]}
+    assert la._line_evals(600.0, [line])[0][0] == pytest.approx(400.0)
+    assert la._line_evals(500.0, [line])[0][0] == pytest.approx(380.0)
+    assert la._line_evals(400.0, [line])[0][0] == pytest.approx(340.0)
+
+
 def test_config_defaults_off_and_detect_every_frame():
     assert LaneObsConfig().enabled is False
     assert LaneObsConfig().detect_every == 1
-    assert LaneObsConfig().provider == "cpu"
+    assert LaneObsConfig().provider == "cpu"   # 数据类缺省；生产值由 policy 决定
     assert load_decision().lane_obs is not None
     assert load_decision().lane_obs.detect_every == 1
-    # 影子不得与生产深度抢 DML 锁（2026-10-24 实机相位锁把深度饿到 5%）
-    assert load_decision().lane_obs.provider == "cpu"
+    # 2026-11-13 起走 DML 槽位排班（感知放锁 → 线观测 30ms 槽窗 → 深度），
+    # 不再靠 CPU 线程绕开 DML 锁
+    assert load_decision().lane_obs.provider == "dml"
+    assert load_decision().lane_obs.weights_fp16.endswith(
+        "plus_small_fp16_384x640.onnx")
 
 
 def test_no_anchor_stays_relock():
@@ -531,19 +578,67 @@ def test_dml_busy_skips_without_calling_model(monkeypatch):
             called["n"] += 1
 
     class _Lock:
-        def acquire(self, blocking=False):
+        def acquire(self, blocking=False, timeout=None):
             return False
 
         def release(self):
             pass
 
+    class _StaleBeat:
+        def snapshot(self):
+            return 1, -1e9          # 没有在跑的控制拍：不走槽位等待
+
+        def wait_newer(self, seq, timeout):
+            return True
+
     w._sess = _Sess()
     monkeypatch.setattr(la, "_letterbox", lambda rgb: np.zeros((1, 3, 384, 640),
                                                               np.float32))
     monkeypatch.setattr(la.dml_lock, "LOCK", _Lock())
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", _StaleBeat())
     assert w._run(np.zeros((8, 8, 3), np.uint8)) is None
     assert w.busy_skips == 1
     assert called["n"] == 0
+
+
+def test_dml_run_marks_slot_done(monkeypatch):
+    """槽位交接：线观测放锁后必须 mark_done，深度才不会白等一个槽窗。"""
+    import maaracing_master.plugins.speedrush.lane_obs as la
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="dml"))
+    w._use_dml = True
+    called = {"n": 0}
+
+    class _Sess:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            called["n"] += 1
+            return [None, np.zeros((1, 2, 384, 640), np.float32)]
+
+    class _Lock:
+        def acquire(self, blocking=True, timeout=None):
+            return True
+
+        def release(self):
+            pass
+
+    class _StaleBeat:
+        def snapshot(self):
+            return 7, -1e9          # 没有在跑的控制拍：不等槽位，直接跑
+
+        def wait_newer(self, seq, timeout):
+            return True
+
+    w._sess = _Sess()
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: np.zeros((1, 3, 384, 640),
+                                                              np.float32))
+    monkeypatch.setattr(la.dml_lock, "LOCK", _Lock())
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", _StaleBeat())
+    monkeypatch.setattr(la.dml_lock, "SLOTS", la.dml_lock._SlotGate())
+    assert w._run(np.zeros((8, 8, 3), np.uint8)) is not None
+    assert called["n"] == 1
+    assert la.dml_lock.SLOTS.wait_done(7, 0.01) is True
 
 
 def test_latest_is_one_consistent_snapshot():
@@ -604,14 +699,17 @@ def test_push_without_throttle_queues_every_tick():
 
 
 def test_push_plumbs_same_frame_anchor():
-    """锚点跟帧入队：worker 拿到的深度锚点与这条帧同拍。"""
+    """锚点跟帧入队：worker 拿到的深度锚点与这条帧同拍；严格标记同帧搬运。"""
     w = LaneObsWorker(LaneObsConfig(enabled=True, hz=0.0))
     w._sess = object()
     rgb = np.zeros((4, 4, 3), np.uint8)
     w.push(rgb, 7, 1.4, 0.0, 0.05, False, anchor=0.7)
     item = w._q.get_nowait()
-    assert item[-1] == pytest.approx(0.7)
+    assert item[-2] == pytest.approx(0.7)
+    assert item[-1] is False
     assert item[1] == 7
+    w.push(rgb, 8, 1.4, 0.0, 0.05, False, anchor=0.7, anchor_strict=True)
+    assert w._q.get_nowait()[-1] is True
 
 
 def test_push_throttle_honored_when_configured():
@@ -631,3 +729,307 @@ def test_predict_advances_x_without_new_identity():
     assert r["x"] == pytest.approx(x0, abs=1e-9)
     assert r["n_locked"] == 0
     assert r["pred"] is True
+
+
+def test_vanish_gate_keeps_snapshot_updating(monkeypatch):
+    """灭点质量门曾按 rec["n_lines"] 取键，而 _infer 只返回 lines：灭点历史
+    一旦非空，每帧都在这里抛 KeyError（循环吞掉异常、快照不更新），线观测
+    掉到 2.1Hz、检测龄涨到秒级——2026-11-13 实机一局的现场。"""
+    import threading
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w._sess = object()
+    w._yv_hist.append(200.0)      # 已有灭点历史：质量门这条路必然走到
+    monkeypatch.setattr(la, "_vanish_row", lambda lines: 200.0)
+    monkeypatch.setattr(w, "_infer",
+                        lambda rgb, cam_h, focal: {"lines": [_line(0.5)]})
+    t = threading.Thread(target=w._loop, daemon=True)
+    t.start()
+    try:
+        w.push(np.zeros((16, 16, 3), np.uint8), 1, 1.28, 0.0, 0.05, False)
+        deadline = time.time() + 2.0
+        while w.latest() is None and time.time() < deadline:
+            time.sleep(0.01)
+        assert w.error is None
+        snap = w.latest()
+        assert snap is not None and snap["fid"] == 1
+    finally:
+        w._stop.set()
+        t.join(timeout=2.0)
+
+
+def test_beat_counts_published_results_only(monkeypatch):
+    """面板的「车道观测 频率」= 有效输出率：跳过或出错的拍不记心跳，否则
+    线程空转也会显示 20Hz（2026-11-13 面板与实况对不上的根因）。"""
+    import threading
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w._sess = object()
+    beats = []
+    monkeypatch.setattr(la, "beat", lambda: beats.append(1))
+    mode = {"ret": None}
+    monkeypatch.setattr(w, "_infer", lambda rgb, cam_h, focal: mode["ret"])
+    t = threading.Thread(target=w._loop, daemon=True)
+    t.start()
+    try:
+        w.push(np.zeros((16, 16, 3), np.uint8), 1, 1.28, 0.0, 0.05, False)
+        time.sleep(0.2)
+        assert beats == []            # 没产出结果：不打心跳
+        mode["ret"] = {"lines": [_line(0.5)]}
+        w.push(np.zeros((16, 16, 3), np.uint8), 2, 1.28, 0.0, 0.05, False)
+        deadline = time.time() + 2.0
+        while not beats and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(beats) == 1
+    finally:
+        w._stop.set()
+        t.join(timeout=2.0)
+
+
+def _dash_prob(s: float, a: float) -> np.ndarray:
+    """概率图上画一条远场虚线：dash 中心落在全幅直线 x=s·y+a 上（640 尺度落图）。"""
+    prob = np.zeros((360, 640), np.float32)
+    for y640 in range(220, 272, 4):
+        x640 = int(round((s * (2.0 * y640) + a) / 2.0))
+        prob[y640:y640 + 2, max(0, x640 - 6):x640 + 6] = 1.0
+    return prob
+
+
+def test_row_segments_step_one_hits_thin_dash_rows():
+    """逐行扫描：高 2 行的远场虚线两条行都命中（原步长 3 只有 1~2 行，虚线
+    轨迹凑不满拟合点数——2026-11-11 分解诊断的主死因）。"""
+    prob = np.zeros((360, 640), np.float32)
+    prob[230:232, 300:340] = 1.0
+    rows = la._row_segments(prob)
+    assert len(rows) == 2
+
+
+def test_lines_from_prob_captures_far_dash_without_color():
+    """虚线组能成线，且颜色不参与：L 正确、字段恒 '?'、无 yellow/white 键。
+    锁 2026-11-11 的提取改动（虚线与实线同待遇、无颜色匹配）。"""
+    s = la.LANE_W / la.DEFAULT_CAM_H          # L=1 道对应的全幅斜率
+    a = 600.0 - s * 500.0                     # y=500 处 x=600（远带中部）
+    lines = la._lines_from_prob(_dash_prob(s, a), la.DEFAULT_CAM_H, 807.7)
+    hit = [ln for ln in lines if abs(ln["L"] - 1.0) <= 0.15]
+    assert hit, f"虚线组未成线或 L 偏了：{[ln['L'] for ln in lines]}"
+    ln = hit[0]
+    assert ln["rms"] <= la.LINE_RMS_MAX
+    assert ln["color"] == "?"
+    assert "yellow" not in ln and "white" not in ln
+    assert ln["y0"] >= 440.0 and ln["y1"] <= 546.0
+
+
+# ---------- 地平线发布口径（2026-11-12）：中位平滑 + 相机高反解 ----------
+
+def test_smooth_vanish_rejects_single_outlier():
+    """单帧离群被中位吸收：坏拍（假灭点）不得直接进合成点图的尺度基准。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    t = 0.0
+    for i, v in enumerate((361.0, 361.2, 360.8, 361.1)):
+        val, t = la._smooth_vanish(hist, v, i * 0.05, t)
+    assert val == pytest.approx(361.05, abs=0.15)
+    val, t = la._smooth_vanish(hist, 372.0, 0.30, t)      # 单帧跳 11px
+    assert abs(val - 361.0) < 1.0, f"离群没有被吸收：{val}"
+
+
+def test_smooth_vanish_clears_history_after_gap():
+    """断检超过 YV_GAP_S：旧姿态样本不得掺进新中位，且不受 slew 限速。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    t = 0.0
+    for i in range(5):
+        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t)
+    assert val == pytest.approx(361.0)
+    val, t = la._smooth_vanish(hist, 350.0, t + 5.0, t, val)
+    assert val == pytest.approx(350.0)
+
+
+def test_smooth_vanish_slews_continuous_drift():
+    """连续同向漂移只按 YV_SLEW_PX/拍走：成簇离群不得整段拉动发布值。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    val = None
+    t = 0.0
+    for i in range(10):
+        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t, val)
+    assert val == pytest.approx(361.0)
+    for i in range(10, 20):
+        val, t = la._smooth_vanish(hist, 371.0, i * 0.05, t, val)
+    assert 361.0 < val <= 361.0 + 10 * la.YV_SLEW_PX + 1e-6, \
+        f"10 拍 10px 台阶不得整段跟上，只允许按陷速走：{val}"
+
+
+def test_fit_theta_uses_live_horizon_not_moge_constant():
+    """线角的地平线用当拍发布值：固定常数会让线角系统性偏（约 0.9~2°）。"""
+    pts = [{"yc": y / 2.0, "xc": (0.3 * y + 100.0) / 2.0, "p": 1.0}
+           for y in range(560, 701, 10)]
+    t_old = la._fit(pts, 1.28, *la.NEAR_Y, 807.7)["theta"]
+    t_new = la._fit(pts, 1.28, *la.NEAR_Y, 807.7, 361.0)["theta"]
+    assert t_old is not None and t_new is not None
+    assert t_new < t_old, "地平线更高 → 同一线角更小"
+    assert abs(t_new - t_old) > 1e-4, "双源差必须真的进入线角"
+
+
+def _vline(k, cam_h=1.25, y_v=361.0, y0=560.0, y1=700.0):
+    """按地面线方程造一条已定道号、已接受的线（x = vpx + L·LANE_W·(y−y_v)/cam_h）。"""
+    s = k * la.LANE_W / cam_h
+    a = la.VPX - s * y_v
+    return {"k": k, "accepted": True,
+            "fits": [{"s": s, "a": a, "y0": y0, "y1": y1}]}
+
+
+def test_lane_cam_h_from_pixel_spacing():
+    """两条相邻线的像素间距能独立反解相机高（不经过任何深度读数）。"""
+    got = la._cam_h_from_lines([_vline(-1), _vline(1)], 361.0)
+    assert got == pytest.approx(1.25, rel=0.01)
+
+
+def test_lane_cam_h_needs_two_distinct_lanes():
+    assert la._cam_h_from_lines([_vline(-1)], 361.0) is None
+    assert la._cam_h_from_lines([_vline(1), _vline(1)], 361.0) is None  # 同道
+    assert la._cam_h_from_lines([_vline(-1), _vline(1)], None) is None
+    bad = dict(_vline(1), accepted=False)
+    assert la._cam_h_from_lines([_vline(-1), bad], 361.0) is None
+
+
+def test_lane_cam_h_separates_chase_view():
+    """追尾机位（约 1.9m）必须落在守卫带 1.12~1.55 之外——这是守卫恢复判据的前提。"""
+    got = la._cam_h_from_lines([_vline(-1, cam_h=1.9), _vline(1, cam_h=1.9)],
+                               361.0)
+    assert got is not None and got > 1.55
+
+
+def test_lane_cam_h_insensitive_to_horizon_offset():
+    """y_v 有 4px 偏差时反解只差 2%（守卫是粗门，不吃地平线的细噪声）。"""
+    got = la._cam_h_from_lines([_vline(-1), _vline(1)], 365.0)
+    assert got == pytest.approx(1.25, rel=0.05)
+
+
+# ---------- 线几何的相机高输入（2026-11-12）：换源后的合法机位带 ----------
+
+def test_lane_cam_h_accepts_chase_view():
+    """线几何要能按真实机位换算：追尾 1.9m 不再被砍回标定值 1.28。
+
+    旧带 1.12~1.55 是「深度平面坏帧」的 v4 防护，换源后它反而会制造静默
+    错。视角判定门（view_guard）仍只认保险杠，两者语义不同。"""
+    assert la._lane_cam_h(1.9) == (1.9, False)
+    assert la._lane_cam_h(1.269) == (1.269, False)
+
+
+def test_lane_cam_h_still_rejects_far_outliers():
+    """带放宽不等于不设防：实机反解会飘到 0.73 / 2.93，越界仍回退。
+    界内的单点噪声由 module 侧 5 拍中位先滤一层。"""
+    assert la._lane_cam_h(0.73)[1] is True
+    assert la._lane_cam_h(2.93)[1] is True
+    assert la._lane_cam_h(4.97)[1] is True
+    assert la._lane_cam_h(None)[1] is True
+    assert la._lane_cam_h(0.73)[0] == la.DEFAULT_CAM_H
+
+
+# ---------- HUD 距离徽章假线剔除（2026-11-12）----------
+
+def _fit_line(s, a, y0, y1):
+    """构造 _lines_from_prob 口径的线（fits 用全幅像素 x = s·y + a）。"""
+    return {"fits": [{"s": s, "a": a, "y0": y0, "y1": y1}]}
+
+
+# 徽章框：徽章中心 x≈618、纵向 592~685（含红环、米字与下方箭头）
+BADGE_BOX = (590.0, 592.0, 646.0, 685.0)
+
+
+def test_badge_only_line_is_dropped():
+    """只长在徽章上的竖线（x 恒定在框内、纵向不出框）判为假线。"""
+    line = _fit_line(0.0, 620.0, 592.0, 640.0)
+    assert la._line_in_badge(line, BADGE_BOX) is True
+
+
+def test_line_passing_beside_badge_is_kept():
+    """贴脸真线纵向跨 520~700、远超徽章高度，比例上不去，必须保留。"""
+    real = _fit_line(0.35, 370.0, 520.0, 700.0)
+    assert la._line_in_badge(real, BADGE_BOX) is False
+
+
+def test_line_outside_badge_x_is_kept():
+    """横向不在徽章范围内的线（左黄线/右侧虚线）与徽章无关。"""
+    left = _fit_line(0.05, 60.0, 520.0, 700.0)
+    assert la._line_in_badge(left, BADGE_BOX) is False
+
+
+def test_drop_badge_lines_uses_frame_box(monkeypatch):
+    """_drop_badge_lines 用当帧检测到的框：徽章线被剔、真线保留。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    real = _fit_line(0.35, 370.0, 520.0, 700.0)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: BADGE_BOX)
+    out = la._drop_badge_lines([badge, real], np.zeros((720, 1280, 3), np.uint8))
+    assert out == [real]
+
+
+def test_drop_badge_lines_noop_without_badge(monkeypatch):
+    """本帧没有徽章（或模板缺失）时行为与旧版一致：一条都不动。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: None)
+    assert la._drop_badge_lines([badge], np.zeros((720, 1280, 3), np.uint8)) == [badge]
+
+
+def test_badge_gate_can_be_disabled(monkeypatch):
+    """HUD_BADGE_GATE=False 时整道门回退（A/B 隔离）。"""
+    badge = _fit_line(0.0, 620.0, 592.0, 640.0)
+    monkeypatch.setattr(la, "HUD_BADGE_GATE", False)
+    monkeypatch.setattr(la, "_hud_badge_box", lambda frame: BADGE_BOX)
+    assert la._drop_badge_lines([badge], np.zeros((720, 1280, 3), np.uint8)) == [badge]
+
+
+def test_gross_anchor_disagreement_shifts_grid_by_one_lane():
+    """整道级复核：锁定后深度连续差超一整道 → 挪一次道号，锁定不重置。
+
+    半道级分歧是常态噪声（路心相位 p50 0.15 道），拿它复核会把网格摇散；
+    只有整道级、且最近 5 个新鲜锚里至少 3 个如此，才认一次。
+    """
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):                      # 先锁住：x 稳定在 0.4
+        out = tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
+    assert out["x"] == pytest.approx(0.4)
+    assert tr.locked >= la.LINE_LOCK_TICKS
+    # 深度连续 5 拍都说车在 1.5 道（差 1.1 道 = 整道级），且锚严格（同源双侧稳定）
+    for i in range(5):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5, True)
+    assert tr.gross_reanchor == 1
+    # 只挪整数道：小数部分仍由线自己给（0.4），所以落在 1.4 而不是锚点 1.5
+    assert out["x"] == pytest.approx(1.4)
+    assert abs(out["x"] - 1.5) < 0.5
+    # 锁定没被重置：复核是修正，不是重来
+    assert tr.locked >= la.LINE_LOCK_TICKS
+
+
+def test_half_lane_anchor_disagreement_never_reanchors():
+    """半道级分歧（0.6 道）不触发复核——那是路心噪声，不是整道错判。"""
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):
+        tr.update(lines, i + 1, 0.05, 0.0, False, 0.0)
+    for i in range(40):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.0, True)
+    assert tr.gross_reanchor == 0
+    assert out["x"] == pytest.approx(0.4, abs=0.05)
+
+
+def test_gross_reanchor_requires_strict_two_sided_anchor():
+    """整道复核只认"同时稳定看清两侧"的锚：单侧/换源/中心逐拍跳的锚
+    即使连续差满一道也不许平移网格（2026-11-13 三局：贴左墙段绿区中心
+    逐拍跳 0.4 道，旧口径 3/5 拍整道平移、错误保持数十秒）。"""
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):
+        tr.update(lines, i + 1, 0.05, 0.0, False, 0.0, True)
+    # 同一远锚，但明确标记为非严格（单侧/不稳定）
+    for i in range(10):
+        out = tr.update(lines, 20 + i, 0.05, 0.0, False, 1.5, False)
+    assert tr.gross_reanchor == 0
+    assert out["x"] == pytest.approx(0.4, abs=0.05)
+    # 非严格锚不计数；切回严格后仍按 3/5 拍从头累积
+    for i in range(2):
+        tr.update(lines, 40 + i, 0.05, 0.0, False, 1.5, True)
+    assert tr.gross_reanchor == 0
+    for i in range(3):
+        out = tr.update(lines, 50 + i, 0.05, 0.0, False, 1.5, True)
+    assert tr.gross_reanchor == 1

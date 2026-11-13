@@ -173,6 +173,5 @@ else {
 }
 Write-Host ''
 Write-Host "  日志    $appData\logs\MaaRM_*.log"
-Write-Host "  鉴宝存图 $appData\debug\treasure\<会话>\raw\"
 Write-Host "  框架日志 $appData\framework\maafw.log"
 Write-Host ''

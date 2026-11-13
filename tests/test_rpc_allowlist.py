@@ -23,7 +23,7 @@ import pytest
 try:
     from maaracing_master.core import sidecar as sc
     _OK, _ERR = True, ""
-except Exception as exc:  # noqa: BLE001 —— 缺重依赖的机器上整文件 SKIP（同 today_stats 口径）
+except Exception as exc:  # noqa: BLE001 —— 缺重依赖的机器上整文件 SKIP
     _OK, _ERR = False, str(exc)
 
 pytestmark = pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖：{_ERR}")

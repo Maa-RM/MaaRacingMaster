@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """运行级调试流契约测试（P0）。
 
-锁定 docs/plan/debug_peep_unification.md 的：
-- 5.2 入队绑定与 FIFO 顺序（旧段帧不被标成新段、控制事件不随帧淘汰）
-- 5.4 双速率独立、开关位置生效（帧携带入队时状态）
-- 5.9 排空与故障隔离
-- 5.10 计数闭合
+锁定 ADR-0019（分段/预览）与 ADR-0021（会话目录）及 core/CODE_WIKI.md §1.4 的：
+- 入队绑定与 FIFO 顺序（旧段帧不被标成新段、控制事件不随帧淘汰）
+- 双速率独立、开关位置生效（帧携带入队时状态）
+- 排空与故障隔离
+- 计数闭合
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _wait(d: NavigationDebugger, timeout: float = 3.0) -> None:
 
 
 def _index_lines(tmp_path) -> list[dict]:
-    path = tmp_path / "run_test" / "index.jsonl"
+    path = tmp_path / "index.jsonl"
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
 
 
@@ -225,9 +225,36 @@ class TestRatesAndCounters:
                 c["peep_encoded"] + c["peep_render_failed"] + c["peep_encode_failed"])
             d.close_segment(seg, "completed")
             _wait(d)
-            files = list((tmp_path / "run_test").rglob("*.jpg"))
+            files = list(tmp_path.rglob("*.jpg"))
             frames = [x for x in _index_lines(tmp_path) if x["type"] == "frame"]
             assert len(files) == c["save_written"] == len(frames)
+        finally:
+            d.end_run()
+
+    def test_save_self_writes_no_save_frames_but_keeps_peep(self, tmp_path):
+        """A1b：`save="self"` 只关存盘路径，PEEP 预览按既有契约保留。
+
+        契约 I1 要的是「模块自有取证时不复制帧」，不是「统一流完全不读帧」：
+        `_output_on` 里 `peep_on` 不看 `seg.save` 是设计意图。所以判据是
+        `frames_due_save` 零增长、无存盘帧入队，而不是「采样函数没跑」。
+        """
+        d = _hub(tmp_path)
+        try:
+            d._q._frame_cap = 1000
+            scope = d.open_scope("speedrush", "speedrush", save="self")
+            seg = d.open_segment("nav", "x", peep_fps=1000, save_fps=1000,
+                                 save="self")
+            for i in range(20):
+                seg.offer(_frame(i), fid=i)
+            _wait(d)
+            c = d.status()["counters"]
+            assert c["frames_due_save"] == 0
+            assert c["save_written"] == 0
+            assert c["frames_due_peep"] > 0      # 预览仍在采样
+            d.close_segment(seg, "completed")
+            d.close_segment(scope, "completed")
+            _wait(d)
+            assert list(tmp_path.rglob("*.jpg")) == []
         finally:
             d.end_run()
 
@@ -236,8 +263,10 @@ class TestRatesAndCounters:
         d = _hub(tmp_path)
         try:
             d._q._frame_cap = 2
-            d._stop_worker()
             seg = d.open_segment("nav", "x", peep_fps=1000, save_fps=1000)
+            # open_segment 内部会 _ensure_worker——必须在开段**之后**掐掉消费者再灌帧，
+            # 否则灌帧与消费赛跑、淘汰数不定（2026-11-14 CI 慢runner上 9≠10 实证）。
+            d._stop_worker()
             for i in range(12):
                 # 每帧都回拨到期时刻，保证 12 帧全部“到期入队”（否则会被限速跳过）
                 seg._last_peep -= 0.5
@@ -288,7 +317,7 @@ class TestToggleBoundary:
             c = d.status()["counters"]
             assert c["save_written"] == 1
             # 在途帧照常落盘，索引也要有行：文件数 = 索引帧行数
-            files = list((tmp_path / "run_test").rglob("*.jpg"))
+            files = list(tmp_path.rglob("*.jpg"))
             frames = [x for x in _index_lines(tmp_path) if x["type"] == "frame"]
             assert len(files) == len(frames) == 1
         finally:
@@ -297,6 +326,11 @@ class TestToggleBoundary:
 
 class TestFailureIsolation:
     def test_renderer_failure_does_not_stop_stream(self, tmp_path):
+        """模块渲染器属**视图**通道：它炸了，证据帧照旧落盘，只是这拍没有 PEEP。
+
+        2026-11-12 的分层：落盘图是模板标定素材，不参与任何绘制，所以渲染器故障
+        不再能顺带弄丢一帧证据（旧契约是 save_render_failed 并丢帧）。
+        """
         d = _hub(tmp_path)
         try:
             token = d.install_renderer(_BoomRenderer())
@@ -304,8 +338,10 @@ class TestFailureIsolation:
             seg.offer(_frame(1))
             _wait(d)
             c = d.status()["counters"]
-            assert c["save_render_failed"] == 1
-            assert c["peep_encoded"] == 1     # PEEP 基线不调用模块渲染器
+            assert c["peep_render_failed"] == 1
+            assert c["peep_encoded"] == 0
+            assert c["save_written"] == 1     # 视图挂了，证据还在
+            assert c["save_render_failed"] == 0
             assert d._worker_errors == 0
             d.remove_renderer(token)
         finally:

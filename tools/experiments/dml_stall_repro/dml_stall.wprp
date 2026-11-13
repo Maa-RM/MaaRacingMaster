@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+DML 停顿判读专用采集：内存环形缓冲（不落盘直到 stop），只收判读必需的事件。
+内核侧：进程/线程/模块加载 + 上下文切换 + 就绪队列 + 采样 IP（不抓栈，控体量），
+用于回答停顿线程在窗口内是「在跑 / 就绪没排上 / 等待」。
+GPU 侧：不在本 profile 内自定义 DxgKrnl EventProvider（实测启用不了、且会撑出空 Event
+session 导致与内置 profile 组合报 0xc5580612）；改由组合内置 GPU.light 提供 DxgKrnl
+队列/执行事件（实测可采且 Dynamic 可解）。本 profile 只负责内核调度三分。
+缓冲共 2GB（24GB 内存机器实测余量充足）；事件率下保留数十秒窗口，
+配合「见停顿现场立即 stop」的包裹脚本，停顿窗口不会被环形覆盖。
+-->
+<WindowsPerformanceRecorder Version="1.0">
+  <Profiles>
+    <SystemCollector Id="DmlStallSystemCollector" Name="DML Stall System Collector">
+      <BufferSize Value="1024"/>
+      <Buffers Value="1024"/>
+    </SystemCollector>
+    <SystemProvider Id="DmlStallSystemProvider">
+      <Keywords>
+        <Keyword Value="ProcessThread"/>
+        <Keyword Value="Loader"/>
+        <Keyword Value="CSwitch"/>
+        <Keyword Value="ReadyThread"/>
+        <Keyword Value="SampledProfile"/>
+        <Keyword Value="DPC"/>
+        <Keyword Value="Interrupt"/>
+      </Keywords>
+    </SystemProvider>
+    <Profile Id="DmlStall.Verbose.Memory" Name="DmlStall" Description="DML stall scheduler partition; GPU via combined built-in GPU.light"
+             LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="DmlStallSystemCollector">
+          <SystemProviderId Value="DmlStallSystemProvider"/>
+        </SystemCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

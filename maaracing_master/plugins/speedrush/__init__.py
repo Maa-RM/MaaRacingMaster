@@ -29,7 +29,7 @@ PIPELINE_DIR = RES_DIR / "pipeline"
 POLICY_DIR = RES_DIR / "policy"
 CALIB_DIR = RES_DIR / "calibration"
 MODELS_DIR = RES_DIR / "models"
-# 驾驶页 HUD 区域真源（照 core/roi_config 口径：归一化、x2/y2 排他）
+# 驾驶页 HUD 区域真源（归一化、x2/y2 排他）
 HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
 # 行为决策参数真源（FSM/评分/迟滞/校验阈值；config.load_decision 唯一读法）
 DECISION_FILE = POLICY_DIR / "decision.json"
@@ -41,7 +41,10 @@ GATE0_FILE = CALIB_DIR / "gate0.json"
 # 解析：用户数据目录优先、安装包兜底，带尺寸 + SHA256 校验）
 PERCEPTION_MODEL_REL = "resources/models/perception/model.onnx"
 PERCEPTION_MODEL_FILE = MODELS_DIR / "perception" / "model.onnx"
-DEPTH_MODEL_REL = "resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx"
-DEPTH_MODEL_FILE = MODELS_DIR / "depth" / "moge2_vits_static_336x598_t1032_q4f16.onnx"
+DEPTH_MODEL_REL = "resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx"
+DEPTH_MODEL_FILE = MODELS_DIR / "depth" / "relative_mnv4m_slim_spf_448_default.onnx"
 LANE_MODEL_REL = "resources/models/lane/plus_small_384x640.onnx"
 LANE_MODEL_FILE = MODELS_DIR / "lane" / "plus_small_384x640.onnx"
+# DML 专用半精度版本（同一权重转 FP16，keep_io_types）：仅 DML 使用，CPU 回退用 fp32
+LANE_FP16_MODEL_REL = "resources/models/lane/plus_small_fp16_384x640.onnx"
+LANE_FP16_MODEL_FILE = MODELS_DIR / "lane" / "plus_small_fp16_384x640.onnx"

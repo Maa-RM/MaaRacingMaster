@@ -18,6 +18,8 @@ clear 位置），事后查永远看不到上一轮的停止；实现必须在�
 from __future__ import annotations
 
 import threading
+import time
+import types
 
 import pytest
 
@@ -45,8 +47,10 @@ class _FakeController:
         self.last_step_outcome = None
         self._manual_stop = False
 
+    def clear_run_requests(self):
+        self._manual_stop = False  # 对齐真实现：受理新一轮时在 start 锁内复位
+
     def start_module(self, module_id, start_from=None, module_config=None):
-        self._manual_stop = False  # 对齐真实现：复位发生在下一次 start_module 开头
         self.last_run_natural = False
         self.calls.append((module_id, start_from, module_config))
         outcome = self.outcomes.get(module_id, "ok")
@@ -62,7 +66,6 @@ class _FakeController:
     def run_builtin_step(self, step_id, step_config=None):
         """内置步骤：按脚本回放 ok / raise / swallowed / exit 四种结局。"""
         self.builtin_calls.append((step_id, step_config))
-        self._manual_stop = False
         self.last_run_natural = False
         outcome = self.outcomes.get(step_id, "ok")
         if outcome == "raise":
@@ -333,6 +336,240 @@ def test_step_skipped_continues_round_and_is_not_reported_ok():
     assert svc._round_result == {"launch_game": "skipped", "a": "ok"}
     assert controller.calls == [("a", None, None)]   # 跳过后仍继续下一项
     assert not any(m.get("event") == "auto_exit" for m in sent)
+
+
+def test_set_run_queue_rejects_when_worker_starts_mid_validation(monkeypatch):
+    """检查与写入之间的间隙里 start 受理了 worker：写入时必须重新检查并拒绝。"""
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "_save_profile", lambda snapshot: None)
+
+    def spawn_mid_validation():
+        svc._worker = object()   # 校验间隙另一请求受理了 start
+        return ["a"]
+
+    monkeypatch.setattr(sc, "_step_ids", spawn_mid_validation)
+    ok, _, err = svc.set_run_queue({"order": ["a"], "enabled": {"a": False}})
+    assert not ok and "运行中" in err
+    assert svc._queue_enabled == {"a": True}, "拒绝后编排状态不得被写入"
+
+
+def test_set_start_from_rejects_when_worker_starts_mid_validation(monkeypatch):
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {"a": object()})
+
+    def spawn_mid_validation(mid):
+        svc._worker = object()
+        return {"stages": ["s1"]}
+
+    monkeypatch.setattr(sc, "get_module_info", spawn_mid_validation)
+    ok, _, err = svc.set_start_from({"module_id": "a", "stage": "s1"})
+    assert not ok and "运行中" in err
+    assert svc._start_from == {}, "拒绝后断点表不得被写入"
+
+
+def test_run_queue_save_serialized_with_update(monkeypatch):
+    """落盘与内存更新同锁：前一笔写完前下一笔不得改内存（写盘顺序=更新顺序）。"""
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {}
+    monkeypatch.setattr(sc, "_step_ids", lambda: ["a"])
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_save(partial):
+        calls.append(partial)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(2.0)
+
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(
+        target=svc.set_run_queue,
+        args=({"order": ["a"], "enabled": {"a": True}},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_run_queue({"order": ["a"], "enabled": {"a": False}})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    time.sleep(0.1)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "落盘期间下一笔更新必须被锁挡住（否则写盘顺序可与内存顺序相反）"
+    assert svc._queue_enabled == {"a": False}
+
+
+def test_module_config_save_serialized_with_update(monkeypatch):
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._module_config_cache = {}
+    svc._module_config_rev = {}
+    monkeypatch.setattr(sc, "_step_ids", lambda: ["a"])
+    monkeypatch.setattr(sc, "_normalize_module_config", lambda mid, cfg: cfg)
+    monkeypatch.setattr(sc, "_module_config_defaults", lambda mid: {"k"})
+    monkeypatch.setattr(svc, "_module_config_view", lambda mid: {})
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_save(partial):
+        calls.append(partial)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(2.0)
+
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(
+        target=svc.set_module_config,
+        args=({"module_id": "a", "config": {"k": 1}},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_module_config({"module_id": "a", "config": {"k": 2}})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    time.sleep(0.1)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "落盘期间下一笔配置更新必须被锁挡住"
+    assert svc._module_config_cache["a"] == {"k": 2}
+
+
+def test_persist_debug_flag_serializes_read_modify_write(monkeypatch):
+    """debug 段读改写同锁：前一笔完成前下一笔不得读旧值（防并发覆盖丢键）。"""
+    svc = object.__new__(SidecarService)
+    svc._lock = threading.RLock()
+    store = {}
+    entered = threading.Event()
+    release = threading.Event()
+    reads = []
+
+    def fake_load():
+        reads.append(1)
+        if len(reads) == 1:
+            entered.set()
+            assert release.wait(2.0)
+        return dict(store)
+
+    def fake_save(partial):
+        store.update(partial)
+
+    monkeypatch.setattr(sc, "_load_profile", fake_load)
+    monkeypatch.setattr(sc, "_save_profile", fake_save)
+    a = threading.Thread(target=svc._persist_debug_flag, args=("k1", True), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc._persist_debug_flag("k2", True)
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and not b_done.is_set():
+        time.sleep(0.01)
+    serialized = not b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert serialized, "读改写须同锁：前一笔完成前下一笔不得读取旧值"
+    assert store["debug"] == {"k1": True, "k2": True}
+
+
+def test_rejected_start_preserves_breakpoint(monkeypatch):
+    """启动校验失败不得消耗断点：下次开始仍从断点跑。"""
+    monkeypatch.setattr(sc, "has_physical_controller", lambda: False)
+    monkeypatch.setattr(sc, "check_required_assets", lambda mid: ["resources/missing.bin"])
+    monkeypatch.setattr(sc, "get_module_info",
+                        lambda mid: {"id": mid, "name": mid, "stages": ["a-1"],
+                                     "expired": False})
+    cls = type("A", (), {
+        "ID": "a",
+        "required_capabilities": classmethod(lambda cls, cfg=None: frozenset()),
+        "requires_exclusive_gamepad": classmethod(lambda cls, cfg=None: False),
+    })
+    monkeypatch.setattr(sc, "MODULE_REGISTRY", {"a": cls})
+    controller = _FakeController({})
+    svc, _ = _svc(controller)
+    svc._closed = False
+    svc._queue_order = ["a"]
+    svc._queue_enabled = {"a": True}
+    svc._start_from = {"a": "a-1"}
+    svc._module_config_cache = {}
+
+    ok, _, err = svc.start({})
+    assert not ok and "资源缺失" in err
+    assert svc._start_from == {"a": "a-1"}, "被拒的启动不得吞掉断点"
+
+
+def test_debug_option_runtime_and_persist_atomic(monkeypatch):
+    """同一开关的运行时生效与落盘须同锁：另一请求不得插队致运行时态与落盘态背离。"""
+    svc = object.__new__(SidecarService)
+    svc._lock = threading.RLock()
+    runtime = {}
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class _Ctl:
+        debug = types.SimpleNamespace(last_toggle_seq=0)
+
+        def set_debug_mode(self, v):
+            calls.append(v)
+            runtime["debug_mode"] = v
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(2.0)
+
+    svc._controller = _Ctl()
+    store = {}
+    monkeypatch.setattr(sc, "_load_profile", lambda: dict(store))
+    monkeypatch.setattr(sc, "_save_profile", lambda p: store.update(p))
+    a = threading.Thread(target=svc.set_debug_mode, args=({"enabled": True},), daemon=True)
+    a.start()
+    assert entered.wait(2.0)
+    b_done = threading.Event()
+
+    def b():
+        svc.set_debug_mode({"enabled": False})
+        b_done.set()
+
+    tb = threading.Thread(target=b, daemon=True)
+    tb.start()
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and not b_done.is_set():
+        time.sleep(0.01)
+    b_completed_while_a_blocked = b_done.is_set()
+    release.set()
+    a.join(2.0)
+    tb.join(2.0)
+    assert not b_completed_while_a_blocked, "同一开关运行时生效与落盘须同锁，另一请求不得插队"
+    assert runtime["debug_mode"] == store["debug"]["debug_mode"], "运行时态与落盘态必须一致"
 
 
 def test_start_consumes_breakpoints_and_builds_plan(monkeypatch):
