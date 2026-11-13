@@ -124,6 +124,11 @@ tools/experiments/**/teachers/
 # 上规则的前提是「结论已进 README」——报告里还藏着没写下来的结论时，先补 README 再忽略。
 tools/experiments/**/*_out/
 
+# 实验区内 .NET/C# 构建产物（编译输出与 NuGet 还原缓存，可由源码重建，不入库；
+# 工具源码真源仍随目录入库，清理走回收站）
+tools/experiments/**/bin/
+tools/experiments/**/obj/
+
 # 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
 # （教育/科研/非营利可分发，商业用途需另行授权）
 
