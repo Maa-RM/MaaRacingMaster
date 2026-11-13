@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -27,7 +28,8 @@ import probe_depthart_prod_sim as sim  # noqa: E402
 
 ROOT = Path(__file__).parent
 OUT = ROOT / "contact_chain_out"
-POOL = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug")
+APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+POOL = APPDATA / "MaaRacingMaster" / "debug"
 FY = 630.0
 CAM_H = 1.25
 CAR_H = 1.5

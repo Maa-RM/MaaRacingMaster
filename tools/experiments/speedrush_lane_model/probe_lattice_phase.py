@@ -33,8 +33,9 @@ import json
 import os
 import sys
 
-LOG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\logs"
-DEBUG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug"
+_APPDATA = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+LOG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "logs")
+DEBUG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "debug")
 SESSIONS = ("20261112_224317", "20261112_220717", "20261112_203641")
 
 

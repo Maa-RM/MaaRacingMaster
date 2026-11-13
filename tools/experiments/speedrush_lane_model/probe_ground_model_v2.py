@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 
-APPDATA = Path(os.environ.get("APPDATA", r"C:\Users\yomen\AppData\Roaming"))
+APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
 MODEL = ROOT / "maaracing_master/plugins/speedrush/resources/models/depth" \
                "/relative_mnv4m_slim_spf_448_default.onnx"
 

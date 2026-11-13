@@ -34,8 +34,9 @@ from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
 
 MODEL = ("maaracing_master/plugins/speedrush/resources/models/depth/"
          "relative_mnv4m_slim_spf_448_default.onnx")
-LOG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\logs"
-DEBUG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug"
+_APPDATA = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+LOG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "logs")
+DEBUG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "debug")
 LANE_W_M = 3.5
 CX = 640.0
 

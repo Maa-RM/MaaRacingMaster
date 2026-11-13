@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -27,7 +28,8 @@ import probe_lane_geometry as lg  # noqa: E402
 
 ROOT = Path(__file__).parent
 OUT = ROOT / "curve_horizon_out"
-POOL = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug")
+APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+POOL = APPDATA / "MaaRacingMaster" / "debug"
 WEIGHTS = ROOT / "weights" / "lane" / "plus_small_384x640.onnx"
 YH0 = 361.12
 PER_DRIVE = 18

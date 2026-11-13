@@ -21,6 +21,7 @@ y_h，也作视角守卫可用性证据；cam_h 只用于守卫，不参与距�
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import cv2
@@ -32,8 +33,9 @@ import probe_lane_geometry as lg  # noqa: E402  同试验区自建探针
 ROOT = Path(__file__).parent
 WD = ROOT / "weights"
 OUT = ROOT / "prod_sim_out"
-FRAMES_JSONL = Path(r"C:/Users/yomen/AppData/Roaming/MaaRacingMaster/debug/"
-                    "20261111_103853/speedrush/drive/20261111_104434_p1/frames.jsonl")
+APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+FRAMES_JSONL = (APPDATA / "MaaRacingMaster" / "debug" /
+                "20261111_103853/speedrush/drive/20261111_104434_p1/frames.jsonl")
 IMGSZ = 640
 CONF = 0.35
 ROI = (0, 201, 1280, 561)

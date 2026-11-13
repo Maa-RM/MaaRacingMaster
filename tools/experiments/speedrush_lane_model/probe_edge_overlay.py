@@ -27,8 +27,9 @@ import sys
 
 import cv2
 
-LOG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\logs"
-DEBUG_ROOT = r"C:\Users\yomen\AppData\Roaming\MaaRacingMaster\debug"
+_APPDATA = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+LOG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "logs")
+DEBUG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "debug")
 LANE_W_M = 3.5
 RED = (0, 0, 255)
 FAR = (255, 0, 255)
