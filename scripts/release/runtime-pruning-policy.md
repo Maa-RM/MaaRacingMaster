@@ -5,6 +5,16 @@
 每个条目都经过了独立单变量实验验证。修改依赖 / WindowsAppSDK / Python / MaaFw 版本时，
 若本白名单匹配不到目标文件，`-Configuration Release` 会**发布失败**（PRUNING-FAIL），而不是悄悄漏删。
 
+## 发布内容与验收
+
+内容筛选及反向检查由 [`assemble.ps1`](assemble.ps1) 维护。源码中的开发工具、测试与内部知识文档不随包分发，用户安装说明、许可证与运行资源保留。正式裁剪还清理依赖内的测试目录及 ONNX Runtime 离线工具；参考配置保留依赖原貌。
+
+自检从解释器启动时禁止写入字节码，归档前清理待打包目录内的字节码与构建指纹；构建缓存本身继续保留复用标记。压缩失败直接终止装配；7z 还须通过归档完整性检查，随后才生成校验和。
+
+体积门禁在保存报告后以失败退出阻断超限包。离线全量包按实际未压缩与 ZIP 压缩字节数扣除可选模型权重，再与默认包基线比较，基础程序的增长仍受门禁约束。
+
+筛选、资源保留、归档与失败退出的回归测试见 [`tests/test_release_assembly.py`](../../tests/test_release_assembly.py)。具备本机运行时缓存时，测试还复制缓存并验证裁剪后的真实框架回调、图像匹配与 OCR；完整装配始终执行 [`smoke_runtime.py`](smoke_runtime.py)。
+
 ## Production-safe removals
 
 \| 项 | 来源实验 | 收益 | 验证结论 |
@@ -14,12 +24,12 @@
 \| Python ORT `capi\onnxruntime.dll` | exp3 | \~20.13 MB | SAFE（pyd 自带 ORT 引擎） |
 \| PIL `_avif` native ext | exp4A | \~7.52 MB | SAFE（惰性，项目零 avif 路径） |
 \| `.NET` crash diagnostics | exp4B | \~4.73 MB | **SAFE FOR NORMAL OPERATION** |
-\| NumPy dev/build 目录 | exp5A | \~1.87 MB | SAFE（不含 ctypeslib，见「明确不纳入」表） |
+\| NumPy dev/build 与依赖测试目录 | 装配回归与运行时冒烟 | 见装配体积报告 | 保留 ctypeslib、类型模块和运行时测试入口辅助文件，见「明确不纳入」表 |
 \| `.pyi` typing stubs | exp5B-1 | \~1.13 MB | SAFE |
 \| Python console wrappers | exp5E-1 | \~0.83 MB | SAFE |
 \| SymPy | exp6 | \~25.37 MB | **SAFE FOR CURRENT MaaRM** |
 \| MaaAgentBinary | exp7 | \~12.53 MB | **SAFE FOR CURRENT MaaRM** |
-\| ORT offline toolchain（google/protobuf + flatbuffers） | exp8 | \~0.96 MB | SAFE（onnxruntime+RapidOCR closure 探针确认运行时未加载；cost：ORT quantization / offline shape-infer / ort\_format\_model 不可用，推理路径不受影响） |
+\| ORT 离线工具及其依赖 | 装配回归与运行时冒烟 | 见装配体积报告 | 离线转换、量化和模型优化工具不可用，推理路径保留 |
 \| OpenCV videoio ffmpeg backend（`opencv_videoio_ffmpeg500_64.dll`） | exp9 | \~29.45 MB | SAFE（dumpbin 证实 cv2.pyd 非静态依赖，ffmpeg 为运行时 LoadLibrary 的 videoio 后端；阶段二删除后 import cv2/中文路径/dnn.NMSBoxes 全 PASS，videoio 失败仅告警到 stderr，stdout/JSONL 干净；cost：OpenCV 视频文件读写/回放禁用，MaaRM 生产零 videoio 调用） |
 
 ## 注意与代价

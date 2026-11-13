@@ -1,7 +1,7 @@
 ﻿# Release package assembly for MaaRM Windows.
 # Output: <OutRoot>/MaaRacingMaster-<Version>-win-x64.zip + .sha256
 # Structure reproduces the validated local package:
-#   <name>/{ MaaRacingMaster.Shell.exe + WinUI/.NET dlls, pyproject.toml,
+#   <name>/{ MaaRacingMaster.exe, app/{Shell + WinUI/.NET dlls}, pyproject.toml,
 #          maaracing_master/, assets/, apps/MaaRacingMaster.Shell/frontend/,
 #          runtime/python/{python.exe, python311._pth, packages/, vcruntime140*.dll} }
 # Usage: powershell -File assemble.ps1 -Version 1.0.0 -Configuration Release
@@ -11,7 +11,7 @@
 #   -SourceRuntimeDir       reuse an existing verified runtime (skip download+pip) for local re-verify
 #   -KeepGoing              continue on error (local debug); default fail-fast
 #   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
-#   -WithModels             include depth-mode ONNX weights (~82MB) in the package; default excludes them (optional model pack)
+#   -WithModels             include optional ONNX weights in the package; default excludes them (separate model pack)
 #   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
 #   -ExcludeModules         人工兜底：在自动判定之外按 plugins/<目录名> 追加剔除（逗号分隔）
 #                           自动剔除：打包时刻已过 manifest VALID_UNTIL 的活动模块不随包分发，
@@ -35,7 +35,7 @@ param(
     [switch]$KeepGoing,
     [string]$ExcludeModules = '',  # 人工兜底：按 plugins/<目录名> 追加剔除（逗号分隔）；自动剔除见 §3.5
     [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
-    [switch]$WithModels,    # 离线全量包：把三个权重（约 83MB）也打进包；默认不带（由可选模型包提供）
+    [switch]$WithModels,    # 离线全量包：把可选权重也打进包；默认不带（由可选模型包提供）
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
     [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MaaRM zero usage)
@@ -401,6 +401,22 @@ if ($RemoveNumpyDev) {
             Write-Host ("[assemble] EXP-5A remove numpy\{0}  ({1:N2} MB)" -f $d, ($sz/1MB))
         }
     }
+    # 测试目录也分布在依赖的子模块中；只处理已核对的包，保留运行时绑定和类型模块。
+    $runtimeTestPackages = @('numpy', 'shapely', 'mpmath', 'colorama', 'certifi')
+    $rtPrefix = (Resolve-Path $rtDir).Path.TrimEnd('\') + '\'
+    foreach ($pkg in $runtimeTestPackages) {
+        $pkgDir = Join-Path $rtDir ('packages\' + $pkg)
+        if (-not (Test-Path -LiteralPath $pkgDir)) { continue }
+        Get-ChildItem -LiteralPath $pkgDir -Recurse -Directory -Filter 'tests' |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                if (-not $_.FullName.StartsWith($rtPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                    & $Fail ('测试目录超出 runtime: ' + $_.FullName)
+                }
+                Write-Host ('[assemble] 清理依赖测试目录: ' + $_.FullName)
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force
+            }
+    }
     # guard: _pytesttester.py hard-imported by numpy __init__; must remain
     $guard = Join-Path $rtDir 'packages\numpy\_pytesttester.py'
     if (-not (Test-Path $guard)) {
@@ -509,7 +525,10 @@ if ($RemoveMaaAgentBinary) {
 if ($RemoveOrtOffline) {
     $targets = @(
         (Join-Path $rtDir 'packages\google\protobuf'),
-        (Join-Path $rtDir 'packages\flatbuffers')
+        (Join-Path $rtDir 'packages\flatbuffers'),
+        (Join-Path $rtDir 'packages\onnxruntime\tools'),
+        (Join-Path $rtDir 'packages\onnxruntime\transformers'),
+        (Join-Path $rtDir 'packages\onnxruntime\quantization')
     )
     foreach ($t in $targets) {
         if (Test-Path $t) {
@@ -612,16 +631,29 @@ foreach ($rel in @(
 # 归档区（maaracing_master/plugins/_archive/）整体不进发布包：归档模块已退役，
 # 目录位置即判据，不参与下方按 VALID_UNTIL 的剔除判定（那套只覆盖 plugins/ 顶层现役插件）。
 # 下方 §3.5 末尾有反向守卫：stage 里若出现该目录即报错，防静默带出。
-robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa data /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+# 插件内工具与内部知识文档同样不分发；用户安装说明、许可和运行资源继续随插件复制。
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa data tools tests /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { $errors.Add('robocopy source package failed') }
+Get-ChildItem (Join-Path $StageRoot 'maaracing_master') -Recurse -File |
+    Where-Object { $_.Name -in @('CODE_WIKI.md', 'RULES.md') } |
+    ForEach-Object {
+        Write-Host ('[assemble] 清理内部文档: ' + $_.Name)
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
+$frontendReadme = Join-Path $StageRoot 'apps\MaaRacingMaster.Shell\frontend\README.md'
+if (Test-Path -LiteralPath $frontendReadme) {
+    Write-Host '[assemble] 清理前端开发说明'
+    Remove-Item -LiteralPath $frontendReadme -Force
+}
 
 # 前端用 Copy-Item 复制，不认 .gitignore：本机 harness 状态目录显式清掉（下方守卫仍兜底）
 Get-ChildItem $StageRoot -Recurse -Directory -Force -Filter '.mimosa' -EA SilentlyContinue |
     ForEach-Object { Remove-Item $_.FullName -Recurse -Force -EA SilentlyContinue }
 
-# 可选权重默认不进包：三个 ONNX 只服务深度/线观测，由独立模型包分发
+# 可选权重默认不进包：这些 ONNX 只服务深度/线观测，由独立模型包分发
 # （用户数据目录优先，见 model_assets.py）。-WithModels 产出离线全量包。
 $modelDir = Join-Path $StageRoot 'maaracing_master\plugins\speedrush\resources\models'
-# 默认包不带可选权重；-WithModels 的全量离线包保留三个权重
+# 默认包不带可选权重；-WithModels 的全量离线包保留权重
 if (-not $WithModels) {
     foreach ($sub in @('lane', 'perception', 'depth')) {
         $p = Join-Path $modelDir $sub
@@ -742,7 +774,7 @@ except Exception as e:
     else:
         raise
 '@
-& $py -c $checkCode $StageRoot
+& $py -B -c $checkCode $StageRoot
 if ($LASTEXITCODE -ne 0) { $errors.Add('import self-check failed') }
 
 # 自检通过且本次为全新构建（未复用缓存/源码 runtime）→ 写回 build/runtime-cache（含指纹），供下次指纹匹配时复用
@@ -771,6 +803,9 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         'app\Microsoft.Windows.Widgets.dll',
         'runtime\python\packages\google\protobuf',
         'runtime\python\packages\flatbuffers',
+        'runtime\python\packages\onnxruntime\tools',
+        'runtime\python\packages\onnxruntime\transformers',
+        'runtime\python\packages\onnxruntime\quantization',
         'runtime\python\packages\cv2\opencv_videoio_ffmpeg500_64.dll'
     )
     foreach ($rel in $AbsentChecks) {
@@ -816,6 +851,20 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     foreach ($rel in @('tools', 'tests', 'docs', '.github', 'scripts')) {
         if (Test-Path (Join-Path $StageRoot $rel)) {
             $errors.Add("DEV-TREE-LEAK: '$rel' must not be shipped")
+        }
+    }
+    # 源码包内部也执行相同边界，避免开发工具跟着插件整包复制。
+    Get-ChildItem (Join-Path $StageRoot 'maaracing_master') -Recurse -Force |
+        Where-Object {
+            ($_.PSIsContainer -and $_.Name -in @('tools', 'tests')) -or
+            (-not $_.PSIsContainer -and $_.Name -in @('CODE_WIKI.md', 'RULES.md'))
+        } |
+        ForEach-Object { $errors.Add('DEV-TREE-LEAK: ' + $_.FullName) }
+    foreach ($pkg in $runtimeTestPackages) {
+        $pkgDir = Join-Path $rtDir ('packages\' + $pkg)
+        if (Test-Path -LiteralPath $pkgDir) {
+            Get-ChildItem -LiteralPath $pkgDir -Recurse -Directory -Filter 'tests' |
+                ForEach-Object { $errors.Add('DEV-TREE-LEAK: ' + $_.FullName) }
         }
     }
     # 本机 harness 状态目录（.mimosa/）只存在于开发工作树，不得随包发出
@@ -870,6 +919,21 @@ if ($errors.Count -gt 0) {
 }
 
 # ---------- 7. zip + sha256 ----------
+# 归档前统一清理构建缓存，涵盖复用 runtime 和 GUI 缓存的路径。
+# 只删除本次生成的 stage 内产物，源缓存仍保留指纹供后续构建复用。
+$stagePrefix = (Resolve-Path $StageRoot).Path.TrimEnd('\') + '\'
+$buildCaches = @(
+    Get-ChildItem -LiteralPath $StageRoot -Recurse -Directory -Force -Filter '__pycache__'
+    Get-ChildItem -LiteralPath $StageRoot -Recurse -File -Force |
+        Where-Object { $_.Extension -in @('.pyc', '.pyo') -or $_.Name -eq '.cache-fingerprint' }
+)
+foreach ($cache in ($buildCaches | Sort-Object { $_.FullName.Length } -Descending)) {
+    if (-not $cache.FullName.StartsWith($stagePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        & $Fail ('构建缓存超出 stage: ' + $cache.FullName)
+    }
+    Write-Host ('[assemble] 清理构建缓存: ' + $cache.FullName.Substring($stagePrefix.Length))
+    Remove-Item -LiteralPath $cache.FullName -Recurse -Force
+}
 $zip = Join-Path $OutRoot ($Name + '.zip')
 if (Test-Path $zip) { Remove-Item $zip -Force }
 # 只用 $Name 目录的内容作 zip 顶层（而非再包一层 $Name 目录），
@@ -895,13 +959,17 @@ if ($SevenZ) {
         # §8 全程用绝对路径，不依赖 cwd，此处 Set-Location 安全。
         $prev = Get-Location
         Set-Location $StageRoot
-        try { & $SevenZPath 'a' '-t7z' '-mx=9' '-m0=LZMA2:d=256m' '-ms=on' $sevenzFile '.' 2>&1 | Out-Null }
-        finally { Set-Location $prev }
-        if ($LASTEXITCODE -ne 0) { $errors.Add("7z 压缩失败 (7za exit $LASTEXITCODE)") } else {
-            $hash7 = (Get-FileHash $sevenzFile -Algorithm SHA256).Hash.ToLower()
-            Set-Content -Path ($sevenzFile + '.sha256') -Value ($hash7 + '  ' + (Split-Path $sevenzFile -Leaf)) -Encoding ascii
-            Write-Host ("[assemble] 7z: {0}  {1}" -f $sevenzFile, $hash7) -ForegroundColor Green
+        try {
+            & $SevenZPath 'a' '-t7z' '-mx=9' '-m0=LZMA2:d=256m' '-ms=on' $sevenzFile '.' 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { & $Fail "7z 压缩失败 (7za exit $LASTEXITCODE)" }
+            # 文件存在不代表归档完整；确认可解压后才生成校验和。
+            & $SevenZPath 't' $sevenzFile 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { & $Fail "7z 完整性检查失败 (7za exit $LASTEXITCODE)" }
         }
+        finally { Set-Location $prev }
+        $hash7 = (Get-FileHash $sevenzFile -Algorithm SHA256).Hash.ToLower()
+        Set-Content -Path ($sevenzFile + '.sha256') -Value ($hash7 + '  ' + (Split-Path $sevenzFile -Leaf)) -Encoding ascii
+        Write-Host ("[assemble] 7z: {0}  {1}" -f $sevenzFile, $hash7) -ForegroundColor Green
     } else {
         Write-Host "[assemble] WARN: -SevenZ 已指定但找不到 7za.exe -> 降级仅出 zip（不阻断）" -ForegroundColor Yellow
     }
@@ -924,8 +992,27 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     # 只记录实测 sevenz 值；下轮把本期实测值回填为 baseline 后，delta 才开始参与观察（仍不进 regression）。
     $baseline7z = $null
     $d7z = if ($baseline7z -ne $null -and $g_7z) { (($g_7z - $baseline7z) / 1MB) } else { $null }
-    $dTotal = ($g_total - 468.86MB) / 1MB
-    $dZip = ($g_zip - 198.79MB) / 1MB
+    # 基线对应默认包；离线全量包只扣除可选权重本身，基础程序的增长仍受同一门禁约束。
+    $g_model = 0L
+    $g_modelZip = 0L
+    if ($WithModels) {
+        $modelPrefix = 'maaracing_master/plugins/speedrush/resources/models/'
+        $models = Join-Path $StageRoot $modelPrefix
+        if (Test-Path -LiteralPath $models) {
+            $g_model = (Get-ChildItem -LiteralPath $models -Recurse -File -Filter '*.onnx' |
+                Measure-Object Length -Sum).Sum
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+            $g_modelZip = ($archive.Entries | Where-Object {
+                $rel = $_.FullName.Replace('\', '/').TrimStart('./')
+                $rel.StartsWith($modelPrefix) -and $rel.EndsWith('.onnx')
+            } | Measure-Object CompressedLength -Sum).Sum
+        } finally { $archive.Dispose() }
+    }
+    $dTotal = ($g_total - $g_model - 468.86MB) / 1MB
+    $dZip = ($g_zip - $g_modelZip - 198.79MB) / 1MB
     $sizes = [ordered]@{
         runtime = [math]::Round($g_runtime/1MB,2); app = [math]::Round($g_app/1MB,2)
         sidecar = [math]::Round($g_sidecar/1MB,2); other = [math]::Round($g_other/1MB,2)
@@ -945,6 +1032,8 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         baseline_7z_mb = $baseline7z
         delta_7z_mb = if ($d7z -ne $null) { [math]::Round($d7z,2) } else { $null }
         delta_total_mb = [math]::Round($dTotal,2); delta_zip_mb = [math]::Round($dZip,2)
+        optional_models_mb = [math]::Round($g_model/1MB,2)
+        optional_models_zip_mb = [math]::Round($g_modelZip/1MB,2)
         size_regression = $regression
         ship_excluded_modules = ($excludedIds -join ',')
         generated = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -973,10 +1062,12 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
 | 7z | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) |
 
 ## 2. vs baseline (0.20.0)
+可选权重按实际未压缩/压缩字节数扣除后比较，完整包体积仍见上表。
+
 | | baseline | release | delta |
 |---|---|---|---|
-| total | 468.86 | $($sizes.total_unpacked) | $([math]::Round($dTotal,2)) |
-| zip | 198.79 | $($sizes.zip) | $([math]::Round($dZip,2)) |
+| total（不含可选权重） | 468.86 | $([math]::Round(($g_total-$g_model)/1MB,2)) | $([math]::Round($dTotal,2)) |
+| zip（不含可选权重） | 198.79 | $([math]::Round(($g_zip-$g_modelZip)/1MB,2)) | $([math]::Round($dZip,2)) |
 | 7z（新基线，仅记录） | - | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) | $(if($g_7z){[math]::Round($d7z,2)}else{'-'}) |
 
 ## 3. Regression
@@ -986,4 +1077,5 @@ $(if($regression){'SIZE REGRESSION (total/zip 较 baseline 涨超 5MB)'}else{'no
     $gateLine = "[assemble] Size gate: total=$($sizes.total_unpacked)MB zip=$($sizes.zip)MB (baseline 468.86/198.79)"
     if ($g_7z) { $gateLine += " 7z=$($sizes.sevenz)MB" }
     Write-Host $gateLine
+    if ($regression) { & $Fail 'SIZE REGRESSION: total/zip 较 baseline 涨超 5MiB，详见体积报告' }
 }
