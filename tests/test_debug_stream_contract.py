@@ -263,8 +263,10 @@ class TestRatesAndCounters:
         d = _hub(tmp_path)
         try:
             d._q._frame_cap = 2
-            d._stop_worker()
             seg = d.open_segment("nav", "x", peep_fps=1000, save_fps=1000)
+            # open_segment 内部会 _ensure_worker——必须在开段**之后**掐掉消费者再灌帧，
+            # 否则灌帧与消费赛跑、淘汰数不定（2026-11-14 CI 慢runner上 9≠10 实证）。
+            d._stop_worker()
             for i in range(12):
                 # 每帧都回拨到期时刻，保证 12 帧全部“到期入队”（否则会被限速跳过）
                 seg._last_peep -= 0.5
