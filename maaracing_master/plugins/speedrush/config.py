@@ -365,10 +365,16 @@ class Collision:
     体积包络重叠（自车与目标各自半宽 + 碰撞余量）。``z_max_m`` 起值 5.0 米是
     「最后一次可信锚点」的上界窗口——锚点 2 米以下因几何失效被拒，所以它不是
     物理间隙，真实接触时仪器已看不见。事件按轨道 id 去重，不逐拍重复，也不作
-    控制输入。"""
+    控制输入。
+
+    ``pass_window_s`` 是候选事件的观察窗：窗内同一 track 产生 pass（超车完成）
+    即否决该候选（擦过/超车不算撞车）。``recede_m`` 是判「拉远」的纵深回升量；
+    窗内纵深回升超过它、或闭速/相对接近率不再为正，同样否决。"""
 
     enabled: bool = True
     z_max_m: float = 5.0
+    pass_window_s: float = 1.5
+    recede_m: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -968,7 +974,9 @@ def _read_decision(path: Path) -> DecisionConfig:
         collision=Collision(
             enabled=_bool(d, "collision", "enabled", default=True),
             z_max_m=_num_def(d, "collision", "z_max_m", 5.0, lo=0,
-                             lo_open=False)),
+                             lo_open=False),
+            pass_window_s=_num_def(d, "collision", "pass_window_s", 1.5, lo=0),
+            recede_m=_num_def(d, "collision", "recede_m", 0.5, lo=0)),
         motion=Motion(
             mode=_str_def(d, "motion", "mode", "off",
                           ("off", "shadow", "live")),

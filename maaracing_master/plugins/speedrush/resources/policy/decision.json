@@ -209,7 +209,9 @@
   "collision": {
     "enabled": true,
     "z_max_m": 5.0,
-    "_note": "正面撞车事件记录（2026-11-13，只读观测）：游戏日志与 HUD 都没有碰撞事件，能留证的只有观测量。判据=YOLO 标为街车的轨道（对象表 kind=car）且**锚点纵深**（metric；不用框高粗距 metric_coarse——近场框被自车车身/画面截断，粗距最不可靠）首次落入 [0, z_max_m] 米，且横向体积包络重叠（|x_m| ≤ ego_half_lane×lane_w + 目标实测半宽(缺失回退 car_half_lane×lane_w) + motion.collision_margin_m）。事件按轨道 id 去重一次，进逐拍 trace 的 collisions 列、阶段汇总计数与日志行，不作任何控制输入。z_max_m=5.0 是「最后一次可信锚点」的上界窗口：锚点纵深 2 米以下因几何失效被拒，真实接触到 0 米时仪器已看不见，所以它不是物理间隙。负纵深=已过车头，按掠过不记；无米制横位的轨道无法证明在正面，也不记。"
+    "pass_window_s": 1.5,
+    "recede_m": 0.5,
+    "_note": "正面撞车事件记录（2026-11-13，只读观测）：游戏日志与 HUD 都没有碰撞事件，能留证的只有观测量。判据=YOLO 标为街车的轨道（对象表 kind=car）且**锚点纵深**（metric；不用框高粗距 metric_coarse——近场框被自车车身/画面截断，粗距最不可靠）首次落入 [0, z_max_m] 米，横向体积包络重叠（|x_m| ≤ ego_half_lane×lane_w + 目标实测半宽(缺失回退 car_half_lane×lane_w) + motion.collision_margin_m），且仍在接近（闭速 >0，缺失看相对接近率 >0）。触发先进候审窗 pass_window_s：窗内同 track 产生 pass（超车完成/推定超越）= 擦过或超车，否决；窗内纵深回升 > recede_m 或接近证据消失 = 在拉远，也同样否决；其余落定。事件按轨道 id 去重一次，进逐拍 trace 的 collisions 列（触发拍 fid 与落定拍 settle 都记）、阶段汇总计数与日志行，不作任何控制输入。z_max_m=5.0 是「最后一次可信锚点」的上界窗口：锚点纵深 2 米以下因几何失效被拒，真实接触到 0 米时仪器已看不见，所以它不是物理间隙。负纵深=已过车头，按掠过不记；无米制横位的轨道无法证明在正面，也不记。"
   },
   "grid_xcheck": {
     "mode": "master",

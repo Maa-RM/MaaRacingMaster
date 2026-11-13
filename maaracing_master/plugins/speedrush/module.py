@@ -83,7 +83,8 @@ from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
 from maaracing_master.plugins.speedrush.collision import CollisionObserver
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder, make_session_dir
-from maaracing_master.plugins.speedrush.traffic import OUTCOME_PASS, TrafficObserver
+from maaracing_master.plugins.speedrush.traffic import (
+    OUTCOME_PASS, OUTCOME_PRESUMED_PASS, TrafficObserver)
 from maaracing_master.plugins.speedrush.tracking import DecisionState, Tracker
 from maaracing_master.plugins.speedrush.world_model import KIND_CAR, load_calib
 from maaracing_master.plugins.speedrush.view_guard import ViewGuard
@@ -1778,7 +1779,9 @@ class SpeedRushModule(ActivityModule):
                         z_max_m=cfg.collision.z_max_m,
                         ego_half_m=cfg.selection.ego_half_lane * cal.lane_w_m,
                         car_half_m=cfg.selection.car_half_lane * cal.lane_w_m,
-                        margin_m=cfg.motion.collision_margin_m)
+                        margin_m=cfg.motion.collision_margin_m,
+                        pass_window_s=cfg.collision.pass_window_s,
+                        recede_m=cfg.collision.recede_m)
                     if cfg.collision.enabled else None),
                 "collisions": [],
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
@@ -2059,8 +2062,12 @@ class SpeedRushModule(ActivityModule):
             cevents = ()
             collision_obs = chain.get("collision_obs")
             if collision_obs is not None:
+                pass_ids = {e.track_id for e in tevents
+                            if e.outcome in (OUTCOME_PASS,
+                                             OUTCOME_PRESUMED_PASS)}
                 cevents = collision_obs.update(
-                    chain["engine"].objects.tracks, fid)
+                    chain["engine"].objects.tracks, fid,
+                    ts_ns=ts_ns, pass_ids=pass_ids)
                 if cevents:
                     chain["collisions"].extend(cevents)
                     for ce in cevents:
@@ -2569,13 +2576,16 @@ class SpeedRushModule(ActivityModule):
             # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
             "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
                        for e in tevents if e.outcome == OUTCOME_PASS],
-            # 撞车事件（本拍新触发；按轨道 id 去重，空拍=None）：纵深/横位/
-            # 横向包络余量/来源与置信原样留证，供离线按得分与横幅真值对账
+            # 撞车事件（本拍落定；按轨道 id 去重，空拍=None）：触发/落定拍号、
+            # 纵深/横位/横向包络余量/来源与置信原样留证，供离线按得分与横幅真值对账
             "collisions": [
-                {"id": e.track_id, "z": round(e.z_m, 2),
+                {"id": e.track_id, "fid": e.fid, "settle": e.settle_fid,
+                 "z": round(e.z_m, 2),
                  "x": round(e.x_m, 2), "xc": round(e.x_clear_m, 2),
                  "hw": None if e.half_w_m is None else round(e.half_w_m, 2),
                  "src": e.src, "conf": round(e.conf, 2),
+                 "v": None if e.v_close_mps is None else round(e.v_close_mps, 2),
+                 "rel": round(e.rel_approach, 3),
                  "age": round(e.age_ms, 1)}
                 for e in cevents] or None,
             "fresh": obs.health.frame_fresh,
