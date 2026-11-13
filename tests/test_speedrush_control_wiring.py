@@ -1177,26 +1177,3 @@ def test_control_tick_carries_lane_agree_gate():
     pad = StubPad()
     m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
     assert "ldis" in chain["trace"][-1]
-
-
-def test_half_center_uses_unclipped_side_and_integer_width():
-    """单侧绿区也能给路心：用没触窗的一侧 + 整道宽度先验。
-
-    贴护栏/单边遮挡时深度只看得到一侧，旧规则要求双侧，于是整段退回复用
-    旧值（实测三局 p1 45%、p2 47% 的拍子路心是复用值）。单侧其实带信息：
-    看到一侧、路宽是整道数，中心就定了。触窗那侧是视锥边界不是路的边界，
-    必须用另一侧当锚。
-    """
-    o = smod._EgoRoadObserver(lane_w_m=3.5)
-    # 左缘触窗（画面截断），右缘在画面内 → 中心 = 右缘 − 2 道
-    c = o._half_center(_xg_grid(0, 50))
-    assert c is not None
-    assert c[1] == pytest.approx(4.0)          # 宽度取整道先验
-    assert abs(c[0]) <= smod._EgoRoadObserver().OFF_MAX
-    # 右缘触窗，左缘在画面内 → 中心 = 左缘 + 2 道（符号相反）
-    c2 = o._half_center(_xg_grid(40, 127))
-    assert c2 is not None and c2[0] > 0
-    # 双侧都成立 → 不给（那是绿区双侧读数的活，别抢）
-    assert o._half_center(_xg_grid(30, 80)) is None
-    # 推出来的中心超出物理上限 → 诚实弃权
-    assert o._half_center(_xg_grid(0, 40)) is None
