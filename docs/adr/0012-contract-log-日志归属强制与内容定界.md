@@ -1,6 +1,6 @@
 # ADR-0012（contract-log）：日志归属强制与内容定界
 
-- **状态**：`accepted`（决策 1-5 仍生效；决策 6「前端零改动」的**渲染承载**部分由 [ADR-0017](0017-arch-shell-无组散行收进其他日志容器卡.md) 取代——归属强制与站点登记不因渲染改动放松，漏归组的行仍由生产者侧修）
+- **状态**：`amended by ADR-0017`（决策 1-5 仍生效；决策 6「前端零改动」的**渲染承载**部分由 [ADR-0017](0017-arch-shell-无组散行收进其他日志容器卡.md) 取代，余留句的取代范围由 [ADR-0024](0024-arch-shell-日志面板读侧叙事视图.md) 明示——归属强制与站点登记不因渲染改动放松，漏归组的行仍由生产者侧修）
 - **日期**：2026-10-29
 - **决策者**：维护者（契约批准并要求「先立判据、再改行为」）· AI 落实施
 - **相关**：[ADR-0007](0007-contract-log-日志记录为唯一事实源双投影.md)（记录唯一事实源与双投影）· [ADR-0010](0010-arch-log-记录流分类与玩法流水汇.md)（三分立户）· [ADR-0011](0011-ownership-perf-性能数据单一采集与判级.md)（「卡片不是调试面板」的同型裁定）· [core/CODE_WIKI.md §1.5.2](../../maaracing_master/core/CODE_WIKI.md) · [tests/log_sites.py](../../tests/log_sites.py)
@@ -50,6 +50,6 @@ GUI 日志面板有两条渲染路径：带组号的记录进卡片，不带组�
 ## 证据
 
 - 机检真源：[`tests/log_sites.py`](../../tests/log_sites.py)（站点登记表 + AST 扫描器）· [`tests/test_log_attribution.py`](../../tests/test_log_attribution.py)（登记完备、站点唯一、core 开组、循环上下文、运行时兜底、降级分项、关闭时序）。
-- 行为锁：[`tests/test_treasure_log_groups.py`](../../tests/test_treasure_log_groups.py) · [`tests/test_speedrush_log_groups.py`](../../tests/test_speedrush_log_groups.py)（组终态、线性组链、桩回退）· [`tests/test_logger_records.py`](../../tests/test_logger_records.py)（组生命周期与并发语义）· [`tests/test_controller_run_groups.py`](../../tests/test_controller_run_groups.py)（生命周期组收口）。
+- 行为锁：[`plugins/_archive/treasure/tests/test_treasure_log_groups.py`](../../maaracing_master/plugins/_archive/treasure/tests/test_treasure_log_groups.py) · [`tests/test_speedrush_log_groups.py`](../../tests/test_speedrush_log_groups.py)（组终态、线性组链、桩回退）· [`tests/test_logger_records.py`](../../tests/test_logger_records.py)（组生命周期与并发语义）· [`tests/test_controller_run_groups.py`](../../tests/test_controller_run_groups.py)（生命周期组收口）。
 - 实现：`maaracing_master/core/logger.py`（降级分项与包装器清单）· `core/controller.py` / `core/window_utils.py` / `core/nav_graph.py`（组号透传）· `core/sidecar.py`（有界排空）· `plugins/speedrush/{module,hud,recorder}.py` / `plugins/_archive/treasure/module.py`（插件归组与逐帧降级）。
 - 内容分界：逐拍/逐帧读数已由 ADR-0010 的流水（treasure `trace.jsonl`、speedrush `trace/<模块>.jsonl`、HUD `hud.jsonl`、录制 `frames.jsonl`）承载；本条的审计未发现仍需从日志迁往流水的 INFO+ 站点，剩下的是状态变化与在册跨切面事件。

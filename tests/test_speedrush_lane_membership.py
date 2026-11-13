@@ -131,6 +131,17 @@ def test_nearest_single_line_uses_geometry_scale():
                                                                   abs=0.01)
 
 
+def test_nearest_geometry_scale_uses_live_horizon():
+    """回退尺子的地平线用当拍发布值，不是 MoGe 常数：y_v 更高 → 分子更小。"""
+    lines = [_line(400.0, -0.5, s=0.3)]
+    # 几何尺 = 3.5·(500−361)/1.28 ≈ 380.1px/道；−0.5 + 100/380.1 ≈ −0.237
+    assert lane_pos_nearest(500.0, 500.0, lines, y_v=361.0) == \
+        pytest.approx(-0.237, abs=0.01)
+    # 地平线随 y_v 上移：y_b=355 在 y_v=361 之上 → 弃权；旧常数下仍可用
+    assert lane_pos_nearest(500.0, 355.0, lines, y_v=361.0) is None
+    assert lane_pos_nearest(500.0, 355.0, lines) is not None
+
+
 def test_nearest_abstains_horizon_and_bad_lines():
     """地平线上几何无效；无可用线弃权；坏线不参选——与夹逼同口径。"""
     lines = [_line(400.0, -0.5), _line(1200.0, 0.5)]

@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE.parents[2] / "maaracing_master" / "plugins" / "speedrush" / "tools"))
 sys.path.insert(0, str(HERE))
 
 import request_cone as R  # noqa: E402

@@ -108,7 +108,7 @@ class TestPluginDeclarations:
         assert self._module().REQUIRED_ASSETS == ()
         assert set(model_assets.DEPTH_MANIFEST) == {
             "resources/models/perception/model.onnx",
-            "resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx",
+            "resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx",
         }
         assert model_assets.LANE_MODEL_REL in model_assets.MODEL_MANIFEST
 

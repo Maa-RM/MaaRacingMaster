@@ -18,7 +18,6 @@
   // 名称首字——新增模块不必改前端。
   const MODULE_META = {
     speedrush: { icon: '🏎️' },
-    treasure: { icon: '🏺' },
   };
   // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
   MODULE_META.launch_game = { icon: '🚀' };
@@ -1068,6 +1067,16 @@
     btn.removeAttribute('aria-label');
   }
 
+  // 成就事实上报：前端只报原始事件，时间窗在后端判定（后端不信前端时间）。
+  // 静默发射、不 await：写盘延迟不得串进 3 秒倒计时的启动路径。
+  function _noteUiEvent(event) {
+    try {
+      Promise.resolve(maarm.call('note_ui_event', { event })).catch(() => {});
+    } catch (e) {
+      /* 通道未就绪：成就旁路，不影响运行 */
+    }
+  }
+
   async function _doStart() {
     try {
       await maarm.call('start', {});
@@ -1089,9 +1098,11 @@
     if (state.is_running) return;
     // 倒计时进行中再次点击 = 取消
     if (_startCountdownTimer) {
+      _noteUiEvent('start_cancel');
       _cancelStartCountdown();
       return;
     }
+    _noteUiEvent('start_click');
     const btn = $('btn-start');
     btn.classList.add('maarm-start--counting');
     btn.setAttribute('aria-label', '即将启动，倒计时 3 秒，再点一次取消');

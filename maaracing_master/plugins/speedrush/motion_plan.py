@@ -459,7 +459,7 @@ class PlanGate:
 
 def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                 plant, gate: PlanGate | None = None, *,
-                intent_lane: float) -> MotionPlan:
+                intent_lane: float, precise: bool = False) -> MotionPlan:
     """场景 + 决策意图 → 候选轨迹 → 可行性 → 选最贴意图且最省动作的一条。
 
     **去哪由决策层定**（``intent_lane``，planner 车道系，右正）。计划只回答
@@ -467,7 +467,11 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     内到站车）→ 安全成本（碰撞/有距无速）→ 离意图的偏差 → 动作量 选一条。
     计划不再有自己的机会价值（金币/奖励车/擦边/预置）——那是选择层的判断，
     两套价值会各自算出一个目标，再按「谁本拍有效」轮流打方向。并线承诺期
-    也一样：决策的意图就是承诺道，计划只负责走过去。"""
+    也一样：决策的意图就是承诺道，计划只负责走过去。
+
+    ``precise``：交付型意图（贴边/让位）。中心带 0.3 道是回中稳态用的，套在
+    计分目标上会把最后一段欠调当成免费（掠过横距中位 0.79 道、带顶 0.77），
+    此时改用 ``motion.precision_band_lane`` 的窄死区。"""
     lane_w = scene.lane_w_m
     if scene.stale:
         return MotionPlan(
@@ -568,6 +572,16 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
     # 目标是决策意图本身。开环档位在 1.3~2s 到站时相邻档横距差约 1m，计分带
     # 会被整段跳过，所以必须有一条闭环落点候选。候选下标追加在开环之后。
     seqs.append((None, None, center0 / lane_w))
+    # 高挡短脉冲（2026-11-09）：人工满舵是 0.10~0.12s 的短脉冲，半程回正
+    # 对高挡保持 1s 会冲过头、被 center_dev 压掉（高挡选中 <1%）。追加在
+    # 意图候选之后，不改既有候选索引；short_pulse_s 按拍取整。
+    if motion.short_pulse_enabled:
+        n_pulse = min(n, max(1, int(round(motion.short_pulse_s / dt))))
+        for lv in motion.heading_levels:
+            if abs(lv) < motion.short_pulse_min_rad:
+                continue
+            c = _h(lv)
+            seqs.append((c, (c,) * n_pulse + (0.0,) * (n - n_pulse), None))
     cands: list[_Cand] = []
     v_ego = ego.v_mps or 0.0
     v_lat_ego = (v_ego * math.tan(ego.heading) / lane_w) if v_ego > 0 else 0.0
@@ -646,7 +660,17 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
             if abs(c.x_m - scene.ego_x_m) <= (
                     ego_half + _half(c) + motion.collision_margin_m):
                 continue                    # 已重叠：不是换道选择问题
+            # 横距上限：最坏情况（立刻满舵朝它）到它到站那一刻也够不着它的
+            # 物理包络（含位置 σ），就不是临门威胁。旧口径只按横向符号一票
+            # 否决，一辆 5m 外、已经在旁边的车也能把朝路心的回正整段钉死
+            # （fid 8082：右车 t=0.18、横距 5.1m，目标 +0.28 道却保持左打）。
             toward = 1.0 if c.x_m > scene.ego_x_m else -1.0
+            reach = v_ego * math.tan(plant.heading_max_rad) * c.t_arrive_s
+            if abs(c.x_m - scene.ego_x_m) > (
+                    ego_half + _half(c) + c.sigma_m
+                    + motion.collision_margin_m + reach):
+                continue
+            # 杆指令朝它，或当前惯性朝它而杆不反打——都算“迎上去”。
             # 杆指令朝它，或当前惯性朝它而杆不反打——都算“迎上去”。
             # 这不是软代价：0.35s 内到站的车横移躲不开，唯一正确的动作
             # 是不往它那侧并；允许它被擦车/金币价值盖过就是重复撞车。
@@ -681,10 +705,13 @@ def plan_motion(scene: Scene, ego: EgoState, motion, selection,
                                    * motion.range_hazard_gain)
         value = -(collision_cost + range_cost)
         soft_cost = soft_viol * motion.corridor_soft_cost_per_m
-        # 中心目标带死区：带内不修正，只在带外惩罚超出量。带宽与选择层
-        # 同一把尺子——车道内可偏 0.5−半宽−余量；motion.center_band_lane
-        # 只作上限，不能再比物理余量宽（旧 0.3 道比可偏 0.23 道还宽）。
-        band_m = min(motion.center_band_lane * lane_w,
+        # 中心目标带死区：带内不修正，只在带外惩罚超出量。回中意图用
+        # center_band_lane（与选择层同一把尺子：车道内可偏 0.5−半宽−余量）；
+        # 交付型意图（贴边/让位）改用窄死区，否则开环候选停在带内任意处、
+        # 掠过横距系统性偏大半档（见 precision_band_lane 出处）。
+        band_lane = (motion.precision_band_lane if precise
+                     else motion.center_band_lane)
+        band_m = min(band_lane * lane_w,
                      max(0.0, (0.5 - selection.ego_half_lane
                                - selection.lane_clearance_lane) * lane_w))
         center_dev = sum(max(0.0, abs(xx - center0) - band_m)

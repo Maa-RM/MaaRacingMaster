@@ -36,6 +36,7 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 
+from maaracing_master.plugins.speedrush.ranges import NEAR_MAX_M
 from maaracing_master.plugins.speedrush.depth_geo import (
     CAM_Z_DATUM_M, GRID_BLOCKED, GRID_CELL, GRID_DRIVABLE, GRID_UNKNOWN,
     GRID_X_MAX, GRID_Z_HI, GRID_Z_LO)
@@ -54,7 +55,7 @@ N_BANDS = int(-(-(GRID_Z_HI - GRID_Z_LO) // BAND_LEN_M))    # ceil → 9
 GREEN_OBS_ROWS_MIN = 3
 # 远场带下界（相机系）：逐箱找边的 16~30m 远箱从这里起进走廊供方向（金标
 # 契约：远箱不进近场车道约束）。NEAR_Z=16 的带 15-18 从此界起算。
-FAR_Z_CAM = 15.0
+FAR_Z_CAM = NEAR_MAX_M       # 近/中分界：与 ranges 的米制分段同源（15 米）
 # 宏观锚取带范围与最小地面点数：16–46m 是地面密度读数最稳的段；更远带
 # 受弯道/建筑污染，近于 15m 的带受自车/前车遮挡。逐带取中点后做中值。
 FAR_MACRO_Z_LO = 15.0
@@ -439,6 +440,21 @@ def build_corridor(reading, grid, fid: int | None, *,
                     sides[side] = (
                         _air_boundary(side, center_lane, width_lane, lane_w_m)
                         or BandBoundary(None, UNKNOWN))
+        # 缺失侧按**测到的那一侧**外推（2026-11-13）：旧行为是 center±W/2，
+        # 也就是绕当前路心做对称——它不携带任何新证据，只是把路心回声一遍，
+        # 一侧贴着护栏时该带的中点会跟着路心走，永远对不上真实边界。改成
+        # 「有证据的一侧 ± 整段宽度」，带中点就变成单侧读数，能与路心互相
+        # 校验而不是互相印证。两侧都无证据（空气墙）时保持原样。
+        if lane_w_m and width_lane:
+            _l, _r = sides[-1], sides[1]
+            _w = width_lane * lane_w_m
+            if _l.src == INFERRED and _l.x_m is not None \
+                    and _r.src != INFERRED and _r.x_m is not None:
+                sides[-1] = BandBoundary(_r.x_m - _w, INFERRED, 0.0, None)
+            elif _r.src == INFERRED and _r.x_m is not None \
+                    and _l.src != INFERRED and _l.x_m is not None:
+                sides[1] = BandBoundary(_l.x_m + _w, INFERRED, 0.0, None)
+
         n_pts = 0
         if grid is not None:
             rows = _band_rows_mask(grid, z0, z1)

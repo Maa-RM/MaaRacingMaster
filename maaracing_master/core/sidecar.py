@@ -30,6 +30,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -66,6 +67,7 @@ from maaracing_master.core.dashboard_contract import (
     normalize_dashboard,
 )
 from maaracing_master.core import maa_option
+from maaracing_master.core import achievement
 from maaracing_master.core.paths import (
     config_dir,
     data_dir,
@@ -504,9 +506,6 @@ def _round_ended_payload(results: dict[str, str]) -> dict:
 class _StdoutGuard:
     """把一切误写 stdout 的输出（第三方库 print 等）转移到 stderr，保证协议通道纯净。"""
 
-    def __init__(self, protocol_stdout):
-        self._protocol = protocol_stdout
-
     def write(self, s: str) -> None:
         _STDERR.write(s)
         _STDERR.flush()
@@ -538,7 +537,10 @@ HANDLERS = frozenset({
     # 更新与公告
     "check_update", "fetch_announcement",
     # 观测
-    "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
+    "fetch_logs", "get_module_dashboard", "get_debug_state",
+    # 成就
+    "get_achievements", "set_achievement_notify", "note_ui_event",
+    "export_achievements", "import_achievements", "reset_achievements",
     # 调试与显示开关
     "set_debug_mode", "set_file_logging", "set_peep", "get_peep_frame",
     # 行为开关
@@ -551,12 +553,53 @@ HANDLERS = frozenset({
 # 普通错误处理并下轮重试），不排队——排队会让 reader 等锁、违背同一铁律。
 _MAX_INFLIGHT = 16
 
+# ---------- 成就：核心 UI 事实 ----------
+# 前端只报原始事件，时间窗判定在这里做。安全口径：UI 事实由前端上报，不保证
+# 不可伪造；成就无实物奖励，接受该风险。
+CORE_UI_EVENTS = frozenset({"start_click", "start_cancel"})
+CORE_UI_REPEAT_WINDOW_S = 60.0
+# 本侧会发射的全部事实种别；与 core 成就目录的 rule.fact 双向一致由回归锁守住
+# （tests/test_achievement_core_catalog.py）——拼错一个字符就会静默永不触发。
+CORE_UI_FACTS = frozenset({
+    "core.ui.start_click",
+    "core.ui.start_cancel",
+    "core.ui.start_repeat_fast",
+    "core.ui.cancel_repeat_fast",
+})
+_UI_EVENT_WARN_INTERVAL_S = 60.0
+_ui_event_warn_ts = 0.0
 
-def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
-    """弹系统「打开文件」对话框，返回所选路径；取消返回空串。
+
+def core_ui_facts(event: str, prev_ts: float | None, now: float) -> list[str]:
+    """把一次 UI 事件翻译成要上报的事实种别（纯函数，边界由测试锁死）。
+
+    prev_ts 是该事件上一次到达的时刻（monotonic），None = 本进程内第一次。事实名
+    不携带窗口数值：窗口是常量，写进名字等于把可调参数焊进成就 ID。
+    """
+    if event not in CORE_UI_EVENTS:
+        return []
+    facts = [f"core.ui.{event}"]
+    if prev_ts is not None and (now - prev_ts) < CORE_UI_REPEAT_WINDOW_S:
+        facts.append("core.ui.start_repeat_fast" if event == "start_click"
+                     else "core.ui.cancel_repeat_fast")
+    return facts
+
+
+def _warn_unknown_ui_event(event: Any) -> None:
+    """未知 UI 事件限频告警：前端字面量拼错时，这是日志里唯一的痕迹。"""
+    global _ui_event_warn_ts
+    now = time.monotonic()
+    if now - _ui_event_warn_ts >= _UI_EVENT_WARN_INTERVAL_S:
+        logger.log(f"[sidecar] 未知 UI 事件，已忽略: {event!r}", "WARNING")
+        _ui_event_warn_ts = now
+
+
+def _file_dialog(title: str, filter_str: str, default_ext: str, *,
+                 save: bool, initial_name: str = "") -> str:
+    """弹系统文件对话框，返回所选路径；取消返回空串。
 
     在 sidecar 侧弹窗：对话框属于本进程自己的 UI，不需要给 WebView 开放任何文件系统
-    能力（前端只说"用户点了浏览"，拿不到任意路径读取权）。
+    能力（前端只说"用户点了浏览"，拿不到任意路径读写权）。
     """
     import ctypes
     import ctypes.wintypes as wt
@@ -575,24 +618,46 @@ def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
             ("dwReserved", wt.DWORD), ("FlagsEx", wt.DWORD),
         ]
 
-    OFN_FILEMUSTEXIST = 0x00001000
-    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_OVERWRITEPROMPT = 0x00000002
+    OFN_HIDEREADONLY = 0x00000004
     OFN_NOCHANGEDIR = 0x00000008
+    OFN_PATHMUSTEXIST = 0x00000800
+    OFN_FILEMUSTEXIST = 0x00001000
     OFN_EXPLORER = 0x00080000
-    filter_str = "可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0"
 
-    buf = ctypes.create_unicode_buffer(2048)
+    flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER
+    flags |= OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY if save else OFN_FILEMUSTEXIST
+
+    buf = ctypes.create_unicode_buffer(initial_name, 2048)
     ofn = OPENFILENAMEW()
     ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
     ofn.lpstrFilter = filter_str
     ofn.lpstrFile = ctypes.cast(buf, wt.LPWSTR)
     ofn.nMaxFile = len(buf)
     ofn.lpstrTitle = title
-    ofn.lpstrDefExt = "exe"
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER
-    if not ctypes.WinDLL("comdlg32").GetOpenFileNameW(ctypes.byref(ofn)):
-        return ""
-    return buf.value
+    ofn.lpstrDefExt = default_ext
+    ofn.Flags = flags
+    comdlg32 = ctypes.WinDLL("comdlg32")
+    ok = (comdlg32.GetSaveFileNameW if save else comdlg32.GetOpenFileNameW)(ctypes.byref(ofn))
+    return buf.value if ok else ""
+
+
+def _pick_exe_dialog(title: str = "选择游戏主程序") -> str:
+    return _file_dialog(title, "可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0",
+                        "exe", save=False)
+
+
+_JSON_FILTER = "成就备份 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0\0"
+
+
+def _pick_achievement_export_path(default_name: str) -> str:
+    return _file_dialog("导出成就备份", _JSON_FILTER, "json",
+                        save=True, initial_name=default_name)
+
+
+def _pick_achievement_import_path(default_name: str = "") -> str:
+    return _file_dialog("选择成就备份", _JSON_FILTER, "json",
+                        save=False, initial_name=default_name)
 
 
 class SidecarService:
@@ -649,8 +714,25 @@ class SidecarService:
         self._config_meta_notes: dict[tuple[str, str], str] = {}
         # 性能优先开关的进程内状态（sidecar 自有，不经 controller；_restore_profile 回放）
         self._boost_priority_enabled = False
-        # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关）。
+        self._achievement_notify = True
+        # UI 事件时间戳（按事件名分开记，monotonic）与它们的锁：只服务核心成就的
+        # 时间窗判定，不参与业务锁，避免对话框/运行链路互相阻塞。
+        self._achievement_ui_last: dict[str, float] = {}
+        self._achievement_ui_lock = threading.Lock()
+        # 启动即回填上次会话的用户偏好（模块配置缓存 + 调试开关 + 成就通知开关）。
         self._restore_profile()
+        # 成就机制：引擎由 sidecar 持有生命周期（registry 只产无运行态声明索引）。偏好已
+        # 回填，构造期元成就解锁回调即遵守用户设置；初始化失败降级为成就功能不可用，不阻断启动。
+        try:
+            # core 自带成就目录先入声明索引，引擎构造时才能读到（失败只降级，不阻断启动）。
+            achievement.register_core_catalog()
+            self._achievement_engine = achievement.AchievementEngine(
+                on_unlock=self._on_achievement_unlock)
+            achievement.bind_engine(self._achievement_engine)
+        except Exception as exc:  # noqa: BLE001 —— 成就旁路，不拖垮业务后端启动
+            self._achievement_engine = None
+            achievement.bind_engine(None)
+            logger.log(f"[sidecar] 成就引擎初始化失败，成就功能暂不可用: {exc!r}", "WARNING")
 
     # ---------- 协议输出 ----------
 
@@ -755,6 +837,9 @@ class SidecarService:
                 self._boost_priority_enabled = bp
                 logger.log(f"性能优先({'提级' if bp else '恢复'}): "
                            f"{process_priority.describe(applied)}", "DEBUG")
+            an = dbg.get("achievement_notify")
+            if isinstance(an, bool):
+                self._achievement_notify = an
         # 2) 模块配置 → 按模块分槽回填；键白名单由各模块的 DEFAULT_MODULE_CONFIG 声明
         slots: dict[str, dict] = {}
         for mid, flat in _parse_module_config_slots(data.get("module_config")).items():
@@ -923,10 +1008,6 @@ class SidecarService:
           看得见）；enabled 只收已知 id 的布尔值；
         - 已过有效期的模块须带 force=true（GUI 弹窗确认后下发），否则拒绝。
         """
-        with self._lock:
-            busy = self._worker is not None
-        if busy:
-            return (False, None, "运行中不允许修改任务列表，请先停止")
         order = params.get("order")
         enabled = params.get("enabled")
         if not isinstance(order, list) or not all(isinstance(m, str) for m in order):
@@ -952,12 +1033,17 @@ class SidecarService:
         if expired_on and not force:
             return (False, None, f"模块已过期，需确认后才能加入: {', '.join(expired_on)}")
         with self._lock:
+            # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
+            if self._worker is not None:
+                return (False, None, "运行中不允许修改任务列表，请先停止")
             self._queue_order = list(order)
             # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
             # profile 里不残留悬空键（再入列时由前端显式给值）
             self._queue_enabled = {k: bool(v) for k, v in enabled.items() if k in self._queue_order}
             snapshot = self._queue_snapshot()
-        _save_profile({"run_queue": snapshot})
+            # 落盘与更新同锁：写盘顺序必须等于内存更新顺序，否则并发两笔可能
+            # 按相反顺序落盘，重启恢复到旧配置
+            _save_profile({"run_queue": snapshot})
         # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
         logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
         return (True, snapshot, None)
@@ -968,10 +1054,6 @@ class SidecarService:
         stage 传 None/缺省 = 清除断点（回到从头跑）。运行中拒绝：断点属「下一次
         启动」的编排，运行中的轮次已经成型。
         """
-        with self._lock:
-            busy = self._worker is not None
-        if busy:
-            return (False, None, "运行中不允许设置断点，请先停止")
         module_id = params.get("module_id")
         if module_id in BUILTIN_STEPS:
             return (False, None, "内置步骤没有细分阶段，不能设断点")
@@ -986,6 +1068,9 @@ class SidecarService:
             if stage not in stages:
                 return (False, None, f"断点 {stage} 不属于模块 {module_id} 的阶段")
         with self._lock:
+            # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
+            if self._worker is not None:
+                return (False, None, "运行中不允许设置断点，请先停止")
             if stage is None:
                 self._start_from.pop(module_id, None)
             else:
@@ -1034,7 +1119,7 @@ class SidecarService:
             "perf": perf,
         }, None)
 
-    # ---------- 活动模块配置（当前 GUI 用 treasure：每日循环上限；接口为通用 module_config 路由）----------
+    # ---------- 活动模块配置（接口为通用 module_config 路由，配置条目随现役插件）----------
 
     def _note_config_meta(self, module_id: str, kind: str, message: str) -> None:
         """同一种配置派生问题只记一次：配置视图会被 1s 轮询反复读取，不能刷屏。"""
@@ -1199,11 +1284,12 @@ class SidecarService:
                 self._module_config_cache[module_id] = target
                 self._module_config_rev[module_id] = self._module_config_rev.get(module_id, 0) + 1
                 snapshot = {mid: dict(cfg) for mid, cfg in self._module_config_cache.items() if cfg}
+                # 写盘持久化（按模块分槽）与更新同锁，保证写盘顺序=内存更新顺序；
+                # 下次启动由 _restore_profile 回填；失败仅记警告。
+                # **只写缓存、不做运行中热更新**：运行中的模块以实例为准，配置下次「开始」才注入。
+                _save_profile({"module_config": snapshot})
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"写模块配置失败: {exc!r}")
-        # 写盘持久化（按模块分槽），下次启动由 _restore_profile 回填；失败仅记警告。
-        # **只写缓存、不做运行中热更新**：运行中的模块以实例为准，配置下次「开始」才注入。
-        _save_profile({"module_config": snapshot})
         result = self._module_config_view(module_id)
         result.setdefault("module_id", module_id)
         return (True, result, None)
@@ -1238,8 +1324,8 @@ class SidecarService:
                     plan.append({"kind": "builtin", "id": module_id,
                                  "start_from": None, "config": cfg})
                     continue
-                # 断点消费即清：本计划用掉后即回到从头跑（断点不跨轮记忆）
-                start_from = self._start_from.pop(module_id, None)
+                # 断点先读不消费：整批校验通过后才统一消费（任一模块被拒都不吞断点）
+                start_from = self._start_from.get(module_id)
                 try:
                     stages = get_module_info(module_id)["stages"]
                 except KeyError:
@@ -1266,6 +1352,10 @@ class SidecarService:
                     ))
                 plan.append({"kind": "module", "id": module_id,
                              "start_from": start_from, "config": cfg})
+            # 计划整体通过校验后统一消费断点（消费即清，不跨轮记忆）
+            for item in plan:
+                if item["start_from"] is not None:
+                    self._start_from.pop(item["id"], None)
             self._round_result = None
             self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
             self._round_seq = getattr(self, "_round_seq", 0) + 1
@@ -1273,6 +1363,10 @@ class SidecarService:
             run_id = f"{base}_r{self._round_seq}"
             # 运行身份的唯一生成点：日志/调试/流水/性能/壳事件都消费它
             logger.set_run_id(run_id)
+            logger.set_round(self._round_seq)
+            # 受理即清停止信号（与 worker 创建同一锁区间）：worker 启动后再清
+            # 会吞掉受理与执行之间到达的停止
+            self._controller.clear_run_requests()
             worker = threading.Thread(
                 target=self._worker_main,
                 args=(plan, run_id),
@@ -1443,6 +1537,7 @@ class SidecarService:
             except Exception:  # noqa: BLE001
                 pass
             logger.set_run_id(None)
+            logger.set_round(None)
             with self._lock:
                 if self._worker is threading.current_thread():
                     self._worker = None
@@ -1904,26 +1999,10 @@ class SidecarService:
             "schema_version": Logger.SCHEMA_VERSION,
         }, None)
 
-    def get_today_stats(self, params):
-        """今日看板路由：读法由各模块自述（ActivityModule.read_today_stats），core 不持有
-        任何模块的看板 schema（表结构、列名、日界语义全部住在插件内）。
-
-        返回 (True, {"bucket", "summary", "games"}, None)；模块未注册或未声明看板读法
-        时返回空看板（前端仅对声明了看板的模块轮询，此分支是删除模块后的健壮性兜底）。
-        """
-        module_id = params.get("module_id") if isinstance(params, dict) else None
-        cls = MODULE_REGISTRY.get(module_id) if isinstance(module_id, str) else None
-        reader = getattr(cls, "read_today_stats", None)
-        if reader is None:
-            return (True, {"bucket": None, "summary": None, "games": []}, None)
-        return (True, reader(), None)
-
     def get_module_dashboard(self, params):
         """数据看板内容路由：统一 block 契约，不持有任何模块业务字段。
 
         - 新模块：``DASHBOARD_CONTRACT`` + ``read_dashboard()``，载荷经共享 schema 校验；
-        - 旧模块：``HAS_DASHBOARD`` + ``read_today_stats()``，core 包成 ``today_stats``
-          兼容块（冻结的鉴宝走这条，不修改模块代码）；
         - 内置步骤 / 未声明看板 / 无内容：空 blocks 或明确错误。
 
         只用类方法，不创建模块实例；单块非法只丢弃该块并记 WARNING。
@@ -1948,16 +2027,6 @@ class SidecarService:
                 if not overrides_classmethod(cls, "read_dashboard"):
                     return (False, None, f"{module_id} 声明了看板契约但未实现 read_dashboard")
                 payload = cls.read_dashboard()
-            elif overrides_classmethod(cls, "read_today_stats"):
-                stats = cls.read_today_stats()
-                payload = {
-                    "version": DASHBOARD_CONTRACT_VERSION,
-                    "title": "今日看板",
-                    "blocks": (
-                        [{"type": "today_stats", "data": stats}]
-                        if isinstance(stats, dict) else []
-                    ),
-                }
             else:
                 payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
         except Exception as exc:  # noqa: BLE001 —— 模块实现失败不得打崩 sidecar
@@ -1998,13 +2067,19 @@ class SidecarService:
             "debug_counters": status.get("counters") or {},
         }, None)
 
+    def _persist_debug_flag(self, key: str, value) -> None:
+        """debug 分段单键持久化：读—改—写与服务锁同临界区，防并发读改写互相覆盖。"""
+        with self._lock:
+            cur = _load_profile().get("debug")
+            cur = dict(cur) if isinstance(cur, dict) else {}
+            cur[key] = value
+            _save_profile({"debug": cur})
+
     def set_debug_mode(self, params):
         enabled = bool(params.get("enabled", False))
-        self._controller.set_debug_mode(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["debug_mode"] = bool(enabled)
-        _save_profile({"debug": cur})
+        with self._lock:
+            self._controller.set_debug_mode(enabled)
+            self._persist_debug_flag("debug_mode", bool(enabled))
         logger.log(f"调试截图模式: {'开启' if enabled else '关闭'}")
         return (True, {"debug_mode": enabled,
                        "effective_seq": getattr(self._controller.debug,
@@ -2013,11 +2088,9 @@ class SidecarService:
     def set_file_logging(self, params):
         """日志记录开关：开启后才把日志写入磁盘（user_data_dir/logs，每次开启新建文件）。"""
         enabled = bool(params.get("enabled", False))
-        logger.set_file_logging(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["file_logging"] = bool(enabled)
-        _save_profile({"debug": cur})
+        with self._lock:
+            logger.set_file_logging(enabled)
+            self._persist_debug_flag("file_logging", bool(enabled))
         logger.log(f"日志记录(写盘): {'开启' if enabled else '关闭'}")
         return (True, {"file_logging": enabled}, None)
 
@@ -2065,13 +2138,11 @@ class SidecarService:
         """
         mode = params.get("mode", "real")
         try:
-            self._controller.set_click_mode(mode)
+            with self._lock:
+                self._controller.set_click_mode(mode)
+                self._persist_debug_flag("click_mode", mode)
         except ValueError as e:
             return (False, None, str(e))
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["click_mode"] = mode
-        _save_profile({"debug": cur})
         logger.log(f"点击方式: {mode}")
         return (True, {"click_mode": mode}, None)
 
@@ -2081,11 +2152,9 @@ class SidecarService:
         持久化到 profile（debug.intent_mode），下次启动由 _restore_profile 回填。
         """
         enabled = bool(params.get("enabled", False))
-        self._controller.set_intent_mode(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["intent_mode"] = enabled
-        _save_profile({"debug": cur})
+        with self._lock:
+            self._controller.set_intent_mode(enabled)
+            self._persist_debug_flag("intent_mode", enabled)
         logger.log(f"仅显示意图: {'开启' if enabled else '关闭'}")
         return (True, {"intent_mode": enabled}, None)
 
@@ -2104,11 +2173,9 @@ class SidecarService:
         此处只改开关并持久化到 profile（debug.mute_game）。
         """
         enabled = bool(params.get("enabled", False))
-        self._controller.set_mute_game(enabled)
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["mute_game"] = enabled
-        _save_profile({"debug": cur})
+        with self._lock:
+            self._controller.set_mute_game(enabled)
+            self._persist_debug_flag("mute_game", enabled)
         logger.log(f"运行时静音游戏: {'开启' if enabled else '关闭'}")
         return (True, {"mute_game": enabled}, None)
 
@@ -2118,16 +2185,185 @@ class SidecarService:
         立即生效（进程常驻，与运行时序解耦）；GPU 无公开优先级旋钮，显存争用
         由推理侧缓冲固定另行解决（见 core/process_priority.py 模块注）。"""
         enabled = bool(params.get("enabled", False))
-        applied = process_priority.apply_boost() if enabled else process_priority.revert()
-        self._boost_priority_enabled = enabled
-        cur = _load_profile().get("debug")
-        cur = cur if isinstance(cur, dict) else {}
-        cur["boost_priority"] = enabled
-        _save_profile({"debug": cur})
+        with self._lock:
+            applied = process_priority.apply_boost() if enabled else process_priority.revert()
+            self._boost_priority_enabled = enabled
+            self._persist_debug_flag("boost_priority", enabled)
         action = "提级" if enabled else "恢复"
         logger.log(f"性能优先({action}): {process_priority.describe(applied)}",
                    "INFO" if enabled else "DEBUG")
         return (True, {"boost_priority": enabled}, None)
+
+    def _on_achievement_unlock(self, global_id: str, entry: dict,
+                               unlocked_ts: int | None = None) -> None:
+        """引擎解锁回调（锁外调用）：通知开关开启时尽力发壳侧事件。
+
+        载荷自足：提示条（标题 + 描述）、详情卡（档位 + 触发条件 + 解锁时间）都靠它
+        渲染，前端不再回查 `get_achievements`（解锁瞬间的查询会与推送竞争）。
+        事件送达尽力而为；壳侧负责前台/后台单通道显示与 Closing 闸门。
+        """
+        if not self._achievement_notify:
+            return
+        hidden = bool(entry.get("hidden"))
+        self._send_event_best_effort({
+            "type": "event", "event": "achievement_unlocked",
+            "data": {
+                "global_id": global_id,
+                "title": entry.get("title", ""),
+                "description": entry.get("description", ""),
+                # 隐藏档的第四种视觉由 hidden 承担，与 get_view 口径一致
+                "tier": "hidden" if hidden else entry.get("tier", "normal"),
+                "hint": entry.get("hint", ""),
+                "category": entry.get("category", ""),
+                "mod_id": global_id.split(".", 1)[0],
+                "unlocked_ts": unlocked_ts,
+            },
+        })
+
+    def get_achievements(self, params):
+        """成就页数据：注册目录 + 进度合并视图（隐藏项后端遮蔽）+ 通知开关态。
+
+        `state` 告诉前端能不能读写：`ready` 正常；`frozen` 只读（不累计、不解锁、不能
+        导入/重置，可以导出），具体原因看 `frozen_reason`——`version` 是存档由更高版本
+        写入（升级程序后恢复），`corrupt` 是存档损坏且无法留备份（原文件保持不动）；
+        `unavailable` 是引擎初始化失败。`repaired_backup` 非空表示本次启动修复过存档，
+        值是原文件备份名，用于告知恢复路径。
+        冻结后引擎返回的是空进度，原样渲染等于谎报「进度没了」。
+        """
+        engine = self._achievement_engine
+        if engine is None:
+            return (True, {"achievements": [], "notify": self._achievement_notify,
+                           "state": "unavailable"}, None)
+        return (True, {
+            "achievements": engine.get_view(),
+            "notify": self._achievement_notify,
+            "state": "frozen" if engine.frozen else "ready",
+            "frozen_reason": engine.frozen_reason,
+            "repaired_backup": engine.repaired_backup,
+            "store_version": engine.store_version,
+            "supported_version": engine.supported_store_version,
+        }, None)
+
+    def set_achievement_notify(self, params):
+        """成就解锁通知开关：关闭后仅写进度不弹通知；持久化到 profile（debug.achievement_notify）。"""
+        enabled = bool(params.get("enabled", True))
+        with self._lock:
+            self._achievement_notify = enabled
+            self._persist_debug_flag("achievement_notify", enabled)
+        return (True, {"achievement_notify": enabled}, None)
+
+    def note_ui_event(self, params):
+        """UI 事件上报（开始/取消倒计时）：前端只报原始事件，时间窗在后端判定。
+
+        为什么需要这条窄通道：开始运行的三秒倒计时是纯前端 `setTimeout`，倒计时中
+        再点一次只 `clearTimeout`、不发任何 RPC，后端对这两个动作完全不知情。
+        尽力而为：未知事件限频 WARNING 后忽略；上报失败不改变运行链路（契约 I1）。
+        """
+        event = (params or {}).get("event")
+        if not isinstance(event, str) or event not in CORE_UI_EVENTS:
+            _warn_unknown_ui_event(event)
+            return (True, {"ignored": True}, None)
+        now = time.monotonic()
+        with self._achievement_ui_lock:
+            prev = self._achievement_ui_last.get(event)
+            self._achievement_ui_last[event] = now
+        for kind in core_ui_facts(event, prev, now):
+            # dedup_key 每条事实一个 uuid：UI 事件不重试、无需跨进程稳定，
+            # 重复点击本身就是多个合法实例（契约去重只管同一条事实的重放）。
+            achievement.report_fact(kind, f"{kind}::{uuid.uuid4().hex}", {})
+        return (True, None, None)
+
+    # ---------- 成就管理（导出 / 导入 / 重置） ----------
+
+    def _achievement_engine_or_error(self):
+        """引擎可用性闸：初始化降级时返回明确错误，不静默成功。"""
+        if self._achievement_engine is None:
+            return None, "成就功能不可用（引擎未初始化）"
+        return self._achievement_engine, None
+
+    def _refuse_achievement_write(self) -> str | None:
+        """导入/重置要求当前未运行：避免与运行期写入竞争（_worker 非空 = slot 已占用）。"""
+        if self._worker is not None:
+            return "运行中不能导入或重置成就存档，请先停止"
+        return None
+
+    def export_achievements(self, params):
+        """导出成就备份：弹系统保存框（路径不从前端进），把存档本体写到用户选的位置。"""
+        engine, err = self._achievement_engine_or_error()
+        if err or engine is None:   # helper 不变量：有引擎必无 err，此处只为收窄
+            return (False, None, err)
+        default_name = f"achievements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        try:
+            path = _pick_achievement_export_path(default_name)
+        except Exception as exc:  # noqa: BLE001 —— 弹窗失败不拖垮服务
+            return (False, None, f"打开保存对话框失败: {exc!r}")
+        if not path:
+            return (True, {"cancelled": True}, None)
+        try:
+            count = engine.export_store(Path(path))
+        except achievement.AchievementStoreError as exc:
+            return (False, None, str(exc))
+        logger.log(f"[achievement] 已导出成就备份: {path}（{count} 条）", "INFO")
+        return (True, {"path": path, "count": count}, None)
+
+    def import_achievements(self, params):
+        """导入成就备份：校验 → 备份现档 → 覆盖 → 内存态同步（不重启即生效）。
+
+        「运行中禁止导入」分两段检查：弹窗前来一次是为免用户白选文件；选完文件后
+        在 `_lock` 内**重新检查**再执行——文件对话框不占侧栏锁，用户完全可能在选
+        文件期间点开始，只查一次等于把契约写成建议。
+        """
+        engine, err = self._achievement_engine_or_error()
+        if err or engine is None:   # 同 export：helper 不变量，只为收窄
+            return (False, None, err)
+        with self._lock:
+            refuse = self._refuse_achievement_write()
+        if refuse:
+            return (False, None, refuse)
+        try:
+            path = _pick_achievement_import_path()
+        except Exception as exc:  # noqa: BLE001
+            return (False, None, f"打开选择对话框失败: {exc!r}")
+        if not path:
+            return (True, {"cancelled": True}, None)
+        try:
+            with self._lock:
+                refuse = self._refuse_achievement_write()
+                if refuse:
+                    return (False, None, refuse)
+                count = engine.import_store(Path(path))
+        except achievement.AchievementStoreError as exc:
+            return (False, None, str(exc))
+        logger.log(f"[achievement] 已导入成就备份: {path}（{count} 条）", "INFO")
+        return (True, {"count": count}, None)
+
+    def reset_achievements(self, params):
+        """重置成就进度：仅支持 `scope="all"`（全清，含去重键集）。
+
+        单项重置尚未开放：撤销单项会牵连依赖它的元成就，级联语义定案前不保留这条
+        可达路径。非法/缺失/空值一律拒绝——绝不把看不懂的参数兜底成"全清"。
+        检查与重置在同一锁区间：与 `start` 抢占同一个运行槽，不允许检查后插入启动。
+        """
+        engine, err = self._achievement_engine_or_error()
+        if err or engine is None:   # 同 export：helper 不变量，只为收窄
+            return (False, None, err)
+        with self._lock:
+            refuse = self._refuse_achievement_write()
+            if refuse:
+                return (False, None, refuse)
+            scope = (params or {}).get("scope")
+            if scope != "all":
+                return (False, None, "仅支持全量重置（scope='all'），单项重置暂未开放")
+            try:
+                cleared = engine.reset(scope)
+            except achievement.AchievementStoreError as exc:
+                return (False, None, str(exc))
+        # 时间窗基线一并作废：否则重置后第一次点「开始」会沿用重置前的计时，
+        # 直接补发 *_repeat_fast，让人以为重置没生效（那是重置前的第二次点击）。
+        with self._achievement_ui_lock:
+            self._achievement_ui_last.clear()
+        logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
+        return (True, {"scope": scope, "cleared": cleared}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。
@@ -2171,7 +2407,7 @@ def main() -> None:
     # 性能采样器常驻（随主进程起停；会话落盘随日志开关联动）
     ensure_perf_sampler_started()
     protocol_stdout = sys.stdout
-    sys.stdout = _StdoutGuard(protocol_stdout)  # 后续一切 print 都走 stderr，协议通道纯净
+    sys.stdout = _StdoutGuard()  # 后续一切 print 都走 stderr，协议通道纯净
     try:
         service = SidecarService(protocol_stdout)
     except Exception as exc:

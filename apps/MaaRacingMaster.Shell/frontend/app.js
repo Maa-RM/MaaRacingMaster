@@ -113,7 +113,11 @@
     page.addEventListener('animationcancel', detach);
   }
   tabButtons.forEach((btn) => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    btn.addEventListener('click', () => {
+      // 成就管理是设置页的子页：切 tab 即退出它（再点当前 tab 等于返回设置）
+      if (window.MaaRM.achievements) MaaRM.achievements.close();
+      switchTab(btn.dataset.tab);
+    });
   });
   moveTabSlider('control'); // 初始：主控 tab 默认激活，滑块落地到首项
   // 关于页底部跳转按钮（data-link 值即逻辑目标名，经 sidecar 用默认浏览器打开）

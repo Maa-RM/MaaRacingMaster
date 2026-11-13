@@ -29,11 +29,13 @@ P = CFG.planner
 
 
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
-         maneuver=False, phase="keep") -> DecisionOutput:
+         maneuver=False, phase="keep",
+         intent_precise=False) -> DecisionOutput:
     return DecisionOutput(
         schema_version=5, state=state, x_target=x_target,
         reason="test", emitted_fid=fid,
-        valid_until_fid=valid, maneuver=maneuver, phase=phase)
+        valid_until_fid=valid, maneuver=maneuver, phase=phase,
+        intent_precise=intent_precise)
 
 
 def _planner(**over) -> LateralPlanner:
@@ -1297,7 +1299,7 @@ def test_plan_hold_does_not_apply_after_merge_commit():
     fs = types.SimpleNamespace(valid=False, reason="plan:frame_shift",
                                layer=4, value_total=0.0, psi_feedforward=0.0,
                                x_preview_lane=0.0, v_preview_lane_s=0.0)
-    pl = _planner()
+    pl = _planner(merge_klat_scale=1.0)   # 本条测断供保持，带宽取默认隔离影响
     rig = _Rig(pl)
     rig.tick(DecisionOutput(schema_version=5, state=DecisionState.CRUISE,
                             x_target=0.9, reason="test", emitted_fid=1,
@@ -1607,8 +1609,8 @@ def test_preview_steer_pulses_toward_target():
 
 
 def test_preview_bypasses_committed_merge():
-    """承诺并线不接管（安全通道保持原 PD）：_preview_prev_u 不被置位。"""
-    pl = _planner()
+    """覆盖闸关时承诺并线不接管（安全通道保持原 PD）：_preview_prev_u 不置位。"""
+    pl = _planner(preview_coverage_enabled=False)
     rig = _Rig(pl)
     for i in range(6):
         rig.tick(_out(x_target=1.0, fid=i + 1, valid=i + 2,
@@ -1778,6 +1780,155 @@ def test_preview_plan_maintenance_dwell_enter_and_exit():
     rig.tick(_out(x_target=0.0, fid=5, valid=5), plan=other)
     assert pl.ctrl_debug()["pcg"] is False
 
+
+def test_preview_plan_precise_dwell_enter_and_exit():
+    """预瞄扩到 pass/机动态：交付意图（plan layer=2、无碰撞代价）驻留 0.2s
+    后进预瞄；有碰撞代价的安全避让不接管。"""
+    ok = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    avoid = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=60.0)
+    pl = _planner(preview_maneuver_enabled=True)
+    rig = _Rig(pl)
+    flags = []
+    for i in range(4):
+        rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1, maneuver=True,
+                      intent_precise=True), plan=ok)
+        flags.append(pl.ctrl_debug()["ppg"])
+    assert flags == [False, False, False, True]
+    rig.tick(_out(x_target=0.68, fid=5, valid=5, maneuver=True,
+                  intent_precise=True), plan=avoid)
+    assert pl.ctrl_debug()["ppg"] is False
+
+
+def test_preview_precise_behavior_bench():
+    """pass/机动态预瞄的闭环行为台架：0.68 道贴边，量到位/超调/尾摆/满杆。"""
+    plan = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    pl = _planner(preview_maneuver_enabled=True)
+    rig = _Rig(pl)
+    target = 0.68
+    xs, us, pv = [], [], []
+    for i in range(80):
+        cmd = rig.tick(_out(x_target=target, fid=i + 1, valid=i + 1,
+                            maneuver=True, intent_precise=True), plan=plan)
+        xs.append(rig.x)
+        us.append(cmd.steer_x / _STICK_FULL)
+        pv.append(pl._preview_active)
+    settle = next((i * DT for i, x in enumerate(xs)
+                   if abs(x - target) <= 0.1), None)
+    overshoot = max(0.0, max(xs) - target)
+    tail = max(xs[-20:]) - min(xs[-20:])
+    full = sum(1 for u in us if abs(u) >= 0.9) / len(us)
+    print(f"PREVIEW BENCH settle={settle} overshoot={overshoot:.3f} "
+          f"tail={tail:.3f} full={full:.0%} pv={sum(pv)/len(pv):.0%} "
+          f"maxu={max(abs(u) for u in us):.2f}")
+    assert sum(pv) > 20
+    assert settle is not None and settle <= 1.6   # 不慢于连续律（1.6s）
+    assert overshoot <= 0.15
+    assert tail <= 0.3
+    # 幅度要能打到满杆档；占比是整段指标（多目标台架 13~18%，与人工
+    # 13.1% 同量级），单步/多步台架都不代表整段，故不在此断言。
+    assert max(abs(u) for u in us) >= 0.85
+
+
+def test_preview_maneuver_off_by_default():
+    """默认关：同样的交付意图拍不进入 pass/机动态预瞄门。"""
+    ok = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    pl = _planner()
+    rig = _Rig(pl)
+    for i in range(5):
+        rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1, maneuver=True,
+                      intent_precise=True), plan=ok)
+    assert pl.ctrl_debug()["ppg"] is False
+
+
+def _plan_ok(layer=2, cc=0.0, reason="plan:ok"):
+    return types.SimpleNamespace(
+        valid=True, reason=reason, layer=layer, value_total=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=cc)
+
+
+def test_preview_coverage_gate_center_and_merge():
+    """覆盖闸：非交付意图（回中/换道）与并线都交给预瞄，驻留 0.2s 进入。"""
+    pl = _planner(preview_coverage_enabled=True)
+    rig = _Rig(pl)
+    flags = []
+    for i in range(4):
+        rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1, maneuver=True),
+                 plan=_plan_ok())
+        flags.append(pl.ctrl_debug()["pvg"])
+    assert flags == [False, False, False, True]
+    assert pl._preview_active
+    rig.tick(_out(x_target=0.68, fid=5, valid=5, maneuver=True,
+                  phase="merging"), plan=_plan_ok())
+    assert pl.ctrl_debug()["pvg"] is True
+    assert pl._preview_active
+
+
+def test_preview_coverage_safety_exclusions():
+    """覆盖闸不接安全链：有碰撞代价的计划避让、计划失效拍仍走连续律。"""
+    for plan in (_plan_ok(cc=60.0),
+                 _plan_ok(reason="plan:infeasible_corridor")):
+        pl = _planner(preview_coverage_enabled=True)
+        rig = _Rig(pl)
+        for i in range(6):
+            rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1,
+                          maneuver=True), plan=plan)
+        # pvg 只是驻留面；最终放行看 pv（计划失效/碰撞代价在 preview_ok 里拦）
+        assert pl.ctrl_debug()["pv"] is False
+        assert pl._preview_active is False
+
+
+def test_preview_coverage_off_by_default():
+    """闸关：并线/非交付意图拍不进入覆盖闸（维护/交付门控不受影响）。"""
+    pl = _planner(preview_coverage_enabled=False)
+    rig = _Rig(pl)
+    for i in range(5):
+        rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1, maneuver=True,
+                      phase="merging"), plan=_plan_ok())
+    assert pl.ctrl_debug()["pvg"] is False
+    assert pl._preview_active is False
+
+
+def test_preview_coverage_merge_behavior_bench():
+    """覆盖闸的并线闭环台架：换道到 0.68 道，量到位/超调/尾摆/满杆。"""
+    pl = _planner(preview_coverage_enabled=True)
+    rig = _Rig(pl)
+    target = 0.68
+    xs, us, pv = [], [], []
+    for i in range(80):
+        cmd = rig.tick(_out(x_target=target, fid=i + 1, valid=i + 1,
+                            maneuver=True, phase="merging"),
+                       plan=_plan_ok())
+        xs.append(rig.x)
+        us.append(cmd.steer_x / _STICK_FULL)
+        pv.append(pl._preview_active)
+    settle = next((i * DT for i, x in enumerate(xs)
+                   if abs(x - target) <= 0.1), None)
+    overshoot = max(0.0, max(xs) - target)
+    tail = max(xs[-20:]) - min(xs[-20:])
+    full = sum(1 for u in us if abs(u) >= 0.9) / len(us)
+    print(f"COVERAGE BENCH settle={settle} overshoot={overshoot:.3f} "
+          f"tail={tail:.3f} full={full:.0%} pv={sum(pv)/len(pv):.0%} "
+          f"maxu={max(abs(u) for u in us):.2f}")
+    assert sum(pv) > 40
+    assert settle is not None and settle <= 1.6
+    assert overshoot <= 0.15
+    assert tail <= 0.3
+    # 满杆幅度不在单条换道上断言：0.2s 驻留期内连续律已把车带出起点，
+    # 正式进入预瞄时误差变小、选 0.6 档更省；整段占空比由回放台架量。
+
 # ---------- 计划命令振荡退位置误差（2026-11-02，闸 plan_osc_gate） ----------
 
 def _plan(psi, *, valid=True, reason="plan:ok", layer=2):
@@ -1819,7 +1970,9 @@ def test_osc_gate_switches_drive_source():
     """闸开+振荡计划：杆退回 x_target 位置误差（不跟振荡的车头角指令）；
     闸关=逐位回今天（判据照算落 trace，杆仍跟计划命令翻面）。"""
     def run(gate):
-        pl = _planner(plan_osc_gate=gate)
+        # 覆盖闸关：这里锁的是振荡闸把驱动源切到位置误差的连续律行为
+        pl = _planner(plan_osc_gate=gate,
+                      preview_coverage_enabled=False)
         rig = _Rig(pl)
         out = []
         for i in range(12):
@@ -1865,3 +2018,31 @@ def test_lane_follow_chase_step_capped():
     step = abs(pl.state.executed_lane - (-1.82))
     assert step <= _LINE_CHASE_MAX_LANE_S * DT + 1e-9,         f"追线步长 {step:.3f} 超过物理上限 {_LINE_CHASE_MAX_LANE_S * DT:.3f}"
     assert step > 0.0
+
+
+def test_merge_bandwidth_scales_command():
+    """并线带宽倍率只改目标朝向的换算增益（台架 bench_merge_stick 定档）。
+
+    现状 k_lat=1.2 在 0.4 道误差上只给 0.25 杆；倍率 2.0 后应接近翻倍。
+    默认值不传 klat 时逐位等于旧行为。
+    """
+    e = 0.4
+    base = law(e, 0.0, 0.0, P)
+    hot = law(e, 0.0, 0.0, P, klat=P.k_lat_lane_s * 2.0)
+    assert hot > 1.5 * base
+    assert heading_for_error(e, P, P.k_lat_lane_s) == pytest.approx(
+        heading_for_error(e, P))
+
+
+def test_merge_bandwidth_reaches_further_in_window():
+    """同一段 1.2 s，并线带宽 2.0 倍应比 1.0 倍走得更远（同车模同延迟）。"""
+    def run(scale: float) -> float:
+        pl = _planner(tau_steer_s=1e-9, rate_limit_raw=999999.0,
+                      stick_deadzone_raw=0.0, merge_klat_scale=scale)
+        rig = _Rig(pl, v_mps=P.speed_ref_mps)
+        for i in range(24):                      # 24 拍 = 1.2 s
+            rig.tick(_out(x_target=0.8, fid=1 + i, valid=99,
+                          phase="merging"), plan=_plan_ok())
+        return rig.x
+    slow, fast = run(1.0), run(2.0)
+    assert fast > slow + 0.15, f"带宽 2.0 只走到 {fast:.2f} 道（1.0 为 {slow:.2f}）"

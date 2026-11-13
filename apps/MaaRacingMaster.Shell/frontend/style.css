@@ -813,21 +813,23 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 
 /* 看板中心 · 列表 block（明细行） */
+/* 列表上下边界用不透明度淡出，不画线；行间仍保留细分隔线 */
 .board-list {
-  border-top: 1px dashed var(--maarm-border-light); padding-top: 8px;
-  max-height: 200px; overflow-y: auto;
-}
-/* 分页列表：一屏约 5 行（含日期组头）；滚动到底由 JS 续下一页；滚动条隐藏 */
-.board-list[data-page-size] {
-  max-height: 184px;
+  padding: 8px 0;
+  max-height: 264px;
+  overflow-y: auto;
   scrollbar-width: none; -ms-overflow-style: none;
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  mask-image: linear-gradient(to bottom,
+    transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
 }
-.board-list[data-page-size]::-webkit-scrollbar { display: none; }
+.board-list::-webkit-scrollbar { display: none; }
 .board-item + .board-item { border-top: 1px solid var(--maarm-border-light); }
 .board-item[hidden] { display: none !important; }
 .board-date {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 2px 2px; font-size: 10px; color: var(--maarm-foreground-muted);
+  padding: 4px 2px 2px; font-size: 10px; color: var(--maarm-foreground-muted);
 }
 .board-date::after {
   content: ''; flex: 1; height: 1px; background: var(--maarm-border-light);
@@ -839,28 +841,54 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .row-part--warn { color: var(--maarm-warning-strong); }
 .board-sentinel { height: 1px; }
 .board-empty { font-size: 12px; color: var(--maarm-foreground-muted); text-align: center; padding: 8px 0; }
-.board-row {
-  display: flex; align-items: center; gap: 8px; font-size: 12px;
-  padding: 4px 2px; color: var(--maarm-foreground-secondary);
+/* 行：时间 / 正文 / 状态 / 结果；状态与结果各占固定列，换行时仍对齐 */
+.dash-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 46px 76px;
+  column-gap: 8px;
+  align-items: center;
+  padding: 5px 2px;
+  font-size: 12px; color: var(--maarm-foreground-secondary);
 }
-.board-row + .board-row { border-top: 1px solid var(--maarm-border-light); }
-.board-row-seq { width: 32px; flex-shrink: 0; color: var(--maarm-foreground-muted); font-family: var(--maarm-font-mono); }
+.dash-row + .dash-row { border-top: 1px solid var(--maarm-border-light); }
+.dash-row-time {
+  font-family: var(--maarm-font-mono);
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dash-row-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-row-badge { justify-self: end; min-width: 0; overflow: hidden; }
+.dash-row-value {
+  justify-self: end; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--maarm-font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .board-res {
   flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 4px;
   background: var(--maarm-border-light); color: var(--maarm-foreground-muted);
+  white-space: nowrap;
 }
 .board-res--win { background: var(--maarm-success-bg); color: var(--maarm-success); }
 .board-res--fail { background: var(--maarm-danger-bg); color: var(--maarm-danger); }
-.board-row-val { margin-left: auto; flex-shrink: 0; font-family: var(--maarm-font-mono); }
-.board-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board-res--warn { background: var(--maarm-warning-bg); color: var(--maarm-warning-strong); }
-.board-res--empty { visibility: hidden; }
-.board-bucket { font-size: 11px; color: var(--maarm-foreground-muted); margin-bottom: 8px; }
 
-/* ============ 看板中心（数据页右上固定槽位） ============ */
-/* 标题不随翻页控件出现而收缩；头部高度由 .card-head 的 min-height 统一保证，
-   翻页控件显隐都不会改变卡头高度 */
+/* ============ 看板中心（数据页右栏固定槽位） ============ */
+/* 卡头固定为槽位标题 + 当前模块名胶囊；标题不随翻页控件显隐而收缩 */
+.dash-head { justify-content: flex-start; }
 .dash-head h3 { flex: none; white-space: nowrap; }
+.dash-module-chip {
+  flex: none; display: inline-flex; align-items: center;
+  margin-left: 8px; padding: 0 8px;
+  font-size: 11px; line-height: 20px;
+  color: var(--maarm-foreground-secondary);
+}
+.dash-module-chip[hidden] { display: none; }
+/* 单看板没有翻页器时，当前看板正在运行由胶囊上的绿点提示 */
+.dash-module-chip--run::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success); margin-right: 5px;
+}
 .dash-nav { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
 .dash-pager { display: inline-flex; align-items: center; gap: 6px; }
 .dash-pager[hidden] { display: none; }
@@ -892,16 +920,15 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: var(--maarm-success); flex: none;
 }
-.dash-body {
-  height: 380px;
-  padding: 4px 16px 0;
-  display: flex; align-items: stretch;
-  overflow-y: auto;
+/* 主体随内容收缩；上下留白与卡片内边距同一档 */
+.dash-body { padding: 16px 16px 12px; }
+.dash-panel { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+/* 日期说明与可选徽章同一行，位于统计之上 */
+.dash-caption-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; min-height: 18px;
 }
-.dash-panel { width: 100%; display: flex; flex-direction: column; gap: 12px; padding-bottom: 8px; }
-.dash-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.dash-panel-head h4 { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
-.dash-panel-sub { display: block; margin-top: 2px; font-size: 11px; color: var(--maarm-foreground-muted); }
+.dash-caption { font-size: 10px; line-height: 1.4; color: var(--maarm-foreground-muted); }
 .kind-chip {
   flex: none; font-size: 10px; line-height: 18px; padding: 0 7px;
   border-radius: 999px; color: var(--maarm-foreground-muted);
@@ -912,20 +939,31 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .kind-chip--warn { color: var(--maarm-warning-strong); background: var(--maarm-warning-bg); }
 
 /* 标准 block：stats / list / text / path / action */
-.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.stat {
-  position: relative; min-height: 62px; padding: 9px 11px;
-  border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-md);
+/* 统计：一行四列窄条；超过四项时换行，行首不画左边线 */
+.dash-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--maarm-border-light);
+  border-radius: var(--maarm-radius-md);
   background: var(--maarm-surface-hover);
+  overflow: hidden;
 }
-.stat > span { display: block; font-size: 11px; color: var(--maarm-foreground-muted); }
-.stat > b {
-  display: inline-block; margin-top: 2px;
-  font-size: 19px; font-weight: 600; line-height: 1.2; letter-spacing: -.01em;
+.dash-stat { min-width: 0; padding: 7px 10px 8px; }
+.dash-stat + .dash-stat { border-left: 1px solid var(--maarm-border-light); }
+.dash-stat:nth-child(4n+1) { border-left: none; }
+.dash-stat:nth-child(n+5) { border-top: 1px solid var(--maarm-border-light); }
+.dash-stat-label {
+  display: block; font-size: 10px; line-height: 1.3;
+  color: var(--maarm-foreground-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.stat > b.pos { color: var(--maarm-success-strong); }
-.stat > b.neg { color: var(--maarm-danger); }
-.stat-sub { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--maarm-foreground-muted); }
+.dash-stat-value {
+  display: block; font-size: 16px; font-weight: 600; line-height: 1.3;
+  letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+}
+.dash-stat-value.pos { color: var(--maarm-success-strong); }
+.dash-stat-value.neg { color: var(--maarm-danger); }
+.dash-stat-sub { display: block; font-size: 10px; line-height: 1.3; color: var(--maarm-foreground-muted); }
 .stat-eggs {
   display: flex; gap: 7px; margin-top: 3px;
   font-size: 11px; font-weight: 600; line-height: 1.2;
@@ -940,7 +978,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .egg-dots i:nth-child(1) { background: var(--maarm-danger); }
 .egg-dots i:nth-child(2) { background: var(--maarm-warning); }
 .egg-dots i:nth-child(3) { background: var(--maarm-info); }
-.dash-desc { font-size: 12px; line-height: 1.7; color: var(--maarm-foreground-secondary); white-space: pre-wrap; }
+.dash-note { font-size: 10px; line-height: 1.5; color: var(--maarm-foreground-muted); white-space: pre-wrap; }
 .path-chip {
   align-self: flex-start; max-width: 100%; padding: 6px 9px;
   border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-sm);
@@ -957,9 +995,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .dash-action:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
 .dash-none { font-size: 12px; color: var(--maarm-foreground-muted); padding: 4px 0; }
 
-/* 空态 / 加载 / 错误：槽位保留，下方实时预览不动 */
+/* 空态 / 加载 / 错误：给槽位一个可读高度，内容仍居中 */
 .dash-empty {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 100%; min-height: 240px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; padding: 24px 12px 30px; text-align: center;
 }
 .empty-art {
@@ -2021,4 +2060,612 @@ footer .spacer { flex: 1; }
   /* 选卡卡片：半径由 --gal-radius 给（20px，与原来的 G2@10 轮廓等效），这里只补形状。
      描边仍是自算路径（见 js/gallery-shape.js），但轮廓、照片裁切、边框都已回到原生。 */
   .task-gallery-cell { corner-shape: var(--maarm-corner-shape); }
+}
+
+/* ============================================================================
+   成就解锁提示条（灵动岛）
+   ----------------------------------------------------------------------------
+   三态：圆点入场 → 胶囊（标题 + 描述）→ 详情卡；多条堆叠、队首 5 秒串行推进。
+   四档落在整条外圈描边上（普通/稀有/珍贵/隐藏），隐藏档色环旋转 + 彩虹标题。
+   层级：成就管理页（9000）之上、模态（9999）之下——解锁提示是全局通知，
+   在成就页里也必须在最上层，否则会被页面挡住；错误 toast 在 bottom:56px，
+   本岛抬到 100px 以免同屏重叠。
+   ============================================================================ */
+
+#ach-fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* 全窗画布：绝不能吃鼠标事件 */
+  z-index: 9400;
+}
+
+#ach-island {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 100px;
+  height: 0;
+  pointer-events: none;   /* 空白区域不吃鼠标事件，单条自己开 auto */
+  z-index: 9500;
+}
+
+.maarm-ach {
+  --ach-h: 56px;          /* 紧凑态直径 / 胶囊高度 */
+  --ach-ring-w: 2.5px;    /* 档位描边宽度 */
+  --ach-ring: #1F2328;    /* 档位色，落在整条外圈描边 */
+  --dy: 0px;              /* 堆叠上移量 */
+
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin: 0 auto;         /* 水平居中用外边距，不靠 transform */
+  bottom: var(--dy);      /* 堆叠位置也用布局属性 */
+  width: var(--ach-h);
+  height: var(--ach-h);
+  /* 圆角取高度一半：胶囊端头成立，且胶囊 → 详情卡的圆角变化看得出来 */
+  border-radius: calc(var(--ach-h) / 2);
+  /* 双背景描边：内层铺底色，外层铺档位色，四档几何完全一致 */
+  border: var(--ach-ring-w) solid transparent;
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--ach-ring) border-box;
+  box-shadow: 0 12px 32px rgba(16, 18, 24, 0.16), 0 2px 6px rgba(16, 18, 24, 0.06);
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: scale(0.18); /* 只在入场那一下用，入场结束回到 none */
+  /* 静态态不保留 transform、不写 will-change：留在合成层会让文字抗锯齿退化成灰度 */
+  transition:
+    width 460ms cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    height 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    bottom 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 240ms ease,
+    transform 280ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+}
+.maarm-ach.is-shown { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] { border-radius: 18px; }
+
+.maarm-ach__face {
+  display: flex;
+  align-items: center;
+  height: calc(var(--ach-h) - var(--ach-ring-w) * 2);
+  transition: opacity 200ms ease;
+}
+.maarm-ach__badge {
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.maarm-ach__badge svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: var(--maarm-foreground);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.maarm-ach__text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 20px 0 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition:
+    opacity 220ms ease 100ms,
+    transform 320ms cubic-bezier(0.2, 0.9, 0.25, 1) 80ms;
+}
+.maarm-ach__title { font-size: 15px; font-weight: 600; line-height: 1.25; color: var(--maarm-foreground); }
+.maarm-ach__sub { font-size: 12px; line-height: 1.2; color: var(--maarm-foreground-muted); }
+
+.maarm-ach[data-state="stacked"] .maarm-ach__text,
+.maarm-ach[data-state="detail"] .maarm-ach__text { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] .maarm-ach__face { opacity: 0; }
+
+/* 详情卡：绝对定位铺满，不参与尺寸计算 */
+.maarm-ach__detail {
+  position: absolute;
+  inset: 0;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 240ms ease,
+    transform 300ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach[data-state="detail"] .maarm-ach__detail { opacity: 1; transform: none; }
+
+.maarm-ach__detail-head { display: flex; align-items: center; gap: 8px; }
+.maarm-ach__detail-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.maarm-ach__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--maarm-border-light);
+  color: var(--maarm-foreground-secondary);
+}
+.maarm-ach__tier::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ach-dot, var(--ach-ring));
+}
+.maarm-ach__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach__detail-desc { font-size: 13px; line-height: 1.45; color: var(--maarm-foreground-secondary); }
+.maarm-ach__detail-cond {
+  margin-top: auto;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--maarm-foreground-muted);
+  border-top: 1px solid var(--maarm-border-light);
+  padding-top: 8px;
+}
+
+/* 档位：整条胶囊的描边（值来自后端载荷的 tier，第四档由 hidden 承担） */
+.maarm-ach[data-tier="normal"] { --ach-ring: #1F2328; }
+.maarm-ach[data-tier="rare"] { --ach-ring: #38BDF8; }
+.maarm-ach[data-tier="precious"] { --ach-ring: var(--maarm-primary); }
+
+@property --maarm-ach-spin {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes maarm-ach-spin { to { --maarm-ach-spin: 360deg; } }
+/* 隐藏档：色环走元素自身的 border-box 背景，与其它三档同一套几何
+   （伪元素画环会被 overflow:hidden 在 padding-box 处裁掉） */
+.maarm-ach[data-tier="hidden"] {
+  --ach-ring: conic-gradient(from var(--maarm-ach-spin) in oklch longer hue,
+    oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  /* 档位小圆点单独给静态色环，避免依赖正在旋转的 --maarm-ach-spin */
+  --ach-dot: conic-gradient(in oklch longer hue, oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  animation: maarm-ach-spin 3.2s linear infinite;
+}
+.maarm-ach[data-tier="hidden"] .maarm-ach__title,
+.maarm-ach[data-tier="hidden"] .maarm-ach__detail-title { --maarm-scan-cycle: 3.2s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .maarm-ach {
+    transition: opacity 150ms ease, width 150ms ease, height 150ms ease !important;
+    transform: none !important;
+  }
+  .maarm-ach[data-tier="hidden"] { animation: none !important; }
+}
+
+/* ============================================================================
+   成就管理（设置 → 快捷工具进入的子页）
+   ----------------------------------------------------------------------------
+   位置：标题栏之下、底栏之上（顶栏与底栏常驻，窗口按钮与拖动区照旧可用）。
+   布局：左列按「核心 / 各模块」分组、随窗口拉伸；右列总览 / 提示开关 / 进度数据
+   固定宽度并随滚动钉住——与主控页、数据页同一条栏目习惯。
+   卡片三态（已解锁 / 未解锁 / 隐藏遮蔽）；已解锁的卡带指针跟随的镜面反光，
+   未解锁保持哑光。存档来自更高版本时进冻结态：顶部警示条 + 进度显示不可用 +
+   导入/重置置灰。
+   ============================================================================ */
+
+.maarm-ach-sheet {
+  position: fixed;
+  top: 52px;                      /* 标题栏高度 */
+  bottom: 44px;                   /* 底栏高度 */
+  left: 0;
+  right: 0;
+  z-index: 9000;                  /* 正文之上、模态（9999）之下 */
+  background: var(--maarm-background);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--maarm-duration-base) ease,
+              transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach-sheet[hidden] { display: none; }
+.maarm-ach-sheet.is-open { opacity: 1; transform: none; }
+
+/* ---------- 页头：返回 + 面包屑 + 筛选（贴右） ---------- */
+.maarm-ach-head {
+  flex: 0 0 53px;                 /* 与通用卡头等高 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;                /* 与正文卡片的 12px 页边对齐：筛选右缘正对卡片右缘 */
+  background: var(--maarm-surface);
+  border-bottom: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-back {
+  width: 28px; height: 28px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--maarm-foreground-secondary);
+  display: grid; place-items: center; cursor: pointer;
+}
+.maarm-ach-back:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.maarm-ach-back svg {
+  width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.maarm-ach-crumb { display: flex; align-items: baseline; gap: 7px; }
+.maarm-ach-crumb__up, .maarm-ach-crumb__sep { font-size: 12px; color: var(--maarm-foreground-muted); }
+.maarm-ach-crumb__cur { font-size: 14px; font-weight: 600; color: var(--maarm-foreground); }
+
+.maarm-ach-seg {
+  display: flex; gap: 2px; padding: 2px;
+  margin-left: auto;
+  border-radius: 8px;
+  background: var(--maarm-surface-active);
+}
+.maarm-ach-filter {
+  font: inherit; font-size: 12px;
+  padding: 4px 12px; border: 0; border-radius: 6px;
+  background: none; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.maarm-ach-filter:hover { color: var(--maarm-foreground); }
+.maarm-ach-filter.is-active {
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground);
+  font-weight: 600;
+  box-shadow: var(--maarm-shadow-sm);
+}
+
+.maarm-ach-banner {
+  flex: 0 0 auto;
+  margin: 12px 12px 0;
+  padding: 10px 14px;
+  border-radius: var(--maarm-radius-md);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #8A5A00;
+  background: #FFF7E6;
+  border: 1px solid #F3DFB8;
+}
+.maarm-ach-banner[hidden] { display: none; }
+
+/* ---------- 正文：左分组拉伸、右栏固定 ---------- */
+.maarm-ach-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; }
+.maarm-ach-inner {
+  max-width: 1440px; margin: 0 auto;
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.maarm-ach-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.maarm-ach-aside {
+  /* 固定宽度但不许被内容撑开：min-width:0 让 flex 项的自动最小尺寸失效，
+     否则一条长路径就能把整栏顶宽、把左边分组挤窄 */
+  flex: 0 0 340px;
+  min-width: 0;
+  position: sticky; top: 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+/* 总览 */
+.maarm-ach-meta { font-size: 12px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums; }
+.maarm-ach-sum { display: flex; align-items: baseline; gap: 4px; }
+.maarm-ach-sum__num { display: flex; align-items: baseline; gap: 3px; }
+.maarm-ach-sum__num b { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.maarm-ach-sum__num span { font-size: 14px; color: var(--maarm-foreground-muted); }
+.maarm-ach-sum__pct { margin-left: auto; font-size: 12px; color: var(--maarm-foreground-muted); }
+.maarm-ach-sum__track {
+  height: 6px; border-radius: 3px; margin-top: 10px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-sum__fill {
+  height: 100%; border-radius: 3px;
+  background: var(--maarm-foreground);
+  transition: width var(--maarm-duration-slow) ease;
+}
+.maarm-ach-sum__tiers {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-tier-stat { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--maarm-foreground-muted); }
+.maarm-ach-tier-stat__name { display: flex; align-items: center; gap: 5px; }
+.maarm-ach-tier-stat__name::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tier-color, #1F2328);
+}
+.maarm-ach-tier-stat__val {
+  margin-left: auto; font-size: 13px; font-weight: 600;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.maarm-ach-tier-stat__val em {
+  font-style: normal; font-weight: 400; font-size: 11px;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-ach-hint {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--maarm-border-light);
+  font-size: 11.5px; line-height: 1.5; color: var(--maarm-foreground-muted);
+  overflow-wrap: anywhere;        /* 兜底：万一还有长串进来，换行而不是撑栏 */
+}
+/* 操作结果（如导出成功带文件名）：一行放不下就省略，完整路径在 title 里 */
+.maarm-ach-hint.is-result { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 解锁提示开关行 */
+.maarm-ach-row { display: flex; align-items: flex-start; gap: 12px; }
+.maarm-ach-row__main { flex: 1; min-width: 0; }
+.maarm-ach-row__title { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
+.maarm-ach-row__desc { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--maarm-foreground-secondary); }
+
+.maarm-ach-switch {
+  position: relative; flex: 0 0 auto;
+  width: 40px; height: 24px; border-radius: 12px;
+  border: 0; padding: 0; cursor: pointer;
+  background: var(--maarm-border-strong);
+  transition: background var(--maarm-duration-base) ease;
+}
+.maarm-ach-switch i {
+  position: absolute; top: 2px; left: 2px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--maarm-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform var(--maarm-duration-base) ease;
+}
+.maarm-ach-switch.is-on { background: var(--maarm-primary); }
+.maarm-ach-switch.is-on i { transform: translateX(16px); }
+.maarm-ach-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 进度数据：竖排按钮 */
+.maarm-ach-actions { display: flex; flex-direction: column; gap: 10px; }
+.maarm-ach-actions .maarm-btn { width: 100%; height: 30px; }
+.maarm-ach-danger:hover:not(:disabled) {
+  border-color: #F3C9CA; color: var(--maarm-primary); background: #FFF7F7;
+}
+
+/* ---------- 分组卡 ---------- */
+.maarm-ach-group__meta { display: flex; align-items: center; gap: 10px; }
+.maarm-ach-group__count { font-size: 12px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums; }
+.maarm-ach-group__bar {
+  flex: 0 0 84px; height: 4px; border-radius: 2px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-group__bar i { display: block; height: 100%; border-radius: 2px; background: var(--maarm-foreground-secondary); }
+.maarm-ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(222px, 1fr)); gap: 10px; }
+
+/* ---------- 成就卡：档位色 + 镜面反光 ---------- */
+.maarm-ach-card {
+  --tier: #1F2328;
+  --mx: 50%; --my: 50%; --ang: 118deg; --glare: 0; --hue: 0deg;
+  position: relative;
+  display: flex; flex-direction: column;
+  min-height: 116px;
+  /* 倾斜与翻面合进同一个 rotateY：转的是这张卡，不是卡里的内容。
+     全部角度由 js 的弹簧逐帧写进变量（见成就页「卡片动效」段），这里不设 transition，
+     否则 CSS 缓动会和弹簧叠成二次延迟。preserve-3d 是翻面的前提：只有三维上下文里，
+     子面的背面朝向才会被 backface-visibility 判定（塌平后正面会一直朝前，翻过去是镜像字）。 */
+  transform: perspective(800px) translate3d(0, var(--lift, 0px), 0)
+             rotateX(var(--rx, 0deg))
+             rotateY(calc(var(--ry, 0deg) + var(--flip, 0deg)))
+             scale(var(--scale, 1));
+  transform-style: preserve-3d;
+  transition: box-shadow var(--maarm-duration-fast) ease;
+}
+
+/* 卡面：底、描边、内边距、圆角、裁切都在面上——卡本身只是一层透明的三维舞台，
+   这样翻面时框和内容一起转，而扫光仍被圆角裁掉。 */
+.maarm-ach-card__face {
+  position: relative;
+  display: flex; flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid transparent;
+  border-radius: var(--maarm-radius-md);
+  overflow: hidden;                       /* 反向补偿的光带会略微超出，裁掉 */
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--edge, var(--maarm-border)) border-box;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.maarm-ach-card[data-tier="normal"]   { --tier: #1F2328; }
+.maarm-ach-card[data-tier="rare"]     { --tier: #38BDF8; }
+.maarm-ach-card[data-tier="precious"] { --tier: var(--maarm-primary); }
+.maarm-ach-card[data-tier="hidden"]   { --tier: #C9B6F2; }
+
+/* 未解锁：哑光，不倾斜、不反光——没到手的东西不该比到手更亮（弹簧目标恒为 0，见 js） */
+.maarm-ach-card.is-locked .maarm-ach-card__face {
+  background:
+    linear-gradient(#FBFCFE, #FBFCFE) padding-box,
+    var(--maarm-border) border-box;
+}
+.maarm-ach-card.is-locked .maarm-ach-card__face::before,
+.maarm-ach-card.is-locked .maarm-ach-card__face::after { display: none; }
+
+/* 已解锁：一层极淡的档位色箔底（白卡上没有可反的光，一点色偏才有东西可反） */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face {
+  --edge: color-mix(in srgb, var(--tier) 28%, var(--maarm-border));
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--tier) 5%, #FFFFFF),
+      color-mix(in srgb, var(--tier) 2%, #FAFBFF)) padding-box,
+    var(--edge) border-box;
+}
+
+/* 光源：指针一侧染一层档位色，对侧轻压暗 */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face::before {
+  content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+  pointer-events: none; opacity: var(--glare); transition: opacity 200ms ease;
+  background:
+    radial-gradient(150% 130% at var(--mx) var(--my),
+      color-mix(in srgb, var(--tier) 18%, #FFFFFF) 0%,
+      rgba(255, 255, 255, 0) 56%,
+      rgba(31, 35, 40, 0.055) 100%);
+}
+/* 镜面光带：不跟卡片一起转（略过补偿），视角一动就相对卡面滑开一截 */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face::after {
+  content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+  pointer-events: none; opacity: var(--glare); transition: opacity 200ms ease;
+  transform: rotateX(calc(var(--rx, 0deg) * -1.25)) rotateY(calc(var(--ry, 0deg) * -1.25)) scale(1.14);
+  transform-origin: 50% 50%;
+  background: linear-gradient(var(--ang),
+    rgba(255, 255, 255, 0) 38%,
+    rgba(255, 255, 255, 0.28) 44%,
+    rgba(255, 255, 255, 0.82) 48.5%,
+    rgba(255, 255, 255, 1) 50.5%,
+    rgba(255, 255, 255, 0.82) 52.5%,
+    rgba(255, 255, 255, 0.28) 57%,
+    rgba(255, 255, 255, 0) 62%);
+}
+/* 面内的文字要压在光带之上（伪元素 z-index: 0，内容包一层自己的层） */
+.maarm-ach-card__front > *, .maarm-ach-card__back > * { position: relative; z-index: 1; }
+.maarm-ach-card.is-unlocked:hover .maarm-ach-card__face {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 24px color-mix(in srgb, var(--tier) 14%, rgba(16, 18, 24, 0.10));
+  --edge: conic-gradient(from calc(var(--ang) - 90deg),
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 0%,
+    #FFFFFF 18%,
+    color-mix(in srgb, var(--tier) 30%, #EAF2FF) 34%,
+    #FFFFFF 52%,
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 68%,
+    #FFFFFF 84%,
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 100%);
+}
+
+/* 隐藏档已解锁：七彩镭射——底色与描边是常亮的整片光谱，扫光换成光谱带并走叠加混合 */
+.maarm-ach-card[data-tier="hidden"].is-unlocked .maarm-ach-card__face {
+  --edge: conic-gradient(from var(--hue) in oklch longer hue,
+    oklch(0.80 0.15 0deg), oklch(0.80 0.15 60deg), oklch(0.80 0.15 120deg),
+    oklch(0.80 0.15 180deg), oklch(0.80 0.15 240deg), oklch(0.80 0.15 300deg),
+    oklch(0.80 0.15 360deg));
+  background:
+    linear-gradient(150deg in oklch longer hue,
+      oklch(0.995 0.010 calc(var(--hue) * 0.4)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 72deg)),
+      oklch(0.995 0.010 calc(var(--hue) * 0.4 + 144deg)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 216deg)),
+      oklch(0.995 0.010 calc(var(--hue) * 0.4 + 288deg)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 360deg))) padding-box,
+    var(--edge) border-box;
+}
+.maarm-ach-card[data-tier="hidden"].is-unlocked .maarm-ach-card__face::after {
+  mix-blend-mode: overlay;        /* 只改明暗、不替换卡面颜色 */
+  background: linear-gradient(var(--ang) in oklch longer hue,
+    rgba(255, 255, 255, 0) 42%,
+    oklch(0.70 0.20 calc(200deg + var(--hue) * 0.3) / 0.75) 45.5%,
+    oklch(0.82 0.17 calc(255deg + var(--hue) * 0.3)) 48.5%,
+    rgba(255, 255, 255, 1) 50.5%,
+    oklch(0.82 0.17 calc(305deg + var(--hue) * 0.3)) 52.5%,
+    oklch(0.70 0.20 calc(20deg + var(--hue) * 0.3) / 0.75) 55.5%,
+    rgba(255, 255, 255, 0) 59%);
+}
+.maarm-ach-card[data-tier="hidden"].is-unlocked:hover .maarm-ach-card__face {
+  --edge: conic-gradient(from calc(var(--ang) - 90deg) in oklch longer hue,
+    oklch(0.80 0.15 0deg), oklch(0.80 0.15 90deg), oklch(0.80 0.15 180deg),
+    oklch(0.80 0.15 270deg), oklch(0.80 0.15 360deg));
+}
+
+/* ---------- 翻面：点一下卡看触发条件 ----------
+   翻的是卡本身（角度来自 --flip，与倾斜合进同一个 rotateY）；两面各自
+   backface-visibility: hidden，转到 90° 时正面消失、背面接上。 */
+.maarm-ach-card { cursor: pointer; }
+.maarm-ach-card:focus-visible { outline: 2px solid var(--maarm-primary); outline-offset: 2px; }
+.maarm-ach-card__front { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+/* 背面：一张与正面同尺寸、预先转 180° 的面；卡转到 180° 时它正好正对观众。
+   内容一行居中——卡只有 220 来像素宽，标签缩小一号压在条件上方，
+   挤成「标签：条件」会先断行，看着像两段。 */
+.maarm-ach-card__back {
+  position: absolute; inset: 0;
+  transform: rotateY(180deg);
+  align-items: center; justify-content: center;
+  gap: 3px;
+  padding: 0 8px;
+  text-align: center;
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card__cond-tag {
+  font-size: 9.5px; letter-spacing: 0.12em;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-ach-card__cond { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+/* 卡内容 */
+.maarm-ach-card__head { display: flex; align-items: center; gap: 8px; }
+.maarm-ach-card__badge {
+  flex: 0 0 auto;
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--maarm-surface-hover);
+  color: var(--maarm-foreground-secondary);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__badge { color: #B9C0CE; }
+.maarm-ach-card.is-unlocked .maarm-ach-card__badge {
+  background: color-mix(in srgb, var(--tier) 12%, var(--maarm-surface));
+  color: var(--tier);
+}
+.maarm-ach-card__badge svg {
+  width: 15px; height: 15px;
+  fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.maarm-ach-card__tier { margin-left: auto; font-size: 11px; color: var(--maarm-foreground-muted); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__tier {
+  color: color-mix(in srgb, var(--tier) 65%, var(--maarm-foreground));
+}
+.maarm-ach-card__title {
+  margin-top: 9px;
+  font-size: 13.5px; font-weight: 600; line-height: 1.3;
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__title { font-weight: 500; color: var(--maarm-foreground-secondary); }
+.maarm-ach-card__masked { letter-spacing: 0.18em; color: var(--maarm-foreground-muted); }
+.maarm-ach-card__desc {
+  margin-top: 4px;
+  font-size: 11.5px; line-height: 1.5; color: var(--maarm-foreground-muted);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.maarm-ach-card__foot {
+  margin-top: auto; padding-top: 9px;
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach-card__bar {
+  flex: 1 1 auto; height: 4px; border-radius: 2px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-card__bar i { display: block; height: 100%; border-radius: 2px; background: var(--maarm-foreground-secondary); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot { color: var(--maarm-success-strong); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success);
+}
+/* 隐藏档已解锁：彩虹标题（复用页首扫光） */
+.maarm-ach-card__title.is-rainbow { --maarm-scan-cycle: 6s; }
+
+/* 冻结态：进度区压暗，界面上以「不可用」占位，不谎报 0/1 */
+.maarm-ach-sheet.is-frozen .maarm-ach-card__foot,
+.maarm-ach-sheet.is-frozen .maarm-ach-sum { opacity: 0.45; }
+
+.maarm-ach-empty {
+  padding: 40px 0; text-align: center;
+  font-size: 13px; color: var(--maarm-foreground-muted);
+}
+
+/* 减弱动效：不出倾斜（js 里目标恒为 0），翻面照常但走临界阻尼、快进快出 */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-ach-card.is-unlocked .maarm-ach-card__face::after { transform: scale(1.14); }
 }

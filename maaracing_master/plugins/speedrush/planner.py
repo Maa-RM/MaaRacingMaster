@@ -140,8 +140,8 @@ _MODEL_AGE_MAX_S = 0.30
 # 按实机口径补 0.10s（策略文件记的观测链 ≈0.15s，trace 线角龄 0.02~0.07s）。
 _MODEL_DELAY_EXTRA_S = 0.10
 _MODEL_HIST_S = 1.0         # 延迟对齐历史窗
-# 短预瞄控制器候选（2026-11-01）：幅度按归一杆值、宽度按秒。人工局脉冲中位
-# 0.15~0.19s、峰值中位 0.95~0.97；程序旧律持续中位 0.3s、反向 0.6~0.85/s。
+# 短预瞄控制器候选（2026-11-01）：幅度按归一杆值、宽度按秒。人工局满杆段
+# 0.10~0.12s、全段占 13.1%；程序旧律持续中位 0.3s、反向 0.6~0.85/s。
 _PREVIEW_AMPS = (0.30, 0.60, 0.90, 1.0)
 _PREVIEW_WIDTHS = (0.10, 0.15, 0.20, 0.25, 0.30)
 _SPD_TAU_S = 20.0           # 比例的泄漏记忆（车速慢变；更长的记忆跟不上加速）
@@ -456,22 +456,26 @@ def stick_of(psi_des: float, psi: float, r: float, p: Planner,
     return max(-1.0, min(1.0, u))
 
 
-def heading_for_error(e: float, p: Planner) -> float:
+def heading_for_error(e: float, p: Planner,
+                      klat: float | None = None) -> float:
     """位置误差 → 目标车头角（先把误差换成**期望横速**，再按固定参考车速换算）。
 
     期望横速 = ``k_lat_lane_s × e``（道/s）——这是**闭环带宽**的设定值（一条
     道误差要在 ~1s 内收完），与车重、车速无关；由 ``x' = v_ref·tanψ/LANE_W``
-    反解出目标朝向 ``tanψ = 期望横速 × LANE_W / v_ref``。
+    反解出目标朝向 ``tanψ = 期望横速 × LANE_W / v_ref``。``klat`` 覆盖带宽
+    （并线承诺期用 merge_klat_scale 放大；台架证据见 bench_merge_stick）。
     **固定参考车速（2026-11-01 裁决）**：在线车速估计只在车头歪时存在（直道
     约 45% 无读数，211722 对局日志核对），HUD 得分速度维护者已裁定不作首选
     速度传感器；对象侧预测用跟踪层的相对接近率，自车运动全部按固定参考。
     已知代价=闭环带宽随真实车速变（41 上下每差 10 m/s 横移速率差约 25%），
     有每拍位置修正兜底。"""
-    return math.atan(p.k_lat_lane_s * e * LANE_W / p.speed_ref_mps)
+    k = p.k_lat_lane_s if klat is None else klat
+    return math.atan(k * e * LANE_W / p.speed_ref_mps)
 
 
 def law(e: float, psi: float, r: float, p: Planner, gentle: bool = False,
-        deadband: float | None = None, cap: float | None = None) -> float:
+        deadband: float | None = None, cap: float | None = None,
+        klat: float | None = None) -> float:
     """位置误差 → 目标朝向 → 杆值（见 ``heading_for_error``）。
 
     死区 ``hold_deadband_lane`` 只吃位置误差：带内不换朝向。"""
@@ -479,7 +483,7 @@ def law(e: float, psi: float, r: float, p: Planner, gentle: bool = False,
         if deadband is None else deadband
     if abs(e) < db:
         e = 0.0
-    return stick_of(heading_for_error(e, p), psi, r, p, gentle, cap)
+    return stick_of(heading_for_error(e, p, klat), psi, r, p, gentle, cap)
 
 
 def step(x: float, psi: float, psi_cmd: float, v: float, dt: float,
@@ -637,6 +641,10 @@ class LateralPlanner:
         self._preview_active = False     # 本拍预瞄是否接管（trace pv）
         self._plan_center_t = 0.0        # 计划维护态连续时长（秒，进入驻留）
         self._plan_center_gated = False  # 驻留后的维护态（预瞄准入）
+        self._plan_precise_t = 0.0       # 计划交付态（pass/graze）连续时长
+        self._plan_precise_gated = False  # 驻留后的交付态（预瞄准入）
+        self._plan_coverage_t = 0.0      # 全段覆盖闸：安全拍连续时长
+        self._plan_coverage_gated = False  # 驻留后的全段覆盖（预瞄准入）
         # 横向位置证据新鲜度（2026-10-31）：距上一次新证据的秒数 + 不可信标志。
         # 不可信期内位置是外推值：冻结模型积分、停线融合、执行层把杆归零
         # （只按朝向回正，不积分旧转杆）、计划不接管（见 update 与
@@ -771,6 +779,10 @@ class LateralPlanner:
              # 4d 驻留面：pcn=计划维护态连续秒数，pcg=驻留后的准入
              "pcn": round(self._plan_center_t, 2),
              "pcg": bool(self._plan_center_gated),
+             "ppn": round(self._plan_precise_t, 2),
+             "ppg": bool(self._plan_precise_gated),
+             "pvn": round(self._plan_coverage_t, 2),
+             "pvg": bool(self._plan_coverage_gated),
              # 并线杆值上调量（平顶峰适配，trace-only）：缺口积分当前值
              "mboost": round(self._sustain_boost, 3),
              # 分支归因面（2026-11-02，8750 型跳变）：exec=规划器信念横位
@@ -1070,6 +1082,11 @@ class LateralPlanner:
             # 范围只限并线，保持态仍走原朝向反馈。状态不可信的归零兜底
             # （上一分支）不变。
             sustain = getattr(decision, "phase", "keep") == "merging"
+            # 并线承诺期提带宽（merge_klat_scale）：一条道要在 ~1.2s 内收完，
+            # 1.2 道/s 的带宽在 0.2s 执行滞后下只剩 0.18 杆、一道走近 2 秒——
+            # 台架 bench_merge_stick 实测 2.0 倍后到位 1.15s、超调 0.10 道。
+            klat = (self.p.k_lat_lane_s * self.p.merge_klat_scale
+                    if sustain else None)
             # 场跟随：保持态=维护性定中心（gentle，16:44 局）；机动态
             # （目标距自车足够远）=全权——机动态死区/杆幅另配。选择层
             # maneuver 现在按安全区间（约 0.17 道）置位，但执行层全权仍要求
@@ -1087,10 +1104,11 @@ class LateralPlanner:
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,
-                    cap=self.p.maneuver_stick_max, sustain=sustain)
+                    cap=self.p.maneuver_stick_max, sustain=sustain,
+                    klat=klat)
             else:
                 steer_raw = self._pd(decision.x_target, gentle=True,
-                                     sustain=sustain)
+                                     sustain=sustain, klat=klat)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
 
@@ -1116,7 +1134,8 @@ class LateralPlanner:
                 assert decision.x_target is not None   # merge_commit 蕴含非 None
                 steer_raw = self._pd(
                     decision.x_target, gentle=False,
-                    cap=self.p.maneuver_stick_max)
+                    cap=self.p.maneuver_stick_max,
+                    klat=self.p.k_lat_lane_s * self.p.merge_klat_scale)
                 # 承诺并线的目标是决策层的道，不能拿来当"短断供保持"的
                 # 航向——断供后并线该由 PD 继续跟目标道。
                 self._plan_hold_left = 0
@@ -1384,6 +1403,34 @@ class LateralPlanner:
             plan_center and (self._preview_active
                              or self._plan_center_t + 1e-9
                              >= _PLAN_CENTER_DWELL_S))
+        # 预瞄扩到 pass/机动态（2026-11-09）：只接交付型意图（pass/graze）、
+        # 计划 layer=2 且无碰撞代价的拍；安全/并线/避让仍走连续律。
+        plan_precise = (
+            self.p.preview_maneuver_enabled
+            and plan is not None and plan.valid
+            and getattr(plan, "layer", None) == 2
+            and getattr(plan, "collision_cost", 0.0) <= 0.0
+            and decision.intent_precise)
+        self._plan_precise_t = (self._plan_precise_t + dt_s
+                                if plan_precise else 0.0)
+        self._plan_precise_gated = bool(
+            plan_precise and (self._preview_active
+                              or self._plan_precise_t + 1e-9
+                              >= _PLAN_CENTER_DWELL_S))
+        # 全段覆盖闸（2026-11-09，试验后默认关）：计划层/意图不再决定用不用
+        # 脉冲，只保留「计划认为有碰撞代价」与安全链。实机两局否掉：目标本身
+        # 反向 228 次/分，脉冲逐拍追踪把旧连续律吸收掉的抖动变成可见扭动
+        # （横向过零 31→55/分、换向 60→111/分）。要再开须先稳定目标。
+        plan_spot_ok = (plan is None
+                        or getattr(plan, "collision_cost", 0.0) <= 0.0)
+        coverage_on = bool(self.p.preview_coverage_enabled)
+        self._plan_coverage_t = (self._plan_coverage_t + dt_s
+                                 if (coverage_on and plan_spot_ok) else 0.0)
+        self._plan_coverage_gated = bool(
+            coverage_on and plan_spot_ok
+            and (self._preview_active
+                 or self._plan_coverage_t + 1e-9
+                 >= _PLAN_CENTER_DWELL_S))
         preview_ok = (
             st is DecisionState.CRUISE
             and not self.state_unverified
@@ -1391,18 +1438,28 @@ class LateralPlanner:
             and not plan_held
             and not frame_shift
             and decision.x_target is not None
-            and getattr(decision, "phase", "keep") != "merging"
+            and (getattr(decision, "phase", "keep") != "merging"
+                 or self._plan_coverage_gated)
             and self._heading_src == "model"
             and abs(self.state.executed_lane) <= _WALL_ESCAPE_LANE
+            and (not coverage_on or plan_spot_ok)
             and (plan is None or not plan.valid
-                 or self._plan_center_gated)
+                 or self._plan_center_gated or self._plan_precise_gated
+                 or self._plan_coverage_gated)
             and not (plan is not None
                      and getattr(plan, "reason", None) in (
                          "plan:stale", "plan:frame_shift",
                          "plan:infeasible_corridor")))
         if preview_ok:
             assert decision.x_target is not None   # preview_ok 蕴含非 None
-            u_pv = self._preview_steer(dt_s, decision.x_target, steer_raw)
+            # 覆盖闸下计划判「要跨道」（layer=2）的拍同样用机动态惩罚缩放：
+            # 平滑/变化惩罚会把换道起步幅度压到 0.6 档（0.68 道静止起步：
+            # 缩放关 0.60、缩放开 0.90），人对跨道目标打的是满杆。
+            u_pv = self._preview_steer(
+                dt_s, decision.x_target, steer_raw,
+                maneuver=(self._plan_precise_gated
+                          or (self._plan_coverage_gated and plan is not None
+                              and getattr(plan, "layer", None) == 2)))
             if u_pv is None:
                 preview_ok = False
             else:
@@ -1424,18 +1481,19 @@ class LateralPlanner:
         self._last_raw = raw
         return GamepadCommand(steer_x=raw, throttle=self.p.throttle_raw)
 
-    def _preview_steer(self, dt_s: float, target: float,
-                       u_orig: float) -> float | None:
+    def _preview_steer(self, dt_s: float, target: float, u_orig: float,
+                       maneuver: bool = False) -> float | None:
         """短预瞄转向：候选脉冲剖面滚动预测（巡航维护态替代连续律）。
 
-        实测人工局：有效打杆只占 20~48%，每次脉冲中位 0.15~0.19 s、近满杆，
-        脉冲间松开 0.15~0.29 s 观察，方向反转几乎为 0——人不是「一直按着」，
+        实测人工局：满杆占全段 13.1%，每次脉冲中位 0.10~0.12 s、近满杆，
+        脉冲间松开 0.28~0.50 s 观察，方向反转几乎为 0——人不是「一直按着」，
         而是在 0.45 s 回路延迟下用短脉冲限冲量、靠车自身回正（τ≈0.2 s）
         衰减后再看。这里在 0.8 s 视界内用带执行滞后的车模滚每种候选
         （脉冲宽度×幅度 + 松开），代价=预测横向误差²+转向变化²+换向惩罚，
         取第一拍执行、下一拍重算；目标仍是决策意图。
 
-        只在影子朝向新鲜且非安全/并线通道时调用；返回 None=不接管。"""
+        只在影子朝向新鲜且安全链放行时调用（覆盖闸开启后并线也接，有碰撞
+        代价的计划避让除外）；返回 None=不接管。"""
         p = self.p
         if p.preview_horizon_s <= 0.0 or target is None:
             return None
@@ -1452,6 +1510,11 @@ class LateralPlanner:
         n = max(1, int(round(p.preview_horizon_s / dt_s)))
         prev = 0.0 if self._preview_prev_u is None else self._preview_prev_u
         a = 1.0 - math.exp(-dt_s / _MODEL_YAW_TAU_S)
+        # 机动态（pass/graze）：人工是瞬时满舵脉冲，平滑/变化惩罚按缩放放宽；
+        # 维护态保持原权重，避免把定心动作改成打点。
+        scale = p.preview_maneuver_penalty_scale if maneuver else 1.0
+        eff_w = p.preview_eff_w * scale
+        change_w = p.preview_change_w * scale
 
         def roll(u0: float, width: float) -> float:
             r, psi, x = r0, psi0, x0
@@ -1463,10 +1526,10 @@ class LateralPlanner:
                 psi += r * dt_s
                 x += v * math.tan(psi) / LANE_W * dt_s
                 cost += p.preview_err_w * (x - target) ** 2
-                cost += p.preview_eff_w * (u - u_prev) ** 2
+                cost += eff_w * (u - u_prev) ** 2
                 u_prev = u
             cost += p.preview_term_w * (x - target) ** 2
-            cost += p.preview_change_w * (u0 - prev) ** 2
+            cost += change_w * (u0 - prev) ** 2
             if u0 * prev < 0.0:
                 cost += p.preview_rev_w
             return cost
@@ -1488,20 +1551,24 @@ class LateralPlanner:
 
     def _pd(self, target: float, gentle: bool = False,
             deadband: float | None = None,
-            cap: float | None = None, sustain: bool = False) -> float:
+            cap: float | None = None, sustain: bool = False,
+            klat: float | None = None) -> float:
         """延迟补偿前瞻 PD（设计稿 §三）：状态外推到 t+τ 再入环，阻尼项反向。
 
         gentle=维护性转向（定中心/保持车道）：误差过死区才发力、杆幅限
         hold_stick_max（16:44 局：全权维护 PD 满左满右交替、速度起不来）。
         机动态（maneuver）传显式 deadband/cap：默认全权（0/None），阶段 2
         起用 maneuver_deadband_lane 与 maneuver_stick_max。
-        ``sustain``：并线承诺时按 ψ̂=0、无角速度解（见 _law）。"""
+        ``sustain``：并线承诺时按 ψ̂=0、无角速度解（见 _law）。
+        ``klat``：覆盖闭环带宽（并线承诺期放大，见 heading_for_error）。"""
         x_pred = (self.state.executed_lane
                   + self.state.v_lat * self.p.lookahead_tau_s)
-        return self._law(target - x_pred, gentle, deadband, cap, sustain)
+        return self._law(target - x_pred, gentle, deadband, cap, sustain,
+                         klat)
 
     def _law(self, e: float, gentle: bool, deadband: float | None = None,
-             cap: float | None = None, sustain: bool = False) -> float:
+             cap: float | None = None, sustain: bool = False,
+             klat: float | None = None) -> float:
         """位置误差入环：没有线角证据时按 ``ψ̂=0、无角速度`` 的比例段。
 
         退化不是第二套模型：它仍是同一式子对同一目标的解，只是把未知的
@@ -1526,13 +1593,13 @@ class LateralPlanner:
         no_heading = self._heading_stale or sustain
         u = law(e, self.state.heading if not no_heading else 0.0,
                 self.state.yaw_rate if not no_heading else 0.0,
-                self.p, gentle, deadband, cap)
+                self.p, gentle, deadband, cap, klat)
         if not sustain:
             return u
         db = (self.p.hold_deadband_lane if gentle else 0.0) \
             if deadband is None else deadband
         e_eff = 0.0 if abs(e) < db else e
-        psi_cmd = heading_for_error(e_eff, self.p)
+        psi_cmd = heading_for_error(e_eff, self.p, klat)
         psi_obs = (self.head.psi
                    if self.head.psi is not None
                    and self.head.psi_age_s() <= self.p.heading_vel_max_age_s

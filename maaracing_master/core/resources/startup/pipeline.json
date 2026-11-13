@@ -13,8 +13,10 @@
             "startup.popup.continue",
             "startup.popup.close_reward",
             "startup.popup.close_marketing",
+            "startup.popup.close_x",
             "startup.login.engine_start",
-            "startup.hall.confirm.1"
+            "startup.hall.confirm.1",
+            "startup.advance"
         ],
         "pre_delay": 0,
         "post_delay": 0,
@@ -217,6 +219,36 @@
         "timeout": 500,
         "rate_limit": 0
     },
+    "startup.popup.close_x": {
+        "attach": {
+            "_label": "弹窗右上角关闭叉：两张皮肤共用全局模板目录（深色弹窗白叉 / 白色弹窗深叉）。搜索区取整个右上象限——叉的位置随弹窗尺寸浮动，收窄到某次实测的框会在换皮时失效"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.70, 0.02, 0.99, 0.42],
+                    "templates": ["common_close_dark.png", "common_close_light.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 800}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
     "startup.login.engine_start": {
         "attach": {
             "_label": "登录页「引擎启动」：手柄模式按 Y（焦点默认在按钮上，不做光标导航），鼠标模式点识别框"
@@ -270,6 +302,7 @@
             "startup.popup.continue",
             "startup.popup.close_reward",
             "startup.popup.close_marketing",
+            "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.2"
         ],
@@ -299,6 +332,7 @@
             "startup.popup.continue",
             "startup.popup.close_reward",
             "startup.popup.close_marketing",
+            "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.3"
         ],
@@ -328,6 +362,7 @@
             "startup.popup.continue",
             "startup.popup.close_reward",
             "startup.popup.close_marketing",
+            "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.done"
         ],
@@ -336,6 +371,38 @@
         "post_delay": 1000,
         "timeout": 500,
         "rate_limit": 300
+    },
+    "startup.advance": {
+        "attach": {
+            "_label": "未知页面兜底：下半屏按文案找推进按钮并点它（继续 / 进入 / 领取 / 点击屏幕继续）；关闭叉与返回箭头是图形，仍由模板节点负责"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Advance",
+                "custom_recognition_param": {
+                    "words": ["继续", "进入", "领取", "确定", "确认", "下一步", "点击屏幕", "点击空白", "跳过"],
+                    "blocklist": ["购买", "消耗", "钻石", "点券", "取消", "退出", "删除", "分享", "转发", "发送", "订阅", "充值"],
+                    "zone": [0.0, 0.45, 1.0, 1.0],
+                    "max_chars": 8,
+                    "min_area": 0.0008,
+                    "min_score": 0.5
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 1500}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 2500,
+        "rate_limit": 0
     },
     "startup.done": {
         "attach": {

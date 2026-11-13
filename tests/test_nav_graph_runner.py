@@ -1,0 +1,384 @@
+# -*- coding: utf-8 -*-
+"""P2a-Q4：WgcapController（帧注入/新鲜度守卫）与图执行节拍。
+
+注意：maa binding 的 C 句柄对象（CustomController/Tasker/Resource）不能在
+pytest 进程内反复构造/回收（GC 顺序触发 C 层悬空回调 → 0xC0000005 崩溃），
+本文件全部经 monkeypatch 把 maa 工厂替换为纯 Python 桩，只测 Python 逻辑。
+"""
+from __future__ import annotations
+
+import json
+import math
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+
+# nav_graph 顶层 import maa，CI 轻依赖环境（只装 pytest+numpy+opencv-headless）下
+# 收集期即 ERROR 并中断整个 pytest 会话；按仓内既有口径整文件优雅跳过。
+try:
+    from maaracing_master.core import nav_graph as ng
+    from maaracing_master.core.nav_graph import STALE_FRAME_MS, FrameStaleError
+
+    _RUNTIME_OK, _RUNTIME_ERR = True, ""
+except Exception as exc:  # noqa: BLE001
+    _RUNTIME_OK, _RUNTIME_ERR = False, str(exc)
+
+pytestmark = pytest.mark.skipif(
+    not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
+)
+
+
+@pytest.fixture()
+def pure_maa(monkeypatch):
+    """把 nav_graph 命名空间里的 maa 工厂替换为无 C 层的桩。"""
+    class _NoInit:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(ng, "CustomController", _NoInit)
+    monkeypatch.setattr(ng, "CustomAction", _NoInit)
+    monkeypatch.setattr(ng, "CustomRecognition", _NoInit)
+    monkeypatch.setattr(ng, "PipelineLogger", _NoInit)
+    monkeypatch.setattr(ng, "Resource", lambda: MagicMock())  # 需 register_* 方法
+    monkeypatch.setattr(ng, "Tasker", lambda: MagicMock())
+
+
+class _FakeCapture:
+    """CaptureAdapter 形态的桩：可控帧/年龄。"""
+
+    def __init__(self):
+        self.frame: np.ndarray | None = np.zeros((720, 1280, 3), dtype=np.uint8)
+        self.fid = 7
+        self.age = 0.0
+
+    def frame_with_age(self):
+        return (self.frame, self.fid, 0, self.age)
+
+
+def test_screencap_injects_rgb_as_bgr(pure_maa):
+    cap = _FakeCapture()
+    cap.frame[:, :] = (10, 20, 30)  # RGB 通道序
+    ctrl = ng.WgcapController(cap)
+    out = ctrl.screencap()
+    assert out.shape == (720, 1280, 3)
+    assert out[0, 0, 0] == 30 and out[0, 0, 2] == 10  # BGR 反转
+    assert ctrl.last_frame_id == 7
+
+
+def test_stale_frame_is_reused(pure_maa):
+    """WGC 对静止画面不出新帧：帧龄超限只告警，继续复用最后一帧。"""
+    cap = _FakeCapture()
+    ctrl = ng.WgcapController(cap, stale_ms=100.0)
+    cap.age = 100.1
+    assert ctrl.screencap() is not None
+    cap.age = 99.9
+    assert ctrl.screencap() is not None  # 阈值内正常
+
+
+def test_missing_frame_raises(pure_maa):
+    cap = _FakeCapture()
+    cap.frame = None
+    cap.age = math.inf
+    with pytest.raises(FrameStaleError):
+        ng.WgcapController(cap).screencap()
+
+
+def test_default_threshold_matches_plan():
+    assert STALE_FRAME_MS == 500.0  # plan §4.2 帧新鲜度守卫
+
+
+def test_click_action_uses_xywh_rect_contract(pure_maa):
+    """MaaFW rect 契约 = (x, y, w, h)：ClickAction 落点 = rect 中心。
+
+    真机六炸根修——analyze 曾返回 (x1,y1,x2,y2) 混填 w/h 槽，框架按帧边界
+    clip 后中心恒错位到 (0.5,0.5) 附近（卡片 (999,591,1103,633) → 被裁成
+    (999,591,281,129) → 点击落屏幕中心）。
+    """
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    graph.click.return_value = True
+    act = ng.ClickAction(graph)
+    argv = MagicMock()
+    argv.custom_action_param = json.dumps({})
+    argv.node_name = "t.card"
+    argv.box = (999, 591, 104, 42)
+    assert act.run(None, argv) is True
+    cx, cy, box_norm = graph.click.call_args[0]
+    assert graph.click.call_args[1]["timeout_s"] == 20.0
+    assert abs(cx - (999 + 52) / 1280) < 1e-9
+    assert abs(cy - (591 + 21) / 720) < 1e-9
+    assert box_norm == (104 / 1280, 42 / 720)
+
+
+def test_click_action_rejects_zero_box(pure_maa):
+    """零面积框 = 识别链断裂，必须拒绝点击（不盲落屏幕左上角）。
+
+    真机教训（2026-09-11）：打包裁剪误删 numpy.ctypeslib 后识别回调在
+    binding 层崩溃，框架仍执行动作且 rect 保持初值 (0,0,0,0)——鼠标/手柄
+    全部点到屏幕左上角。匹配引擎合法命中框 w/h ≥4，零框只可能是故障形态。
+    """
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    act = ng.ClickAction(graph)
+    argv = MagicMock()
+    argv.custom_action_param = json.dumps({})
+    argv.node_name = "t.card"
+    argv.box = (0, 0, 0, 0)
+    assert act.run(None, argv) is False
+    graph.click.assert_not_called()
+
+
+# ---------- 点击后条件等待（settle）----------
+#
+# 2026-11-06 实机（会话 20261106_185832，nav 帧 894→895）：确认上阵按钮 ROI 分数
+# 0.814→0.250 与驾驶页齿轮 0.882 出现在同一帧，识别零滞后；节点比画面晚 0.75~0.85s
+# 是点击后固定 800ms 睡眠造成的。这里把固定睡改成「源按钮认不出来即返回、最长仍
+# 800ms」，用纯 Python 桩锁住四种边界；真模板匹配与 C 句柄一律不进测试进程。
+
+_SETTLE = {
+    "rect": [0.7086, 0.8681, 0.9398, 0.9944],
+    "templates": ["speedrush_store_confirm_btn.png"],
+    "threshold": 0.8,
+    "colorspace": "rgb",
+}
+
+
+def _settle_env(monkeypatch, *, box=None, score=0.25, template_ok=True,
+                sleep_ok=True):
+    graph = MagicMock()
+    graph.frame_size.return_value = (1280, 720)
+    graph.click.return_value = True
+    graph.image_dirs = []
+    graph.frame.return_value = np.zeros((720, 1280, 3), dtype=np.uint8)
+    clock = {"t": 0.0}
+
+    def sleep(seconds):
+        clock["t"] += seconds
+        return sleep_ok
+
+    graph.ctx.lifecycle.sleep.side_effect = sleep
+    # 假钟替掉整个 time 名字（不污染全局 time 模块）；条件等待只读 monotonic。
+    monkeypatch.setattr(ng, "time", SimpleNamespace(
+        monotonic=lambda: clock["t"], perf_counter=lambda: clock["t"],
+        sleep=lambda _s: None))
+    monkeypatch.setattr(ng, "load_template",
+                        lambda _n, _dirs: (np.zeros((4, 4, 3), dtype=np.uint8)
+                                          if template_ok else None))
+    monkeypatch.setattr(ng, "match_template_cs", lambda *a, **k: (box, score))
+    argv = MagicMock()
+    argv.node_name = "speedrush.点确认上阵"
+    argv.box = (100, 100, 40, 40)
+    return graph, argv, clock
+
+
+def _run_settle(graph, argv, *, wait_ms=800, settle=_SETTLE):
+    p = {"wait_after_ms": wait_ms}
+    if settle is not None:
+        p["settle"] = settle
+    argv.custom_action_param = json.dumps(p)
+    return ng.ClickAction(graph).run(None, argv)
+
+
+def test_click_settle_returns_early_when_button_gone(pure_maa, monkeypatch):
+    """按钮 ROI 认不出来 = 画面已切走：立即收工，不再睡满 800ms。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None, score=0.250)
+    assert _run_settle(graph, argv) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 0
+    assert clock["t"] == 0.0
+    log = " ".join(str(c) for c in graph._log.call_args_list)
+    assert "提前收工" in log and "0.250" in log  # 分数留痕，供下局 ROI 复核
+
+
+def test_click_settle_waits_full_budget_when_button_stays(pure_maa, monkeypatch):
+    """点了没反应、按钮还在 → 与旧版一样等满 800ms，绝不缩窗口或提前失败。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=(10, 10, 20, 20), score=0.928)
+    assert _run_settle(graph, argv) is True
+    assert clock["t"] >= 0.8
+    assert "按兜底收工" in " ".join(str(c) for c in graph._log.call_args_list)
+
+
+def test_click_without_settle_keeps_fixed_sleep(pure_maa, monkeypatch):
+    """没给 settle（startup / 归档真源）= 旧路径：一次固定 sleep，连帧都不取。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None)
+    assert _run_settle(graph, argv, settle=None) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 1
+    assert clock["t"] == pytest.approx(0.8)
+    graph.frame.assert_not_called()
+
+
+def test_click_settle_honours_stop_signal(pure_maa, monkeypatch):
+    """停止信号一到立刻退出条件等待，点击结果不受影响。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=(1, 1, 2, 2), score=0.93,
+                                     sleep_ok=False)
+    assert _run_settle(graph, argv) is True
+    assert clock["t"] == pytest.approx(ng.CLICK_SETTLE_POLL_S)
+    assert graph.frame.call_count == 1
+
+
+def test_click_settle_missing_template_falls_back(pure_maa, monkeypatch):
+    """模板缺失时「认不出来」会恒真——必须退回固定兜底，不能静默删掉 800ms。"""
+    graph, argv, clock = _settle_env(monkeypatch, box=None, template_ok=False)
+    assert _run_settle(graph, argv) is True
+    assert graph.ctx.lifecycle.sleep.call_count == 1
+    assert clock["t"] == pytest.approx(0.8)
+    assert "模板不可用" in " ".join(str(c) for c in graph._log.call_args_list)
+    graph.frame.assert_not_called()
+
+
+def test_input_action_point_goes_through_click_with_no_box(pure_maa):
+    """point = 归一化 0..1 直送 graph.click；无识别框可给，box 必须是 None。"""
+    graph = MagicMock()
+    graph.click.return_value = True
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.wake"
+    argv.custom_action_param = json.dumps({"point": [0.0, 0.0], "wait_after_ms": 0})
+    assert act.run(None, argv) is True
+    assert graph.click.call_args[0] == (0.0, 0.0, None)
+    assert graph.click.call_args[1] == {"timeout_s": 20.0}
+
+
+def test_input_action_requires_exactly_one_of_point_and_button(pure_maa):
+    """两个都给 = 意图不明；两个都不给 = 空动作。两种都当场失败。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ({}, {"point": [0.5, 0.5], "button": "B"}):
+        argv.custom_action_param = json.dumps(bad)
+        assert act.run(None, argv) is False
+    graph.click.assert_not_called()
+    graph.press_gamepad_button.assert_not_called()
+
+
+def test_input_action_rejects_out_of_range_or_malformed_point(pure_maa):
+    """point 越界/形态非法一律拒绝——0..1 口径与真源其余几何同族，写错不能盲点。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ([0, 900], [1.5], "0,0", None):
+        argv.custom_action_param = json.dumps({"point": bad})
+        assert act.run(None, argv) is False
+    graph.click.assert_not_called()
+
+
+def test_input_action_button_maps_by_table_and_never_fakes_success(pure_maa):
+    """button 名查表送真按钮对象；手柄未绑定（宿主返回 False）时不得报成功。"""
+    from maaracing_master.core.vgamepad_lazy import vg
+    graph = MagicMock()
+    graph.press_gamepad_button.return_value = False
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.back"
+    argv.custom_action_param = json.dumps({"button": "b", "wait_after_ms": 0})
+    assert act.run(None, argv) is False
+    assert graph.press_gamepad_button.call_args[0][0] == vg.XUSB_BUTTON.XUSB_GAMEPAD_B
+
+
+def test_input_action_rejects_unknown_button_names(pure_maa):
+    """扳机 LT/RT 是模拟量、不在按键表里；写错名字必须失败而不是按一个别的键。"""
+    graph = MagicMock()
+    act = ng.InputAction(graph)
+    argv = MagicMock()
+    argv.node_name = "t.x"
+    for bad in ("LT", "RT", "TRIGGER", "H", ""):
+        argv.custom_action_param = json.dumps({"button": bad})
+        assert act.run(None, argv) is False
+    graph.press_gamepad_button.assert_not_called()
+
+
+# ---------- NavGraph.run 的完成轮询节拍（回归锁）----------
+#
+# 为什么单独立锁：`run()` 是**所有插件共用**的阻塞跑图入口，调用者里有**毫秒级完成**的
+# 图（speedrush 门控每 0.5s 复查一次驾驶页锚点，单节点模板匹配）。原先完成轮询写死
+# `time.sleep(0.2)`——任务早已完成却仍空等满 200ms，实测给该域驾驶主循环每 0.5s 插进
+# 一次 130~250ms 停顿（主循环被压到 15.3Hz、帧间隔 P95=200ms，见该域 CODE_WIKI §2.1）。
+# 改成自适应短间隔后，**这两个用例必须同时通过**：快图不等、慢图仍正常收尾。
+
+
+class _LateStatus:
+    """按墙钟判完成的状态桩：`done` 在 delay 秒后变真。"""
+
+    def __init__(self, delay: float):
+        self._until = time.monotonic() + delay
+
+    @property
+    def done(self) -> bool:
+        return time.monotonic() >= self._until
+
+    def finish_now(self) -> None:
+        """立即置为已完成（模拟停止请求让框架马上结束任务）。"""
+        self._until = 0.0
+
+
+class _LateJob:
+    """完成时间可控的任务桩（`succeeded` 恒真，只用来测等待节拍）。"""
+
+    def __init__(self, delay: float):
+        self.succeeded = True
+        self.status = _LateStatus(delay)
+
+    @property
+    def done(self) -> bool:
+        """对齐真实 Job 的便捷属性（收尾路径用它判断任务是否已结束）。"""
+        return self.status.done
+
+    def wait(self):
+        return self
+
+
+def _nav_with_job(pure_maa, tmp_path, job):
+    nav = tmp_path / "nav"
+    nav.mkdir()
+    (nav / "t.json").write_text(
+        json.dumps({"t": {"recognition": "DirectHit", "action": "DoNothing"}}),
+        encoding="utf-8")
+    (tmp_path / "img").mkdir()
+    ctx = MagicMock()
+    ctx.capture.frame_with_age = _FakeCapture().frame_with_age
+    graph = ng.NavGraph(ctx)
+    graph.add_plugin(nav, tmp_path / "img")
+    graph._resource.post_pipeline.return_value.wait.return_value.failed = False
+    graph._tasker.post_task.return_value = job
+    return graph
+
+
+def test_run_returns_promptly_when_graph_finishes_fast(pure_maa, tmp_path):
+    """毫秒级完成的图不得被空等：20ms 完成的图，run() 必须在 0.1s 内返回。
+
+    这是本轮修复的**回归锁**——用旧的固定 `sleep(0.2)` 时本用例必红（至少 200ms）。
+    """
+    graph = _nav_with_job(pure_maa, tmp_path, _LateJob(0.02))
+    t0 = time.monotonic()
+    assert graph.run("t") is True
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.1, f"快图被空等：{elapsed * 1000:.0f}ms（应 <100ms）"
+
+
+def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path):
+    """原本正常的场景也要在锁里：需要多轮轮询才完成的图，仍须正确等到并返回真。"""
+    graph = _nav_with_job(pure_maa, tmp_path, _LateJob(0.12))
+    t0 = time.monotonic()
+    assert graph.run("t") is True
+    elapsed = time.monotonic() - t0
+    # 下界不可靠：_LateJob 的计时从构造开始，run 前的装配也消耗墙钟（实测 93ms
+    # 完成并不代表没等）。这里只防空转/无限等待；毫秒级返回由 fast 用例看护。
+    assert elapsed < 1.0, f"慢图等待异常：{elapsed * 1000:.0f}ms"
+
+
+def test_run_still_interrupts_on_lifecycle_stop(pure_maa, tmp_path):
+    """中断语义不得被节拍改动破坏：未完成 + 已停止 → 发 post_stop 并返回假。"""
+    job = _LateJob(5.0)
+    graph = _nav_with_job(pure_maa, tmp_path, job)
+    # 停止请求会让框架立即结束任务（真机实测毫秒级），桩要模拟这一点：否则测的是
+    # 「中断后仍等图自然跑完」，与实际语义不符——中断路径等的是收摊，不是等图跑完。
+    graph._tasker.post_stop.side_effect = lambda: job.status.finish_now()
+    graph.ctx.lifecycle.running = False
+    t0 = time.monotonic()
+    assert graph.run("t") is False
+    assert time.monotonic() - t0 < 0.1, "中断路径也不该空等"
+    assert graph._tasker.post_stop.called

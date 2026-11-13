@@ -1,0 +1,83 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "MaaRM Custom Action Schema",
+    "description": "MaaRacingMaster 自定义动作参数契约（官方 pipeline.schema.json 的 custom 扩展槽，同目录引用）。",
+    "type": "object",
+    "allOf": [
+        {
+            "if": {
+                "properties": { "custom_action": { "const": "MaaRM_Policy" } },
+                "required": ["custom_action"]
+            },
+            "then": {
+                "properties": {
+                    "custom_action_param": {
+                        "type": "object",
+                        "properties": {
+                            "table": {
+                                "title": "策略表引用",
+                                "description": "<module>.policy.json#<段名> 形式",
+                                "type": "string",
+                                "pattern": "^.+\\.policy\\.json(#[\\w./-]+)?$"
+                            }
+                        },
+                        "required": ["table"]
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": { "custom_action": { "const": "MaaRM_Click" } },
+                "required": ["custom_action"]
+            },
+            "then": {
+                "properties": {
+                    "custom_action_param": {
+                        "type": "object",
+                        "description": "手柄光标点击（目标默认取命中框；point 模式取识别参数 rect 中心）",
+                        "properties": {
+                            "target": {
+                                "description": "归一化固定点 [x, y]（可选，缺省按识别结果）",
+                                "type": "array",
+                                "items": false,
+                                "prefixItems": [
+                                    { "type": "number", "minimum": 0, "maximum": 1 },
+                                    { "type": "number", "minimum": 0, "maximum": 1 }
+                                ]
+                            },
+                            "wait_after_ms": {
+                                "description": "点击后停顿上限（毫秒，缺省 800）。给了 settle 时只作为兜底上限，画面切走即提前返回",
+                                "type": "number",
+                                "minimum": 0
+                            },
+                            "settle": {
+                                "description": "可选；点击后条件等待的判据规格，与节点 recognition 同源。源按钮在 ROI 内认不出来即提前收工，最长不超过 wait_after_ms",
+                                "type": "object",
+                                "properties": {
+                                    "rect": {
+                                        "description": "归一化搜索区 [x0,y0,x1,y1]",
+                                        "type": "array",
+                                        "prefixItems": [
+                                            { "type": "number" }, { "type": "number" },
+                                            { "type": "number" }, { "type": "number" }
+                                        ],
+                                        "items": false
+                                    },
+                                    "templates": {
+                                        "description": "源按钮模板名列表",
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "threshold": { "type": "number" },
+                                    "colorspace": { "type": "string" }
+                                },
+                                "required": ["rect", "templates", "threshold"]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

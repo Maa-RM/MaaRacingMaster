@@ -4,23 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maaracing-master"
-dynamic = ["version"]
+dynamic = ["version", "dependencies"]
 description = "模块化游戏自动化平台 — MAA Framework + YOLOv8 ONNX + vgamepad，主打极速狂飙"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "numpy",
-    "opencv-python",
-    "onnxruntime-directml",
-    "vgamepad",
-    "windows-capture",
-    "MaaFw",
-]
+
+# 运行时依赖范围的唯一人写点是 requirements.txt：上界策略（「按下一 major 收口」）与它的
+# 理由同处维护，构建时按原样读入。两处各写一遍必然漂出不同的许可范围，而漂出来的那一份
+# 会随 wheel/sdist 元数据对外发布。
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [project.optional-dependencies]
 # CI（test.yml / release.yml）不直接采用本 extra：安装 [test] 会连带安装主依赖，
 # 其中 onnxruntime-directml / windows-capture 仅 Windows 有 wheel，Linux runner 装不上，
-# 故 CI 只 `pip install pytest`。此处 extra 保留，便于本地 `pip install -e .[test]`。
+# 故 CI 逐个装跨平台依赖（pytest / numpy / opencv-headless / onnxruntime / MaaFw，
+# 版本与 scripts/release/requirements-runtime-lock.txt 对齐）。此处 extra 保留，便于本地 `pip install -e .[test]`。
 test = [
     "pytest>=7.0",
 ]
@@ -29,7 +28,7 @@ dev-lint = [
     "ruff==0.16.7",
     "pyright==1.1.411",
 ]
-# 训练/导出模型所用（tools/training/train.py）。运行时推理走 onnxruntime-directml，
+# 训练/导出模型所用（plugins/speedrush/tools/training/train.py）。运行时推理走 onnxruntime-directml，
 # 不依赖 ultralytics/torch，故作为可选 extra 避免发布包拽入 torch。
 train = [
     "ultralytics>=8.4.92",
@@ -47,6 +46,7 @@ testpaths = ["tests"]
 addopts = "-ra -m 'not retired'"
 markers = [
     "retired: 已退役活动模块的回归锁，CI 默认不跑",
+    "local_asset: 依赖本机金标数据/模型/硬件的用例，资产缺失即跳过，不计入 CI 保护面",
 ]
 python_files = ["test_*.py", "*_test.py"]
 

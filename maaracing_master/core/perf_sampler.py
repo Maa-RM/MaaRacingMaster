@@ -55,6 +55,14 @@ def _current_run_id() -> str | None:
     except Exception:  # noqa: BLE001 —— 身份缺失不拖垮采样
         return None
 
+
+def _current_round() -> int | None:
+    try:
+        from maaracing_master.core.logger import logger
+        return logger.current_round
+    except Exception:  # noqa: BLE001
+        return None
+
 # 受管进程嗅探：模拟器家族的可执行名子串（小写匹配）。这是环境级进程清单，
 # 与任何玩法模块无关；命中即纳入逐秒 CPU/内存读数。
 DEFAULT_WATCH_PATTERNS = (
@@ -85,7 +93,6 @@ class PerfSampler:
                  gpu_runner: Callable[[float], str] | None = None,
                  gpu_counters: Any = None):
         self._interval_s = interval_s
-        self._ring_cap = ring_cap
         self._gpu_every = max(1, gpu_every)
         self._gpu_timeout_s = gpu_timeout_s
         self._keep_every = max(1, keep_every)
@@ -106,15 +113,12 @@ class PerfSampler:
         self._active: list[dict] = []       # 后置窗口进行中的事件
         # 会话态（logger 生命周期驱动）
         self._session_token: str | None = None
-        self._session_path: Path | None = None
         # 文件句柄仅采样线程与收尾路径写，统一过 _file_lk
         self._file = None
         self._file_lk = threading.Lock()
-        self._close_requested = False
         # 受管进程表：pid → (psutil.Process, name)
         self._procs: dict[int, tuple[Any, str]] = {}
         self._last_scan = -1e9
-        self._tick_count = 0
         self._gpu: dict = {"status": "unavailable", "util_pct": None,
                            "prog_pct": None, "name": None,
                            "mem_used_mb": None, "mem_total_mb": None,
@@ -148,7 +152,6 @@ class PerfSampler:
             if self._thread is not None and self._thread.is_alive():
                 return True
             self._stop.clear()
-            self._close_requested = False
             self._thread = threading.Thread(
                 target=self._run, daemon=True, name="perf-sampler")
             self._thread.start()
@@ -181,7 +184,6 @@ class PerfSampler:
             fh = None
         with self._lk:
             self._session_token = token
-            self._session_path = path
             self._ring.clear()
             self._active.clear()
             self._pending.clear()
@@ -243,8 +245,6 @@ class PerfSampler:
         finally:
             with self._lk:
                 self._session_token = None
-                self._session_path = None
-                self._close_requested = False
         missing = self._threads.missing_labels()
         if missing:
             from maaracing_master.core.logger import logger
@@ -365,7 +365,6 @@ class PerfSampler:
         """单拍采样（公开给测试手动驱动）：构建→入环→事件/背景落盘。"""
         sample = self._build_sample()
         with self._lk:
-            self._tick_count += 1
             self._ring.append(sample)
             self._latest = sample
             pending = list(self._pending)
@@ -460,6 +459,7 @@ class PerfSampler:
         self._last_tick_mono = t_tick
         sample = {
             "v": SCHEMA_VERSION, "type": "sample", "sample_id": sid,
+            "session": self._session_token, "round": _current_round(),
             "run_id": _current_run_id(),
             "ts_wall_ns": time.time_ns(), "ts_mono_ns": time.monotonic_ns(),
             "_p": False,

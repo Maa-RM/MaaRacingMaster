@@ -198,25 +198,31 @@ class RouteParams:
     # 所在道落回 keep——卡在并线态会让路线永不重启
     soft_car: bool = False           # 普通车（car）不构成撤销理由：车是时间成本，
     # 不是物理约束；目标道 space 仍按参考道失去几何重建。False=旧行为
-    # —— 紧急逃生的时间面（2026-10-30）——
+    # —— 紧急逃生的时间面（2026-10-30；2026-11-09 改运动学门）——
     # 粗层净空是「24 m 窗内有无车」，不是「多久会撞上」。按代理速度折算，
     # 窗内任何车都 ≤0.53s＝永远紧急，路线于是见车就并（90s 局并线 21 次，
-    # 人工同局 26 次但每次都在真冲突上）。这两个参数用**实测到站时间**
-    # （相对速度口径）替代代理时间：车真的要到线上了才允许动方向。
-    urgent_ttc_s: float = 1.0        # 当前道（承诺道与实际所在道）最近到站时间
-    # ≤ 此值才起紧急逃生；None=该道无车/无时间证据
+    # 人工同局 26 次但每次都在真冲突上）。时间门用**实测到站时间**（相对
+    # 速度口径）：车真的要到线上了才允许动方向。
+    # 阈值不再是固定秒数，而是「横移所需时间 + 反应 + 余量」（见
+    # `lane_need_s`）：固定 1.0s 的紧急门比一道横移本身（≈1.6s）还短，
+    # 起意时执行层物理上已来不及。这两个余量与选择层同源（decision 装配
+    # 从 [selection] 注入），不另立真源。
+    reaction_s: float = 0.13
+    move_margin_s: float = 0.15
     urgent_blind_m: float = 6.0      # 无到站时间（不接近或无法测速）但粗层净空
     # ≤ 此值的近距离盲区仍可逃生
+    ttc_hold_s: float = 0.3          # `ttc_s` 证据的丢样宽限（秒）：z/t 单拍
+    # 缺失或跳变很常见（10~40 m 内 20~40% 车拍 z 为 None），0.15 s 的连续
+    # 确认跨不过单拍丢检——提前带 43/59 段只有 1 拍，提前门因此形同虚设
+    # （2026-11-10 三局复核）。宽限期内保留计时，出带读数到达仍立即归零。
     merge_safe_ttc_s: float = 0.8    # 逃生目标道上有车时，到站时间必须 ≥ 此值
     # （够并过去）；更近的车不选它当逃生方向
     pass_hold: bool = True           # 超车动作进行中（选择层正在出擦边目标）
     # 不抢方向：临近车会让紧急逃生在 1s 内起意，把刚要成的擦边超车改成并线
     # （2026-10-30 实测：31 段≥5 拍的擦边里有 6 段被 3 拍内的并线打断）
-    overtake: bool = True            # 提前超车并线：车 1~2.5s 到站、邻道确认
-    # 空闲、横穿路径空闲 → 现在就并过去。等 1s 紧急门才动，等于把超车拖成
-    # 临门闪避（真机常见：跟到 0.9s 才起并线）
-    overtake_ttc_s: float = 2.5      # 提前超车的到站时间上界（秒）；下界是
-    # urgent_ttc_s（更近的归紧急逃生）
+    overtake: bool = True            # 提前超车并线：车进入「紧急门 ~ 紧急门+一道
+    # 横移时间」区间、邻道确认空闲、横穿路径空闲 → 现在就并过去。等紧急门
+    # 才动，等于把超车拖成临门闪避（真机常见：跟到 0.9s 才起并线）
     # 承诺道跟随实测道（6g 归因）：粗层把车所在道短暂判成 space 时路线会重建
     # 到邻道，之后没有机制把承诺道挪回来——车在 −1 道、承诺道写 0，选择层就把
     # 邻道币判成本道目标，机会请求永远发不出来。实测道可行且偏离承诺道
@@ -236,6 +242,42 @@ class RouteParams:
     k_lat_lane_s: float = 1.2        # 清障时间用执行层同一套运动学（缺省=
     tau_heading_s: float = 0.2       # 2026-10-30 策略值；生产由 decision.py
     heading_max_rad: float = 0.46    # 随 policy planner.* 注入，不另立真源）
+
+
+# 提前超车比紧急逃生多留的横移时间（道）：一次横移的时长作为「落到新道后
+# 还有一整段可以消化」的余量。旧固定差值 2.5−1.0=1.5 s 与一道横移同量级。
+_OVERTAKE_LEAD_LANES = 1.0
+
+
+def _move_time_s(lanes: float, p: RouteParams) -> float:
+    """横移 ``lanes`` 道所需秒数（执行层同一闭环律）。"""
+    return lane_move_time(abs(lanes), k_lat_lane_s=p.k_lat_lane_s,
+                          tau_heading_s=p.tau_heading_s,
+                          heading_max_rad=p.heading_max_rad)
+
+
+def lane_need_s(lanes: float, p: RouteParams) -> float:
+    """横移 ``lanes`` 道并留出反应/测量余量的时间门（秒）。
+
+    与选择层 ``reach_slack`` 同一套运动学与同一组余量参数（执行层闭环律）。
+    固定秒数门在物理上说不通——旧紧急门 1.0 s 比一道横移本身（≈1.6 s）
+    还短，起意时已经来不及。到站时间是闭速口径，所以同一时间门在高速接近
+    时自然对应更远的起意纵深（v·T）。"""
+    return _move_time_s(lanes, p) + p.reaction_s + p.move_margin_s
+
+
+def urgent_need_s(p: RouteParams) -> float:
+    """紧急逃生时间门：横移一道 + 反应 + 余量。"""
+    return lane_need_s(1.0, p)
+
+
+def overtake_need_s(p: RouteParams) -> float:
+    """提前超车时间门：紧急门 + 一道横移的提前量。
+
+    超车动作关（``p.overtake=False``）时返回 0——时间表视界不因此扩张。"""
+    if not p.overtake:
+        return 0.0
+    return urgent_need_s(p) + _move_time_s(_OVERTAKE_LEAD_LANES, p)
 
 
 @dataclass(frozen=True)
@@ -265,6 +307,11 @@ class RouteState:
     req_pause_s: float = 0.0         # 无读数累计（秒）
     req_state: str = "none"          # active/paused/none（6c）
     drift_s: float = 0.0             # 承诺道与实测道偏离的连续时长（秒）
+    ttc_s: float = 0.0               # 现任道有「时间表内到站车」的连续时长（秒）：
+    # 粗层观察窗只有 24m，50m 外的车它看不见——这类前置证据只能来自
+    # `lane_ttc`，用独立计时器做与 blocked_s 同口径的连续确认。
+    ttc_gap_s: float = 0.0           # 上述证据连续缺样的时长（秒）：≤
+    # `ttc_hold_s` 时保留计时不归零（z/t 单拍丢检很常见，见参数注释）。
 
 
 @dataclass(frozen=True)
@@ -299,6 +346,9 @@ class RouteVerdict:
     req_age_s: float = 0.0
     req_pause_s: float = 0.0
     req_hold: bool = False           # 6c 开关状态（trace 验收：确认本局开了）
+    # 提前超车分支当拍没收下任何候选时的第一失败原因（只写 trace，不参与控制）：
+    # already_there / not_clear / path_blocked / target_too_soon / cross_not_clear
+    reject: str | None = None
     anchor_follow: bool = False      # 6h 开关状态（trace 验收：确认本局开了）
 
     def as_trace(self) -> dict:
@@ -315,7 +365,9 @@ class RouteVerdict:
                 "reqs": self.req_state, "roid": self.req_oid,
                 "rage": _r(self.req_age_s, 2),
                 "rpa": _r(self.req_pause_s, 2), "rh": self.req_hold,
-                "af": self.anchor_follow}
+                "af": self.anchor_follow,
+                # 提前分支当拍没收下候选时的第一失败原因（只观测）
+                "rj": self.reject}
 
 
 def init_state(epoch: int) -> RouteState:
@@ -327,6 +379,15 @@ def init_state(epoch: int) -> RouteState:
     未完成的动作要保护，落回实测可达道）。"""
     return RouteState(0.0, 0.0, None, PHASE_KEEP, 0.0, 0.0, 0.0, None, 0, 0,
                       epoch, 0.0, 0.0, 0.0)
+
+
+def _rebase_ttc(st: RouteState, prev_lane: float) -> RouteState:
+    """`st` 已换到新的参考道时作废 `ttc_s` 证据：旧道的到站时间对新道没有意义。
+
+    ``prev_lane`` 是转移前的 `lane_ref`；与 `st.lane_ref` 相同表示没换道。"""
+    if prev_lane == st.lane_ref:
+        return st
+    return replace(st, ttc_s=0.0, ttc_gap_s=0.0)
 
 
 def _clear_req(s: RouteState) -> RouteState:
@@ -530,7 +591,7 @@ def _cur_ttc(s: RouteState, lane_ttc: dict[int, float] | None) -> float | None:
 
 def _urgent_time_ok(s: RouteState, cur: CoarseLane, p: RouteParams,
                     lane_ttc: dict[int, float] | None) -> bool:
-    """紧急逃生的时间门。
+    """紧急逃生的时间门：到站时间 ≤ 横移一道 + 反应 + 余量（见 lane_need_s）。
 
     ``lane_ttc``=整数道→最早到站时间（秒）。无时间证据的无车/不接近道保持
     旧行为（由净空盲区兜底）；整张表缺席（离线/单测未供）也保持旧行为，
@@ -539,7 +600,7 @@ def _urgent_time_ok(s: RouteState, cur: CoarseLane, p: RouteParams,
         return True
     t = _cur_ttc(s, lane_ttc)
     if t is not None:
-        return t <= p.urgent_ttc_s
+        return t <= urgent_need_s(p)
     return cur.free_m <= p.urgent_blind_m
 
 
@@ -575,6 +636,39 @@ def _cross_clear_ok(s: RouteState, alt: CoarseLane, cur: CoarseLane | None,
                           tau_heading_s=p.tau_heading_s,
                           heading_max_rad=p.heading_max_rad)
     return need <= cur_ttc
+
+
+def _overtake_reject(s: RouteState, alts: list, cur: CoarseLane | None,
+                     cur_ttc: float | None, by: dict,
+                     p: RouteParams) -> str | None:
+    """提前超车分支没收下候选时，最接近自车那条道的第一个失败原因（只写 trace）。
+
+    语义是「所有候选都过不了」才记原因：先按生产 feas 逐条筛一遍，有任意一条
+    通过就返回 None。否则记**最接近自车那条道**的第一失败原因——只有一条候选
+    失败不等于起不了意，另一侧可能是通的。
+
+    与 `_tick_keep` 提前分支的 feas 过滤逐条同序：**不含**目标道到站时间门——
+    生产该分支只要求邻道在 24 m 观察窗内确认空闲（`_clear`），到站时间表
+    只给紧急分支的 `_target_time_ok` 用。两边口径不一致是生产事实，观测面
+    照实记录，不在这里补一道生产没有的门。
+    """
+    def _why(c) -> str | None:
+        if p.anchor_follow and _already_in(s.v_ref, c.lane):
+            return "already_there"
+        if not _clear(c):
+            return "not_clear"
+        if not _path_clear(s, c, by):
+            return "path_blocked"
+        if not _cross_clear_ok(s, c, cur, cur_ttc, p):
+            return "cross_not_clear"
+        return None
+
+    if any(_why(c) is None for c in alts):
+        return None
+    cands = [c for c in alts if abs(c.lane - s.v_ref) == 1.0] or list(alts)
+    if not cands:
+        return None
+    return _why(min(cands, key=lambda c: (abs(c.lane - s.v_ref), c.lane)))
 
 
 def _drivable_lane(ego_lane: float, by: dict) -> float:
@@ -703,8 +797,8 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         drift_s = s.drift_s + step if follow else 0.0
         if follow and _reached(drift_s, p.anchor_follow_s):
             st = _carry_req_across_reanchor(
-                replace(s, lane_ref=k, lane_from=k,
-                        lane_target=None, drift_s=0.0))
+                _rebase_ttc(replace(s, lane_ref=k, lane_from=k,
+                                    lane_target=None, drift_s=0.0), s.lane_ref))
             return st, RouteVerdict(
                 PHASE_KEEP, k, None, "anchor_follow", "lane_drift",
                 max(0.0, clock - st.decided_t), None, _avail_s(by[k], p),
@@ -714,8 +808,21 @@ def tick_route(state: RouteState | None, report: CoarseReport | None,
         s = replace(s, drift_s=drift_s)
     # 现任道被截的连续时长：逃生要"持续占用"，单帧闪检不起意（与撤销判据
     # 同一族的时域滞回；观察窗只有 0.5 s，按实测 dt 累计）
+    # 时间面独立计时：粗层窗只有 24m，窗外的接近车只能由 lane_ttc 作证；
+    # 单拍时间读数会跳（纵深估计的阶梯），同样要连续确认。
+    cur_ttc = _cur_ttc(s, lane_ttc)
+    ttc_hot = (cur_ttc is not None
+               and 0.0 < cur_ttc <= overtake_need_s(p))
+    if ttc_hot:
+        ttc_s, ttc_gap = s.ttc_s + step, 0.0
+    elif cur_ttc is not None:
+        ttc_s, ttc_gap = 0.0, 0.0      # 新鲜读数明确出带：证据作废
+    else:
+        ttc_gap = s.ttc_gap_s + step
+        ttc_s = s.ttc_s if ttc_gap <= p.ttc_hold_s else 0.0
     s = replace(s, blocked_s=(s.blocked_s + step
-                              if _known_blocked(cur) else 0.0))
+                              if _known_blocked(cur) else 0.0),
+                ttc_s=ttc_s, ttc_gap_s=ttc_gap)
     if s.phase == PHASE_MERGING:
         st, v = _tick_merging(s, by, p, clock, epoch, arrival,
                               reject_shift_arrival, step)
@@ -733,11 +840,13 @@ def _rebuild(s: RouteState, by: dict, ego_lane: float, clock: float,
              why: str, blocker: str | None = None) -> tuple[RouteState, RouteVerdict]:
     """降级为 KEEP(实测可达道)：并线作废、冷却清零、定案时钟不清。"""
     k = _drivable_lane(ego_lane, by)
-    st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
-                 phase=PHASE_KEEP, unsafe_s=0.0, cooldown_left_s=0.0,
-                 ban_lane=None, epoch=epoch, merge_started_t=clock,
-                 req_lane=None, req_credit=0.0, req_oid=None, req_side=0,
-                 req_age_s=0.0, req_pause_s=0.0, req_state="none")
+    st = _rebase_ttc(replace(s, lane_ref=k, lane_from=k, lane_target=None,
+                             phase=PHASE_KEEP, unsafe_s=0.0,
+                             cooldown_left_s=0.0, ban_lane=None, epoch=epoch,
+                             merge_started_t=clock, req_lane=None,
+                             req_credit=0.0, req_oid=None, req_side=0,
+                             req_age_s=0.0, req_pause_s=0.0,
+                             req_state="none"), s.lane_ref)
     return st, RouteVerdict(PHASE_KEEP, k, None, verdict, why,
                             max(0.0, clock - st.decided_t), None,
                             _avail_s(by[k], p), None, 0.0, epoch,
@@ -765,10 +874,11 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
     unsafe = s.unsafe_s + dt_s if _cancel_blocked(tgt, p) else 0.0
     if _reached(unsafe, p.cancel_unsafe_s):
         back = _drivable_lane(s.v_ref, by)
-        st = replace(s, lane_ref=back, lane_target=None, phase=PHASE_KEEP,
-                     decided_t=clock, unsafe_s=0.0, merge_started_t=clock,
-                     cooldown_left_s=p.cancel_cooldown_s,
-                     ban_lane=s.lane_target)
+        st = _rebase_ttc(replace(
+            s, lane_ref=back, lane_target=None, phase=PHASE_KEEP,
+            decided_t=clock, unsafe_s=0.0, merge_started_t=clock,
+            cooldown_left_s=p.cancel_cooldown_s, ban_lane=s.lane_target),
+            s.lane_ref)
         return st, RouteVerdict(PHASE_KEEP, back, None, "cancel",
                                 "target_blocked", since, None, t_tgt,
                                 None if tgt is None else tgt.free_m,
@@ -784,9 +894,10 @@ def _tick_merging(s: RouteState, by: dict, p: RouteParams, clock: float,
         # 超时落回**实测所在道**：车可能停在半道，硬判"完成"会把命令位钉在
         # 车根本没到的道上。超时是独立结局，不冒充 finish。
         k = float(lane_target) if arrived else _drivable_lane(s.v_ref, by)
-        st = replace(s, lane_ref=k, lane_from=k, lane_target=None,
-                     phase=PHASE_KEEP, decided_t=clock, unsafe_s=unsafe,
-                     merge_started_t=clock)
+        st = _rebase_ttc(replace(
+            s, lane_ref=k, lane_from=k, lane_target=None, phase=PHASE_KEEP,
+            decided_t=clock, unsafe_s=unsafe, merge_started_t=clock),
+            s.lane_ref)
         return st, RouteVerdict(
             PHASE_KEEP, k, None,
             "finish" if arrived else "timeout",
@@ -808,11 +919,14 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                passing: bool = False,
                request_action: bool | None = None,
                ) -> tuple[RouteState, RouteVerdict]:
-    """保持态：只有"现任道确认被截"才动，方向是"确实更宽"。
+    """保持态：只有"现任道确认被截或时间表里有到站车"才动，方向是"确实更宽"。
 
-    不设时间窗门槛：窗长 24 m ≈0.53 s，横移一道最快 0.4 s，再加连续确认——
-    "能不能在撞上之前到那儿"永远判否（离线重放 20261024_p2 会得出 40% 的帧
-    "无路可逃"）。多出的净空本身就是多出的时间，按净空差裁决才判得动。
+    时间门用执行层横移时间换算（`lane_need_s`），不用固定秒数：紧急门
+    ≈ 横移一道 + 反应 + 余量，超车门再多留一道横移的提前量。判定证据有两条
+    独立来源，各自按时长确认（`urgent_confirm_s`）：
+    - 粗层占用（`blocked_s`）——24m 观察窗内的车；
+    - 时间表（`ttc_s`）——窗外的接近车由 `lane_ttc` 作证（纵深 40~50m 的
+      车粗层看不见，只看粗层会一直等到它进窗，起意就晚了）。
 
     `anchor_follow` 开时，车实际所在道确认空闲、与承诺道偏离达到重锚阈值：
     跳过逃生与超车起意，等 `tick_route` 重锚——否则会按陈旧承诺道的占用起
@@ -824,17 +938,25 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
         alts = [c for c in alts if c.lane != s.ban_lane]
 
     not_urgent = False
+    rej_overtake: str | None = None
     pass_hold = bool(p.pass_hold and passing)
     drifted_free = (p.anchor_follow and s.phase == PHASE_KEEP
                     and _drifted_free(s, by, p))
-    if not drifted_free and t_cur is not None \
-            and _reached(s.blocked_s, p.urgent_confirm_s):
+    urgent_need = urgent_need_s(p)
+    overtake_need = overtake_need_s(p)
+    cur_ttc = _cur_ttc(s, lane_ttc)
+    blocked = _reached(s.blocked_s, p.urgent_confirm_s)
+    ttc_ok = _reached(s.ttc_s, p.urgent_confirm_s)
+    time_urgent = (ttc_ok and cur_ttc is not None
+                   and 0.0 < cur_ttc <= urgent_need)
+    time_overtake = (ttc_ok and cur_ttc is not None
+                     and urgent_need < cur_ttc <= overtake_need)
+    if not drifted_free and t_cur is not None and (blocked or time_urgent):
         if pass_hold:
             not_urgent = True        # 超车动作进行中：方向留给擦边目标
         elif not _urgent_time_ok(s, cur, p, lane_ttc):
             not_urgent = True        # 确认被截，但车还不到线上：留在本道过
         else:
-            cur_ttc = _cur_ttc(s, lane_ttc)
             feas = [c for c in alts
                     if (c.blocker is None
                         or c.free_m >= cur.free_m + p.switch_gain_m)
@@ -859,27 +981,25 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                 since, alt.free_m - cur.free_m, t_cur, cur.free_m,
                 s.cooldown_left_s, epoch, blocker=alt.blocker)
 
-    # 提前超车（2026-10-30）：本道被截、车 1~2.5s 才到站，邻道**确认空闲**
-    # 且横穿路径空闲 → 现在就并过去。等紧急门（≤1s）才动等于把超车拖成
-    # 临门闪避（真机常见：跟到 0.9s 才起并线）。只认完全空闲的邻道：有车的
-    # 道仍归紧急逃生（那边的净空差门槛更严，避免为超车并进另一辆车后面）。
-    if (not drifted_free and p.overtake and not pass_hold and t_cur is not None
-            and _reached(s.blocked_s, p.urgent_confirm_s)):
-        cur_ttc = _cur_ttc(s, lane_ttc)
-        if cur_ttc is not None \
-                and p.urgent_ttc_s < cur_ttc <= p.overtake_ttc_s:
-            feas = [c for c in alts if _clear(c) and _path_clear(s, c, by)
-                    and _cross_clear_ok(s, c, cur, cur_ttc, p)]
-            if p.anchor_follow:
-                feas = [c for c in feas if not _already_in(s.v_ref, c.lane)]
-            if feas:
-                alt = min(feas, key=lambda c: (abs(c.lane - s.v_ref),
-                                               -c.free_m, c.lane))
-                return _start_merge(s, alt, clock), RouteVerdict(
-                    PHASE_MERGING, alt.lane, alt.lane, "merge_start",
-                    "overtake", since, alt.free_m - cur.free_m, t_cur,
-                    cur.free_m, s.cooldown_left_s, epoch,
-                    blocker=alt.blocker)
+    # 提前超车：本道有车在「紧急门 ~ 紧急门+一道横移时间」区间到站，邻道
+    # **确认空闲**且横穿路径空闲 → 现在就并过去。证据只认时间表（含 24m
+    # 窗外的车），连续确认后起意；等紧急门才动等于把超车拖成临门闪避。
+    # 只认完全空闲的邻道：有车的道仍归紧急逃生（那边的净空差门槛更严）。
+    if (not drifted_free and not pass_hold and time_overtake
+            and t_cur is not None):
+        feas = [c for c in alts if _clear(c) and _path_clear(s, c, by)
+                and _cross_clear_ok(s, c, cur, cur_ttc, p)]
+        if p.anchor_follow:
+            feas = [c for c in feas if not _already_in(s.v_ref, c.lane)]
+        if feas:
+            alt = min(feas, key=lambda c: (abs(c.lane - s.v_ref),
+                                           -c.free_m, c.lane))
+            return _start_merge(s, alt, clock), RouteVerdict(
+                PHASE_MERGING, alt.lane, alt.lane, "merge_start",
+                "overtake", since, alt.free_m - cur.free_m, t_cur,
+                cur.free_m, s.cooldown_left_s, epoch,
+                blocker=alt.blocker)
+        rej_overtake = _overtake_reject(s, alts, cur, cur_ttc, by, p)
 
     if s.req_lane is not None:
         # 机会换道请求（选择层出界目标转来）：现任道确认空闲才让机会主导，
@@ -921,7 +1041,8 @@ def _tick_keep(s: RouteState, by: dict, cur: CoarseLane, t_cur: float | None,
                else "not_urgent" if not_urgent else "blocked_unconfirmed")
     return s, RouteVerdict(PHASE_KEEP, s.lane_ref, s.lane_target, "keep", why,
                            since, None, t_cur, None, s.cooldown_left_s, epoch,
-                           blocker=cur.blocker, credit=s.req_credit)
+                           blocker=cur.blocker, credit=s.req_credit,
+                           reject=rej_overtake)
 
 
 def _request_reject_reason(s: RouteState, tgt: float,

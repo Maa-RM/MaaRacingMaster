@@ -227,15 +227,6 @@ def test_adjacent_cars_do_not_swap_identities():
 
 # ---------- 7 弯道 / 几何无效输入 ----------
 
-def test_geometry_invalid_passthrough_not_gated():
-    """本层不判弯道（设计决定 10：判据属校验层），只把标志如实带进观测。"""
-    trk = Tracker()
-    obs = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1,
-                     geometry_valid=False)
-    assert obs.health.geometry_valid is False
-    assert len(obs.targets) == 1                  # 不拦截——保守与否由校验层合取决定
-
-
 def test_stage_transition_passthrough():
     trk = Tracker()
     obs = trk.update(_per(1), frame_age_ms=10.0, stage=1, stage_transition=True)
@@ -327,18 +318,12 @@ def test_decision_output_contract_shape():
                                   DecisionState.CONSERVE, DecisionState.FAULT}
 
 
-def test_boundary_is_none_until_layer_lands():
-    trk = Tracker()
-    obs = trk.update(_per(1), frame_age_ms=10.0, stage=1)
-    assert obs.boundary is None              # 边界感知层未落地，不许有伪造摘要
-
-
 def test_health_passthrough_fields():
     trk = Tracker()
     obs = trk.update(_per(1), frame_age_ms=10.0, stage=2)
     h = obs.health
     assert isinstance(h, PerceptionHealth)
-    assert (h.perception_alive, h.geometry_valid, h.stage_transition) == (True, True, False)
+    assert (h.perception_alive, h.frame_fresh, h.stage_transition) == (True, True, False)
     assert obs.stage == 2 and obs.frame_age_ms == 10.0 and obs.ts_ns == 33_000_000 * 1
 
 
@@ -386,3 +371,77 @@ def test_fid_rate_survives_stage_reset():
         trk.update(_per(fid), frame_age_ms=10.0, stage=1)
     obs = trk.update(_per(20), frame_age_ms=10.0, stage=2)   # 阶段切换
     assert obs.targets == () and obs.fid_rate_hz == pytest.approx(30.3, rel=0.05)
+
+
+# ---------- 12 并号拆分（闸 demerge.enabled，默认关） ----------
+
+def _mk_track(idx_id, x_lane, last_seen=10, kind=KIND_CAR):
+    """直造轨道判据单测用（_demerge 操作内部结构，走 update 拼不出干净
+    的并存+跳变场景：1:1 贪心会先让并存号拿走检测）。"""
+    from maaracing_master.plugins.speedrush.tracking import _Track
+    return _Track(id=idx_id, kind=kind, cy=500, cx=800.0, w=60, h=40,
+                  conf=0.9, x_lane=x_lane, x_known=x_lane, x_sigma=0.1,
+                  lane_side=1, rel_approach=0.0, first_seen=1,
+                  last_seen=last_seen)
+
+
+def _mk_obs(x_lane, kind=KIND_CAR):
+    from maaracing_master.plugins.speedrush.tracking import _Obs
+    return _Obs(kind=kind, cy=500, cx=800.0, w=60, h=40, conf=0.9,
+                x_lane=x_lane, x_sigma=0.1, lane_side=1)
+
+
+def test_demerge_vetoes_jumped_match_and_defers_to_coexisting_track():
+    """并号拆分：横位跳 >0.8 道且新位置上有另一活跃轨道（与旧位置可分）
+    的匹配即拒绝，检测让位并存号——旧轨道不跟过去（一号先后挂两辆车
+    =真值小集 same 链内横跳的主机理）。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0}                     # 旧轨道挂上了跳变检测（x_lane 2.0）
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert 0 not in matches              # 旧轨道被拒绝
+    assert matches == {1: 0}             # 检测让位并存号（轨道 id2）
+
+
+def test_demerge_off_keeps_old_behavior():
+    trk = Tracker()                      # 缺省关
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_artifact_jump_without_coexistence_not_touched():
+    """纯读数伪跳（自车横移/出画/远场小位移）无并存证据：门不触发，
+    归横位未知态——拆号不治读数跳。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_normal_lateral_motion_not_vetoed():
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 1.3)]
+    matches = {0: 0}                     # 跳 0.3 道 ≤0.8 门：正常横移
+    trk._demerge(matches, [_mk_obs(1.3)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_gap_beyond_window_not_vetoed():
+    """拍距 > gap_ticks 是断号重挂的领域：门不比跳。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0, last_seen=4), _mk_track(2, 2.0, last_seen=4)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)   # 拍距 7 > 4
+    assert matches == {0: 0}
+
+
+def test_demerge_reassign_skipped_when_coexisting_track_already_matched():
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0, 1: 1}               # 并存号已有自己的检测
+    trk._demerge(matches, [_mk_obs(2.0), _mk_obs(1.2)], fid=11)
+    assert 0 not in matches              # 旧轨道仍被拒绝
+    assert matches == {1: 1}             # 检测不重复给并存号

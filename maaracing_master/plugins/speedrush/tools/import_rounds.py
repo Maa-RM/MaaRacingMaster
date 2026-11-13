@@ -4,7 +4,7 @@
 
 数据源（只读）：
 - ``logs/<token>/trace/speedrush_summary.jsonl``
-- ``debug/speedrush/<局前缀>_p<阶段>/meta.json`` 与 ``hud/hud.jsonl``
+- ``debug/<会话>/speedrush/drive/<局前缀>_p<阶段>/meta.json`` 与 ``hud/hud.jsonl``
 - ``logs/<token>/trace/speedrush.jsonl``（判 深度几何 / 全程直行）
 
 只导入 ``meta.source == "control"`` 的回合；人工录制与宏不写入。重复运行
@@ -105,7 +105,7 @@ def _load_summaries(logs_root: Path) -> list[dict[str, Any]]:
 
 def _load_metas(debug_root: Path) -> list[dict[str, Any]]:
     metas: list[dict[str, Any]] = []
-    for path in sorted(debug_root.glob("*/meta.json")):
+    for path in sorted(debug_root.glob("*/speedrush/drive/*/meta.json")):
         try:
             meta = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -195,11 +195,20 @@ def _stage_for(row: dict[str, Any], walls: list[int]) -> int | None:
 
 
 def _opponent(meta_dir: Path, ego_final: int | None) -> int | None:
-    """以段汇总末分为锚选对手末分；与线上写库共用同一选择函数。"""
+    """以段汇总末分为锚选对手末分；与线上写库共用同一选择函数。
+
+    读数对先过 ``ScoreGate``（与线上采集同参）：hud.jsonl 里的单步假读
+    （实测 214,760 / 414,920 的尖峰）不进锚选面。
+    """
+    gates = dashboard_store.new_pair_gates()
     pairs: list[tuple[int, int]] = []
     for rec in _jsonl(meta_dir / "hud" / "hud.jsonl"):
         scores = read_hud_scores(rec.get("fields") or {})
         if scores.ego_score is None or scores.opponent_score is None:
+            continue
+        ts_ns = int(rec.get("ts_ns") or 0)
+        if not (gates[0].feed(ts_ns, scores.ego_score)
+                and gates[1].feed(ts_ns, scores.opponent_score)):
             continue
         pairs.append((scores.ego_score, scores.opponent_score))
     return dashboard_store.pick_opponent(pairs, ego_final)
@@ -273,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         db = args.db.expanduser().resolve()
         dashboard_store.db_path = lambda: db
     logs_root = args.logs_root or logs_dir()
-    debug_root = args.debug_root or (debug_dir() / "speedrush")
+    debug_root = args.debug_root or debug_dir()
 
     rounds = build_rounds(logs_root, debug_root)
     if not rounds:

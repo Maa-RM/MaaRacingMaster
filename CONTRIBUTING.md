@@ -4,12 +4,12 @@
 > **本文不是什么**：不是架构与实现说明（见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)）；不是 AI 协作守则（见 [AGENTS.md](AGENTS.md)）。
 > **信源等级**：L3（导航与摘要）—— 可作「怎么参与」的依据；架构与规则细节一律回到其 home。
 
-欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **巅峰鉴宝**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
+欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **极速狂飙**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
 
-在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与信源路由见 [AGENTS.md](AGENTS.md)。
+在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与知识路由见 [AGENTS.md](AGENTS.md)。
 
 > **⚠️ 合规红线（必须遵守）**
-> 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责声明](README.md#免责与合规声明)。
+> 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责与合规声明](README.md)。
 
 ---
 
@@ -18,7 +18,7 @@
 | 方向 | 说明 | 适合谁 |
 |------|------|--------|
 | 🐛 报 Bug | 使用中遇到异常，先查 [已知问题](https://github.com/Maa-RM/MaaRacingMaster/issues) 是否已有报告 | 所有用户 |
-| 💡 提需求 | 描述你想要的鉴宝 / 平台能力，说明使用场景 | 所有用户 |
+| 💡 提需求 | 描述你想要的活动 / 平台能力，说明使用场景 | 所有用户 |
 | 🧹 修 Bug | 认领 Issue，修复后提 PR | 初级贡献者 |
 | 🧩 新模块 | 复用能力接口（capability）开发新活动模块 | 进阶贡献者 |
 | 📝 文档 | 完善 README / CODE_WIKI / 快速开始指南 | 所有贡献者 |
@@ -47,9 +47,11 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-- 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
+- **运行时依赖版本范围的唯一人写点是 `requirements.txt`**（逐件带「下一 major」上界，理由写在该文件头部注释）。打包元数据与本地可编辑安装在构建时读取这份文件，不在别处另写范围——两处各写一遍会漂出不同的许可范围，而漂出来的那一份随 wheel/sdist 元数据对外发布。新增或调整运行时依赖只改这里；只在训练、门禁、测试里用的包走可选依赖段。
+
+- 启动 GUI：运行编译产物 `apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe`（exe 自身 manifest 自动 UAC 提权）
 - 独立调试 sidecar（不经 GUI）：`.venv\Scripts\python.exe -u -m maaracing_master.core.sidecar`
-- 调试工具位于 `tools/`（训练 / 分析 / 调试分类）
+- 工具按归属放：跨插件现役工具 → `tools/`；单插件工具 → `plugins/<id>/tools/`；应用/子系统专用 → `apps/<app>/tools/`；活跃实验 → `tools/experiments/<主题>/`（README 标 `status: active`）。退役即删，历史由 git 保存；本机二进制与草稿走 gitignore，不入库。
 
 ---
 
@@ -60,8 +62,6 @@ pip install -r requirements.txt
 - **模块经能力接口（capability）接触宿主**：模块只能通过 `capture` / `gamepad` / `debug_renderer` 等窄接口办事，**无法获得高权限宿主对象**。
 - **资源所有权统一治理**：虚拟手柄用租约（`with ctx.gamepad.acquire()`）表达借还；渲染器由 `ActivityContext` 的 `ExitStack` 托管生命周期，退出（含异常）自动释放。
 - **克制不滥用抽象**：高权限对象必须隔离、有生命周期的资源必须治理；稳定纯函数直接依赖即可。
-
-关键文件位置：
 
 关键文件位置（完整导航见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md) 的「我要改 X，应该去哪里」）：
 
@@ -100,7 +100,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读对应域文档（鉴宝见 [plugins/_archive/treasure/CODE_WIKI.md](maaracing_master/plugins/_archive/treasure/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 涉及活动流程逻辑，先阅读对应域文档（极速狂飙见 [speedrush/CODE_WIKI.md](maaracing_master/plugins/speedrush/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送
@@ -116,12 +116,19 @@ git push -u origin feat/your-feature
 **提交前跑什么（跑触碰面，不跑全仓）：**
 
 - 改动相关的 `pytest` + 改动文件的 `ruff`；
-- 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/navkit/check_truth.py`；
-- 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
+- 动到真源（`plugins/*/resources/` 的图与锚点）时加跑 `python tools/pipeline/truth.py`；
+- 动到 `tools/experiments/`、`docs/plan/`（新建或改动工作台文件）、正式文档中的实验/plan 指针、或卫生基线时加跑 `python tools/check_repo_hygiene.py`（AGENTS 红线 6 与红线 4 隐私扫描；基线只减不增；实验退役四步见 [tools/experiments/README.md](tools/experiments/README.md)，plan 头部三行与退役四步见 [docs/README.md](docs/README.md)）；
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md)「作业纪律与提交红线」中「抽公共层」那一条；答不出就不抽。
 
 全仓 `ruff` / `pyright` / 全量 `pytest` **不在提交路径上**：CI（`test.yml`，push 与 PR 触发）与发版（`release.yml` 发布前 gate）已经是全仓门禁，本地重跑一遍只是把等待时间翻倍。
+
+**跳过（skip）的口径**：CI 不按跳过数量设门槛，`pytest -ra` 会逐条打印原因。两类跳过是预期内的：
+
+- `local_asset` 标记：依赖本机金标数据、模型权重或硬件的用例，资产缺失即跳过，不计入 CI 保护面；
+- 依赖上限：Windows-only 能力、`node`、`rapidocr` 等可选依赖缺失时的 `skipif`。
+
+新增跳过必须二选一：打 `local_asset` 标记，或在 `skipif(..., reason=...)` 里写清缺失的是哪一项。没有标记、没有原因的静默跳过视为测试写坏。
 
 ### 4. 提 PR
 

@@ -206,9 +206,14 @@ def iter_calls(path: Path) -> list[CallSite]:
 
 
 def scan_package(root: Path = PACKAGE) -> list[CallSite]:
-    """按目录发现（插件增删自动伸缩），不依赖 cwd。"""
+    """按目录发现（插件增删自动伸缩），不依赖 cwd。
+
+    归档区（`_archive/`）不是活跃树：已退役插件冻结，不参与日志归属门禁。
+    """
     out: list[CallSite] = []
     for path in sorted(Path(root).rglob("*.py")):
+        if "_archive" in path.parts:
+            continue
         out.extend(iter_calls(path))
     return out
 
@@ -277,7 +282,7 @@ def _s(file, func, template, level, klass, attribution, reason) -> LogSite:
 
 SITES: list[LogSite] = [
     # ---- core/clicker.py ----
-    _s('core/clicker.py', 'Clicker.auto_shoo', '[鉴宝点击] 避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/clicker.py', 'Clicker.auto_shoo', '避让空转：已连续 {} 次导航到 ({},{}) 光标仍压住 [{}]（当前位 ({},{})）——游戏可能不接受该落点，需人工核查', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/covers.py ----
     _s('core/covers.py', '_declared_file', '[covers] {}: COVER 应为字符串，已忽略: {}', 'WARNING', 'state', 'cross', '封面声明非法属插件配置错误：WARNING 不静默但封面是装饰、不阻断模块；解析在 RPC 线程，无业务组可挂。'),
@@ -295,6 +300,7 @@ SITES: list[LogSite] = [
     _s('core/controller.py', 'MaaRacingMasterController.start_module', '模块执行异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/controller.py', 'MaaRacingMasterController.stop', '停止模块异常: {}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
     _s('core/controller.py', 'MaaRacingMasterController._emergency_stop_loop', '紧急停止：检测到同时按下 ≥2 个按键，立即停止逻辑', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/controller.py', 'MaaRacingMasterController.begin_run', '切到游戏前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台', 'WARNING', 'state', 'cross', '运行边界的前台准备被系统拒绝：可恢复降级，不阻断本轮；日志发生在生命周期组开启之前，无业务组可挂。'),
 
     # ---- core/gamepad_cursor.py ----
     _s('core/gamepad_cursor.py', 'GamepadClicker.watchdog', '[手柄导航] 任务槽已占用 {}s（{}，导航仍在推进：{}s 前更新过进度）——期间点击与避让都会被跳过', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
@@ -306,6 +312,7 @@ SITES: list[LogSite] = [
     # ---- core/ocr.py ----
     _s('core/ocr.py', '_pin_to_p_cores', '[OCR] CPU 亲和性未生效({})——E-core 漂移防护缺位，OCR 尾部耗时可能偏高', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
     _s('core/ocr.py', 'RapidOcrEngine._get_engine', '[OCR] RapidOCR 加载失败({})，OCR 已禁用', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
+    _s('core/ocr.py', 'RapidOcrEngine._get_block_engine', '[OCR] 整帧检测引擎加载失败({})，位置未知时的文字兜底已禁用', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
 
     # ---- core/perf_contract.py ----
     _s('core/perf_contract.py', 'rows_for', '[perf] {} 契约版本 {} 不认识（期望 {}），领域面整体不显示', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
@@ -316,7 +323,7 @@ SITES: list[LogSite] = [
     _s('core/perf_sampler.py', 'PerfSampler.on_session_closing', '[perf] 线程标签声明未兑现（整场没匹配到线程）：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/pipeline_logger.py ----
-    _s('core/pipeline_logger.py', 'PipelineLogger.on_node_action', '[Pipeline] {}({}) → 动作❌失败', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/pipeline_logger.py', 'PipelineLogger.on_node_action', '[Pipeline] {} → 动作❌失败', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
     # ---- core/registry.py ----
     _s('core/registry.py', '_parse_validity', '[registry] 插件 {}: {}，按未声明处理', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
@@ -377,7 +384,11 @@ SITES: list[LogSite] = [
 
     # ---- core/yolo_detector.py ----
     # __init__ 的设备/缓存加载判定已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。
+    _s('core/yolo_detector.py', 'YOLODetector.__init__', 'DirectML 会话创建失败，回退 CPU：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；回退原因必须与设备不可用区分，发生在加载期、无业务组。'),
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+
+    # ---- plugins/speedrush/gpu_probe.py ----
+    _s('plugins/speedrush/gpu_probe.py', 'GpuProbe._dump_scene', '[GpuProbe] 停顿抓拍失败: {}', 'WARNING', 'cross', 'cross', '常驻 daemon 取证线程的跨切面事件：无稳定业务组可挂；抓拍失败不阻断采样主路。'),
 
     # ---- plugins/speedrush/hud.py ----
     _s('plugins/speedrush/hud.py', 'HudObserver._write_meta', '[极速狂飙] HUD meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
@@ -386,7 +397,9 @@ SITES: list[LogSite] = [
     # ---- plugins/speedrush/module.py ----
     _s('plugins/speedrush/module.py', '_open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/speedrush/module.py', '_fresh_session_dir', '[极速狂飙] 会话目录 {} 已存在且非空，改写到 {}', 'WARNING', 'cross', 'cross', '建目录先于业务组开启：撞名换名是异常但可恢复的降级，WARNING 不静默；工具函数无组上下文。'),
+    _s('plugins/speedrush/module.py', '_fresh_session_dir', '[极速狂飙] 会话目录 {} 已存在，改写到 {}', 'WARNING', 'cross', 'cross', '建目录先于业务组开启：撞名换名是异常但可恢复的降级，WARNING 不静默；工具函数无组上下文。'),
+    _s('plugins/speedrush/module.py', '_register_drive_segment', '[极速狂飙] 驾驶取证清单登记失败: {}', 'WARNING', 'cross', 'cross', '取证清单是离线回放入口；写失败属可恢复降级，发生在驾驶阶段组内但由工具函数统一上报。'),
+    _s('plugins/speedrush/module.py', '_finish_drive_segment', '[极速狂飙] 驾驶取证清单收尾失败: {}', 'WARNING', 'cross', 'cross', '阶段收尾的清单/索引重建；失败不阻断驾驶，WARNING 不静默。'),
     _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
@@ -400,42 +413,36 @@ SITES: list[LogSite] = [
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧返回失败（累计 {}） seq={}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
     _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧失败（累计 {}） seq={}: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
 
-    # ---- plugins/_archive/treasure/detector.py ----
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector.__init__', '[鉴宝检测器] 无可用 v4 DetectionPlan（policy.json 缺失/损坏），阶段检测跳过', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector.__init__', '[鉴宝检测器] v4 DetectionPlan 加载失败: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/detector.py', 'TreasureStageDetector._match_score', '[鉴宝检测器] ROI 尺寸不足（{}/{} 搜索区 {}×{}），该模板永远无法命中，请调大 ROI', 'WARNING', 'state', 'cross', '配置缺陷（ROI 过小）按节流告警：是状态变化而非逐帧读数；检测 worker 无组可挂。'),
-
-    # ---- plugins/_archive/treasure/module.py ----
-    _s('plugins/_archive/treasure/module.py', '_open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', '_load_action_centers', '[鉴宝] policy 感知锚点 rect 读取失败: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请将游戏窗口调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载到动作按钮 rect，准星模式将不可用', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载任何鉴宝师头像模板（选择鉴宝师阶段将用点中心兜底）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载「开始匹配」按钮模板（降级：始终先点目标场次 badge，再点开始匹配位置）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载智能出价按钮模板（面板已开判定降级：依赖主按钮 OCR 兜底）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.start', '[鉴宝] 未加载放弃确认弹窗模板（pass 二级确认将无法自动处置）', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._init_policy_stack', '[鉴宝] policies 编译失败：{}', 'ERROR', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule.cleanup', '[鉴宝][v4] 跑图器释放异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._io_worker_loop', '[鉴宝] IO worker 异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/module.py', 'TreasureModule._ocr_worker_loop', '[鉴宝] OCR worker 异常: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-
-    # ---- plugins/_archive/treasure/ocr.py ----
-    _s('plugins/_archive/treasure/ocr.py', 'TreasureOcr._load_regions', '[鉴宝OCR] policy.json 真源不可用，识别区为空', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-
-    # ---- plugins/_archive/treasure/store.py ----
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._mlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/_archive/treasure/store.py', 'read_today_stats', '读取今日看板数据失败: {}', 'WARNING', 'cross', 'cross', 'GUI 今日看板读侧的跨切面事件（RPC 请求线程），无业务组。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] SQLite 初始化失败（数据不记录，不影响自动化）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.close_db', '[鉴宝落盘] 关闭连接失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.flush_game_record', '[鉴宝落盘] 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.record_egg_claim', '[鉴宝落盘] 领取数含负值，拒写: {} coin={} score={}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.record_egg_claim', '[鉴宝落盘] 领取蛋数写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore.log_session_summary', '<dynamic>', 'INFO', 'state', 'cross', '测试桩无 _open_grp 时的 legacy 逐行回退：正式模块走组句柄，不走这里。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] games 表迁移失败（strategy_mode 列缺失）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
-    _s('plugins/_archive/treasure/store.py', 'TreasureStore._conn', '[鉴宝落盘] daily_summary 迁移失败（egg_coin/egg_score 列）: {}', 'WARNING', 'cross', 'cross', '初始化/加载期判定：业务组尚未开启，属跨切面。'),
+    # ---- 成就机制（core/achievement.py · core/registry.py · core/sidecar.py） ----
+    # 成就整体是旁路功能：不挂业务组、失败只降级（契约 I1），工作线程是 sidecar 启动期
+    # 与 RPC 线程，稳定业务组不存在。
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就目录不可用（{}）: {}', 'WARNING', 'state', 'cross', 'core 成就目录在 sidecar 初始化期加载，先于任何业务组；文件缺失/损坏只降级为无核心成就，不阻断启动。'),
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就: {}', 'WARNING', 'state', 'cross', 'catalog 逐条校验问题回显（启动期、无业务组）：非法条目丢弃但不静默，否则成就莫名不弹无从排查。'),
+    _s('core/achievement.py', 'register_core_catalog', '[achievement] core 成就目录校验失败，跳过', 'WARNING', 'state', 'cross', '整份目录不可用（schema 版本不符等）：降级为无核心成就，启动期无业务组可挂。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档损坏，重建为空: {}', 'WARNING', 'state', 'cross', '存档解析失败按空态重建：引擎构造期读取，无业务组；WARNING 让用户知道进度被重建。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档形状非法，重建为空', 'WARNING', 'state', 'cross', '存档顶层不是对象：同属构造期降级路径，无业务组可挂。'),
+    _s('core/achievement.py', 'AchievementEngine._load_state', '[achievement] 存档版本 {} 高于支持 {}，保留原文件停写', 'WARNING', 'state', 'cross', '降级保护（高版本存档）：只读冻结、不改运行结局，构造期无业务组；这条必须可见，否则用户以为进度丢了。'),
+    _s('core/achievement.py', 'AchievementEngine.__init__', '[achievement] 加载期补偿存档失败（未提交）: {}', 'WARNING', 'state', 'cross', '构造期补偿（补缺解锁/元成就）落盘失败：不提交、不上抛，成就旁路故障，无业务组。'),
+    _s('core/achievement.py', 'AchievementEngine.reload_from_disk', '[achievement] 重载补偿存档失败（未提交）: {}', 'WARNING', 'state', 'cross', '重载路径与启动同源，RPC/初始化线程、无业务组；补偿失败整体不提交。'),
+    _s('core/achievement.py', 'AchievementEngine._preserve_corrupt_store', '[achievement] 存档损坏（{}）但无法留备份，转只读: {}', 'WARNING', 'state', 'cross', '损坏档留证失败即停写：状态变化而非阶段；构造/重载期无业务组，原文件必须保持不动。'),
+    _s('core/achievement.py', 'AchievementEngine._preserve_corrupt_store', '[achievement] 存档损坏（{}），原文件已备份为 {}，随后修复', 'WARNING', 'state', 'cross', '修复前留证：循环体内按微秒时间戳重试独占创建，属状态变化；用户需要知道备份文件名。'),
+    _s('core/achievement.py', 'AchievementEngine._preserve_corrupt_store', '[achievement] 存档备份命名冲突，转只读（原文件未动）', 'WARNING', 'state', 'cross', '循环体内重试耗尽后的安全降级：停写且不改原文件，无业务组。'),
+    _s('core/achievement.py', 'AchievementEngine._rewrite_repaired', '[achievement] 修复后的存档写回失败（保持内存态）: {}', 'WARNING', 'state', 'cross', '修复是旁路动作，写回失败不阻断启动；内存态已规范，后续事实会重试落盘。'),
+    _s('core/achievement.py', 'AchievementEngine._notify', '[achievement] 解锁回调异常 {}: {}', 'WARNING', 'state', 'cross', '通知回调在引擎锁外执行且尽力而为：失败不回灌引擎（契约 I1），工作线程无业务组。'),
+    _s('core/achievement.py', '_warn_throttled', '<dynamic>', 'WARNING', 'state', 'cross', '事实处理失败的限频告警（模板由调用方给出）：跨切面旁路事件，已有 60s 限频防刷屏。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {}: mod_id 为成就保留命名空间，跳过成就声明', 'WARNING', 'state', 'cross', '插件扫描发生在 registry import 期，早于任何业务组；保留 mod_id 冲突只拒绝该插件的成就声明。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 声明非法，跳过成就', 'WARNING', 'state', 'cross', '插件声明错误隔离（不撤销模块注册）：import 期无业务组。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 须为插件内相对路径，跳过', 'WARNING', 'state', 'cross', '路径闸拒绝绝对路径：import 期、无业务组，拒绝即跳过该插件的成就。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} ACHIEVEMENTS 路径越界，跳过', 'WARNING', 'state', 'cross', '路径闸拒绝穿越插件目录：import 期、无业务组。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就目录缺失: {}，跳过', 'WARNING', 'state', 'cross', '声明了成就目录但文件不在：import 期隔离该插件成就，不影响模块注册。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就: {}', 'WARNING', 'state', 'cross', 'catalog 逐条校验问题回显：import 期无业务组，非法条目丢弃但不静默。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就目录不可用，跳过', 'WARNING', 'state', 'cross', '整份目录不可用：import 期降级为无该插件成就，不影响模块注册。'),
+    _s('core/registry.py', '_register_achievements', '[registry] 插件 {} 成就注册失败，跳过: {}', 'WARNING', 'state', 'cross', '成就注册兜底异常隔离：import 期、无业务组，失败不阻断模块注册。'),
+    _s('core/sidecar.py', 'SidecarService.__init__', '[sidecar] 成就引擎初始化失败，成就功能暂不可用: {}', 'WARNING', 'state', 'cross', 'sidecar 构造期初始化旁路功能：失败降级为成就不可用，不改运行结局，无业务组。'),
+    _s('core/sidecar.py', '_warn_unknown_ui_event', '[sidecar] 未知 UI 事件，已忽略: {}', 'WARNING', 'state', 'cross', 'RPC 线程上的前端输入校验回显（已 60s 限频）：前端字面量拼错时这是唯一痕迹，无业务组。'),
+    _s('core/sidecar.py', 'SidecarService.export_achievements', '[achievement] 已导出成就备份: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的管理操作，RPC 线程、无业务组；导出结果需要用户可见（路径与条数）。'),
+    _s('core/sidecar.py', 'SidecarService.import_achievements', '[achievement] 已导入成就备份: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的管理操作，RPC 线程、无业务组；导入源与条数需要可追溯。'),
+    _s('core/sidecar.py', 'SidecarService.reset_achievements', '[achievement] 已重置成就进度: {}（{} 条）', 'INFO', 'state', 'cross', '用户主动的重置操作，RPC 线程、无业务组；清了几条要留痕（重置会撤销解锁态）。'),
 ]
 
 # 迁到玩法流水的站点：key（四元组）→ (流水模块, 判别字段, 所属阶段)。

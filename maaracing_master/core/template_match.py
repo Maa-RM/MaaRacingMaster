@@ -154,24 +154,6 @@ def find_template(frame: np.ndarray, template: np.ndarray, threshold: float = 0.
     return best_box, best_val
 
 
-def find_any(frame: np.ndarray, names: list[str], image_dirs: list[Path],
-             threshold: float = 0.7, scales=DEFAULT_SCALES,
-             roi: Box | None = None) -> tuple[Box | None, float, str]:
-    """一张节点挂多张候选图（新旧皮肤同时有效），取最高分。
-
-    返回 (命中框, 置信度, 命中的模板名)。
-    """
-    best_box, best_val, best_name = None, 0.0, ""
-    for name in names:
-        tpl = load_template(name, image_dirs)
-        if tpl is None:
-            continue
-        box, val = find_template(frame, tpl, threshold=threshold, scales=scales, roi=roi)
-        if box is not None and val > best_val:
-            best_box, best_val, best_name = box, val, name
-    return best_box, best_val, best_name
-
-
 # ==================== v4 引擎件（P2a-Q5）：colorspace / 仲裁 / 断言 / 遮挡 ====================
 
 CURSOR_SIZE_NORM = 0.03  # 光标贴图归一化宽（P2b 真机校准前的引擎常量）
@@ -241,9 +223,14 @@ def find_any_cs(frame: np.ndarray, names: list[str], image_dirs: list[Path], *,
                 colorspace: str = "rgb", threshold: float = 0.7,
                 thresholds: dict[str, float] | None = None,
                 scales=DEFAULT_SCALES, roi: Box | None = None) -> tuple[Box | None, float, str]:
-    """v4 多候选匹配：逐模板独立阈值（arbitration.template_thresholds）+ colorspace。"""
+    """v4 多候选匹配：逐模板独立阈值（arbitration.template_thresholds）+ colorspace。
+
+    未命中时置信度仍是**真实最高分**（不是 0）：调用方靠它打「ROI 内最高分」，
+    恒返回 0 会把「差一点命中」和「完全不沾边」抹成同一行日志。
+    """
     thresholds = thresholds or {}
-    best_box, best_val, best_name = None, 0.0, ""
+    best_box, best_hit_val, best_name = None, 0.0, ""
+    best_miss_val = 0.0
     for name in names:
         tpl = load_template(name, image_dirs)
         if tpl is None:
@@ -251,9 +238,14 @@ def find_any_cs(frame: np.ndarray, names: list[str], image_dirs: list[Path], *,
         box, val = match_template_cs(frame, tpl, colorspace=colorspace,
                                      threshold=float(thresholds.get(name, threshold)),
                                      scales=scales, roi=roi)
-        if box is not None and val > best_val:
-            best_box, best_val, best_name = box, val, name
-    return best_box, best_val, best_name
+        if box is not None:
+            if val > best_hit_val:
+                best_box, best_hit_val, best_name = box, val, name
+        elif val > best_miss_val:
+            best_miss_val = val
+    if best_box is not None:
+        return best_box, best_hit_val, best_name
+    return None, best_miss_val, ""
 
 
 def color_assert_ok(frame: np.ndarray, box: Box, sub_rect_norm: list[float],

@@ -9,7 +9,6 @@ NO_ANCHOR_YET）、UNKNOWN 的 metric=None 类型语义、既有 2D 输出零回
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from dataclasses import replace
@@ -335,33 +334,27 @@ def test_zero_regression_on_existing_2d_outputs():
     assert all(ob.distances for ob in outs_b[1:])   # 锚点面只体现在 distances
 
 
-# ---------- 深度侧锚点清单口径 ----------
+# ---------- 深度侧锚点清单口径（2026-11-11：框底行几何） ----------
 
-def _pts_with_cluster(z_main=42.0, z_far=80.0):
-    pts = np.full((598, 336, 3), np.nan, np.float64)
-    pts[:, :, 2] = z_main                     # 全幅主簇
-    pts[100:110, 100:110, 2] = z_far          # 小块远景簇
-    return pts
-
-
-def test_anchor_sheet_densest_cluster_median():
-    pts = _pts_with_cluster()
-    sheet = anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)], fid=7, ts_ns=700)
+def test_anchor_sheet_box_bottom_geometry():
+    """逐车距离 = 框底行几何：z = fy·cam_h/(y_bot−y_h)，与点云无关。"""
+    sheet = anchor_sheet_from_detections(
+        [(0, 560, 500, 720, 540)], fid=7, ts_ns=700, y_v=360.0)
     assert sheet is not None and sheet.fid == 7
     assert len(sheet.entries) == 1
     e = sheet.entries[0]
-    assert e.z_m == pytest.approx(42.0)       # 最密簇中位，不被远景簇带跑
-    assert e.y1 - e.y0 == 720
+    assert e.z_m == pytest.approx(630.0 * 1.25 / (540.0 - 360.0))
+    assert e.y1 - e.y0 == 40
 
 
 def test_anchor_sheet_drops_out_of_domain_and_degenerate_boxes():
-    pts = _pts_with_cluster(z_main=120.0)     # 出有效域（>90m）
-    assert anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)], fid=1,
-                                        ts_ns=1) .entries == ()
-    assert anchor_sheet_from_detections(pts, [], fid=1, ts_ns=1) is None  # 零成本路径
-    # 2×2 小框（原生 <3px）：量不出 → 静默弃权
-    tiny = anchor_sheet_from_detections(_pts_with_cluster(),
-                                        [(0, 636, 356, 640, 360)], fid=1, ts_ns=1)
+    # 框底太靠近灭点行 → z 出有效域（>90m）
+    assert anchor_sheet_from_detections(
+        [(0, 560, 340, 720, 365)], fid=1, ts_ns=1, y_v=360.0).entries == ()
+    assert anchor_sheet_from_detections([], fid=1, ts_ns=1, y_v=360.0) is None
+    # 2×2 小框：量不出 → 静默弃权
+    tiny = anchor_sheet_from_detections(
+        [(0, 636, 356, 640, 360)], fid=1, ts_ns=1, y_v=360.0)
     assert tiny.entries == ()
 
 
@@ -469,13 +462,13 @@ def test_cluster_switch_clears_fx_with_anchor():
 
 
 def test_sheet_carries_frame_focal():
-    """锚点清单携带同帧焦距（契约加法）：fx 原样透传，缺省 None。"""
-    pts = _pts_with_cluster()
-    s = anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)], fid=7,
-                                     ts_ns=700, fx=697.3)
+    """锚点清单携带横向反投影焦距（契约）：缺省=固定投影焦距，可显式覆盖。"""
+    s = anchor_sheet_from_detections([(0, 560, 500, 720, 540)], fid=7,
+                                     ts_ns=700, y_v=360.0, focal=697.3)
     assert s.fx == pytest.approx(697.3)
-    assert anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)],
-                                        fid=7, ts_ns=700).fx is None
+    assert anchor_sheet_from_detections(
+        [(0, 560, 500, 720, 540)], fid=7, ts_ns=700,
+        y_v=360.0).fx == pytest.approx(630.0)
 
 
 def test_jump_gate_drops_flip_and_keeps_old_anchor():
@@ -501,14 +494,13 @@ def test_jump_gate_drops_flip_and_keeps_old_anchor():
     assert d2.v_close_mps == pytest.approx((44.0 - 44.5) / (10 * NS / 1e9))
 
 
-def test_box_anchor_z_prefers_near_cluster():
-    """近簇选择（2026-10-13 换装）：远车框里背景簇比车身簇更密时取**车身**
-    （近）簇——实心物体对背景，比车更近的只有噪声级散点；旧"最密簇"口径
-    在此场景翻到背景（生命表实测逐锚跳 10~15m）。密度比按实机紧框量级
-    （背景:车身 ≈ 5:3，翻跳正发生在这量级）。"""
-    pts = np.full((598, 336, 3), np.nan, np.float64)
-    pts[300:320, 150:175, 2] = 60.0                       # 背景 60m：500 像素
-    pts[300:315, 150:170, 2] = 25.0                       # 车身 25m：300 像素（近）
-    sheet = anchor_sheet_from_detections(pts, [(0, 0, 0, 1280, 720)],
-                                         fid=1, ts_ns=1)
-    assert sheet.entries[0].z_m == pytest.approx(25.0, abs=1.5)
+def test_box_anchor_z_drops_adjacent_lane_box():
+    """邻道车的框底给的是「最近侧面点」，不是纵向车距：横向米制位超 1.2m
+    一律不给锚（否则并行车 3~5m 会被当成前车）。"""
+    y_v = 360.0
+    front = anchor_sheet_from_detections(
+        [(0, 560, 500, 720, 540)], fid=1, ts_ns=1, y_v=y_v)
+    assert front.entries[0].z_m == pytest.approx(630.0 * 1.25 / 180.0)
+    side = anchor_sheet_from_detections(
+        [(0, 1000, 500, 1200, 540)], fid=1, ts_ns=1, y_v=y_v)
+    assert side.entries == ()

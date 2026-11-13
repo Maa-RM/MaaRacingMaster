@@ -9,11 +9,11 @@
 - **接线层**（需完整运行时依赖，CI 上整类跳过）：模块在录制模式下与录制器同一时机
   启停观察者、非录制模式不起、``_state`` 暴露记录状态。
 
-**区域真源的机检口径照 ``tools/navkit/check_truth.py`` 的 ``rect_checks()``**，且直接
+**区域真源的机检口径照 ``tools/pipeline/truth.py`` 的 ``rect_checks()``**，且直接
 复用那个函数（把区域集包成 ``{"rect": [...]}`` 形状喂进去），不在这里另写一份判据——
 两份判据会各自漂移，而这一条的全部意义就是"区域集与图/policy 面同一把尺子"。
-判据落在本文件而非 ``check_truth.py``：``tools/navkit/**`` 机检的是 treasure 图/policy
-数据面，HUD 区域集是插件侧纯数据真源，两者不是一条链（见汇报口径）。
+判据落在本文件而非 ``truth.py``：``truth.py`` 机检的是 pipeline 节点图与几何，
+HUD 区域集是插件侧纯数据真源，两者不是一条链。
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from maaracing_master.core import xinput
 from maaracing_master.plugins.speedrush import HUD_REGIONS_FILE
 from maaracing_master.plugins.speedrush import hud
 from maaracing_master.plugins.speedrush.recorder import DriveRecorder
-from tools.navkit import check_truth as ct
+from tools.pipeline import truth as ct
 
 REPO = Path(__file__).resolve().parents[1]
 REGIONS = hud.load_hud_regions()
@@ -38,11 +38,9 @@ FRAME_W, FRAME_H = 320, 180
 # 旧（实验目录）区域真源路径：搬走后任何消费者都不得再引用它
 _STALE_REGION_PATH = "experiments/speedrush_scoring/hud_regions.json"
 _REGION_CONSUMERS = (
-    REPO / "tools" / "experiments" / "speedrush_scoring" / "probe_hud_ocr.py",
-    REPO / "tools" / "experiments" / "speedrush_scoring" / "README.md",
-    REPO / "tools" / "navkit" / "studio_server.py",
-    REPO / "tools" / "navkit" / "README.md",
-    REPO / "tools" / "navkit" / "static" / "app.js",
+    REPO / "maaracing_master" / "plugins" / "speedrush" / "tools" / "probe_hud_ocr.py",
+    REPO / "tools" / "pipeline" / "README.md",
+    REPO / "tools" / "pipeline" / "studio" / "static" / "app.js",
 )
 
 
@@ -158,7 +156,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 # ----------------------------------------------------------------------
-# 区域真源：唯一真源 + 几何机检（口径 = check_truth.rect_checks）
+# 区域真源：唯一真源 + 几何机检（口径 = truth.rect_checks）
 # ----------------------------------------------------------------------
 
 
@@ -632,10 +630,16 @@ class _FakeGraph:
         self.seq = list(seq)
         self.calls = 0
 
-    def run(self, entry: str, reached: str | None = None) -> bool:
+    def run(self, entry: str, reached: str | None = None,
+            *, save: str | None = None) -> bool:
         v = self.seq[min(self.calls, len(self.seq) - 1)]
         self.calls += 1
         return v
+
+    def probe(self, node: str, **kwargs):
+        """驾驶主循环的只读页面查询；计数口径与 run 一致。"""
+        hit = self.run(node, node)
+        return sr.ProbeOutcome.HIT if hit else sr.ProbeOutcome.MISS
 
 
 class _SpyObserver:

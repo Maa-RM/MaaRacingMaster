@@ -26,8 +26,7 @@ P = load_decision().traffic
 
 def _health() -> PerceptionHealth:
     return PerceptionHealth(perception_alive=True, frame_fresh=True,
-                            geometry_valid=True, target_presence=True,
-                            stage_transition=False)
+                            target_presence=True, stage_transition=False)
 
 
 def _car(tid: int, fid: int, cy: float, x_lane: float, rel: float,
@@ -41,7 +40,7 @@ def _car(tid: int, fid: int, cy: float, x_lane: float, rel: float,
 def _obs(fid: int, targets: tuple[TrackedTarget, ...]) -> WorldObservation:
     return WorldObservation(schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
                             frame_age_ms=20.0, stage=1, health=_health(),
-                            boundary=None, targets=targets, far_targets=())
+                            targets=targets, far_targets=())
 
 
 def _drive(o: TrafficObserver, cars_by_fid: dict[int, list[tuple]]) -> tuple:

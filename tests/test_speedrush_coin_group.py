@@ -33,7 +33,7 @@ def _obs(fid: int, targets=()) -> WorldObservation:
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 33_000_000, frame_age_ms=10.0,
         stage=1, health=PerceptionHealth(True, True, True, bool(targets), False),
-        boundary=None, targets=tuple(targets), far_targets=())
+        targets=tuple(targets), far_targets=())
 
 
 # ---------- 同帧聚类 ----------

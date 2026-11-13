@@ -61,7 +61,10 @@
 - **必须有 `README.md`，文首含 `status: active` 行**（机检 R1）。status 是给 agent 与
   检查器看的**入口护栏，不是状态数据库**——不存在 "closed 但留在树里"：在树即 active，
   退役即删除。禁止给来历不明的存量目录批量补 status（见下方 legacy 分诊）。
-- 实验脚本**自包含、可直接运行**，不 import `maaracing_master` 业务代码；需要的能力在脚本内最小自建。
+- 实验脚本**可直接运行**（离线复算，不依赖实机在线）。允许 import `maaracing_master` 的回放/
+  读取面（trace 读取、标定加载、模型推理适配）——回放要复用生产的读数，重抄一遍就是第二份
+  真相，会与生产漂移；禁止的是**写生产状态**：不得改写 `resources/**`、生产配置与运行时数据，
+  探针落盘只进本区 `_out/` 与 `_probe_data/`。不依赖业务代码的纯算法探索仍可最小自建。
 - 结论同时按触发清单写入项目记忆库。
 
 ### 出口（实验关闭 = 四步，顺序不可换）
@@ -97,5 +100,5 @@ D 已废弃 → 删。基线只减不增。
 ## 先例
 
 - `cursor_refactor` 探针 → 事实沉淀 → 生产化为 `core/gamepad_cursor.py` +
-  `core/resources/stick_speed_model.json`（工具本体属"已退役生产资产"，归档 `archive/cursor_refactor/`）。
+  `core/resources/stick_speed_model.json`（工具本体已退役，结论以生产化文件与其 commit 史为准）。
 - 新实验照此路径走：**实验 → 结论入 home 与记忆库 → 仪器提升或随目录退役**。

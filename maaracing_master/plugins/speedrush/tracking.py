@@ -70,7 +70,6 @@ class PerceptionHealth:
 
     perception_alive: bool   # 本 tick detect() 完成且被消费
     frame_fresh: bool        # frame_age_ms ≤ fresh_max_ms
-    geometry_valid: bool     # v1 = 调用方传入（边界层落地后由 BoundarySummary 推导）
     target_presence: bool    # 本帧观测含近场或远场目标
     stage_transition: bool   # 阶段切换/起步/过场窗口（调用方传入，锚点序列可判）
     # 本帧原始检出分类计数（YOLO 层）。安全检查只认车：币/奖励是机会面，
@@ -84,41 +83,6 @@ class PerceptionHealth:
     def raw_vehicle_presence(self) -> bool:
         """原始检出里有车——目标流枯竭判据只认这一项。"""
         return self.raw_cars > 0
-
-
-@dataclass(frozen=True)
-class BoundarySummary:
-    """边界感知层摘要契约。v1 **无生产者**（边界层未落地），
-    `WorldObservation.boundary` 恒为 None；路缘不参与目标评分（v2 §三），
-    其消费者只有校验层与横向位移代价项。"""
-
-    schema_version: int
-    left_x: float
-    right_x: float
-    road_width: float
-    straight_residual: float
-    vp_row: float | None
-    validity: bool
-    uncertainty: float
-    # 稳定跟踪到的路缘侧数（0/1/2）。单侧容忍（step 6）：sides≥1 即 validity，
-    # 但 sides==1 时 road_width/vp_row 不可用（需双侧）——消费者据 sides 决定是否
-    # 用居中/路宽类量，不得假设单侧帧有完整路几何。
-    sides: int = 2
-    # 两边线交点的横向位置（需 sides==2；与 vp_row 同门控同缺省）。与校准 vpx 的
-    # 横偏 ∝ 车头航向角——真机证据链（2026-09-22）：打舵画面是旋转不是平移，
-    # 平移假设下边界检测恰在控制动作时失明；vp_x 是航向的免费观测量，v2 trace
-    # 落列供 C1/C2 定档，planner 现值不消费（不建立第二份真相：消费时由观测层给）。
-    vp_x: float | None = None
-    # 左右路缘的 A1 读数（带顶行，左负右正；该侧稳定才有值，否则 None）。
-    # 消费者=超车空间闸门（设计稿 §四补：决策默认左右对称，禁用某方向必须拿
-    # "那侧没空间"的显式证据——None=证据不足=两侧都放行）。
-    left_edge_lane: float | None = None
-    right_edge_lane: float | None = None
-    # 全部可见黄线簇的车道坐标（升序，schema 3，2026-09-28）——**车道栅格本身**:
-    # 簇=车道边界线,间隙=车道,自车车道=包含 x=0 的间隙。配对(left/right)只是
-    # 路宽级两簇的特例;配对宽度天然多模态(212734 局实证:拍间 325→204→518px
-    # 乱跳),任何"路宽常数"先验对它都不成立——车道归属必须走间隙,不走配对宽度。
-    clusters: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -287,7 +251,10 @@ class MetricCarState:
       未开——消费端此时回退像素 t_meet，不算 pacing）。
     - t_meet_s = z/v_close（v_close ≤ 0 = 掠过/远离 → None，**与「估计窗未开」
       同值不同义**——区分靠 source：source 非 UNKNOWN 且 t None= pacing/远离
-      占用语义；source=UNKNOWN=无锚，回退像素）。"""
+      占用语义；source=UNKNOWN=无锚，回退像素）。
+    - z_box_bridged：本拍发布 z 取自框高比桥接（BOX_RATIO），是框高量子化
+      与锚步进的阶梯噪声，不是锚点基线；consumer 不得用它判断「换锚/真实
+      通过」。"""
 
     target_id: int
     source: DistanceSource
@@ -306,6 +273,10 @@ class MetricCarState:
     # 框高比桥接距离（z_m 之外的第二列；trace 消费）。与 bridged 无关：
     # bridged 是速度像素桥（t_meet），本字段是距离桥（z）。
     box_bridge_z_m: float | None = None
+    # 本拍发布 z 是否取自框高比桥接（method=BOX_RATIO）。决策层据此把
+    # 桥接值与锚点口径分开：桥接值是框高量子化 + 锚步进的阶梯噪声，不进
+    # 锚点的跳变门/EMA 基线（跳变≠真实换锚），只作闭速稳健斜率的原料。
+    z_box_bridged: bool = False
 
 
 @dataclass(frozen=True)
@@ -316,7 +287,6 @@ class WorldObservation:
     frame_age_ms: float
     stage: int
     health: PerceptionHealth
-    boundary: BoundarySummary | None
     targets: tuple[TrackedTarget, ...]     # 近→远（cy 降序）
     far_targets: tuple[FarTarget, ...]     # 近→远
     coin_groups: tuple[CoinGroup, ...] = ()  # 契约扩展（加字段不破消费方，schema 仍 1）
@@ -350,6 +320,8 @@ class DecisionOutput:
     phase: str = "keep"
     authority: str = "GENTLE"
     deadline_s: float | None = None
+    # 交付型意图（贴边/让位）：目标位本身是计分几何，计划不再套回中的宽死区。
+    intent_precise: bool = False
 
 
 @dataclass(frozen=True)
@@ -516,7 +488,11 @@ class Tracker:
                  box_bridge_enabled: bool = False,
                  box_bridge_trace_only: bool = True,
                  anchor_box_gate_enabled: bool = False,
-                 lane_line_enabled: bool = False):
+                 lane_line_enabled: bool = False,
+                 demerge_enabled: bool = False,
+                 demerge_jump: float = 0.8,
+                 demerge_coloc: float = 0.35,
+                 demerge_gap: int = 4):
         # cal 缺省读几何真源（gate0.json）；三源分立，代码不写标定字面量
         self.cal = cal if cal is not None else load_calib()
         self.p = params
@@ -532,6 +508,13 @@ class Tracker:
         # 车道线定道（双线同行插值，闸 lane_line.enabled，默认关=字段恒 None）：
         # 闸由 decision.json 传入，配置流向单点在链构建
         self._lane_line_on = lane_line_enabled
+        # 并号拆分（闸 demerge.enabled，默认关）：横位跳超限且新位置有另
+        # 一活跃轨道即拒绝匹配，让位并存号——治并号不治读数伪跳（伪跳无
+        # 并存证据，门不触发，归横位未知态）
+        self._demerge_on = demerge_enabled
+        self._demerge_jump = demerge_jump
+        self._demerge_coloc = demerge_coloc
+        self._demerge_gap = demerge_gap
         self._tracks: list[_Track] = []
         self._next_id = 1
         self._last_fid: int | None = None
@@ -560,7 +543,7 @@ class Tracker:
         self._ingest_stats = None
 
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
-               geometry_valid: bool = True, stage_transition: bool = False,
+               stage_transition: bool = False,
                anchors: DepthAnchorSheet | None = None,
                lane: dict | None = None) -> WorldObservation:
         fid = per.frame_id
@@ -587,7 +570,8 @@ class Tracker:
                 o.x_lane_line = lane_membership(o.cx, o.box[3], _lines)
                 if o.x_lane_line is None:
                     o.x_lane_line = lane_pos_nearest(o.cx, o.box[3], _lines,
-                                                     lane.get("cam_h"))
+                                                     lane.get("cam_h"),
+                                                     lane.get("y_v"))
         for t in self._tracks:
             t.matched = False   # 上一帧的配对结果不作数：本帧重新关联
         matches = self._associate(obs, fid)
@@ -696,7 +680,6 @@ class Tracker:
         health = PerceptionHealth(
             perception_alive=True,
             frame_fresh=frame_age_ms <= self.p.fresh_max_ms,
-            geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
             stage_transition=stage_transition,
             raw_cars=len(per.cars), raw_coins=len(per.coins),
@@ -715,7 +698,7 @@ class Tracker:
         self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
-            boundary=None, targets=tuple(targets), far_targets=tuple(fars),
+            targets=tuple(targets), far_targets=tuple(fars),
             distances=distances, metric_cars=metric_cars, fid_rate_hz=fid_hz)
         return self._last_obs
 
@@ -1066,7 +1049,8 @@ class Tracker:
             target_id=t.id, source=d.source, z_m=z, x_m=x_m,
             v_close_mps=v, t_meet_s=t_meet, anchor_age_ms=d.anchor_age_ms,
             bridged=bridged, bridge_reason=bridge_reason,
-            box_bridge_z_m=d.box_bridge_m)
+            box_bridge_z_m=d.box_bridge_m,
+            z_box_bridged=(d.method is DistanceMethod.BOX_RATIO))
 
     def _associate(self, obs: list[_Obs], fid: int) -> dict[int, int]:
         """2D 身份主干 + 几何回退，两遍贪心 1:1 配对。
@@ -1115,7 +1099,38 @@ class Tracker:
             used_t.add(ti)
             used_o.add(oi)
             matches[ti] = oi
+        self._demerge(matches, obs, fid)
         return matches
+
+    def _demerge(self, matches: dict[int, int], obs: list[_Obs],
+                 fid: int) -> None:
+        """并号拆分（闸 demerge.enabled，默认关不消费）：横位跳超限且新
+        位置上有另一活跃轨道（与旧位置可分）的匹配即拒绝——旧轨道不跟
+        过去，让位并存号。治并号（一号先后挂两辆物理车：真值小集 same
+        事件 50% 链内横跳超限的机理）；纯读数伪跳（90% 拆点已目视排除，
+        自车横移/近距出画/远场小位移）无并存证据、门不触发，归横位未知
+        态。拍距 > gap_ticks 的候选不比（那是断号重挂的领域）。"""
+        if not self._demerge_on:
+            return
+        for ti, oi in list(matches.items()):
+            t, o = self._tracks[ti], obs[oi]
+            if t.x_lane is None or o.x_lane is None:
+                continue
+            if fid - t.last_seen > self._demerge_gap:
+                continue
+            if abs(o.x_lane - t.x_lane) <= self._demerge_jump:
+                continue
+            for tj, u in enumerate(self._tracks):
+                if tj == ti or u.kind != t.kind or u.x_lane is None:
+                    continue
+                if fid - u.last_seen > self.p.grace_ticks:
+                    continue
+                if (abs(o.x_lane - u.x_lane) <= self._demerge_coloc
+                        and abs(u.x_lane - t.x_lane) > self._demerge_coloc):
+                    del matches[ti]
+                    if tj not in matches:
+                        matches[tj] = oi   # 让位：检测归已在新位置的并存号
+                    break
 
     def _pred_box(self, t: _Track,
                   fid: int) -> tuple[float, float, float, float]:

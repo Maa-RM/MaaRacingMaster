@@ -1,22 +1,21 @@
 # -*- coding: utf-8 -*-
-"""深度几何观测层 v4（MoGe 点云 3D 找边）的回归锁。
+"""深度几何观测层 v5（车道线几何 + DepthART 相对深度合成点图）的回归锁。
 
 三层用例：
 - **合成**（零数据依赖）：按度量几何直接构造点云（相机针孔模型 + 已知
   路宽/墙体/车盒，fx/fy 任意一致值），锁找边机制——直路双缘读数与车道
   换算、单侧诚实弃权、物体掩码挖除、平面拟合失败弃权、走廊域拟合的
   抗墙歪斜。
-- **后处理单元**（moge_post）：shift 求解器在已知焦距合成场景上收敛到真值
-  （官方 scipy 版的产线替代，等价性由金标实跑验证、本锁防退化）。
-- **数据锚点**（skipif：无离线缓存则跳）：金标帧 MoGe 点云缓存上的读数锁
-  （干净直路帧 ±0.5m 口径），钉读数不许漂。缓存由金标回归探针同款推理生成
-  （见深度几何 v4 换装提交）。
+- **生产者单元**（DepthART 相对深度 + 车道线灭点行）：合成相对深度场 →
+  合成点图的米制几何（贴地 Z 公式、平路 Y≈cam_h）、地面拟合失败弃权、
+  框底行距离锚点与邻道门。
+- **数据锚点**（skipif：无离线缓存则跳）：金标帧点云缓存上的读数锁
+  （干净直路帧 ±0.5m 口径），钉读数不许漂。
 
 合成场景构造口径：Y 向下为正，地面 Y = H_CAM + PITCH_B·Z（c≈相机离地高），
 墙体为 X=±半宽的竖直面，全帧逐像素取最近命中。"""
 from __future__ import annotations
 
-import ctypes
 import os
 import threading
 import time as _time
@@ -31,7 +30,6 @@ from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.depth_geo import (
     AsyncDepthRoadObserver, DepthRoadObserver, DepthRoadReading,
     infer_points, load_session, reading_from_points)
-from maaracing_master.plugins.speedrush import moge_post
 from maaracing_master.plugins.speedrush.world_model import load_calib
 
 CAL = load_calib()
@@ -595,66 +593,7 @@ def test_fit_road_plane_feature_seed_resists_wall_tilt():
     np.testing.assert_allclose(coef_leg, coef_leg_open, atol=1e-3)
 
 
-# ── moge_post 后处理单元 ────────────────────────────────────────────────
-
-def _synthetic_affine_points(focal_true: float, shift_true: float = 0.0,
-                             shape=(336, 598)) -> tuple[np.ndarray, np.ndarray]:
-    """官方链自洽的仿射点图：xy = uv·(z−shift)/focal（uv=官方 span 归一网格）。
-
-    官方 recover_focal_shift 的单焦距模型只在「点由同一 focal 投影」时精确可解
-    （598×336 下 span_x≠span_y，任意针孔场景必有系统残差被 shift 吸收）——
-    所以合成点必须从链自身生成，求解器才有 shift≈0 / focal=focal_true 的真值。"""
-    H, W = shape
-    uv = moge_post.normalized_view_plane_uv(W, H).astype(np.float64)
-    rng_z = 2.0 + 6.0 * ((np.arange(H) + 0.5) / H)[:, None]
-    zz = np.broadcast_to(rng_z, (H, W))
-    xy = uv * (zz - shift_true)[..., None] / focal_true
-    pts = np.concatenate([xy, zz[..., None]], -1).astype(np.float32)
-    return pts, np.ones(shape, bool)
-
-
-def test_moge_shift_solver_recovers_known_focal():
-    """shift 求解器：已知焦距场景上收敛到真值（shift≈0 / focal=focal_true）。
-
-    这是官方 scipy LM 的产线替代（模式搜索，同走「离 0 最近局部极小」盆地）：
-    等价性由金标帧实跑验证（shift/fx 相对差 <1e-5），本锁防求解器退化。"""
-    for focal_true in (1.0, 1.5, 2.2):
-        pts, mask = _synthetic_affine_points(focal_true)
-        focal, shift = moge_post.recover_focal_shift(pts, mask)
-        assert abs(shift) < 1e-3, f"f={focal_true}: shift={shift}"
-        assert abs(focal - focal_true) < 1e-3, f"f={focal_true}: got {focal}"
-
-
-def test_moge_shift_solver_beats_shallow_valley_trap():
-    """浅谷场景（step 迈得过真谷的形态）：模式搜索不得停在 x0=0 的假极小。"""
-    # R(s) = (s + 0.05)² + 0.1·s² 的单谷函数，谷在 s = -1/22 ≈ -0.04545：
-    # 大步长两侧试探都回升的形态（历史 frame 0 实证）——求解器必须走到真谷。
-    def r(s):
-        return (s + 0.05) ** 2 + 0.1 * s * s
-    x = moge_post._minimize_local(r, step=0.5)
-    assert abs(x + 0.05 / 1.1) < 1e-4, f"{x}"
-
-
-def test_moge_solver_diag_fields():
-    """求解器诊断（焦距漂移治理 2026-10-10 P0 仪表）：diag 填全八字段、
-    与解自洽、reconstruct 透传同值——trace/证据包两路（dgeo_shift/resid/
-    nsol 列与 evid npz sol_*）都从这份 dict 派生，字段漂移在此拦。"""
-    pts, mask = _synthetic_affine_points(1.5)
-    d: dict = {}
-    focal, shift = moge_post.recover_focal_shift(pts, mask, diag=d)
-    assert abs(shift) < 1e-3 and abs(focal - 1.5) < 1e-3
-    assert {"n", "z_med", "step0", "evals", "shift", "focal",
-            "resid", "resid_mean"} <= set(d)
-    assert d["n"] >= 2 and d["evals"] > 0 and d["step0"] > 0 and d["z_med"] > 0
-    assert d["shift"] == shift and d["focal"] == focal
-    assert d["resid"] >= 0.0
-    assert abs(d["resid_mean"] - d["resid"] / d["n"]) < 1e-12
-    res = moge_post.reconstruct(pts, mask, 10.0)
-    assert res["solver"]["n"] == d["n"]
-    assert res["solver"]["shift"] == d["shift"]
-
-
-# ── 会话与推理封装 ──────────────────────────────────────────────────────
+# ── 生产者单元（DepthART 相对深度 + 车道线几何 → 合成点图）──────────────
 
 def _load_session_or_skip():
     w = Path(__import__("maaracing_master.plugins.speedrush", fromlist=["DEPTH_MODEL_FILE"])
@@ -664,18 +603,26 @@ def _load_session_or_skip():
     return load_session(w)
 
 
-def test_load_session_is_folded_static_shape():
-    """load_session 的输入维必须是编译期常量（batch/height/width 三 free dim 全固定）。
-
-    漏折叠的形态是"能跑但慢数倍"（未融合图落 CPU）——性能回退不会红任何功能
-    测试，只能由这条形状锁拦。"""
+def test_load_session_is_static_square_input():
+    """DepthART 权重输入是固定 448²（方形拉伸，官方口径）。"""
     dims = _load_session_or_skip().get_inputs()[0].shape
-    assert all(isinstance(d, int) for d in dims), f"输入维未静态化（折叠未生效）: {dims}"
-    assert tuple(dims) == (1, 3, dg.MOGE_IN_H, dg.MOGE_IN_W)
+    assert all(isinstance(d, int) for d in dims), f"输入维未静态化: {dims}"
+    assert tuple(dims) == (1, 3, dg.DA_IN, dg.DA_IN)
 
 
-class _FakeMogeSess:
-    """sess.run 替身：断言调用期间持有 DML 锁，返回定形 MoGe 四元输出。"""
+def _fake_depth_v(y_v: float = 360.0, m: float = 1.2, a: float = 0.02,
+                  A: float = 0.55) -> np.ndarray:
+    """合成相对深度场：地面 V = A + m·(r_full−y_h) + a·u（448² → 全幅行口径）。"""
+    rows = (np.arange(dg.DA_IN) * (dg.FRAME_H - 1.0) / (dg.DA_IN - 1.0)) + 0.5
+    u = (np.arange(dg.DA_IN) + 0.5) / dg.DA_IN
+    return (A + m * (rows[:, None] - y_v) + a * u[None, :]).astype(np.float32)
+
+
+class _FakeDepthSess:
+    """sess.run 替身：断言调用期间持有 DML 锁，返回定形 448² 相对深度。"""
+
+    def __init__(self, v: np.ndarray):
+        self._v = v
 
     def get_inputs(self):
         class _In:
@@ -684,157 +631,66 @@ class _FakeMogeSess:
 
     def run(self, _names, _feeds):
         assert dml_lock.LOCK.locked(), "session.run 期间必须持有 DML 锁"
-        pts, mask = _synthetic_affine_points(1.5)
-        return [pts[None], np.zeros((1, 8, 598, 3), np.float32),
-                mask[None].astype(np.float32),
-                np.array([1.0], np.float32)]
+        return [self._v[None, None]]
 
 
 def _frame_np() -> np.ndarray:
     return np.zeros((720, 1280, 3), np.uint8)
 
 
+def test_infer_points_synthesizes_ground_geometry():
+    """地面像素的米制距离由车道线几何给：Z = fy·cam_h/(r−y_v)，平路 Y≈cam_h。"""
+    y_v = 360.0
+    pts, fx, fy = infer_points(_FakeDepthSess(_fake_depth_v(y_v)), _frame_np(),
+                               y_v=y_v)
+    assert pts.shape == (dg.PT_H, dg.PT_W, 3)
+    assert fx == pytest.approx(dg.FOCAL_PX) and fy == pytest.approx(dg.FOCAL_PX)
+    z_bottom = pts[-1, dg.PT_W // 2, 2]
+    rc = (dg.PT_H - 1) * 2 + 0.5          # 全幅行中心
+    assert z_bottom == pytest.approx(dg.FOCAL_PX * dg.CAM_H_M / (rc - y_v), rel=0.02)
+    assert float(np.nanmedian(pts[..., 1])) == pytest.approx(dg.CAM_H_M, abs=0.05)
+
+
+def test_infer_points_ground_fit_failure_abstains(monkeypatch):
+    """地面拟合样本不足 → 点图为 None（observe 诚实弃权，退纯模型积分）。"""
+    monkeypatch.setattr(dg, "GROUND_MIN_PTS", 10 ** 9)
+    pts, _fx, _fy = infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(),
+                                 y_v=360.0)
+    assert pts is None
+
+
 def test_infer_points_holds_dml_lock_during_run():
-    pts, fx, fy = infer_points(_FakeMogeSess(), _frame_np())
-    assert pts.shape == (720, 1280, 3) and np.isfinite(pts).all()
+    pts, _fx, _fy = infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(),
+                                 y_v=360.0)
+    assert pts is not None and pts.shape == (dg.PT_H, dg.PT_W, 3)
 
 
 def test_infer_points_busy_raises_not_blocks():
     """锁被占（控制拍感知在飞）：立即抛 Busy 让 worker 跳帧，不得阻塞等待。"""
     with dml_lock.LOCK:
         with pytest.raises(dml_lock.Busy):
-            infer_points(_FakeMogeSess(), _frame_np())
+            infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(), y_v=360.0)
 
 
-# ── forward 的 IO binding（固定输入/输出缓冲，抗显存分页）──────────────────
-
-class _BindableSess:
-    """io_binding 接口替身：记录绑定次数与 run 时缓冲内容，回放定形输出。"""
-
-    def __init__(self):
-        self.io_binding_calls = 0
-        self.run_calls = 0
-        self.run_seen_input_head = None
-        self._pts, self._mask = _synthetic_affine_points(1.5)
-
-    def get_inputs(self):
-        class _In:
-            name = "image"
-        return [_In()]
-
-    def get_outputs(self):
-        class _Out:
-            def __init__(self, name):
-                self.name = name
-        return [_Out("points"), _Out("normal"), _Out("mask"), _Out("scale")]
-
-    def io_binding(self):
-        self.io_binding_calls += 1
-        return _FakeBinding()
-
-    def run_with_iobinding(self, bind, _opts):
-        self.run_calls += 1
-        self.run_seen_input_head = float(bind.xbuf_view[0, 0, 0, 0])
-        bind.outputs = [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
-                        self._mask[None].astype(np.float32),
-                        np.array([1.0], np.float32)]
-
-    def run(self, _names, _feeds):
-        self.run_calls += 1
-        return [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
-                self._mask[None].astype(np.float32),
-                np.array([1.0], np.float32)]
+def test_box_anchor_uses_bottom_row_geometry():
+    """逐车距离 = 框底行几何；邻道/截断/框底在灭点行之上都弃权。"""
+    y_v = 360.0
+    z = dg._box_anchor_z((560, 500, 720, 540), y_v)
+    assert z == pytest.approx(dg.FOCAL_PX * dg.CAM_H_M / (540.0 - y_v))
+    assert dg._box_anchor_z((1000, 500, 1200, 540), y_v) is None   # 邻道
+    assert dg._box_anchor_z((0, 500, 300, 540), y_v) is None       # 画面截断
+    assert dg._box_anchor_z((560, 300, 720, 355), y_v) is None     # 灭点行之上
+    assert dg._box_anchor_z((560, 300, 720, 355), 400.0) is None   # 同上（高灭点）
 
 
-class _FakeBinding:
-    """SessionIOBinding 替身：bind_input 记录指针，按地址重建缓冲视图。"""
+def test_anchor_sheet_from_detections_drops_adjacent():
+    sheet = dg.anchor_sheet_from_detections(
+        [(0, 560, 500, 720, 540), (1, 1000, 500, 1200, 540)], 3, 1,
+        360.0)
+    assert sheet is not None and len(sheet.entries) == 1
+    assert sheet.entries[0].det_idx == 0
+    assert sheet.fx == pytest.approx(dg.FOCAL_PX)
 
-    def __init__(self):
-        self.xbuf_view = None
-
-    def bind_input(self, _name, _dev, _did, dtype, shape, ptr):
-        dt = np.dtype(dtype)
-        n = int(np.prod(shape))
-        buf = (ctypes.c_ubyte * (dt.itemsize * n)).from_address(ptr)
-        self.xbuf_view = np.frombuffer(buf, dtype=dt).reshape(shape)
-
-    def bind_output(self, *_a, **_k):
-        pass
-
-    def copy_outputs_to_cpu(self):
-        return self.outputs
-
-
-def test_forward_binding_caches_and_overwrites_input():
-    """binding 只建一次（会话级缓存），新帧内容覆写进同一固定缓冲。"""
-    moge_post._BINDINGS.clear()
-    sess = _BindableSess()
-    img1 = np.zeros((1, 3, 720, 1280), np.float32)
-    pts, mask, ms = moge_post.forward(sess, img1, 1032)
-    assert sess.io_binding_calls == 1 and sess.run_calls == 1
-    assert pts.shape == (336, 598, 3) and ms == 1.0   # 原生点图（升采样在 infer_points）
-    img2 = np.full((1, 3, 720, 1280), 0.5, np.float32)
-    moge_post.forward(sess, img2, 1032)
-    assert sess.io_binding_calls == 1          # 缓存复用：不重建 binding
-    assert sess.run_calls == 2
-    assert sess.run_seen_input_head == pytest.approx(0.5)  # 新帧已覆写进缓冲
-
-
-class _NonBindableSess:
-    """io_binding 缺失的会话替身（forward 负缓存路径锁）：读属性即抛。"""
-
-    def __init__(self):
-        self.attempts = 0
-        self.run_calls = 0
-        self._pts, self._mask = _synthetic_affine_points(1.5)
-
-    def get_inputs(self):
-        class _In:
-            name = "image"
-        return [_In()]
-
-    def get_outputs(self):
-        class _Out:
-            def __init__(self, name):
-                self.name = name
-        return [_Out("points"), _Out("normal"), _Out("mask"), _Out("scale")]
-
-    @property
-    def io_binding(self):
-        self.attempts += 1
-        raise AttributeError("no io_binding")
-
-    def run(self, _names, _feeds):
-        self.run_calls += 1
-        return [self._pts[None], np.zeros((1, 8, 598, 3), np.float32),
-                self._mask[None].astype(np.float32),
-                np.array([1.0], np.float32)]
-
-
-def test_forward_falls_back_and_negatively_caches_non_bindable():
-    """无 io_binding 能力的会话（测试桩类）：降级普通 run，且只试探一次。"""
-    moge_post._BINDINGS.clear()
-    sess = _NonBindableSess()
-    img = np.zeros((1, 3, 720, 1280), np.float32)
-    for _ in range(2):
-        pts, mask, ms = moge_post.forward(sess, img, 1032)
-        assert pts.shape == (336, 598, 3) and ms == 1.0
-    assert sess.run_calls == 2                # 两帧都走普通 run
-    assert sess.attempts == 1                 # 负缓存：第二次不再试探
-
-
-def test_forward_shape_drift_drops_binding_for_that_frame():
-    """输入形状漂移：该帧走普通 run，不把漂移帧写进固定缓冲。"""
-    moge_post._BINDINGS.clear()
-    sess = _BindableSess()
-    img = np.zeros((1, 3, 720, 1280), np.float32)
-    moge_post.forward(sess, img, 1032)
-    assert sess.run_calls == 1
-    odd = np.zeros((1, 3, 640, 960), np.float32)
-    moge_post.forward(sess, odd, 1032)
-    assert sess.run_calls == 2                   # 漂移帧降级
-    moge_post.forward(sess, img, 1032)
-    assert sess.run_calls == 3 and sess.io_binding_calls == 1  # 常规帧仍走 binding
 
 
 # ── 异步解耦协议（AsyncDepthRoadObserver，stub 零数据依赖）────────────────
@@ -854,12 +710,12 @@ class _StubObserver:
         self.session_ready = session_ready
         self.calls = 0
 
-    def observe(self, frame, object_mask=None):
-        reading, _ = self.observe_debug(frame, object_mask)
+    def observe(self, frame, object_mask=None, y_v=None):
+        reading, _ = self.observe_debug(frame, object_mask, y_v=y_v)
         return reading
 
     def observe_debug(self, frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None):
+                      fid=None, frame_ts_ns=None, y_v=None):
         self.calls += 1
         item = self._script.pop(0) if self._script else None
         if isinstance(item, Exception):
@@ -944,13 +800,13 @@ class _BlockingStub(_StubObserver):
         self.frames: list = []
 
     def observe_debug(self, frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None):
+                      fid=None, frame_ts_ns=None, y_v=None):
         self.frames.append(np.array(frame, copy=True))
         if len(self.frames) == 1:
             self.entered.set()
             self.release.wait(2.0)
         return super().observe_debug(frame, object_mask, detections, fid,
-                                     frame_ts_ns)
+                                     frame_ts_ns, y_v)
 
 
 def test_async_staggers_to_same_tick_push_not_previous_frame(monkeypatch):
@@ -1262,16 +1118,28 @@ def test_async_throttle_bounds_rate():
 
 
 def _mk_evid():
-    pts, mask = _synthetic_affine_points(0.652)
-    return {"pts": pts, "valid": mask, "fx": 0.652, "fy": 0.65}
+    """v5 证据包：半幅合成点图（平路 + 固定灭点行），焦距已是全幅像素。"""
+    y_v = 360.0
+    rows = np.arange(dg.PT_H)[:, None] * 2 + 0.5
+    cols = np.arange(dg.PT_W)[None, :] * 2 + 0.5
+    Z = np.broadcast_to(
+        dg.FOCAL_PX * dg.CAM_H_M / np.maximum(1.0, rows - y_v),
+        (dg.PT_H, dg.PT_W)).astype(np.float32)
+    X = (cols - dg.PT_CX) * Z / dg.FOCAL_PX
+    Y = (rows - y_v) * Z / dg.FOCAL_PX
+    pts = np.stack([np.broadcast_to(X, Z.shape),
+                    np.broadcast_to(Y, Z.shape), Z], -1).astype(np.float32)
+    return {"pts": pts, "valid": np.isfinite(pts[..., 2]), "fx": dg.FOCAL_PX,
+            "fy": dg.FOCAL_PX, "y_v": y_v, "ground": (1.2, 0.0, 0.55),
+            "mad": 0.02, "ground_frac": 0.9}
 
 
 def test_async_debug_writes_replayable_evidence(tmp_path):
-    """调试图同拍落可复现证据包：336×598 原生点图 fp16 + valid + 原生焦距——
+    """调试图同拍落可复现证据包：半幅合成点图 fp16 + valid + 全幅焦距——
     只有有损渲染时，实机读数故障无法离线重放（2026-09-25 21:41 局的教训）。"""
     stub = _StubObserver([_mk_reading()])
     def _evid_observe(frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None):
+                      fid=None, frame_ts_ns=None, y_v=None):
         stub.calls += 1
         return _mk_reading(), _mk_evid()
     stub.observe_debug = _evid_observe
@@ -1292,10 +1160,13 @@ def test_async_debug_writes_replayable_evidence(tmp_path):
             except Exception:
                 _time.sleep(0.05)
         assert z is not None, "证据包读取失败（写入窗竞态）"
-        assert z["pts"].shape == (336, 598, 3) and z["pts"].dtype == np.float16
+        assert z["pts"].shape == (dg.PT_H, dg.PT_W, 3)
+        assert z["pts"].dtype == np.float16
         assert list(tmp_path.glob("d*.jpg")), "渲染图未落盘"
-        mask = np.unpackbits(z["valid"])[: 336 * 598].reshape(336, 598).astype(bool)
+        vh, vw = (tuple(int(x) for x in z["valid_shape"]))
+        mask = np.unpackbits(z["valid"])[: vh * vw].reshape(vh, vw).astype(bool)
         assert mask.all()
+        assert "y_v" in z.files and "g_m" in z.files
     finally:
         a.stop()
 
@@ -1345,6 +1216,7 @@ def _anchor_rows():
     ("000906", -3.6, -2.6, 2.66, 2.96),
     ("000340", -3.14, -2.85, 1.2, 2.2),
 ])
+@pytest.mark.local_asset
 def test_anchor_clean_straight_frames(stem, l_lo, l_hi, r_lo, r_hi):
     if not NPY.exists():
         pytest.skip(f"离线点云缓存缺失：{NPY}")
@@ -1847,13 +1719,16 @@ D09_NEAR_BLOCKED_BASELINE = 378
 
 
 def _assemble_evid(stem: Path):
-    """证据包 → (全幅点云, fx, fy, obj)；口径同产线离线复算
-    （336×598 fp16 点图各通道 resize 到 1280×720 + valid 最近邻 + invalid 置
-    nan；obj = *_mask.npy）。旧包该文件=ego∪obj 合并掩码（2026-10-10 起
-    ego 由 3D 框处理不再落盘，新包纯 obj 候选区）——矩形作候选区进统一
-    挖除缝，语义与旧 ego 矩形近似（矩形内路面像素由刀保留）。"""
+    """证据包 → (全幅点云, fx, fy, obj)；口径同产线离线复算（点图各通道
+    resize 到 1280×720 + valid 最近邻 + invalid 置 nan；obj = *_mask.npy）。
+
+    兼容两代包：v4（336×598 原生点图 + 归一化焦距）与 v5（半幅合成点图 +
+    全幅像素焦距）。旧包该 mask 文件=ego∪obj 合并掩码（2026-10-10 起 ego
+    由 3D 框处理不再落盘，新包纯 obj 候选区）。"""
     z = np.load(str(stem) + "_evid.npz")
-    valid = np.unpackbits(z["valid"])[: 336 * 598].reshape(336, 598).astype(bool)
+    vh, vw = (tuple(int(x) for x in z["valid_shape"])
+              if "valid_shape" in z.files else (336, 598))
+    valid = np.unpackbits(z["valid"])[: vh * vw].reshape(vh, vw).astype(bool)
     pn = z["pts"].astype(np.float32)
     pts = np.stack([cv2.resize(pn[..., k], (1280, 720),
                                interpolation=cv2.INTER_LINEAR) for k in range(3)], -1)
@@ -1866,7 +1741,11 @@ def _assemble_evid(stem: Path):
     if mp.exists():
         obj = np.unpackbits(np.load(mp))[: 1280 * 720] \
             .reshape(720, 1280).astype(bool)
-    return pts, float(z["fx"]) * 1280, float(z["fy"]) * 720, obj
+    if "y_v" in z.files:          # v5：fx/fy 已是全幅像素焦距
+        fx, fy = float(z["fx"]), float(z["fy"])
+    else:                         # v4：归一化焦距 × 全幅尺寸
+        fx, fy = float(z["fx"]) * 1280, float(z["fy"]) * 720
+    return pts, fx, fy, obj
 
 
 def _evid_or_skip(dirname: str, seq: int) -> Path:
@@ -1876,6 +1755,7 @@ def _evid_or_skip(dirname: str, seq: int) -> Path:
     return stem
 
 
+@pytest.mark.local_asset
 def test_drivable_grid_frame_anchor_dug_all_unknown():
     """175855/d00055（雨天超车帧）：刀挖格全灰——0 误判锁。
 
@@ -1889,6 +1769,7 @@ def test_drivable_grid_frame_anchor_dug_all_unknown():
     assert (g.state[g.dig_mask] == dg.GRID_UNKNOWN).all(), "挖除格出现非未知态"
 
 
+@pytest.mark.local_asset
 def test_drivable_grid_frame_anchor_clean_frame_baseline():
     """140930/d00009（晴天宽路帧）：近场不可走格数不超基线——防恶化锁。"""
     stem = _evid_or_skip("depth_debug_20261004_140930", 9)
@@ -1903,20 +1784,8 @@ def test_drivable_grid_frame_anchor_clean_frame_baseline():
 def test_drivable_grid_obs_debug_attaches_grid():
     """observe_debug 在 reading 旁挂栅格：evid['grid'] 是 DrivableGrid 且与
     reading 同拍（异步 worker 消费链的数据面）。"""
-    pts, mask = _synthetic_affine_points(0.652)
-
-    class _Sess:
-        def get_inputs(self):
-            class _In:
-                name = "image"
-            return [_In()]
-
-        def run(self, _n, _f):
-            return [pts[None], np.zeros((1, 8, 598, 3), np.float32),
-                    mask[None].astype(np.float32), np.array([1.0], np.float32)]
-
-    obs = DepthRoadObserver(_Sess(), CAL)   # type: ignore[arg-type]
-    reading, evid = obs.observe_debug(_frame_np())
+    obs = DepthRoadObserver(_FakeDepthSess(_fake_depth_v()), CAL)  # type: ignore[arg-type]
+    reading, evid = obs.observe_debug(_frame_np(), y_v=360.0)
     assert reading is not None and evid is not None
     assert isinstance(evid.get("grid"), dg.DrivableGrid)
     assert evid["grid"].state.shape == (dg.GRID_NZ, dg.GRID_NX)
@@ -2086,63 +1955,173 @@ def test_region_reading_clip_side_honest():
     assert dg.region_reading(_xg_grid([]), 2.75).sides == 0
 
 
-# ── 车框锚点：框底条带估计器（2026-11-04 距离突变修正） ─────────────────
 
-def _box_pts(x0, y0, x1, y1, z_bottom, z_upper=None, noise=0.0, seed=7):
-    """合成车框点云 (720,1280,3)：底 25% 行=z_bottom（车身接地面），
-    上部=z_upper（缺省同 z_bottom）；noise 米级高斯。"""
-    pts = np.full((720, 1280, 3), np.nan, np.float32)
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    yb = y0 + (y1 - y0) * 3 // 4
-    rng = np.random.default_rng(seed)
-    lo = yy >= yb
-    up = ~lo
-    pts[yy[lo], xx[lo], 2] = z_bottom + rng.normal(0, noise, int(lo.sum()))
-    if z_upper is not None:
-        z_u = (z_upper if np.isscalar(z_upper)
-               else z_upper[0] + (yy[up] - y0) / max(1, (yb - y0))
-               * (z_upper[1] - z_upper[0]))
-        pts[yy[up], xx[up], 2] = z_u
-    return pts
+# ---------- 米制骨架的标定口径（2026-11-12）：回退值与 MAD 门 ----------
+
+def test_fallback_horizon_is_lane_median_not_gate0():
+    """灭点行缺值只回退合成骨架的标定值 361.0。
+
+    gate0 的 y_h=354.2 是 2D 尺子分母（a_x 按它标定），两个数差 7px；拿它当
+    纵向骨架会让 40m 处偏近约 25%、66m 处偏近约 40%。"""
+    assert dg.FALLBACK_Y_V == pytest.approx(361.0)
+    assert dg.FALLBACK_Y_V != pytest.approx(CAL.y_h)
 
 
-def test_box_anchor_far_car_bottom_strip_beats_background():
-    """远框：底 25% 行=车身接地面（45m，点少——原生分辨率下远框就这点点），
-    上部=背景路面（50→85m 线性斜坡，逐 bin 比车身 bin 密）。整框近簇被
-    40% 门槛把车身 bin 挡掉、落到背景近缘（+5m 级偏差；102658_p1 raw
-    0084 实测 57 vs 真值 46）；底带中位直接给车距，锚不漂。"""
-    pts = np.full((720, 1280, 3), np.nan, np.float32)
-    x0, y0, x1, y1 = 600, 340, 660, 380
-    yb = y0 + (y1 - y0) * 3 // 4
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    lo = yy >= yb
-    rng = np.random.default_rng(7)
-    idx = np.argwhere(lo)
-    pick = rng.choice(len(idx), 20, replace=False)
-    pts[idx[pick, 0] + y0, idx[pick, 1] + x0, 2] = (
-        45.0 + rng.normal(0, 0.15, 20))
-    up = ~lo                                   # 背景：50→85m，密度均匀逐 bin
-    pts[yy[up], xx[up], 2] = 50.0 + (yy[up] - y0) / max(1, (yb - y0)) * 35.0
-    z = dg._box_anchor_z(pts, (x0, y0, x1, y1))
-    assert z is not None and abs(z - 45.0) < 1.0
+def test_observe_uses_fallback_horizon_and_labels_it():
+    """y_v 缺值 → 用 361.0 合成，并在读数上标 y_v_src=fallback（trace 可见）。"""
+    obs = DepthRoadObserver(_FakeDepthSess(_fake_depth_v(361.0)), CAL)
+    r, _ev = obs.observe_debug(_frame_np(), y_v=None)
+    assert r is not None
+    assert r.y_v == pytest.approx(dg.FALLBACK_Y_V)
+    assert r.y_v_src == "fallback"
+    r2, _ev2 = obs.observe_debug(_frame_np(), y_v=360.4)
+    assert r2.y_v == pytest.approx(360.4) and r2.y_v_src == "lane"
 
 
-def test_box_anchor_bottom_strip_starved_falls_back_to_cluster():
-    """底 25% 行全无效（遮挡/无效点多）：回退整框近簇（旧口径）——
-    紧簇 30m 读数不漂，回退语义=修正前行为。"""
-    pts = np.full((720, 1280, 3), np.nan, np.float32)
-    yy, xx = np.mgrid[340:380, 600:660]
-    yb = 340 + (380 - 340) * 3 // 4
-    up = yy < yb
-    pts[yy[up], xx[up], 2] = 30.0            # 上部紧簇；底带保持 nan
-    z = dg._box_anchor_z(pts, (600, 340, 660, 380))
-    assert z is not None and abs(z - 30.0) < 0.5
+def _fake_depth_v_full(y_v: float = 361.0, m: float = 0.0154,
+                       a: float = 0.01, A: float = 0.33,
+                       noise: float = 0.0, seed: int = 0) -> np.ndarray:
+    """全幅相对深度场（_ground_model 的直接输入口径）。"""
+    rows = np.arange(dg.FRAME_H) + 0.5
+    u = (np.arange(dg.FRAME_W) + 0.5) / dg.FRAME_W
+    v = A + m * (rows[:, None] - y_v) + a * u[None, :]
+    if noise:
+        v = v + np.random.default_rng(seed).normal(0.0, noise, v.shape)
+    return v.astype(np.float32)
 
 
-def test_box_anchor_small_box_and_starved_box_none():
-    """既有语义保留：框过小（<3px）与整框有效点不足（<10）→ None。"""
-    pts = _box_pts(600, 340, 660, 380, z_bottom=45.0)
-    assert dg._box_anchor_z(pts, (600, 340, 601, 341)) is None
-    starved = np.full((720, 1280, 3), np.nan, np.float32)
-    starved[350:353, 620:622, 2] = 45.0       # 仅 6 点 <10
-    assert dg._box_anchor_z(starved, (610, 340, 650, 380)) is None
+def test_ground_mad_separates_good_and_bad_fit():
+    """MAD 门是「地面模型有没有解释住画面」的判据：干净场 ~0，噪声场跨过 0.06。"""
+    gm = dg._ground_model(_fake_depth_v_full(), 361.0, None)
+    assert gm is not None and gm[3] <= dg.GROUND_MAD_MAX
+    gm_noisy = dg._ground_model(_fake_depth_v_full(noise=0.08), 361.0, None)
+    assert gm_noisy is not None and gm_noisy[3] > dg.GROUND_MAD_MAX
+
+
+def _depth_with_side_shelf(offset: float = 0.20,
+                           col_lo: float = 0.70) -> np.ndarray:
+    """中央是路面、右侧列带是高出路面的结构（护栏/人行道）的深度场。"""
+    v = _fake_depth_v_full()
+    x0 = int(dg.FRAME_W * col_lo)
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI, x0:] += offset
+    return v
+
+
+def test_ground_model_ignores_side_structure():
+    """两阶段拟合：右侧护栏/人行道高出路面不该整帧弃权（20261112 局 p2 的根因）。
+
+    旧实现拿全幅行带一次拟合，右侧四成是高出路面的结构，全幅 MAD 0.14~0.21
+    （门限 0.06）→ 453/800 拍整帧弃用 → 下游无深度、无线锚、决策盲。
+    新实现中央列粗拟 + 全带筛贴地点重拟，质量门只在中央列上算。
+    """
+    v = _depth_with_side_shelf()
+    gm = dg._ground_model(v, 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    # 平面参数必须仍是「中央路面」的平面，不能被高台拽走
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)     # m 斜率
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)       # A 截距
+
+
+def test_ground_model_falls_back_when_core_occluded():
+    """中央列被前车/飞坡占满时退回旧全幅拟合：改造不得比旧实现更差。
+
+    20261112 局 p1：前车贴脸（卡车占满中央）与飞坡跳台处，中央列 MAD
+    0.575/1.097。若固定用中央就会弃掉这些帧，而旧全幅拟合靠两侧路面仍能
+    给出合格平面（0.053/0.118）。所以中央粗拟超门必须退回旧路径。
+    """
+    v = _fake_depth_v_full()
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI,
+      int(dg.FRAME_W * 0.30):int(dg.FRAME_W * 0.70)] += 0.30
+    gm = dg._ground_model(v, 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    # 退回全幅后平面仍由两侧路面决定，不被中央高台拽走
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)
+
+
+def _depth_with_core_obstacle(frac: float = 0.65) -> np.ndarray:
+    """中央列被一块平面状障碍占去 frac 宽（前车尾门/墙板）的深度场。"""
+    v = _fake_depth_v_full(noise=0.004)
+    w = dg.FRAME_W
+    c0, cw = int(w * dg.GROUND_CORE_LO), int(w * (dg.GROUND_CORE_HI - dg.GROUND_CORE_LO))
+    ow = int(cw * frac)
+    ox = c0 + (cw - ow) // 2
+    rows = np.arange(dg.GROUND_ROW_LO, dg.GROUND_ROW_HI)
+    v[dg.GROUND_ROW_LO:dg.GROUND_ROW_HI, ox:ox + ow] = (
+        4.0 + 0.0003 * (rows[:, None] - 535.0))
+    return v
+
+
+def test_ground_model_rejects_planar_obstacle_in_core():
+    """中央被平面状障碍占多数时不能当路面：MAD 会很小，但参数已被换掉。
+
+    2026-11-12 独立复核的合成反例：路面 A=0.33/m=0.0154，障碍占中央 65%
+    （V=4.0+0.0003·(row−535)）。障碍本身是平面，4 轮 2.5σ 裁剪会收敛到它，
+    MAD 只有 0.038 就过 0.06 门，但 A 从 0.33 跳到 3.95、路面点全成离群。
+    旧全幅拟合因为障碍只占 26% 反而正确。离群占比门（33.8% > 20%）退回全幅。
+    """
+    gm = dg._ground_model(_depth_with_core_obstacle(0.65), 361.0, None)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)     # 仍是路面斜率
+    assert gm[2] == pytest.approx(0.33, abs=5e-3)       # 仍是路面截距
+
+
+def test_ground_model_accepts_clean_core():
+    """反面对照：中央是干净路面时走中央路径（不被离群门误退）。"""
+    gm = dg._ground_model(_fake_depth_v_full(noise=0.004), 361.0, None)
+    assert gm is not None and gm[3] <= dg.GROUND_MAD_MAX
+    assert gm[0] == pytest.approx(0.0154, abs=1e-4)
+
+
+def test_ground_model_still_rejects_global_noise():
+    """中央列本身被噪声打散时仍要弃权：质量门没被「筛完当然小」自证。"""
+    gm = dg._ground_model(_fake_depth_v_full(noise=0.08), 361.0, None)
+    assert gm is not None and gm[3] > dg.GROUND_MAD_MAX
+
+
+def test_ground_model_falls_back_when_core_removed():
+    """中央列被车框整块挖掉（点数不足）时退回全幅一次拟合，不返回垃圾。"""
+    v = _fake_depth_v_full()
+    box = (int(dg.FRAME_W * 0.25), dg.GROUND_ROW_LO - 10,
+           int(dg.FRAME_W * 0.75), dg.GROUND_ROW_HI + 10)
+    gm = dg._ground_model(v, 361.0, box)
+    assert gm is not None
+    assert gm[3] <= dg.GROUND_MAD_MAX
+
+
+def test_infer_points_abstains_when_ground_mad_over_gate(monkeypatch):
+    """MAD 超限整帧弃权（实验区定案「MAD>0.06 必须弃用」），并计数可查。"""
+    before = dg.SKIP_STATS.get("mad", 0)
+    monkeypatch.setattr(dg, "GROUND_MAD_MAX", -1.0)   # 强制越门（干净场必过）
+    pts, _fx, _fy = infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(),
+                                 y_v=360.0)
+    assert pts is None
+    assert dg.SKIP_STATS.get("mad", 0) == before + 1
+
+
+def test_health_reports_mad_skips():
+    """阶段汇总行与逐拍 trace 都读这个计数；缺键会让「弃帧率」验收项失明。"""
+    a = AsyncDepthRoadObserver(_StubObserver([_mk_reading()]))  # type: ignore[arg-type]
+    assert isinstance(a.health().get("mad_skips"), int)
+
+
+def test_degraded_cam_h_gate_is_dead_in_v5_but_alive_offline():
+    """⑥ 尺度门：v5 合成点图的平面 c 恒等于 CAM_H_M → 结构上恒真。
+
+    它是**死门**，生产质量靠 GROUND_MAD_MAX 整帧弃权 + ⑤ 残差门；保留它只为
+    离线真实点云回放能挡住异常尺度。别再把它写成「平面质量已检查」。"""
+    rng = np.random.default_rng(11)
+    n = 40000
+    X = rng.uniform(-3.9, 3.9, n).astype(np.float32)
+    Z = rng.uniform(4.0, 13.9, n).astype(np.float32)
+    Y = (dg.CAM_H_M + rng.normal(0, 0.02, n)).astype(np.float32)
+    dig = np.zeros(n, bool)
+    assert dg.DEGRADED_CAM_H_LO <= dg.CAM_H_M <= dg.DEGRADED_CAM_H_HI
+    assert dg._plane_degraded_ok(
+        np.array([0.0, 0.0, dg.CAM_H_M], np.float32), X, Y, Z, dig) is True
+    # 离线异常尺度仍被挡（这道门没删，只是标注为生产死门）
+    assert dg._plane_degraded_ok(
+        np.array([0.0, 0.0, 3.25], np.float32), X, Y + 2.0, Z, dig) is False
