@@ -135,7 +135,7 @@ def test_field_goal_half_lane_moves_with_realistic_time():
             schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
             frame_age_ms=10.0, stage=1,
             health=PerceptionHealth(True, True, True, True, False),
-            boundary=None, targets=(), far_targets=(), coin_groups=())
+            targets=(), far_targets=(), coin_groups=())
 
     x, psi = 1.6, 0.0
     pl.state.executed_lane = x

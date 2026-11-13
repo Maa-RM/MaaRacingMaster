@@ -151,8 +151,8 @@ class ValidationWatch:
         # 信号·帧过旧：卡屏/断供下不许盲决策（过渡窗除外——过场本就无新帧）
         if not h.frame_fresh and not h.stage_transition:
             return ValidationReport("frame_stale")
-        # 信号·目标流枯竭：五信号**合取**才计时（空旷路面/过渡/半死不活都不算）
-        conj = (h.perception_alive and h.frame_fresh and h.geometry_valid
+        # 信号·目标流枯竭：四信号**合取**才计时（空旷路面/过渡/半死不活都不算）
+        conj = (h.perception_alive and h.frame_fresh
                 and not h.stage_transition)
         # 只有“画面有车、跟踪却没输出”才算目标流枯竭；画面本来没车
         # （raw=False）是空旷路面，不是故障（2026-10-19 局 213750_p1 空街
@@ -181,10 +181,7 @@ class ValidationWatch:
         for g in obs.far_targets:
             if g.last_seen_fid == obs.frame_id:
                 self._last_cy[g.id] = (obs.frame_id, g.cy, ())
-        reasons: list[str] = []
-        if obs.boundary is None:
-            reasons.append("straight_check_inactive")  # v1 边界未接线：如实注记
-        return ValidationReport(None, tuple(reasons))
+        return ValidationReport(None)
 
 
 class Scorer:
@@ -638,7 +635,6 @@ class DecisionEngine:
         """阶段切换/保守态出口/接线重入（重置面：全清，id 语义归上游）。"""
         self.watch.reset()
         self._state = DecisionState.CRUISE
-        self._boundary = None
         # 输出连续性：上一拍下发目标（None=首拍直通；CONSERVE/ABORT/FAULT 清空）
         self._target_prev: float | None = None
         # 可观测面：执行分支
@@ -761,7 +757,6 @@ class DecisionEngine:
         # 采集帧率逐拍喂入评分器（car_t_meet_s 的 px/fid→秒换算锚；None=
         # 预热未达，评分器自决退回旧口径）
         self.scorer.fid_hz = obs.fid_rate_hz
-        self._boundary = obs.boundary
         self._corridor = corridor
         # 优先级：致命信号 > ABORT/保守/故障 > 选择层。本 tick 先处理转移，
         # 再按落定的状态发输出。

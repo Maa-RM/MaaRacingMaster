@@ -57,9 +57,9 @@ def _obs(fid, *, coin_cy, car_cy):
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=1,
-        health=PerceptionHealth(True, True, True, True, False,
+        health=PerceptionHealth(True, True, True, False,
                                 raw_cars=1, raw_coins=3),
-        boundary=None, targets=coins + (car,), far_targets=(),
+        targets=coins + (car,), far_targets=(),
         coin_groups=(group,), fid_rate_hz=20.0)
 
 

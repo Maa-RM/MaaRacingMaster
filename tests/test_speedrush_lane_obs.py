@@ -64,11 +64,14 @@ def test_worker_focal_holds_last_valid():
 def test_config_defaults_off_and_detect_every_frame():
     assert LaneObsConfig().enabled is False
     assert LaneObsConfig().detect_every == 1
-    assert LaneObsConfig().provider == "cpu"
+    assert LaneObsConfig().provider == "cpu"   # 数据类缺省；生产值由 policy 决定
     assert load_decision().lane_obs is not None
     assert load_decision().lane_obs.detect_every == 1
-    # 影子不得与生产深度抢 DML 锁（2026-10-24 实机相位锁把深度饿到 5%）
-    assert load_decision().lane_obs.provider == "cpu"
+    # 2026-11-13 起走 DML 槽位排班（感知放锁 → 线观测 30ms 槽窗 → 深度），
+    # 不再靠 CPU 线程绕开 DML 锁
+    assert load_decision().lane_obs.provider == "dml"
+    assert load_decision().lane_obs.weights_fp16.endswith(
+        "plus_small_fp16_384x640.onnx")
 
 
 def test_no_anchor_stays_relock():
@@ -531,7 +534,7 @@ def test_dml_busy_skips_without_calling_model(monkeypatch):
             called["n"] += 1
 
     class _Lock:
-        def acquire(self, blocking=False):
+        def acquire(self, blocking=False, timeout=None):
             return False
 
         def release(self):
@@ -544,6 +547,46 @@ def test_dml_busy_skips_without_calling_model(monkeypatch):
     assert w._run(np.zeros((8, 8, 3), np.uint8)) is None
     assert w.busy_skips == 1
     assert called["n"] == 0
+
+
+def test_dml_run_marks_slot_done(monkeypatch):
+    """槽位交接：线观测放锁后必须 mark_done，深度才不会白等一个槽窗。"""
+    import maaracing_master.plugins.speedrush.lane_obs as la
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="dml"))
+    w._use_dml = True
+    called = {"n": 0}
+
+    class _Sess:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            called["n"] += 1
+            return [None, np.zeros((1, 2, 384, 640), np.float32)]
+
+    class _Lock:
+        def acquire(self, blocking=True, timeout=None):
+            return True
+
+        def release(self):
+            pass
+
+    class _StaleBeat:
+        def snapshot(self):
+            return 7, -1e9          # 没有在跑的控制拍：不等槽位，直接跑
+
+        def wait_newer(self, seq, timeout):
+            return True
+
+    w._sess = _Sess()
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: np.zeros((1, 3, 384, 640),
+                                                              np.float32))
+    monkeypatch.setattr(la.dml_lock, "LOCK", _Lock())
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", _StaleBeat())
+    monkeypatch.setattr(la.dml_lock, "SLOTS", la.dml_lock._SlotGate())
+    assert w._run(np.zeros((8, 8, 3), np.uint8)) is not None
+    assert called["n"] == 1
+    assert la.dml_lock.SLOTS.wait_done(7, 0.01) is True
 
 
 def test_latest_is_one_consistent_snapshot():
@@ -708,6 +751,17 @@ def test_smooth_vanish_slews_continuous_drift():
         val, t = la._smooth_vanish(hist, 371.0, i * 0.05, t, val)
     assert 361.0 < val <= 361.0 + 10 * la.YV_SLEW_PX + 1e-6, \
         f"10 拍 10px 台阶不得整段跟上，只允许按陷速走：{val}"
+
+
+def test_fit_theta_uses_live_horizon_not_moge_constant():
+    """线角的地平线用当拍发布值：固定常数会让线角系统性偏（约 0.9~2°）。"""
+    pts = [{"yc": y / 2.0, "xc": (0.3 * y + 100.0) / 2.0, "p": 1.0}
+           for y in range(560, 701, 10)]
+    t_old = la._fit(pts, 1.28, *la.NEAR_Y, 807.7)["theta"]
+    t_new = la._fit(pts, 1.28, *la.NEAR_Y, 807.7, 361.0)["theta"]
+    assert t_old is not None and t_new is not None
+    assert t_new < t_old, "地平线更高 → 同一线角更小"
+    assert abs(t_new - t_old) > 1e-4, "双源差必须真的进入线角"
 
 
 def _vline(k, cam_h=1.25, y_v=361.0, y0=560.0, y1=700.0):

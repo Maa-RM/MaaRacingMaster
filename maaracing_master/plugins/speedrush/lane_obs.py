@@ -43,6 +43,9 @@ from maaracing_master.plugins.speedrush import model_assets
 
 LANE_W = 3.5
 VPX = 640.7
+# 地平线的**冷启动回退**值（MoGe 时期平面拟合中位）。现役线角与近线回退都用
+# 当拍发布的灭点行（lane 快照的 y_v，实测中位 ~361），只有首拍/无发布值时
+# 才落到这个常数——两者差约 7px，按常数算会让线角系统性偏 0.9~2°。
 Y_H = 354.2
 DEFAULT_CAM_H = 1.28
 # 车心离路心的物理上限（道）：路缘实测 ≈2.5 道（2026-10-31 帧 0112 目检
@@ -57,6 +60,11 @@ OFF_MAX = 2.6
 FOCAL_LO = 400.0
 FOCAL_HI = 1400.0
 FOCAL_EMA = 0.25          # 逐帧焦距轻平滑（场景内容会让估计帧间抖 ±10%）
+# GPU 槽位（2026-11-13）：provider=dml 时不抢锁，等控制拍放锁后的槽位窗口开工；
+# 超窗就放弃本帧（latest-only），把锁让给深度。窗口从拍起点（感知放锁）算起。
+LANE_SLOT_S = 0.030       # 线观测槽窗：拍后 30ms 内必须开跑
+SLOT_BEAT_WAIT_S = 0.080  # 等下一拍的兜底（拍周期 50ms + 余量）
+SLOT_FRESH_S = 1.0        # 最近一拍在 1s 内 = 控制拍在跑，才按槽位排队
 # 线几何可用的相机高带（v5 2026-11-12）：输入已从「深度平面 c」换成车道线
 # 反解值，与视角守卫同源。带要覆盖两种合法机位（保险杠 ≈1.25、追尾 ≈1.9），
 # **不是视角判定门**（判定门在 view_guard，仍只认保险杠）；上界只挡反解失败
@@ -131,8 +139,9 @@ SIDE_DEADBAND_PX = 20.0
 class LaneObsConfig:
     enabled: bool = False
     weights: str = ""
+    weights_fp16: str = ""     # DML 专用半精度权重；缺失/会话失败回退 weights
     hz: float = 10.0
-    provider: str = "cpu"      # cpu=独立线程不抢 GPU 锁；dml=与深度共用锁
+    provider: str = "cpu"      # cpu=独立线程不抢 GPU 锁；dml=控制拍槽位排队
     threads: int = 4           # 仅 CPU：4 线程实测约 23ms/帧，仍在控制拍内
     detect_every: int = 1      # 每 N 帧做一次完整检测；1=逐拍检测，中间帧只预测
     model_input: tuple[int, int] = (384, 640)
@@ -255,7 +264,7 @@ def _lane_cam_h(cam_h: float | None) -> tuple[float, bool]:
 
 
 def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
-         focal: float | None = None):
+         focal: float | None = None, y_v: float | None = None):
     use = [q for q in pts if y_lo <= 2.0 * q["yc"] <= y_hi]
     if len(use) < 4:
         return None
@@ -268,10 +277,14 @@ def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
     s, a = np.linalg.lstsq(A * wt[:, None], xs * wt, rcond=None)[0]
     L = float(s * cam_h / LANE_W)
     # 无有效焦距只丢线角（横位 L 不依赖焦距，仍可用）；不拿写死值冒充测量。
+    # 线角的地平线用**当拍发布值**（车道线灭点中位），Y_H 只是冷启动回退：
+    # 两者实测差约 7px，按 Y_H 算会让线角系统性偏 0.9~2°（六局逐线复算中位
+    # 0.016/p90 0.038 rad），而线角进 planner 的航向融合，不是纯诊断量。
     theta = None
     if focal is not None and math.isfinite(focal) \
             and FOCAL_LO <= focal <= FOCAL_HI:
-        theta = math.atan((VPX - a - L * LANE_W * Y_H / cam_h) / focal)
+        y_ref = Y_H if y_v is None else float(y_v)
+        theta = math.atan((VPX - a - L * LANE_W * y_ref / cam_h) / focal)
     rms = float(np.sqrt(np.average((xs - (s * ys + a)) ** 2, weights=wt)))
     return {"L": L, "theta": None if theta is None else float(theta), "rms": rms,
             "s": float(s), "a": float(a),
@@ -340,21 +353,23 @@ def lane_membership(cx: float, y_b: float, lines: list[dict]) -> float | None:
 
 
 def lane_pos_nearest(cx: float, y_b: float, lines: list[dict],
-                     cam_h: float | None = None) -> float | None:
+                     cam_h: float | None = None,
+                     y_v: float | None = None) -> float | None:
     """最近线 + 米制尺度（2026-11-04 供货修正）：夹逼插值在远场框底行
     失效后的回退——框心相对最近 accepted 线的带符号像素偏移，按像素每道
     换成车道量 ``L_i + (cx − x_i)/像素每道``。
 
     尺子优先同帧实测线距（横向量不同的线对，中位像素间距 ÷ 道差，免
-    vpx/Y_H/cam_h 常数）；缺对回退地面线几何（``LANE_W·(y_b−Y_H)/cam_h``，
-    灭点/地平线 2026-11-04 真帧核对吻合、投影偏差中位 +5px）。不要求两线
+    vpx/cam_h 常数、地平线用当拍发布值）；缺对回退地面线几何
+    （``LANE_W·(y_b−y_v)/cam_h``，灭点/地平线 2026-11-04 真帧核对吻合、投影偏差
+    中位 +5px；``y_v`` 缺席才回退常数 ``Y_H``）。不要求两线
     夹住框心：远场线距收敛到 ~76px/道后夹逼边界外就是同车道车，噪声一动
     出夹（失效形态见 lane_membership）。接受门/残差门/线角门/拟合覆盖与
-    夹逼同口径（_line_evals）；地平线上（y_b ≤ Y_H）几何无效弃权。真帧
+    夹逼同口径（_line_evals）；地平线上（y_b ≤ 地平线）几何无效弃权。真帧
     验证（102658_p1，64 远车样本）：供货 64/64，车道量聚在自车 ±0.5 与
     邻道 ±1 附近；白车正前帧读 −0.14~−0.47 道（远场拟合噪声 ~±0.2 道内，
     够决策用）。"""
-    if y_b <= Y_H:
+    if y_b <= (Y_H if y_v is None else float(y_v)):
         return None
     evals = _line_evals(y_b, lines)
     if not evals:
@@ -369,13 +384,15 @@ def lane_pos_nearest(cx: float, y_b: float, lines: list[dict],
         px_per_lane = float(np.median(scales))
     else:
         used_h, _fb = _lane_cam_h(cam_h)
-        px_per_lane = LANE_W * (y_b - Y_H) / used_h
+        y_ref = Y_H if y_v is None else float(y_v)
+        px_per_lane = LANE_W * (y_b - y_ref) / used_h
     x_i, L_i = min(evals, key=lambda e: abs(e[0] - cx))
     return L_i + (cx - x_i) / px_per_lane
 
 
 def _lines_from_prob(prob: np.ndarray, cam_h: float,
-                     focal: float | None) -> list[dict]:
+                     focal: float | None,
+                     y_v: float | None = None) -> list[dict]:
     """概率图 → 线候选（无颜色匹配）。
 
     颜色不参与提取（2026-11-11 维护者叫停）：黄昏场景下白色分界线系统性
@@ -384,8 +401,8 @@ def _lines_from_prob(prob: np.ndarray, cam_h: float,
     LineTracker 同一套道号逻辑。"""
     lines = []
     for pts in _build_tracks(_row_segments(prob)):
-        near = _fit(pts, cam_h, *NEAR_Y, focal)
-        far = _fit(pts, cam_h, *FAR_Y, focal)
+        near = _fit(pts, cam_h, *NEAR_Y, focal, y_v)
+        far = _fit(pts, cam_h, *FAR_Y, focal, y_v)
         f = near or far
         if f is None:
             continue
@@ -1147,6 +1164,7 @@ class LaneObsWorker:
         self._yv_hist: deque = deque(maxlen=YV_WIN)
         self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史，见 _push_vanish）
         self.busy_skips = 0
+        self.slot_skips = 0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
         # 节拍记账：真实检测频率=det_n/时长，不受推送节流口径误导
@@ -1195,8 +1213,23 @@ class LaneObsWorker:
             so = ort.SessionOptions()
             so.intra_op_num_threads = int(self.cfg.threads)
             so.inter_op_num_threads = 1
-            self._sess = ort.InferenceSession(
-                str(weights), sess_options=so, providers=providers)
+            model_path = weights
+            if providers[0] == "DmlExecutionProvider" and self.cfg.weights_fp16:
+                fp16_path, fp16_err = self._resolve_weights(self.cfg.weights_fp16)
+                if fp16_path is not None:
+                    model_path = fp16_path
+                elif self.note is None:
+                    self.note = f"FP16 权重不可用，回退 FP32：{fp16_err}"
+            try:
+                self._sess = ort.InferenceSession(
+                    str(model_path), sess_options=so, providers=providers)
+            except Exception:
+                if model_path == weights:
+                    raise
+                # FP16 会话失败退回 FP32（同 provider）：换精度不该把线观测丢掉
+                self._sess = ort.InferenceSession(
+                    str(weights), sess_options=so, providers=providers)
+                self.note = "FP16 会话创建失败，回退 FP32"
             self._use_dml = providers[0] == "DmlExecutionProvider"
         except Exception as exc:  # noqa: BLE001 —— 影子故障不碰控制
             self.error = repr(exc)
@@ -1210,6 +1243,14 @@ class LaneObsWorker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+
+    @staticmethod
+    def _resolve_weights(rel: str) -> tuple[Path | None, str | None]:
+        """绝对路径直读；相对路径走模型包（用户目录优先、安装包兜底）。"""
+        raw = Path(rel)
+        if raw.is_absolute():
+            return (raw, None) if raw.is_file() else (None, f"权重缺失：{raw}")
+        return model_assets.select(rel)
 
     def push(self, rgb: np.ndarray, fid: int, cam_h: float | None,
              v_lat: float, dt: float, fid_jump: bool,
@@ -1279,6 +1320,7 @@ class LaneObsWorker:
                          else round((time.perf_counter() - t_done) * 1000.0, 1))
         out["provider"] = "dml" if self._use_dml else "cpu"
         out["busy_skips"] = self.busy_skips
+        out["slot_skips"] = self.slot_skips
         out["hold_ms"] = self.hold_ms
         out["det_n"] = self.det_n
         out["pred_n"] = self.pred_n
@@ -1377,14 +1419,26 @@ class LaneObsWorker:
                 "lines": res["lines"]}
 
     def _run(self, rgb: np.ndarray):
-        """DML 走共享锁：只包 run 本体；抢不到即弃帧（latest-only，不排队）。"""
+        """DML 按槽位排队：等控制拍放锁后开工，超窗让给深度（latest-only）。"""
         assert self._sess is not None   # 线程只在 session 建好后才起
         inp = self._sess.get_inputs()[0].name
         feed = {inp: _letterbox(rgb)}
         if not self._use_dml:
             return _prob_from_out(self._sess.run(None, feed))
-        if not dml_lock.LOCK.acquire(blocking=False):
+        seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+        if time.perf_counter() - t_beat <= SLOT_FRESH_S:
+            # 控制拍在跑：等下一拍（感知放锁）再开工，占槽位而不是抢锁
+            if not dml_lock.TICK_BEAT.wait_newer(seq, timeout=SLOT_BEAT_WAIT_S):
+                self.slot_skips += 1
+                return None
+            seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+            if time.perf_counter() - t_beat > LANE_SLOT_S:
+                self.slot_skips += 1       # 槽窗已过：让深度先走
+                dml_lock.SLOTS.mark_done(seq)
+                return None
+        if not dml_lock.LOCK.acquire(timeout=0.02):
             self.busy_skips += 1
+            dml_lock.SLOTS.mark_done(seq)
             return None
         dml_lock.RUN_WATCH.enter("lane")
         try:
@@ -1394,6 +1448,7 @@ class LaneObsWorker:
         finally:
             dml_lock.RUN_WATCH.exit()
             dml_lock.LOCK.release()
+            dml_lock.SLOTS.mark_done(seq)
         return _prob_from_out(out)
 
     def _infer(self, rgb: np.ndarray, cam_h: float,
@@ -1403,5 +1458,6 @@ class LaneObsWorker:
             return None
         # 先剔 HUD 距离徽章上的假线，再进 tracker：徽章假线位置正好落在贴脸真线
         # 的目标带内，若进 tracker 会被当成真线锁道号，事后无法区分。
-        lines = _drop_badge_lines(_lines_from_prob(prob, cam_h, focal), rgb)
+        lines = _drop_badge_lines(
+            _lines_from_prob(prob, cam_h, focal, self._yv), rgb)
         return {"lines": lines}

@@ -2541,7 +2541,7 @@ class SpeedRushModule(ActivityModule):
             # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
             "passes": [{"id": e.track_id, "d_min": round(e.d_min, 3)}
                        for e in tevents if e.outcome == OUTCOME_PASS],
-            "fresh": obs.health.frame_fresh, "geom": obs.health.geometry_valid,
+            "fresh": obs.health.frame_fresh,
             "presence": obs.health.target_presence,
             # 原始检出分类计数：目标流枯竭判据只认车；这两列用来区分
             # “空街”与“有币但没跟踪”（2026-10-20 阶段 1 误冻结归因）。

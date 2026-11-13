@@ -227,15 +227,6 @@ def test_adjacent_cars_do_not_swap_identities():
 
 # ---------- 7 弯道 / 几何无效输入 ----------
 
-def test_geometry_invalid_passthrough_not_gated():
-    """本层不判弯道（设计决定 10：判据属校验层），只把标志如实带进观测。"""
-    trk = Tracker()
-    obs = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1,
-                     geometry_valid=False)
-    assert obs.health.geometry_valid is False
-    assert len(obs.targets) == 1                  # 不拦截——保守与否由校验层合取决定
-
-
 def test_stage_transition_passthrough():
     trk = Tracker()
     obs = trk.update(_per(1), frame_age_ms=10.0, stage=1, stage_transition=True)
@@ -327,18 +318,12 @@ def test_decision_output_contract_shape():
                                   DecisionState.CONSERVE, DecisionState.FAULT}
 
 
-def test_boundary_is_none_until_layer_lands():
-    trk = Tracker()
-    obs = trk.update(_per(1), frame_age_ms=10.0, stage=1)
-    assert obs.boundary is None              # 边界感知层未落地，不许有伪造摘要
-
-
 def test_health_passthrough_fields():
     trk = Tracker()
     obs = trk.update(_per(1), frame_age_ms=10.0, stage=2)
     h = obs.health
     assert isinstance(h, PerceptionHealth)
-    assert (h.perception_alive, h.geometry_valid, h.stage_transition) == (True, True, False)
+    assert (h.perception_alive, h.frame_fresh, h.stage_transition) == (True, True, False)
     assert obs.stage == 2 and obs.frame_age_ms == 10.0 and obs.ts_ns == 33_000_000 * 1
 
 

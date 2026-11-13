@@ -33,8 +33,7 @@ CFG = _read_decision(
 # ---------- 观测构造 helper（场景算式见各测试注释） ----------
 
 def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
-         geometry=True, transition=False, boundary=None, fid_hz=None, raw=None,
-         raw_coins=0):
+         transition=False, fid_hz=None, raw=None, raw_coins=0):
     if presence is None:
         presence = bool(groups or targets)
     if raw is None:
@@ -42,10 +41,12 @@ def _obs(*, fid=1, groups=(), targets=(), presence=None, alive=True, fresh=True,
     return WorldObservation(
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000, frame_age_ms=10.0,
         stage=1,
-        health=PerceptionHealth(alive, fresh, geometry, presence, transition,
+        health=PerceptionHealth(perception_alive=alive, frame_fresh=fresh,
+                                target_presence=presence,
+                                stage_transition=transition,
                                 raw_cars=int(bool(raw)),
                                 raw_coins=raw_coins),
-        boundary=boundary, targets=targets, far_targets=(), coin_groups=groups,
+        targets=targets, far_targets=(), coin_groups=groups,
         fid_rate_hz=fid_hz)
 
 
@@ -153,10 +154,10 @@ def test_watch_stale_during_transition_not_fatal():
 
 
 def test_watch_empty_needs_conjunction():
-    """枯竭计时要求 alive∧fresh∧geometry∧¬transition 全立——空旷/过渡/半死不计时。"""
+    """枯竭计时要求 alive∧fresh∧¬transition 全立——半死（未存活）/过渡不计时。"""
     w = ValidationWatch(CFG)
     for _ in range(int(CFG.validate.t_empty_s / DT)):
-        assert w.check(_obs(presence=False, geometry=False), DT).fatal is None
+        assert w.check(_obs(presence=False, alive=False), DT).fatal is None
     # 合取恢复后从头计时（旧账不追溯）
     for i in range(int(CFG.validate.t_empty_s / DT) - 1):
         assert w.check(_obs(presence=False, raw=True), DT).fatal is None
@@ -318,10 +319,10 @@ def test_conserve_recovers_with_full_reset():
     e.update(_obs(fid=2, fresh=False), DT)         # 过旧拍：保守态续留
     e.update(_obs(fid=3, presence=True), DT)
     f = 4
-    out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
+    out = e.update(_obs(fid=f, presence=True), DT)
     while out.reason != "conserve_recovered" and f < 200:
         f += 1
-        out = e.update(_obs(fid=f, presence=True, geometry=True), DT)
+        out = e.update(_obs(fid=f, presence=True), DT)
     assert out.state is DecisionState.CRUISE
     # 首个非致命拍=fid 3：恢复计数从这拍起，不许秒回
     assert f - 2 >= int(CFG.validate.t_recover_s / DT)
@@ -389,8 +390,7 @@ def _traffic(views=(), events=()):
 # ---------- 对称性原则（维护者裁定 2026-09-22：决策默认左右对称，禁用方向需显式证据） ----------
 
 def _corridor(left_m=None, right_m=None):
-    """单带走廊（_side_has_space 消费面）：米制入参，obs.boundary 通道
-    v4 恒 None 已退役（第 6 步侧别检查改吃走廊带）。"""
+    """单带走廊（_side_has_space 消费面）：米制入参；侧别检查吃走廊带。"""
     from maaracing_master.plugins.speedrush.corridor import (
         BandBoundary, Corridor, CorridorBand, UNKNOWN)
     band = CorridorBand(

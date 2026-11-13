@@ -70,7 +70,6 @@ class PerceptionHealth:
 
     perception_alive: bool   # 本 tick detect() 完成且被消费
     frame_fresh: bool        # frame_age_ms ≤ fresh_max_ms
-    geometry_valid: bool     # v1 = 调用方传入（边界层落地后由 BoundarySummary 推导）
     target_presence: bool    # 本帧观测含近场或远场目标
     stage_transition: bool   # 阶段切换/起步/过场窗口（调用方传入，锚点序列可判）
     # 本帧原始检出分类计数（YOLO 层）。安全检查只认车：币/奖励是机会面，
@@ -84,41 +83,6 @@ class PerceptionHealth:
     def raw_vehicle_presence(self) -> bool:
         """原始检出里有车——目标流枯竭判据只认这一项。"""
         return self.raw_cars > 0
-
-
-@dataclass(frozen=True)
-class BoundarySummary:
-    """边界感知层摘要契约。v1 **无生产者**（边界层未落地），
-    `WorldObservation.boundary` 恒为 None；路缘不参与目标评分（v2 §三），
-    其消费者只有校验层与横向位移代价项。"""
-
-    schema_version: int
-    left_x: float
-    right_x: float
-    road_width: float
-    straight_residual: float
-    vp_row: float | None
-    validity: bool
-    uncertainty: float
-    # 稳定跟踪到的路缘侧数（0/1/2）。单侧容忍（step 6）：sides≥1 即 validity，
-    # 但 sides==1 时 road_width/vp_row 不可用（需双侧）——消费者据 sides 决定是否
-    # 用居中/路宽类量，不得假设单侧帧有完整路几何。
-    sides: int = 2
-    # 两边线交点的横向位置（需 sides==2；与 vp_row 同门控同缺省）。与校准 vpx 的
-    # 横偏 ∝ 车头航向角——真机证据链（2026-09-22）：打舵画面是旋转不是平移，
-    # 平移假设下边界检测恰在控制动作时失明；vp_x 是航向的免费观测量，v2 trace
-    # 落列供 C1/C2 定档，planner 现值不消费（不建立第二份真相：消费时由观测层给）。
-    vp_x: float | None = None
-    # 左右路缘的 A1 读数（带顶行，左负右正；该侧稳定才有值，否则 None）。
-    # 消费者=超车空间闸门（设计稿 §四补：决策默认左右对称，禁用某方向必须拿
-    # "那侧没空间"的显式证据——None=证据不足=两侧都放行）。
-    left_edge_lane: float | None = None
-    right_edge_lane: float | None = None
-    # 全部可见黄线簇的车道坐标（升序，schema 3，2026-09-28）——**车道栅格本身**:
-    # 簇=车道边界线,间隙=车道,自车车道=包含 x=0 的间隙。配对(left/right)只是
-    # 路宽级两簇的特例;配对宽度天然多模态(212734 局实证:拍间 325→204→518px
-    # 乱跳),任何"路宽常数"先验对它都不成立——车道归属必须走间隙,不走配对宽度。
-    clusters: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -323,7 +287,6 @@ class WorldObservation:
     frame_age_ms: float
     stage: int
     health: PerceptionHealth
-    boundary: BoundarySummary | None
     targets: tuple[TrackedTarget, ...]     # 近→远（cy 降序）
     far_targets: tuple[FarTarget, ...]     # 近→远
     coin_groups: tuple[CoinGroup, ...] = ()  # 契约扩展（加字段不破消费方，schema 仍 1）
@@ -580,7 +543,7 @@ class Tracker:
         self._ingest_stats = None
 
     def update(self, per: PerceptionResult, frame_age_ms: float, stage: int,
-               geometry_valid: bool = True, stage_transition: bool = False,
+               stage_transition: bool = False,
                anchors: DepthAnchorSheet | None = None,
                lane: dict | None = None) -> WorldObservation:
         fid = per.frame_id
@@ -607,7 +570,8 @@ class Tracker:
                 o.x_lane_line = lane_membership(o.cx, o.box[3], _lines)
                 if o.x_lane_line is None:
                     o.x_lane_line = lane_pos_nearest(o.cx, o.box[3], _lines,
-                                                     lane.get("cam_h"))
+                                                     lane.get("cam_h"),
+                                                     lane.get("y_v"))
         for t in self._tracks:
             t.matched = False   # 上一帧的配对结果不作数：本帧重新关联
         matches = self._associate(obs, fid)
@@ -716,7 +680,6 @@ class Tracker:
         health = PerceptionHealth(
             perception_alive=True,
             frame_fresh=frame_age_ms <= self.p.fresh_max_ms,
-            geometry_valid=geometry_valid,
             target_presence=bool(targets or fars),
             stage_transition=stage_transition,
             raw_cars=len(per.cars), raw_coins=len(per.coins),
@@ -735,7 +698,7 @@ class Tracker:
         self._last_obs = WorldObservation(
             schema_version=SCHEMA_VERSION, frame_id=fid, ts_ns=per.ts_ns,
             frame_age_ms=frame_age_ms, stage=stage, health=health,
-            boundary=None, targets=tuple(targets), far_targets=tuple(fars),
+            targets=tuple(targets), far_targets=tuple(fars),
             distances=distances, metric_cars=metric_cars, fid_rate_hz=fid_hz)
         return self._last_obs
 

@@ -197,7 +197,7 @@ def _obs(fid, groups=(), targets=(), metric_cars=()):
         schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
         frame_age_ms=10.0, stage=1,
         health=PerceptionHealth(True, True, True, bool(groups or targets), False),
-        boundary=None, targets=targets, far_targets=(), coin_groups=groups,
+        targets=targets, far_targets=(), coin_groups=groups,
         metric_cars=tuple(metric_cars), fid_rate_hz=20.0)
 
 

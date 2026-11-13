@@ -26,7 +26,7 @@
     "planner.hold_deadband_lane|hold_stick_max": "[需实测] 维护性转向权限（16:44 局：路中心定心全权 PD——保持态误差动辄 ±1.5 车道（k_p0.7 下 >1.43 即满舵），257/267 饱和拍在 CRUISE-hold/CONSERVE、满左满右交替 2-3s 绕桩、速度起不来；⑥b β 注入还绕过 v_lat_max（|v|→11.4 物理上限 2.5），阻尼项满反打喂给极限环）：死区 0.15 道（=车道内可偏 0.5−0.27−0.06 的物理余量，2026-10-27 从 0.5 收紧；计划因参考系分歧退回 PD 的拍占三成，0.5 道会让车在目标外半道内不修正）、维护杆幅 ≤0.45；CHANGE 机动保留全权。v_lat 饱和已收进 ⑥b；brake_edge_lane=0.5 是刹停预算的越带容差，与维护死区分开，保持 2026-10-26 人工局定档",
     "traffic.exit_margin_px": "[需实测 C5] 下带消失判据的余量（起值 80px）：last cy ≥ 画面下缘−此值 判\"从车尾侧出画\"；回放定档（阶段 C 设计稿 §三）",
     "traffic.min_obs_ticks|ghost_max_age_ticks|ghost_rel_eps": "[需实测 C5] 闪现噪声自卫（3 次）；鬼影=超龄(200 拍≈10s，雨测 191 帧案)+低速(<1px/tick)的底边消失",
-    "traffic.presumed_cy_px|presumed_lane_max": "[2026-10-08 取证预演定档] 推定超越判据：真检 cy≥430（绝对画面纵坐标，真检数据缺口 404~431 之间取中）且 |x_lane|≤2.5 且 rel>0（消失方向指向下缘）→ presumed_pass。动机=检测下界≈575 高于画面下缘−margin≈640 判据线（下带是检测死区），51/51 pass 均为遮挡外推跨线、慢速超越系统性记 lost；预演 26 lost 晋升 16、远车 10 零泄漏、pass 组 51/51 自洽（probe_lost_vanish，设计稿 §4A）",
+    "traffic.presumed_cy_px|presumed_lane_max": "[2026-10-08 取证预演定档] 推定超越判据：真检 cy≥430（绝对画面纵坐标，真检数据缺口 404~431 之间取中）且 |x_lane|≤2.5 且 rel>0（消失方向指向下缘）→ presumed_pass。动机=真检到不了画面下缘−margin≈640 的判据线（下带是检测死区），51/51 pass 均为遮挡外推跨线、慢速超越系统性记 lost；预演 26 lost 晋升 16、远车 10 零泄漏、pass 组 51/51 自洽（probe_lost_vanish，设计稿 §4A）。2026-11-13 保险杠机位六局复测（637 条轨迹）：最后可见行 ≥636 占 15.9%、575~636 占 5.2%——下带不是全死区，原「自车遮挡」理由失效，改为画角裁切与贴脸框不稳；430~575 区间占 22.6%，判据保留，430 尚未按新视角误判率重标",
     "control.abort_settle_v_lane_s": "[需实测] 19:44 复盘补装：v1 注释的'有反馈等横向速率归零'信号（此前未实现，丢目标白冻 2s）",
     "traffic.v_lat_ema_alpha": "街车横向速率 EMA α=0.3（帧间差分，车道/tick 口径；遮挡延续拍不投毒）。注意：读数噪声主导（P90≈3.8 道/s 物理不可能），仅供 trace 观测，禁止当真实运动外推",
     "traffic.lane_vote_decay|lane_memb_min_weight|lane_vote_sigma_max": "车道成员资格投票（2026-10-11 前置三件套②，起值 [需实测]）：单拍 x 按整道栅格投票进生命期票仓、逐真实读数拍衰减 0.7——真横移连续新票数拍内翻位（及时响应边界）、偶发噪声票停留少数派；最大票质量 ≥1.5 成员位才成立（约 2-3 拍连续一致读数），未成立 CarView.x_memb=None 消费方退回单拍读数；σ>0.6 道的失真读数（远场/弯道）不进票仓=近场保守。验收判据=接近段 band 误拒率下降（账本复跑对比）",
@@ -282,11 +282,12 @@
   "lane_obs": {
     "enabled": true,
     "weights": "resources/models/lane/plus_small_384x640.onnx",
-    "provider": "cpu",
+    "weights_fp16": "resources/models/lane/plus_small_fp16_384x640.onnx",
+    "provider": "dml",
     "hz": 0.0,
     "threads": 4,
     "detect_every": 1,
-    "_note": "TwinLiteNet+ Small 线观测：线可用时是供数链的位置原点，也供车道成员插值；权重随可选模型包分发，缺失时自动退回深度/墙，深度档本身不受影响。weights 走 model_assets 解析（用户数据包优先、安装包兜底，带尺寸+SHA256 校验）；模型训练自 BDD100K，随可选模型包按非商业/科研许可分发，商业使用需另行授权。provider=cpu 走独立线程、不抢 dml_lock（2026-10-24 实机：dml 与深度同锁会相位锁，深度连续丢 95% 帧）；threads=4 实测约 23ms/帧，仍在 50ms 控制拍内。若改 dml，必须确认不与深度抢锁。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
+    "_note": "TwinLiteNet+ Small 线观测：线可用时是供数链的位置原点，也供车道成员插值；权重随可选模型包分发，缺失时自动退回深度/墙，深度档本身不受影响。weights 走 model_assets 解析（用户数据包优先、安装包兜底，带尺寸+SHA256 校验）；模型训练自 BDD100K，随可选模型包按非商业/科研许可分发，商业使用需另行授权。provider=dml 走槽位排班（2026-11-13）：控制拍放锁后线观测槽窗 30ms，超窗让给深度，不再抢锁；weights_fp16 是 DML 专用半精度件（实测 3.7ms/帧、输出与 FP32 等价），缺失或会话创建失败回退 fp32（23ms/帧），CPU provider 只用 fp32。hz=0 表示每拍推、队列深度 1 丢旧帧；detect_every=1 逐拍检测。道号由同帧新鲜深度路心锚定（k=round(anchor+L)），颜色不参与身份。"
   },
   "route": {
     "control": true,
