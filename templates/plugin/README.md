@@ -96,8 +96,7 @@ templates/plugin/
   `tools/pipeline/truth.py` 机检（CI 同款），编辑与 ROI 校准台见
   [tools/pipeline/README.md](../../tools/pipeline/README.md)；真源组织口径见
   [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md)。
-- **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MaaRM_Template`/`MaaRM_Click` 桥），
-  当前未接线（无生产实例化点），留作把跳转图交给框架跑的备选实现。
+- **MAA Pipeline 执行通路**：`core/nav_graph.py`（`NavGraph` + `MaaRM_Template`/`MaaRM_Click` 桥）。这条通路已接线——内置启动步骤与极速狂飙模块都在生产中使用它跑导航图。
 - **MAA Pipeline 任务驱动**：`Resource.post_bundle(RES_DIR)` + 自定义
   `CustomAction`（参考 `core/nav_graph.py` 的桥实现与 docs/MAAFW_GUIDE.md）。
 - **目标检测**：`core/yolo_detector.py`（模型放 `resources/models/`，进 `REQUIRED_ASSETS`）。

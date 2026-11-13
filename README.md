@@ -194,15 +194,16 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 ```bash
 .\dev-shell.cmd                 # 按需编译 + 启动，窗口跑的就是仓库当前源码
 .\dev-shell.cmd --check-deps    # 顺带验证 .venv 依赖完整（import maa / cv2 / numpy）
+.\dev-shell.cmd --stop-existing # 先结束正在运行的 MaaRM 实例（含打包版），再起源码版
 .\dev-shell.cmd --rebuild       # 强制重新编译 .NET shell
 .\dev-shell.cmd --no-launch     # 只编译与自检，不开窗口
 ```
 
-它按四步走：预检（`.venv`、dotnet SDK）→ 仅当 C#/前端资源比现有 exe 更新时才 `dotnet build` → 检出冲突实例并列出其完整路径（单实例互斥体会让第二个窗口直接退出）→ 启动 `bin\` 下的 shell，最后**查进程自证**本次后端由哪个 python 拉起。
+它按五步走：预检（`.venv`、dotnet SDK）→ 仅当 C#/前端资源比现有 exe 更新时才 `dotnet build` → 检出冲突实例并列出其完整路径（单实例互斥体会让第二个窗口直接退出；加 `--stop-existing` 则改由脚本代关）→ 启动 `bin\` 下的 shell → 最后**查进程自证**本次后端由哪个 python 拉起。
 
 - **改 Python / pipeline JSON / policy 存盘即生效**，不必重新打包；只有改 C# 或前端资源才需要编译，脚本按文件时间戳自行判断。
 
-- 源码模式下左上角版本号形如 `v<最近 tag>.devN+<领先提交数>（源码模式）`：基线取最近的 tag，`+N` 是距该 tag 领先的 commit 数。打包版显示的是包内固化的版本号，不带此后缀。
+- 源码模式下左上角版本号形如 `v<发布标记>.devN+<领先提交数>（源码模式）`：基线取仓库里的发布标记 `docs/latest_release.json`（不依赖 tag 可达性）；`+N` 是 HEAD 距该标记文件最后一次改动的提交数，恰好停在标记版本时没有 `+N`。打包版显示的是包内固化的版本号，不带此后缀。
 
 - 判断"这次跑的到底是哪份代码"看输出末尾 `[verify]`：`源码模式 ✓` 表示后端来自仓库 `.venv`；若打印成其它目录下的 `runtime\python\python.exe`，则说明起的是打包产物。
 
@@ -229,7 +230,7 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 > **驾驶方式**：默认「全程直行」；「深度几何」需要先安装模型包；「宏录制」先在卡片里录制或选择宏。缺少依赖时，设置页的「环境中心」会给出检测与下载引导。
 
-> **调试功能**：PEEP 实时预览调试帧；DEBUG 存盘模式将标注截图保存至用户数据目录。
+> **调试功能**：PEEP 实时预览调试帧；「DEBUG 截图与记录」把原始证据帧与标注数据（`frames.jsonl` 的 `overlay` 字段）保存至用户数据目录，标注由 Studio 回放时叠加，不写进像素。
 
 ***
 
@@ -256,6 +257,7 @@ MaaRacingMaster/
 │       ├── speedrush/             # 现役插件：极速狂飙（含模型清单、策略与文档）
 │       └── _archive/              # 已退役插件（不随安装包分发）
 ├── apps/MaaRacingMaster.Shell/    # 🖥️ WinUI 3 壳 + WebView2 前端
+├── apps/MaaRacingMaster.Launcher/ # 🚀 发布包根入口（薄 Launcher，提权拉起 Shell）
 ├── templates/plugin/              # 🧪 插件开发样板（复制到 plugins/ 即成新模块）
 ├── assets/                        # 应用图标与运行资源
 ├── tools/                         # 跨插件工具（pipeline 工具链、MaaFw 审计、活跃实验）
@@ -308,5 +310,39 @@ MaaRacingMaster/
 
 > 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，深度几何为 Apache-2.0，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
 > 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
+
+***
+
+## 项目统计
+
+<p align="center">
+  <a href="https://star-history.com/#Maa-RM/MaaRacingMaster&Timeline">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Maa-RM/MaaRacingMaster&type=Timeline&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Maa-RM/MaaRacingMaster&type=Timeline" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Maa-RM/MaaRacingMaster&type=Timeline" width="75%" />
+    </picture>
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Maa-RM/MaaRacingMaster/stargazers"><img src="https://img.shields.io/github/stars/Maa-RM/MaaRacingMaster?style=for-the-badge&logo=github" alt="GitHub Stars"></a>
+  <a href="https://github.com/Maa-RM/MaaRacingMaster/forks"><img src="https://img.shields.io/github/forks/Maa-RM/MaaRacingMaster?style=for-the-badge&logo=github" alt="Forks"></a>
+  <a href="https://github.com/Maa-RM/MaaRacingMaster/graphs/contributors"><img src="https://img.shields.io/github/contributors/Maa-RM/MaaRacingMaster?style=for-the-badge&logo=github" alt="Contributors"></a>
+  <a href="https://github.com/Maa-RM/MaaRacingMaster/blob/master/LICENSE"><img src="https://img.shields.io/github/license/Maa-RM/MaaRacingMaster?style=for-the-badge&logo=apache" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Maa-RM/MaaRacingMaster/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=Maa-RM/MaaRacingMaster" alt="Contributors">
+  </a>
+</p>
+
+<!--
+  参考仓库那种「贡献 / Issue / PR / Push / Top Contributors」多卡片统计由 Repobeats 提供：
+  在仓库安装 Repobeats GitHub App（https://repobeats.axiom.co）后，把控制台给出的 embed ID
+  填进下面的 URL，再删除这段注释的外壳即可。
+  ![Repobeats analytics](https://repobeats.axiom.co/api/embed/<REPOBEATS_EMBED_ID>.svg)
+-->
 
 <br />

@@ -28,7 +28,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 
 | 项 | 取值 | 说明 |
 |---|---|---|
-| 目标框架 | `net8.0-windows10.0.19041.0` | .NET SDK 8.0.123 |
+| 目标框架 | `net8.0-windows10.0.19041.0` | .NET SDK 8.0.x（验证用 8.0.123；CI 同为 8.0.x） |
 | Windows App SDK | **1.8.260710003** | NuGet meta 包，依赖拆成 9 个子包，restore 自动拉 |
 | WebView2 | 随 WindowsAppSDK 提供 | WinUI 3 用 `Microsoft.UI.Xaml.Controls.WebView2`，无需单独引 WebView2 SDK |
 | 部署形态 | `WindowsPackageType=None` + `WindowsAppSDKSelfContained=true` | 未打包应用，免装 Windows App Runtime |

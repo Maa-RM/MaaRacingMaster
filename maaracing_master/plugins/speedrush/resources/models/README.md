@@ -61,7 +61,7 @@ models/
   米制换算（车道线灭点行 + 地面模型 → 合成点图）为本仓库实现（`depth_geo.py`）。
 - 上游: <https://github.com/xuefeng-cvr/DepthART> 、<https://huggingface.co/Fengxue93/DepthART>
 
-## lane/plus_small_384x640.onnx —— 线观测（许可待核对）
+## lane/plus_small_384x640.onnx —— 线观测（BDD100K 非商业/科研）
 
 - **来源**：TwinLiteNet+ Small 车道分割模型，训练自 BDD100K；在此基础上用**自采
   游戏帧**做定向微调（只解冻车道头三层，74 张逐张目检样本，Focal+Tversky 区域损失），

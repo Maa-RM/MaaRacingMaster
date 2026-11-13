@@ -18,11 +18,12 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
 - **动态文本只走 `textContent` / DOM API**（用 `mkEl()` 建元素再填文本），不得拼字符串进
   `innerHTML`。远程渲染路径上唯一允许 `innerHTML` 的位置是 `appendIcon()`——它只喂本仓库
   静态 SVG 串。回归锁：[`tests/test_frontend_remote_render.py`](../../../tests/test_frontend_remote_render.py)。
-- **外链只报逻辑目标名**：`openTarget('home' | 'issue' | 'docs' | 'announcement' | 'download')`，
-  地址由 sidecar 侧白名单给出（[`core/remote_meta.py`](../../../maaracing_master/core/remote_meta.py)
-  的 `EXTERNAL_TARGETS`）；前端不持有、也不传递可打开的 URL。
-- `index.html` 里 `data-link` 的属性值**就是目标名**。新增外链入口必须同时在 `EXTERNAL_TARGETS`
-  里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
+- **外链只报逻辑目标名**：`openTarget('home' | 'issue' | 'docs' | 'announcement' | 'download')`。
+  静态目标查 [`core/remote_meta.py`](../../../maaracing_master/core/remote_meta.py) 的
+  `EXTERNAL_TARGETS`；`announcement` / `download` 用本进程最近一次校验通过的远程地址
+  （`download` 无地址时回退 release 页）；前端不持有、也不传递可打开的 URL。
+- `index.html` 里 `data-link` 的属性值**就是目标名**。新增 `data-link` 静态入口必须同时在
+  `EXTERNAL_TARGETS` 里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
 - **更新源是偏好，不是 URL**：关于页单个来源按钮展开 CNB / GitHub 菜单，只向 `check_update` 传 `source`
   枚举（默认 `cnb`，选择存 `localStorage`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
   不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径（实心版），CNB 图标 `cnb.svg` 取自
