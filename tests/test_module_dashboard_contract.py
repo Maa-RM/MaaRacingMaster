@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from maaracing_master.core.base import ActivityModule, declares_dashboard, overrides_classmethod
+from maaracing_master.core.base import ActivityModule, declares_dashboard
 from maaracing_master.core.builtin_steps import BUILTIN_STEPS
 from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION
 from maaracing_master.core.registry import MODULE_REGISTRY, get_module_info

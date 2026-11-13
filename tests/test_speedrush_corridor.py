@@ -437,9 +437,9 @@ def test_anchor_strict_requires_same_source_stable_center():
 
     o2 = smod._EgoRoadObserver(_MASTER, LW, wall_track=WallTrack(CAL),
                                mem_fallback=True)
-    for i, (l, r) in enumerate(((-2.0, 2.0), (-1.6, 2.4),
-                                (-2.0, 2.0), (-1.6, 2.4))):
-        o2.update(_bnd(l, r, edge_pts=_walls(l, r)),
+    for i, (lb, rb) in enumerate(((-2.0, 2.0), (-1.6, 2.4),
+                                  (-2.0, 2.0), (-1.6, 2.4))):
+        o2.update(_bnd(lb, rb, edge_pts=_walls(lb, rb)),
                   now=1000.0 + 0.1 * i, fid=i + 1)
         assert o2.anchor_strict is False, "中心逐拍跳 0.4 道不得算严格"
 

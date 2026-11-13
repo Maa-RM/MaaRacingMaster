@@ -1812,7 +1812,7 @@ def render_depth_debug(frame_rgb: np.ndarray, evid: dict | None,
     mad: float | None = None
     gfrac: float | None = None
     if evid is not None:
-        pts_n, valid_n = evid["pts"], evid["valid"]
+        pts_n = evid["pts"]
         fx_f = float(evid["fx"])          # 已是全幅像素焦距
         yv_f = evid.get("y_v")
         gm = evid.get("ground")

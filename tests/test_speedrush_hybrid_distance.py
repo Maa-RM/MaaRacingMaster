@@ -9,7 +9,6 @@ NO_ANCHOR_YET）、UNKNOWN 的 metric=None 类型语义、既有 2D 输出零回
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from dataclasses import replace
