@@ -159,7 +159,7 @@ def get_module_info(module_id: str) -> dict:
         "requires": sorted(cls.REQUIRES),
         "requires_gamepad_exclusive": cls.REQUIRES_GAMEPAD_EXCLUSIVE,
         "required_assets": tuple(getattr(cls, "REQUIRED_ASSETS", ())),
-        # 资格位：显式 HAS_DASHBOARD / 新契约（版本 > 0） / 旧今日统计钩子。
+        # 资格位：显式 HAS_DASHBOARD / 新契约（版本 > 0）。
         "has_dashboard": declares_dashboard(cls),
         "valid_from": valid_from.isoformat() if valid_from else None,
         "valid_until": valid_until.isoformat() if valid_until else None,

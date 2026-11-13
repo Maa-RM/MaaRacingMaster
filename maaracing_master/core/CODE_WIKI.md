@@ -306,7 +306,7 @@
 | 整帧通路不要试「缩小输入加速」 | det 内部按 `limit_side_len` 归一，把帧缩到一半再喂不减少计算量（实测同量级）；真正的旋钮是 `limit_side_len` 与 ORT 线程数，实测组合写在 `BLOCK_DET_*` 注释里 |
 | 绑核必须在引擎构造前 | `_pin_to_p_cores()` 只在 ORT 线程池创建之前调用才有意义（worker 线程创建后继承进程亲和性）；引擎已构造再绑核是空动作。失败按 WARNING 降级——绑核失败必须可见，不得记 DEBUG |
 | 通道序只走 image_io | 本模块对外收 RGB（标准语义），交 RapidOCR 前由 [`image_io.to_bgr`](./image_io.py) 翻一次；不要在 OCR 侧自写切片翻转（通道写反在灰白画面上看不出来） |
-| 抠图边界是 int 截断 | x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，**不是** [`roi_config.to_pixel`](./roi_config.py) 的 floor/ceil——边界差一个像素就换掉喂给模型的像素，识别文本随之漂移，而下游把读数当稳定值用。边界与语义由 `tests/test_core_ocr.py` 机检 |
+| 抠图边界是 int 截断 | x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，**不是** floor/ceil 式换算——边界差一个像素就换掉喂给模型的像素，识别文本随之漂移，而下游把读数当稳定值用。边界与语义由 `tests/test_core_ocr.py` 机检 |
 | 引擎懒加载 + 失败固化 | `rapidocr` 在函数内导入（模块导入期不拉重依赖）；加载失败置 `_engine_failed`、不再重试，识别返回 None 不抛——调用方按「引擎不可用」降级，不得改成抛异常 |
 
 **配套层：[advance.py](./advance.py)（`MaaRM_Advance`）**——整帧通路的唯一消费者与判定层。
@@ -516,13 +516,11 @@
 
 ### 1.20 数据看板：资格声明与内容契约
 
-**资格位（模块自述）**：`ActivityModule.HAS_DASHBOARD` 是显式旧标志，`DASHBOARD_CONTRACT` 是新契约版本（`0` = 已登记但尚未实现，不进入候选集；大于 `0` 的版本才生效），覆盖 `read_today_stats` 是旧模块的今日看板入口；三者任一成立即进入候选集。资格并集由 `base.declares_dashboard()` 单点定义，`get_module_info()`、`get_initial_state.modules[]` 的 `has_dashboard` 与路由共用；内置步骤恒 `False`。
+**资格位（模块自述）**：`ActivityModule.HAS_DASHBOARD` 是显式旧标志，`DASHBOARD_CONTRACT` 是新契约版本（`0` = 已登记但尚未实现，不进入候选集；大于 `0` 的版本才生效）；两者任一成立即进入候选集。资格并集由 `base.declares_dashboard()` 单点定义，`get_module_info()`、`get_initial_state.modules[]` 的 `has_dashboard` 与路由共用；内置步骤恒 `False`。
 
 **内容契约（新模块）**：模块置 `DASHBOARD_CONTRACT = 1` 并实现 `read_dashboard()`，返回版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。标题、布局、间距、配色、翻页与生命周期归前端看板中心；模块只组合 block 与文本。新增视觉原语时扩展共享 block 词表（[dashboard_contract.py](./dashboard_contract.py) + 前端渲染器），不做模块私有页面。
 
 **统一路由与校验**：`get_module_dashboard(module_id)` 只按 id 分发；`normalize_dashboard()` 校验版本、block 白名单、色调与标准动作（当前 `open_user_data_folder`），非法块丢弃并记 WARNING。动作只走白名单，后端不下发 HTML、不接受任意 RPC/URL。版本 `0` 的占位模块返回「看板尚未实现」的明确错误。
-
-**旧模块兼容桥**：只覆盖 `read_today_stats()` 的模块不改代码——该钩子本身即资格位，core 把返回值包成 `today_stats` 兼容块，前端用对应块渲染器还原今日看板。新模块不走这条路。
 
 **不建实例 / 不持有正文**：看板数据来自持久化或既有 RPC；core 不创建模块实例，也不持有任何模块业务字段。
 

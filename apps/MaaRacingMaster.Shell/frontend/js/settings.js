@@ -512,46 +512,6 @@
       + '</div>';
   }
 
-  // 今日统计兼容块：pre-contract 模块（冻结的鉴宝）的原始 {bucket, summary, games}
-  // 由这个渲染器解释；bucket 由 dashboardPayloadHtml 提升为顶部日期说明。
-  function todayStatsBlockHtml(d) {
-    if (!d || typeof d !== 'object') return '';
-    const s = (d.summary && typeof d.summary === 'object') ? d.summary : null;
-    const num = (v) => Number(v) || 0;
-    const coinNet = s ? num(s.income_sum) + num(s.egg_coin) : 0;
-    const coinCls = !s ? '' : coinNet > 0 ? ' pos' : coinNet < 0 ? ' neg' : '';
-    const egg = (cls, v) => '<span class="' + cls
-      + (num(v) ? '' : ' is-zero') + '">' + fmtNum(v) + '</span>';
-    const score = s ? num(s.highest_score) + num(s.egg_score) : null;
-    const games = Array.isArray(d.games) ? d.games : [];
-    const rows = games.map((g) => dashRowHtml({
-      leading: '#' + fmtNum(g.game_seq),
-      badge: g.auction_result === 'win'
-        ? { text: '拍中', tone: 'positive' }
-        : g.auction_result === 'fail'
-          ? { text: '未中', tone: 'negative' } : null,
-      text: '收 ' + fmtNum(g.income),
-      trailing: g.auction_result === 'win' ? '利 ' + fmtNum(g.profit) : '',
-    })).join('');
-    const wl = s
-      ? '<span class="dash-stat-sub">胜 ' + num(s.win) + ' / 负 ' + num(s.fail) + '</span>' : '';
-    return '<div class="dash-stats">'
-      + dashStatCell('银币盈亏', s ? fmtNum(coinNet) : '--', '', coinCls)
-      + dashStatCell('领取彩蛋',
-        fmtNum(s ? num(s.egg_red) + num(s.egg_yellow) + num(s.egg_blue) : 0),
-        '<div class="stat-eggs">'
-        + egg('egg-red', s && s.egg_red)
-        + egg('egg-yellow', s && s.egg_yellow)
-        + egg('egg-blue', s && s.egg_blue)
-        + '</div>')
-      + dashStatCell('今日积分', fmtNum(score), '')
-      + dashStatCell('场次', fmtNum(s && s.games), wl)
-      + '</div>'
-      + (games.length
-        ? '<div class="board-list">' + rows + '</div>'
-        : '<p class="board-empty">今日暂无对局记录</p>');
-  }
-
   function dashBlockHtml(block) {
     switch (block.type) {
       case 'stats':
@@ -579,8 +539,6 @@
       case 'action':
         return '<button class="dash-action" type="button" data-dash-action="'
           + escHtml(block.action) + '">' + escHtml(block.label) + '</button>';
-      case 'today_stats':
-        return todayStatsBlockHtml(block.data);
       default:
         return '';
     }
@@ -641,10 +599,7 @@
         : badge.tone === 'positive' ? ' kind-chip--positive'
         : badge.tone === 'negative' ? ' kind-chip--negative' : '')
       : '';
-    const todayBlock = blocks.find((block) => block.type === 'today_stats'
-      && block.data && typeof block.data.bucket === 'string' && block.data.bucket);
-    const caption = subtitle
-      || (todayBlock ? todayBlock.data.bucket + ' 05:00 起' : '');
+    const caption = subtitle || '';
     const captionRow = (caption || badge)
       ? '<div class="dash-caption-row">'
         + '<span class="dash-caption">' + escHtml(caption) + '</span>'

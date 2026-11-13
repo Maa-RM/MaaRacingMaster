@@ -711,14 +711,6 @@ class Logger:
                     out.append(dict(rec))
             return out, self._seq, truncated, gap
 
-    @staticmethod
-    def _extract_level(line: str) -> str:
-        """从日志行中提取级别，如 [INFO] → INFO（兼容旧调用方；记录化后内部不再使用）"""
-        parts = line.split("] [")
-        if len(parts) >= 2:
-            return parts[1].split("]")[0]
-        return "INFO"
-
 
 class GroupHandle:
     """logger.group() 返回的句柄。跨线程传句柄或 group_id 均可继续写组内事件。"""

@@ -6,7 +6,7 @@
 2. ROIConfig 阶段三段式访问：get_active_rois / get_global_anchors / get_detection_rois
 3. schema 版本与结构校验
 
-测试只依赖 core.roi_config（纯数据，不拉入 maa/opencv 等重依赖）。
+测试只依赖归档包内的 roi_config（纯数据，不拉入 maa/opencv 等重依赖）。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from maaracing_master.core.roi_config import NormalizedROI, ROIConfig, SCHEMA_VER
+from maaracing_master.plugins._archive.treasure.core.roi_config import NormalizedROI, ROIConfig, SCHEMA_VER
 
 
 # ---------------- 坐标契约：NormalizedROI ----------------

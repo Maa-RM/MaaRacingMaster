@@ -220,9 +220,8 @@ class ActivityModule(ABC):
     DEBUG_SAVE: str = "on"
 
     # 声明模块是否有「数据看板」（GUI 数据页看板中心的候选资格）。
-    # HAS_DASHBOARD / DASHBOARD_CONTRACT（版本 > 0）/ 覆盖 read_today_stats 任一成立
-    # 即进入候选集。新模块用 DASHBOARD_CONTRACT + read_dashboard；覆盖
-    # read_today_stats 的旧模块由 core 包成 today_stats 兼容块（当前为冻结的鉴宝）。
+    # HAS_DASHBOARD / DASHBOARD_CONTRACT（版本 > 0）任一成立即进入候选集。
+    # 新模块用 DASHBOARD_CONTRACT + read_dashboard。
     HAS_DASHBOARD: bool = False
 
     # 看板内容契约版本（见 core/dashboard_contract.py）。
@@ -338,8 +337,7 @@ class ActivityModule(ABC):
 
     # ---------- GUI 数据看板内容（可选，模块自述）----------
     #
-    # 新模块实现 read_dashboard()，返回 core/dashboard_contract.py 定义的 block 载荷；
-    # 旧模块的 read_today_stats 会被 core 包成 today_stats 兼容块（鉴宝冻结桥）。
+    # 新模块实现 read_dashboard()，返回 core/dashboard_contract.py 定义的 block 载荷。
     # 看板数据不得依赖模块实例：读持久化数据或既有 RPC。
 
     @classmethod
@@ -347,22 +345,6 @@ class ActivityModule(ABC):
         """返回版本化看板载荷；默认 None = 本模块不提供看板内容。
 
         载荷形状与 block 白名单见 core/dashboard_contract.py。"""
-        return None
-
-    # ---------- GUI 今日看板数据（旧模块兼容）----------
-    #
-    # 覆盖本方法即视为旧模块声明了看板资格；core 会把返回值包成 today_stats 兼容块。
-    # 新模块请用 read_dashboard / DASHBOARD_CONTRACT。
-    # 看板读什么表、哪些列、日界语义全部是模块业务（与 DEFAULT_MODULE_CONFIG 的
-    # "配置面由模块自述"同理）——core 只持有通用路由，不出现任何模块的 schema 字段。
-
-    @classmethod
-    def read_today_stats(cls) -> dict | None:
-        """读取本模块的今日统计；默认 None = 本模块无今日统计。
-
-        覆盖后自动成为看板候选（旧模块兼容桥）。
-        返回 {"bucket": 日界字符串, "summary": 汇总行或 None, "games": 明细列表}；
-        库不存在/读取失败由实现自行兜底为空看板，不抛错（GUI 显示空态）。"""
         return None
 
     @property
@@ -402,8 +384,8 @@ def declares_dashboard(cls: type) -> bool:
     """模块是否进入数据页看板候选集。
 
     ``DASHBOARD_CONTRACT = 0`` 是「已登记、尚未实现」的占位，不参与候选；
-    其余非零版本与旧资格位（``HAS_DASHBOARD`` / 覆盖 ``read_today_stats``）
-    任一成立即可。资格判定只在这里定义一次，元信息与路由都走它。
+    其余非零版本与旧资格位（``HAS_DASHBOARD``）任一成立即可。
+    资格判定只在这里定义一次，元信息与路由都走它。
     """
     contract = getattr(cls, "DASHBOARD_CONTRACT", None)
     if contract == 0:
@@ -411,5 +393,4 @@ def declares_dashboard(cls: type) -> bool:
     return bool(
         getattr(cls, "HAS_DASHBOARD", False)
         or contract is not None
-        or overrides_classmethod(cls, "read_today_stats")
     )

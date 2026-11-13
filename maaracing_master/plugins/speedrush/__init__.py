@@ -29,7 +29,7 @@ PIPELINE_DIR = RES_DIR / "pipeline"
 POLICY_DIR = RES_DIR / "policy"
 CALIB_DIR = RES_DIR / "calibration"
 MODELS_DIR = RES_DIR / "models"
-# 驾驶页 HUD 区域真源（照 core/roi_config 口径：归一化、x2/y2 排他）
+# 驾驶页 HUD 区域真源（归一化、x2/y2 排他）
 HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
 # 行为决策参数真源（FSM/评分/迟滞/校验阈值；config.load_decision 唯一读法）
 DECISION_FILE = POLICY_DIR / "decision.json"

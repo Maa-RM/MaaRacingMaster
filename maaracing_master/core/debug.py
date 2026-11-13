@@ -10,10 +10,6 @@ MaaRacingMaster — 调试可视化模块
               随帧写进 `frames.jsonl` 的 `overlay` 字段，消费方自己画。
   • 视图帧 —— `_render_overlay` 把同一份 payload 画在副本上，只喂 PEEP，
               不落盘。绘制能力留在这里，但不回流进证据。
-
-绘制的具体样式（颜色、lite 精简）由 `_draw_*` 统一，lite=True 跳过文字与散点。
-
-遗留：`save_frame` 是旧入口，仍会把绘制烧进存盘图，新代码不得接入。
 """
 
 from __future__ import annotations
@@ -357,43 +353,10 @@ def _draw_dashed_rect(frame, pt1, pt2, color, thickness=1, dash_len=8):
         cv2.line(frame, (x2, i), (x2, y_end), color, thickness)
 
 
-def _dedup_overlapping(dets, iou_thresh=0.5):
-    """同类别重叠框去重：每个重叠区域只保留最高置信度的一个，避免虚线框堆叠"""
-
-    if not dets:
-        return []
-    by_class: dict[str, list] = {}
-    for d in dets:
-        by_class.setdefault(d["class_name"], []).append(d)
-
-    result = []
-    for cls, cls_dets in by_class.items():
-        sorted_dets = sorted(cls_dets, key=lambda d: -d["confidence"])
-        kept = []
-        for d in sorted_dets:
-            x1, y1, x2, y2 = d["box"]
-            overlap = False
-            for k in kept:
-                kx1, ky1, kx2, ky2 = k["box"]
-                ix1, iy1 = max(x1, kx1), max(y1, ky1)
-                ix2, iy2 = min(x2, kx2), min(y2, ky2)
-                if ix1 < ix2 and iy1 < iy2:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    union = (x2 - x1) * (y2 - y1) + (kx2 - kx1) * (ky2 - ky1) - inter
-                    if union > 0 and inter / union > iou_thresh:
-                        overlap = True
-                        break
-            if not overlap:
-                kept.append(d)
-        result.extend(kept)
-    return result
-
-
 class DebugState:
-    """调试帧状态容器：save_frame 收到的全部 kwargs 快照，供渲染器读取。
+    """调试帧状态容器：流式链路收到的全部状态快照，供渲染器读取。
 
-    简单透传（__dict__ 存字段），渲染器可通过 to_kwargs() 展开为关键字参数，
-    复用 DebugManager 的内置默认视图（_render_full/_render_peep）。
+    简单透传（__dict__ 存字段），渲染器可通过 to_kwargs() 展开为关键字参数。
     """
 
     def __init__(self, **kwargs):
@@ -410,8 +373,6 @@ class NavigationDebugger:
     • 基础设施：PEEP 线程 / frame buffer / 文件存盘，由本类统一管理。
     • 渲染器分发：模块通过 install_renderer 安装自己的调试视图（owner/token
       机制，旧模块 token 不匹配时无法误清新模块的 renderer）。
-    • 内置默认视图：_render_full/_render_peep 作为未安装 renderer 时的兜底
-      （导航侧元素 + 检测框 + 顶部信息栏；类别配色等模块语义归模块渲染器）。
 
     类名保持 NavigationDebugger 不变，避免大改调用方。
     """
@@ -419,10 +380,8 @@ class NavigationDebugger:
     def __init__(self, debug_root: Path):
         # 本对象只服务一个会话：debug_root = `debug/<会话>/`，运行编号不再进路径。
         self.debug_root = Path(debug_root)
-        self.session_dir: Path | None = None
-        self.frame_count = 0
 
-        # PEEP 兼容缓冲（update_peep / get_peep_jpeg 旧接口仍可用）
+        # PEEP 兼容缓冲（update_peep 旧接口仍可用）
         self._latest_frame: np.ndarray | None = None
         self._frame_lock = threading.Lock()
 
@@ -1255,21 +1214,6 @@ class NavigationDebugger:
         with self._frame_lock:
             self._latest_frame = None
 
-    def get_peep_jpeg(self, quality: int = 70) -> bytes | None:
-        """兼容入口：优先返回 IO 线程已编码的帧；旧路径无帧时才补编码。"""
-        with self._lock:
-            jpeg = self._peep_jpeg
-        if jpeg is not None:
-            return jpeg
-        with self._frame_lock:
-            if self._latest_frame is None:
-                return None
-            frame = self._latest_frame.copy()
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ok:
-            return None
-        return buf.tobytes()
-
     def update_peep(self, peep_img) -> None:
         """兼容入口：模块直接注入预览帧（归档模块 / 旧测试）。
 
@@ -1280,200 +1224,6 @@ class NavigationDebugger:
         with self._lock:
             if self._peep_jpeg is None:
                 self._peep_meta = {**self._peep_meta, "state": "live"}
-
-    def start_session(self, label: str):
-        """开始一次导航调试会话（仅 enabled 时创建目录）。
-
-        目录名 = `<时间戳>_<标签>`，与 debug/ 下其它会话、logs/ 会话同一规则：
-        时间戳恒在最前，标签按「用途」追加在后。
-        """
-        self.frame_count = 0
-        self.session_dir = None
-        if not self.enabled:
-            return
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = self.debug_root / "navigate" / f"{ts}_{label}"
-        self.session_dir.mkdir(parents=True, exist_ok=True)
-
-    # ---------- 检测框颜色（core 不认识类别语义，类别配色由模块渲染器自定） ----------
-
-    _DET_SOLID_COLOR = (0, 200, 0)      # 正式检测框（实线）
-    _DET_RAW_COLOR = (160, 160, 160)    # 低阈值原始框（虚线）
-
-    # ==================================================================
-    #  共用绘制辅助方法
-    # ==================================================================
-
-    def _draw_yolo_dets(self, frame, detections, lite=False):
-        """YOLO 正式检测框（置信度过滤后）"""
-        if not detections:
-            return
-        for det in detections:
-            x1, y1, x2, y2 = det["box"]
-            cls_name = det.get("class_name", "?")
-            color = self._DET_SOLID_COLOR
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            if not lite:
-                _put_text(frame, f"{cls_name} {det['confidence']:.2f}", (x1, y1 - 5), 0.4, color)
-
-    def _draw_raw_dets(self, frame, all_raw, detections):
-        """全部原始检测框（低阈值，虚线，仅 debug 全量模式）
-
-        去重策略：
-          1. 同类别重叠框只保留最高分（_dedup_overlapping）
-          2. 与实线框重叠的虚线框→隐藏（NMS 跨类压制导致高分变虚线很迷惑）
-        """
-        if not all_raw:
-            return
-        det_set = {(d["box"], d["class_name"]) for d in (detections or [])}
-        deduped = _dedup_overlapping(all_raw, iou_thresh=0.5)
-
-        # 构建实线框的边界盒列表供重叠检查
-        solid_boxes = [d["box"] for d in (detections or [])]
-
-        to_draw = []
-        for det in deduped:
-            if (det["box"], det["class_name"]) in det_set:
-                continue
-            dx1, dy1, dx2, dy2 = det["box"]
-            # 检查是否与任何实线框显著重叠（IoU > 0.3，跨类也压）
-            overlaps_solid = False
-            for sx1, sy1, sx2, sy2 in solid_boxes:
-                ix1, iy1 = max(dx1, sx1), max(dy1, sy1)
-                ix2, iy2 = min(dx2, sx2), min(dy2, sy2)
-                if ix1 < ix2 and iy1 < iy2:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    d_area = (dx2 - dx1) * (dy2 - dy1)
-                    s_area = (sx2 - sx1) * (sy2 - sy1)
-                    union = d_area + s_area - inter
-                    if union > 0 and inter / union > 0.3:
-                        overlaps_solid = True
-                        break
-            if not overlaps_solid:
-                to_draw.append(det)
-
-        for det in to_draw:
-            x1, y1, x2, y2 = det["box"]
-            cls_name = det.get("class_name", "?")
-            conf = det.get("confidence", 0)
-            color = self._DET_RAW_COLOR
-            _draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 1)
-            _put_text(frame, f"{cls_name} {conf:.2f}", (x1, y1 - 3), 0.3, color)
-
-    def _draw_cursor(self, frame, cursor_pos, cursor_area=0.0, cursor_score=0.0, dist=None, lite=False):
-        """选中的光标位置（红色圈 + 十字）"""
-        h, w = frame.shape[:2]
-        if cursor_pos:
-            cx, cy = cursor_pos
-            r = 8 if lite else 12
-            cv2.circle(frame, (cx, cy), r, (0, 0, 220), 2)
-            cv2.line(frame, (cx - 6, cy), (cx + 6, cy), (0, 0, 220), 1)
-            cv2.line(frame, (cx, cy - 6), (cx, cy + 6), (0, 0, 220), 1)
-            if not lite:
-                info = f"CURSOR({cx},{cy}) A={cursor_area:.0f} S={cursor_score:.3f}"
-                if dist is not None:
-                    info += f" D={dist:.0f}"
-                _put_text(frame, info, (cx + 14, cy - 6), 0.4, (0, 0, 220))
-        elif not lite:
-            _put_text(frame, "NO CURSOR", (w // 2 - 50, 22), 0.55, (0, 0, 220), stroke=2)
-
-    def _draw_button(self, frame, button_pos, lite=False):
-        """按钮目标（蓝色圈 + 十字）"""
-        if not button_pos:
-            return
-        bx, by = button_pos
-        r = 10 if lite else 14
-        cv2.circle(frame, (bx, by), r, (235, 206, 135), 2)
-        cv2.line(frame, (bx - 8, by), (bx + 8, by), (235, 206, 135), 1)
-        cv2.line(frame, (bx, by - 8), (bx, by + 8), (235, 206, 135), 1)
-        if not lite:
-            _put_text(frame, f"btn({bx},{by})", (bx + 16, by + 4), 0.4, (235, 206, 135))
-
-    def _draw_templates(self, frame, template_rects):
-        """模板匹配矩形（青色）— 仅 debug 全量模式"""
-        if not template_rects:
-            return
-        for tr in template_rects:
-            cx, cy = tr["pos"]
-            tw, th = tr["size"]
-            x1 = cx - tw // 2
-            y1 = cy - th // 2
-            cv2.rectangle(frame, (x1, y1), (x1 + tw, y1 + th), (255, 255, 0), 2)
-            _put_text(frame, f"TPL {tr.get('name','')} {tr['confidence']:.2f}", (x1, y1 - 5), 0.4, (255, 255, 0))
-
-    def _draw_nav_candidates(self, frame, candidates, all_candidates):
-        """导航光标候选（黑=过滤, 绿=入围, 紫=拉黑）— 仅 debug 全量模式"""
-        # 被过滤拉黑的轮廓（黑色）
-        if all_candidates:
-            cand_set = {c["pos"] for c in (candidates or [])}
-            for c in all_candidates:
-                if c["pos"] in cand_set:
-                    continue
-                px, py = c["pos"]
-                cv2.circle(frame, (px, py), 5, (0, 0, 0), 1)
-                _put_text(frame, f"A{c['area']:.0f} R{c['circularity']:.2f}", (px + 6, py - 4), 0.30, (0, 0, 0))
-        # 入围候选（绿色/紫色）
-        if candidates:
-            for c in candidates:
-                px, py = c["pos"]
-                color = (255, 0, 255) if c.get("blacklisted") else (0, 200, 0)
-                cv2.circle(frame, (px, py), 8, color, 1)
-                _put_text(frame, f"A{c['area']:.0f} R{c['circularity']:.2f}", (px + 9, py - 4), 0.32, color)
-
-    # ==================================================================
-    #  组合渲染
-    # ==================================================================
-
-    def _render_full(self, img: np.ndarray, **kw) -> np.ndarray:
-        """全量标注绘制（存盘用），返回 BGR 帧
-
-        未安装模块渲染器时的内置兜底视图：导航侧元素 + 检测框 + 顶部信息栏。
-        """
-        frame = img.copy()
-        label = kw.get("label", "")
-
-        # 导航场景元素
-        self._draw_nav_candidates(frame, kw.get("candidates"), kw.get("all_candidates"))
-        self._draw_button(frame, kw.get("button_pos"))
-        self._draw_cursor(frame, kw.get("cursor_pos"), kw.get("cursor_area", 0.0),
-                          kw.get("cursor_score", 0.0), kw.get("dist"))
-        self._draw_templates(frame, kw.get("template_rects"))
-
-        # 检测框（调用方传了 detections 时）
-        self._draw_raw_dets(frame, kw.get("all_raw_dets"), kw.get("detections"))
-        self._draw_yolo_dets(frame, kw.get("detections"))
-
-        # 顶部信息栏改到底部黑带（文字不压画面）
-        info_line = f"#{self.frame_count}"
-        if label:
-            info_line += f" | {label}"
-        score_line = (f"score={kw['cursor_score']:.3f}"
-                      if kw.get("cursor_score", 0) > 0 else "")
-        _draw_status_band(frame, info_line, score_line)
-
-        return frame
-
-    def _render_peep(self, img: np.ndarray, **kw) -> np.ndarray:
-        """精简绘制（PEEP 实时预览用），返回 BGR 帧
-
-        未安装模块渲染器时的内置兜底视图：导航侧元素 + 检测框 + 顶部信息栏。
-        """
-        frame = img.copy()
-        label = kw.get("label", "")
-
-        # 检测框（精简：无置信度文字）
-        self._draw_yolo_dets(frame, kw.get("detections"), lite=True)
-
-        # 导航场景元素
-        self._draw_cursor(frame, kw.get("cursor_pos"), lite=True)
-        self._draw_button(frame, kw.get("button_pos"), lite=True)
-
-        info_parts = [f"#{self.frame_count}"]
-        if label:
-            info_parts.append(label)
-        _draw_status_band(frame, " | ".join(info_parts))
-
-        return frame
 
     # ==================================================================
     #  渲染器管理（owner/token 机制）
@@ -1495,82 +1245,3 @@ class NavigationDebugger:
         with self._renderer_lock:
             if token == self._renderer_token:
                 self._renderer = None
-
-    # ==================================================================
-    #  统一入口
-    # ==================================================================
-
-    def save_frame(
-        self,
-        frame_rgb: np.ndarray,
-        cursor_pos: tuple[int, int] | None = None,
-        cursor_area: float = 0.0,
-        cursor_score: float = 0.0,
-        button_pos: tuple[int, int] | None = None,
-        candidates: list[dict] | None = None,
-        all_candidates: list[dict] | None = None,
-        dist: float | None = None,
-        label: str = "",
-        template_rects: list[dict] | None = None,
-        detections: list[dict] | None = None,
-        save_to_disk: bool = True,
-        all_raw_dets: list[dict] | None = None,
-        **extra_kwargs,
-    ):
-        """保存一帧调试截图
-
-        **遗留入口**：v5 主链路走 `_process`，落盘是干净证据帧、标注另存索引
-        （见 `_overlay_payload`）。本方法仍会把绘制烧进存盘图，因为它服务于旧版
-        调用方的那套口径；新代码不得接入，否则又会把标注写回像素。
-
-        save_to_disk: False 时跳过 cv2.imwrite。
-        PEEP 预览帧独立于存盘帧——PEEP 使用精简绘制，存盘使用全量绘制。
-
-        颜色约定（全量绘制）：
-          🔴 红 — 选中的光标
-          🟢 绿 — 入围候选（通过硬过滤，参与评分）
-          🟣 紫 — 静止拉黑（连续3帧不动，被跳过评分）
-          ⚫ 黑 — 被硬过滤拉黑的探测项
-          🔵 亮蓝 — 按钮目标
-        """
-        if not self.enabled and not self.peep_enabled:
-            return
-        if self.session_dir is None and not self.peep_enabled:
-            return
-
-        self.frame_count += 1
-        img_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-
-        kwargs = dict(
-            cursor_pos=cursor_pos, cursor_area=cursor_area, cursor_score=cursor_score,
-            button_pos=button_pos, candidates=candidates, all_candidates=all_candidates,
-            dist=dist, label=label, template_rects=template_rects,
-            detections=detections,
-            all_raw_dets=all_raw_dets,
-            **extra_kwargs,   # 模块自定义状态字段（如鉴宝的 treasure_*）透传给渲染器
-        )
-
-        # 渲染器分发：已安装 renderer 时走模块视图（render_full/render_peep 各自独立调用），
-        # 否则走 DebugManager 内置默认视图（兼容兜底，与重构前行为一致）
-        renderer = self._renderer
-        if renderer is not None:
-            state = DebugState(**kwargs)
-            full_img = renderer.render_full(img_bgr, state)
-            peep_img = renderer.render_peep(img_bgr, state)
-        else:
-            full_img = self._render_full(img_bgr, **kwargs)   # 内置默认视图（兼容兜底）
-            peep_img = self._render_peep(img_bgr, **kwargs)
-
-        # 存盘：全量绘制
-        if self.enabled and self.session_dir is not None and save_to_disk:
-            fname = f"{self.frame_count:03d}.png"
-            cv2.imwrite(str(self.session_dir / fname), full_img)
-
-        # PEEP：精简绘制
-        if self.peep_enabled:
-            with self._frame_lock:
-                self._latest_frame = peep_img
-
-        # 返回全量渲染结果，供调用方复用（如 treasure 模块全量 debug 存盘），
-        # 避免同一帧被 render_full 二次渲染（CPU 竞争是 OCR 推理被拖慢的主因之一）。
-        return full_img

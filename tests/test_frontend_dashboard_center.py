@@ -81,14 +81,12 @@ def test_single_dashboard_hides_pager_and_shows_module_chip():
     assert "mod.name" in chrome
 
 
-def test_dashboard_caption_comes_from_subtitle_or_today_stats_bucket():
-    """日期说明：新契约读 subtitle，旧兼容块读 today_stats 的 bucket。"""
+def test_dashboard_caption_comes_from_subtitle():
+    """日期说明：新契约读 subtitle。"""
     src = SETTINGS_JS.read_text(encoding="utf-8")
     body = _js_function_body(src, "function dashboardPayloadHtml(payload) {")
     assert "payload.subtitle" in body
-    assert "today_stats" in body
-    assert "bucket" in body
-    assert "05:00 起" in body
+    assert "today_stats" not in body
 
 
 def test_list_rows_keep_fixed_badge_and_value_columns():

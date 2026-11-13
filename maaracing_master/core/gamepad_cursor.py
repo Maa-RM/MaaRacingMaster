@@ -102,15 +102,6 @@ SLOT_THREAD_RESTART_COOLDOWN_S = 5.0  # 导航线程异常退出后的重启冷�
 CONFIRM_HOLD_S = 0.15         # 确认键标称按住时长（秒），press_confirm 默认值同源
 
 
-def _clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
-def _is_gray_px(b, g, r):
-    return (abs(b - g) <= GRAY_DIFF and abs(g - r) <= GRAY_DIFF
-            and abs(b - r) <= GRAY_DIFF)
-
-
 def _is_pure_gray(b, g, r):
     return (abs(b - g) <= PURE_GRAY_TOL and abs(g - r) <= PURE_GRAY_TOL
             and abs(b - r) <= PURE_GRAY_TOL)

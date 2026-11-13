@@ -237,9 +237,9 @@ class RapidOcrEngine:
         patch」——所有已知消费者（treasure 的 policy 锚点、studio 校准台的手拖选区、
         后续 speedrush 的 HUD 格子）手里都是归一化 rect，抠图与边界夹紧因此只有这一份实现。
 
-        坐标语义同 `core/roi_config.py`：top-left 原点、归一化到 [0,1]、x2/y2 排他。
+        坐标语义：top-left 原点、归一化到 [0,1]、x2/y2 排他。
         像素边界**刻意沿用历史口径**（x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，不是
-        roi_config 的 floor/ceil）：边界差一个像素就换掉喂给模型的像素，识别文本会漂移，
+        floor/ceil 式换算）：边界差一个像素就换掉喂给模型的像素，识别文本会漂移，
         而这条路径的输出被下游当作稳定读数用（固化的出价金额等）。
 
         返回 `OcrText`（lines 逐块 / text 合并）；引擎不可用、矩形退化到无像素或推理

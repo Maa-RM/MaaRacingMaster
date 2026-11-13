@@ -3,14 +3,11 @@
 
 锁住四件事：
 
-1. **资格位归模块**：``HAS_DASHBOARD`` / ``DASHBOARD_CONTRACT``（版本 > 0）/ 覆盖
-   ``read_today_stats`` 任一成立即候选；版本 0 是「已登记、尚未实现」的占位，
-   不进入候选集；
+1. **资格位归模块**：``HAS_DASHBOARD`` / ``DASHBOARD_CONTRACT``（版本 > 0）任一
+   成立即候选；版本 0 是「已登记、尚未实现」的占位，不进入候选集；
 2. **元信息单点**：``get_module_info`` 的 ``has_dashboard`` 与资格位一致且为布尔；
 3. **下发行齐备**：``get_initial_state.modules[]`` 每项带 ``has_dashboard``；
-   内置步骤不参与看板中心，恒 False；
-4. **两套入口**：显式标志 / 新契约与旧的今日统计兼容桥并存——显式资格不要求
-   今日统计，覆盖今日统计钩子则单独构成旧模块资格。
+   内置步骤不参与看板中心，恒 False。
 
 前端渲染器对后端 block 词表的覆盖由 ``tests/test_frontend_dashboard_center.py``
 锁定；本文件只锁资格位与后端下发。
@@ -83,49 +80,6 @@ def test_speedrush_declares_dashboard():
     cls = MODULE_REGISTRY["speedrush"]
     assert cls.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
     assert get_module_info("speedrush")["has_dashboard"] is True
-
-
-def test_legacy_hook_override_is_detected():
-    """旧钩子覆盖是看板资格位的一部分：覆盖 read_today_stats 即算，基类不算。"""
-    class _ReferenceModule(ActivityModule):
-        @classmethod
-        def read_today_stats(cls):
-            return {"bucket": "2026-11-02", "summary": None, "games": []}
-
-    assert overrides_classmethod(_ReferenceModule, "read_today_stats") is True
-    assert overrides_classmethod(ActivityModule, "read_today_stats") is False
-
-
-def test_legacy_today_stats_alone_counts_as_dashboard(monkeypatch):
-    """旧模块只覆盖 read_today_stats，也能进入看板候选集。"""
-    from maaracing_master.core import registry as reg
-
-    class _LegacyOnly(ActivityModule):
-        @classmethod
-        def read_today_stats(cls):
-            return {"bucket": "2026-11-02", "summary": None, "games": []}
-
-    monkeypatch.setattr(reg, "MODULE_REGISTRY", {"legacy_only": _LegacyOnly})
-    monkeypatch.setattr(reg, "module_validity", lambda mid: (None, None))
-    monkeypatch.setattr(reg, "module_expired", lambda mid, now=None: False)
-    assert reg.get_module_info("legacy_only")["has_dashboard"] is True
-
-
-def test_flag_and_today_stats_are_distinct_declarations():
-    """显式资格不要求今日统计；今日统计钩子单独构成旧模块资格。"""
-
-    class _DashboardOnly(ActivityModule):
-        HAS_DASHBOARD = True
-
-    class _StatsOnly(ActivityModule):
-        @classmethod
-        def read_today_stats(cls):
-            return {"bucket": "2026-11-02", "summary": None, "games": []}
-
-    assert _DashboardOnly.HAS_DASHBOARD is True
-    assert _DashboardOnly.read_today_stats() is None
-    assert _StatsOnly.HAS_DASHBOARD is False
-    assert _StatsOnly.read_today_stats()["bucket"] == "2026-11-02"
 
 
 def test_builtin_steps_never_declare_dashboards():

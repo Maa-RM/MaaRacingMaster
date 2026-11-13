@@ -12,8 +12,6 @@
 - **不认识业务**：不知道「银币盈亏」是什么，只认识 label/value/tone 这类通用字段；
 - **不猜**：非法块丢弃并给 warning，不把坏数据伪装成空字符串；
 - **不信任模块**：动作只收标准白名单，文本由前端转义，后端不下发 HTML；
-- **兼容旧模块**：``today_stats`` 是给 pre-contract 模块（当前为冻结的鉴宝）的兼容块，
-  它的 ``data`` 原样透传，由前端对应渲染器解释；新模块用 stats/list 等标准块。
 """
 
 from __future__ import annotations
@@ -23,8 +21,8 @@ from typing import Any, cast
 
 DASHBOARD_CONTRACT_VERSION = 1
 
-# block 白名单。today_stats 是兼容块，不是新模块的推荐形态。
-BLOCK_TYPES = frozenset({"stats", "list", "text", "path", "action", "today_stats"})
+# block 白名单。
+BLOCK_TYPES = frozenset({"stats", "list", "text", "path", "action"})
 
 # 色调只影响前端样式，不允许任意类名/内联样式。
 # info = 蓝（本体/本方），negative = 红；两者不表达好坏，只表达归属。
@@ -217,22 +215,12 @@ def _action(block: dict, warnings: list[str]) -> dict | None:
     return {"type": "action", "label": label, "action": action}
 
 
-def _today_stats(block: dict, warnings: list[str]) -> dict | None:
-    """兼容块：data 原样透传，由前端对应渲染器解释。"""
-    data = block.get("data")
-    if not isinstance(data, dict):
-        warnings.append("today_stats.data 不是对象")
-        return None
-    return {"type": "today_stats", "data": data}
-
-
 _BLOCK_NORMALIZERS = {
     "stats": _stats,
     "list": _list,
     "text": lambda block, warnings: _plain_text(block, "text", warnings),
     "path": lambda block, warnings: _plain_text(block, "path", warnings),
     "action": _action,
-    "today_stats": _today_stats,
 }
 
 

@@ -109,7 +109,6 @@
 - 惰性锚点真源 = spec 的 `egg_claim_red_btn`/`egg_claim_title`/`egg_panel_tabbar`/`egg_task_tab3`/`act_get_silver_btn`/`hall_back_btn`/`hall_home_btn`/`claim_coin_medal`/`claim_score_medal` 族（= `TreasureModule.EGG_CHAIN_ANCHORS`，测试直接 import 该常量、不再手抄副本），**不进 transitions/stages.active/global\_anchors**（detector 零扫描、不参阶段判定；`tests/test_treasure_egg_claim.py` 机检这条惰性）。链尾确认「已回大厅」另用全局锚点 `EGG_CHAIN_LOBBY_ANCHOR`（`hall_peak_appraise_card`，检测面本就每帧扫描），与惰性清单语义分开、不混。GUI 底部阶段条在收尾期间（约 30s）不更新——链不是阶段，以「\[彩蛋收尾]」日志补偿；日后要可视化按 §10.1 升级路径补 dwell+stage，属独立改动。
 
 - 蛋落盘语义：`games` 蛋列退役（不再写、列保留）；`daily_summary.egg_red/yellow/blue` = 「今日领取数」，写入点=链内弹窗数蛋成功；`egg` 数蛋锚点 rect 已搬家到聚合奖励弹窗蛋卡行（旧结算链业务上不再产蛋；真帧实测红/黄/蓝蛋 0.837–0.920 命中、币章卡被中心 S≈7 判色拒掉）。
-- GUI 看板读侧契约（`core/sidecar.get_today_stats`）：新列的 ALTER 迁移由鉴宝模块（写侧）惰性建连时补，升级后天然存在「GUI 开着、模块没跑过」的窗口——读侧**按 PRAGMA 实有列取交集查询、缺列兜底 0/None**，绝不硬编码全列 SELECT（真机实证：曾 378 次/83min `no such column: egg_coin` 看板全灭）。回归锁 `tests/test_sidecar_today_stats.py`。
 
 **回合出价**（`第N回合出价` 阶段，`_run_bidding_choice`）：
 

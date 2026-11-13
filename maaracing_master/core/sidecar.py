@@ -540,7 +540,7 @@ HANDLERS = frozenset({
     # 更新与公告
     "check_update", "fetch_announcement",
     # 观测
-    "fetch_logs", "get_today_stats", "get_module_dashboard", "get_debug_state",
+    "fetch_logs", "get_module_dashboard", "get_debug_state",
     # 成就
     "get_achievements", "set_achievement_notify", "note_ui_event",
     "export_achievements", "import_achievements", "reset_achievements",
@@ -2002,26 +2002,10 @@ class SidecarService:
             "schema_version": Logger.SCHEMA_VERSION,
         }, None)
 
-    def get_today_stats(self, params):
-        """今日看板路由：读法由各模块自述（ActivityModule.read_today_stats），core 不持有
-        任何模块的看板 schema（表结构、列名、日界语义全部住在插件内）。
-
-        返回 (True, {"bucket", "summary", "games"}, None)；模块未注册或未声明看板读法
-        时返回空看板（前端仅对声明了看板的模块轮询，此分支是删除模块后的健壮性兜底）。
-        """
-        module_id = params.get("module_id") if isinstance(params, dict) else None
-        cls = MODULE_REGISTRY.get(module_id) if isinstance(module_id, str) else None
-        reader = getattr(cls, "read_today_stats", None)
-        if reader is None:
-            return (True, {"bucket": None, "summary": None, "games": []}, None)
-        return (True, reader(), None)
-
     def get_module_dashboard(self, params):
         """数据看板内容路由：统一 block 契约，不持有任何模块业务字段。
 
         - 新模块：``DASHBOARD_CONTRACT`` + ``read_dashboard()``，载荷经共享 schema 校验；
-        - 旧模块：``HAS_DASHBOARD`` + ``read_today_stats()``，core 包成 ``today_stats``
-          兼容块（旧钩子模块走这条，不改模块代码）；
         - 内置步骤 / 未声明看板 / 无内容：空 blocks 或明确错误。
 
         只用类方法，不创建模块实例；单块非法只丢弃该块并记 WARNING。
@@ -2046,16 +2030,6 @@ class SidecarService:
                 if not overrides_classmethod(cls, "read_dashboard"):
                     return (False, None, f"{module_id} 声明了看板契约但未实现 read_dashboard")
                 payload = cls.read_dashboard()
-            elif overrides_classmethod(cls, "read_today_stats"):
-                stats = cls.read_today_stats()
-                payload = {
-                    "version": DASHBOARD_CONTRACT_VERSION,
-                    "title": "今日看板",
-                    "blocks": (
-                        [{"type": "today_stats", "data": stats}]
-                        if isinstance(stats, dict) else []
-                    ),
-                }
             else:
                 payload = {"version": DASHBOARD_CONTRACT_VERSION, "blocks": []}
         except Exception as exc:  # noqa: BLE001 —— 模块实现失败不得打崩 sidecar

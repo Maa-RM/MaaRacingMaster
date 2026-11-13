@@ -513,24 +513,6 @@ class Clicker:
                 return bool(res.get("ok"))
             time.sleep(0.02)
 
-    def move_only(self, cx: float, cy: float, *,
-                  on_progress=None, should_abort=None, box=None, tol_px=None) -> bool:
-        """同步兼容壳（已弃用）：submit_move + 自旋 consume_result，只移动不点击。
-
-        推荐改用 submit_move + consume_result 异步协议。
-        """
-        if not self.submit_move(cx, cy, box=box, tol_px=tol_px):
-            return False
-        while True:
-            if should_abort is not None and should_abort():
-                self.cancel()
-                time.sleep(0.02)
-                continue
-            res = self.consume_result()
-            if res is not None:
-                return bool(res.get("ok"))
-            time.sleep(0.02)
-
     def _click_real(self, cx, cy, down_up_gap_ms, move_pause_s) -> bool:
         """前台(鼠标)：SetCursorPos + SendInput；意图模式只移光标。"""
         if not self.hwnd:

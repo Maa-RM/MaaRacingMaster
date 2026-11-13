@@ -89,7 +89,7 @@ templates/plugin/
 
 按活动类型从样板增补，均为现成基建：
 
-- **模板匹配 / 归一化 ROI**：`core/template_match.py`、`core/roi_config.py`。
+- **模板匹配 / 归一化 ROI**：`core/template_match.py`。
 - **导航真源（v4）**：`resources/pipeline/<图>.json` —— 节点 JSON 即真源，编辑器与引擎
   同读一份，中间没有编译层；局内复杂决策与感知执行规格放 `resources/policy/<表>.json`，
   由图里的 `action: "Custom"` 节点指向。图闭合、数据面装配与分层红线由

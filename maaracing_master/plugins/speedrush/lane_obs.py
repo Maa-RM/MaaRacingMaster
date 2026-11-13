@@ -175,11 +175,6 @@ def _prob_from_out(out) -> np.ndarray:
     return (e[1] / e.sum(0)).astype(np.float32)
 
 
-def _lane_prob(sess, rgb: np.ndarray) -> np.ndarray:
-    inp = sess.get_inputs()[0].name
-    return _prob_from_out(sess.run(None, {inp: _letterbox(rgb)}))
-
-
 def _row_segments(prob: np.ndarray) -> list[tuple[int, list[dict]]]:
     """逐行扫描概率图成段（步长 1）。
 
