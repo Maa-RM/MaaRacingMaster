@@ -140,7 +140,8 @@ def test_non_windows_is_a_noop(monkeypatch):
         Process=lambda: touched.append("psutil") or _FakeProc(),
         HIGH_PRIORITY_CLASS=_HIGH_PRIORITY_CLASS,
         NORMAL_PRIORITY_CLASS=_NORMAL_PRIORITY_CLASS))
-    monkeypatch.setattr(ctypes, "WinDLL", _boom)
+    # raising=False：Linux 的 ctypes 没有 WinDLL 属性（同 _install_fakes 的口径）。
+    monkeypatch.setattr(ctypes, "WinDLL", _boom, raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
 
     assert pp.apply_boost() == {"cpu": False, "io": False}
