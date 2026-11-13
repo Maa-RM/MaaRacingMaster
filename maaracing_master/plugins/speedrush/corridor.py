@@ -439,6 +439,21 @@ def build_corridor(reading, grid, fid: int | None, *,
                     sides[side] = (
                         _air_boundary(side, center_lane, width_lane, lane_w_m)
                         or BandBoundary(None, UNKNOWN))
+        # 缺失侧按**测到的那一侧**外推（2026-11-13）：旧行为是 center±W/2，
+        # 也就是绕当前路心做对称——它不携带任何新证据，只是把路心回声一遍，
+        # 一侧贴着护栏时该带的中点会跟着路心走，永远对不上真实边界。改成
+        # 「有证据的一侧 ± 整段宽度」，带中点就变成单侧读数，能与路心互相
+        # 校验而不是互相印证。两侧都无证据（空气墙）时保持原样。
+        if lane_w_m and width_lane:
+            _l, _r = sides[-1], sides[1]
+            _w = width_lane * lane_w_m
+            if _l.src == INFERRED and _l.x_m is not None \
+                    and _r.src != INFERRED and _r.x_m is not None:
+                sides[-1] = BandBoundary(_r.x_m - _w, INFERRED, 0.0, None)
+            elif _r.src == INFERRED and _r.x_m is not None \
+                    and _l.src != INFERRED and _l.x_m is not None:
+                sides[1] = BandBoundary(_l.x_m + _w, INFERRED, 0.0, None)
+
         n_pts = 0
         if grid is not None:
             rows = _band_rows_mask(grid, z0, z1)
