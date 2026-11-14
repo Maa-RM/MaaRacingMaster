@@ -29,7 +29,8 @@ public static class WebView2Runtime
         try
         {
             if (_environment is not null) return _environment;
-            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            // 与 core/paths.py 同口径取 APPDATA 环境变量（已知目录 API 不认重定向）
+            var appData = Environment.GetEnvironmentVariable("APPDATA");
             var appRoot = AppRootResolver.Resolve(
                 Environment.GetCommandLineArgs(),
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),

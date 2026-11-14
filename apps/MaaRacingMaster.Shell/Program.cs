@@ -34,11 +34,13 @@ public static class Program
 
         // 受管安装前置检查：%APPDATA% 缺失时用户数据回退会落进可被整体替换的内容树，
         // 升级即丢数据——显式拒绝启动，不做静默降级。
+        // 用户数据根取 APPDATA 环境变量（与 core/paths.py 同口径）：系统的已知目录
+        // API 不认环境变量重定向，隔离/重定向场景下两边会分叉（实测踩过）。
         var appRoot = AppRootResolver.Resolve(
             Environment.GetCommandLineArgs(),
             Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
             AppContext.BaseDirectory,
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+            Environment.GetEnvironmentVariable("APPDATA"));
         if (appRoot.RefusedReason is not null)
         {
             MessageBoxW(IntPtr.Zero,

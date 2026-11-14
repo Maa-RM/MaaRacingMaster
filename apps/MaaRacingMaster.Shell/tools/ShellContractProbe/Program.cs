@@ -41,6 +41,7 @@ internal static class Program
             case "approot": CheckAppRoot(); break;
             case "hook": CheckHook(args); break;
             case "sidecar": CheckSidecarAsync(args).GetAwaiter().GetResult(); break;
+            case "cleanup": CheckCleanup(args); break;
             default:
                 Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar");
                 return 2;
@@ -86,6 +87,37 @@ internal static class Program
     }
 
     private sealed record ChildRun(int? ExitCode, bool TimedOut);
+
+    // ---------- 启动清场（遗留侧车扫描与终止） ----------
+
+    /// <summary>造一个命令行含侧车模块标记的 python 子进程模拟遗留侧车，实测
+    /// 清理路径的命中与耗时（命令行经 ntdll PEB 直读）。</summary>
+    private static void CheckCleanup(string[] args)
+    {
+        var python = GetOption(args, "--python") ?? "python";
+        using var child = Process.Start(new ProcessStartInfo
+        {
+            FileName = python,
+            Arguments = "-c \"import time; print('READY', flush=True); time.sleep(60)\" " +
+                        "maaracing_master.core.sidecar",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        });
+        var ready = child!.StandardOutput.ReadLine();
+        Check("模拟遗留侧车已就绪", ready == "READY", $"stdout={ready ?? "<空>"}");
+
+        // 应用根取解释器上两层目录（venv 场景：.venv/Scripts/python.exe → venv 父目录）
+        var fullPython = Path.GetFullPath(python);
+        var appRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullPython))!;
+        var sw = Stopwatch.StartNew();
+        var killed = PythonSidecar.CleanupLeftovers(appRoot);
+        var elapsed = sw.ElapsedMilliseconds;
+        Check("遗留侧车扫描+清理命中 1 个", killed == 1, $"killed={killed}");
+        Check("清理毫秒级完成（<3s）", elapsed < 3_000, $"{elapsed}ms");
+        Check("目标进程已退出", child.WaitForExit(10_000) && child.HasExited,
+              $"exit={child.HasExited}");
+    }
 
     // ---------- 侧车关停合同 ----------
 

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -199,9 +200,10 @@ public sealed class PythonSidecar : IDisposable
     {
         // GUI 无控制台：sidecar stderr 落盘便于排查。固定落用户数据目录
         // （%APPDATA%/MaaRacingMaster/logs，开发/发行一致、不受日志开关控制——框架诊断日志）；
-        // APPDATA 不可用时回退工作目录，保证跨机器可移植。
+        // APPDATA 取环境变量（与 core/paths.py 同口径，已知目录 API 不认重定向），
+        // 不可用时回退工作目录，保证跨机器可移植。
         // 体积有界：超过上限轮转一份备份后重开，长跑不再无界追加。
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var appData = Environment.GetEnvironmentVariable("APPDATA");
         var baseDir = string.IsNullOrEmpty(appData)
             ? (_workDir ?? Environment.CurrentDirectory)
             : Path.Combine(appData, "MaaRacingMaster");
@@ -435,61 +437,134 @@ public sealed class PythonSidecar : IDisposable
         }
     }
 
-    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块」的 pid。</summary>
+    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块」的 pid。
+    /// 命令行经 NtQueryInformationProcess 读目标进程 PEB（毫秒级，不依赖 PowerShell/WMI——
+    /// 提权环境下 CIM 查询实测超时）；读取失败的进程跳过。</summary>
     private static IEnumerable<int> ListLeftoverSidecarPids(string appRoot)
     {
-        const string script = """
-            [Console]::OutputEncoding=[System.Text.Encoding]::UTF8
-            Get-CimInstance Win32_Process -Filter "Name like 'python%'" | ForEach-Object {
-                '{0}|{1}|{2}' -f $_.ProcessId, $_.ExecutablePath, $_.CommandLine
-            }
-            """;
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = "-NoProfile -NonInteractive -EncodedCommand " +
-                        Convert.ToBase64String(Encoding.Unicode.GetBytes(script)),
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        using var ps = Process.Start(psi)
-            ?? throw new InvalidOperationException("powershell 启动失败");
-        string output;
-        using (ps)
-        {
-            if (!ps.WaitForExit(8_000))
-            {
-                try { ps.Kill(); } catch { }
-                throw new TimeoutException("遗留侧车扫描超时（8s）");
-            }
-            output = ps.StandardOutput.ReadToEnd();
-        }
-
         var rootNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(appRoot));
         var result = new List<int>();
-        foreach (var line in output.Split('\n'))
+        foreach (var proc in Process.GetProcessesByName("python"))
         {
-            var parts = line.Trim('\r').Split('|', 3);
-            if (parts.Length < 3) continue;
-            if (!int.TryParse(parts[0], out var pid)) continue;
-            var exe = parts[1].Trim();
-            var cmd = parts[2];
-            if (cmd.Length == 0 || !cmd.Contains(SidecarModuleMarker, StringComparison.Ordinal))
-                continue;
-            if (exe.Length == 0) continue;
             try
             {
+                string? exe;
+                string? cmd;
+                try
+                {
+                    exe = proc.MainModule?.FileName;
+                }
+                catch
+                {
+                    continue; // 权限不足/已退出：跳过该进程
+                }
+                if (string.IsNullOrEmpty(exe))
+                    continue;
+                cmd = ReadProcessCommandLine(proc.Id);
+                if (string.IsNullOrEmpty(cmd) ||
+                    !cmd.Contains(SidecarModuleMarker, StringComparison.Ordinal))
+                    continue; // 命令行读不出/不是本侧车：跳过
                 var exeNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(exe));
                 if (exeNorm.StartsWith(rootNorm + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(Path.GetDirectoryName(exeNorm), rootNorm, StringComparison.OrdinalIgnoreCase))
-                    result.Add(pid);
+                    result.Add(proc.Id);
             }
-            catch { /* 非法路径条目跳过 */ }
+            catch
+            {
+                // 单个进程读取失败：跳过，不影响其余
+            }
+            finally
+            {
+                proc.Dispose();
+            }
         }
         return result;
+    }
+
+    // ---- 进程命令行读取（ntdll PEB 直读，x64） ----
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(
+        IntPtr hProcess, int infoClass,
+        ref PROCESS_BASIC_INFORMATION pbi, int cb, out int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadProcessMemory(
+        IntPtr h, IntPtr baseAddr, byte[] buffer, IntPtr size, out IntPtr read);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr h);
+
+    private const int ProcessQueryInformation = 0x0400;
+    private const int ProcessVmRead = 0x0010;
+
+    /// <summary>读目标进程的完整命令行（UTF-16）；失败返回 null。仅本进程与目标同完整性级别时可用。</summary>
+    private static string? ReadProcessCommandLine(int pid)
+    {
+        IntPtr h = OpenProcess(ProcessQueryInformation | ProcessVmRead, false, pid);
+        if (h == IntPtr.Zero)
+            return null;
+        try
+        {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            var status = NtQueryInformationProcess(h, 0, ref pbi,
+                Marshal.SizeOf<PROCESS_BASIC_INFORMATION>(), out _);
+            if (status != 0 || pbi.PebBaseAddress == IntPtr.Zero)
+                return null;
+
+            // x64：PEB+0x20 = ProcessParameters 指针（一次间接）；
+            // CommandLine UNICODE_STRING 结构体直接位于 ProcessParameters+0x70（无二次间接）。
+            if (!TryReadIntPtr(h, pbi.PebBaseAddress + 0x20, out var paramsPtr) ||
+                paramsPtr == IntPtr.Zero)
+                return null;
+            var cmdStruct = paramsPtr + 0x70;
+
+            // UNICODE_STRING 手工解析（全部来自已读回的本地字节）：Length 在前 2 字节，
+            // Buffer 指针在第 8~16 字节（远端地址，不可用本地指针 API 解引用）
+            var header = new byte[16];
+            if (!ReadProcessMemory(h, cmdStruct, header, (IntPtr)header.Length, out _))
+                return null;
+            ushort length = (ushort)(header[0] | (header[1] << 8));
+            var buffer = (IntPtr)BitConverter.ToInt64(header, 8);
+            if (length == 0 || buffer == IntPtr.Zero)
+                return string.Empty;
+            var textBytes = new byte[length];
+            if (!ReadProcessMemory(h, buffer, textBytes, (IntPtr)length, out _))
+                return null;
+            return Encoding.Unicode.GetString(textBytes);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    private static bool TryReadIntPtr(IntPtr h, IntPtr addr, out IntPtr value)
+    {
+        value = IntPtr.Zero;
+        var buf = new byte[8];
+        if (!ReadProcessMemory(h, addr, buf, (IntPtr)8, out _))
+            return false;
+        value = (IntPtr)BitConverter.ToInt64(buf, 0);
+        return true;
     }
 
     /// <summary>侧车模块启动命令行标记（与 MainWindow 启动侧车的 -m 参数一致）。</summary>

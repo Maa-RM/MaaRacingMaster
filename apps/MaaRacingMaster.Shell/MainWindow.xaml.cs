@@ -37,7 +37,7 @@ public sealed partial class MainWindow : Window
             Environment.GetCommandLineArgs(),
             Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
             AppContext.BaseDirectory,
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)).Root;
+            Environment.GetEnvironmentVariable("APPDATA")).Root;
 
     /// <summary>
     /// 从仓库根向上查找指定相对路径的资源文件（sidecar / venv 等一律以仓库根为锚）。
