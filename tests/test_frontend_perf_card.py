@@ -56,3 +56,21 @@ def test_module_rows_come_from_backend():
         "前端仍在计算模块指标的显示值：格式化应只在 core 一处产生")
     assert "warn_at" not in body and "error_at" not in body, (
         "前端在按阈值判级：判级权应只在 core")
+
+
+def test_perf_health_exempt_not_reported_from_error():
+    """健康度聚合不得把 not_reported（本轮该项不适用）点亮成异常。
+
+    契约的缺失原因四值里只有 invalid / out_of_range / read_error 是「监控真没
+    取到值」；not_reported 是模块的正常缺报（如导航阶段还没有驾驶拍），聚合时
+    按行自带等级（idle）参与——任何缺失一律判 error 会让每局开跑前的正常等待
+    都显示「异常」。
+    """
+    src = RUN_JS.read_text(encoding="utf-8")
+    body = _slice_fn(src, "function renderPerfHealth(mid, rows) {")
+    assert "PERF_LEVEL_RANK" in body, "抽取到的不是健康度聚合"
+    assert "row.reason ? 'error'" not in body, (
+        "健康度聚合把所有缺失原因一律判为异常：正常缺报（not_reported）"
+        "会被点亮成异常灯")
+    assert "not_reported" in body, (
+        "健康度聚合应显式豁免 not_reported，其余缺失原因照常参与异常聚合")

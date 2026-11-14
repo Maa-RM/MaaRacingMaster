@@ -928,7 +928,11 @@
     let worst = 'ok';
     let bad = 0;
     rows.forEach((row) => {
-      const lv = row.reason ? 'error' : (row.level || 'ok');
+      // 缺失原因二分：not_reported 是模块说「本轮该项不适用」（导航阶段还没有
+      // 驾驶拍），按行自带等级（idle）聚合；其余三种是监控真的没取到值，才点亮
+      // 异常灯。任何缺失都算 error 会把每局开跑前的正常等待读成异常。
+      const lv = (row.reason && row.reason !== 'not_reported')
+        ? 'error' : (row.level || 'ok');
       if (PERF_LEVEL_RANK[lv] > PERF_LEVEL_RANK[worst]) worst = lv;
       if (lv === 'warn' || lv === 'error') bad += 1;
     });
