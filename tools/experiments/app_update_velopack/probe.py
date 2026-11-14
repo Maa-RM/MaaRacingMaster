@@ -788,16 +788,19 @@ def _dev_smoke_chain(args) -> dict:
     userdata.mkdir()
     env = {"APPDATA": str(userdata), "MaaRM_APP_ROOT": str(app_root)}
     ev: dict = {"case": str(case), "shell": str(shell), "dev_root": str(app_root)}
+    # dev 模式侧车解释器来自主线检出 .venv（不在用例目录下），进程快照按该前缀过滤
+    py_prefix = str(app_root / ".venv")
     subprocess.Popen([str(shell)], cwd=str(shell.parent),
                      env={**os.environ, **env}, creationflags=0x00000008)
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
-        procs = _process_snapshot(str(case))
+        procs = _process_snapshot(py_prefix)
         if any(p["Name"] == "python.exe" for p in procs):
             break
         time.sleep(1)
     else:
         raise AssertionError("侧车 120 秒内未启动")
+    ev["sidecar_pid"] = procs[0]["ProcessId"] if procs else None
     ev["sidecar_started"] = True
     udf = userdata / "MaaRacingMaster" / "webview2" / "EBWebView"
     deadline = time.monotonic() + 60
@@ -808,8 +811,14 @@ def _dev_smoke_chain(args) -> dict:
     ev["webview2_udf_in_userdata"] = udf.is_dir()
     ev["udf_exe_adjacent"] = (shell.parent / (SHELL_EXE + ".WebView2")).is_dir()
     ev["shell_log_tail"] = _tail(userdata / "MaaRacingMaster" / "logs" / "shell.log", 2500)
+    ev["sidecar_alive_before_wait"] = any(
+        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
     ev.update(_collect_live_evidence(shell.parent, userdata))
+    ev["sidecar_alive_after_evidence"] = any(
+        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
     _wait_user_close_window(ev, case)
+    ev["sidecar_alive_after_close"] = any(
+        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
     return ev
 
 
