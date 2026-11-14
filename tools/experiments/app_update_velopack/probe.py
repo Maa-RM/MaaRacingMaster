@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
@@ -18,6 +19,11 @@ import xml.etree.ElementTree as ET
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "_out"
 EXE = OUT / "publish" / "MaaRM.UpdateProbe.exe"
+
+SHELL_EXE = "MaaRacingMaster.Shell.exe"
+# 提权子进程用的随包真实 Python：商店版解释器（WindowsApps）无法提权启动。
+RUNTIME_PYTHON = Path(os.environ.get(
+    "MAARM_RUNTIME_SOURCE", "D:/maaracing_assistant/build/runtime-cache")) / "python.exe"
 
 
 def run(args: list[str], *, timeout: int = 45, expected: int | None = 0,
@@ -185,9 +191,423 @@ def manifests() -> None:
                       "scope": "PE resources only; actual UAC not exercised"}))
 
 
+# ---------------------------------------------------------------------------
+# 受管真实壳整链（P0）：标准布局 live 副本上的提权启动、升级提交与证据采集。
+# 提权说明：壳与生成入口均为 requireAdministrator，因此整链探针需在提权上下文运行；
+# 非提权运行时会经 UAC 自提权重启自身一次（唯一一次系统交互）。
+# ---------------------------------------------------------------------------
+
+class _ShellExecuteInfoW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD), ("fMask", wintypes.ULONG), ("hwnd", wintypes.HANDLE),
+        ("lpVerb", wintypes.LPCWSTR), ("lpFile", wintypes.LPCWSTR),
+        ("lpParameters", wintypes.LPCWSTR), ("lpDirectory", wintypes.LPCWSTR),
+        ("nShow", ctypes.c_int), ("hInstApp", wintypes.HINSTANCE),
+        ("lpIDList", ctypes.c_void_p), ("lpClass", wintypes.LPCWSTR),
+        ("hkeyClass", wintypes.HKEY), ("dwHotKey", wintypes.DWORD),
+        ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE),
+    ]
+
+
+def _is_elevated() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _elevated_interpreter() -> str:
+    override = os.environ.get("MAARM_ELEVATED_PYTHON")
+    if override and Path(override).is_file():
+        return override
+    exe = sys.executable
+    if "WindowsApps" not in exe and Path(exe).is_file():
+        return exe
+    if RUNTIME_PYTHON.is_file():
+        return str(RUNTIME_PYTHON)
+    return exe
+
+
+def _run_elevated_child(result_path: Path, action_args: list[str]) -> None:
+    """以 runas 经 cmd 启动提权子进程并等待结束；UAC 由用户确认一次。
+
+    子进程解释器用随包真实 Python（商店版无法提权）；stdout/stderr 重定向到
+    日志文件，子进程秒退时可用于定位（cmd.exe 是系统原生程序，提权最稳）。
+    """
+    log_path = result_path.with_suffix(".launch.log")
+    interpreter = _elevated_interpreter()
+    script = Path(__file__).resolve()
+    sei = _ShellExecuteInfoW()
+    sei.cbSize = ctypes.sizeof(_ShellExecuteInfoW)
+    sei.fMask = 0x40  # SEE_MASK_NOCLOSEPROCESS
+    sei.lpVerb = "runas"
+    sei.lpFile = os.environ.get("ComSpec", "cmd.exe")
+    sei.lpParameters = (f'/c ""{interpreter}" -B -X utf8 "{script}" '
+                        f'{" ".join(action_args)} '
+                        f'--elevated-child --result "{result_path}" '
+                        f'> "{log_path}" 2>&1"')
+    sei.lpDirectory = str(HERE)
+    sei.nShow = 0  # SW_HIDE：子进程控制台不可见——控制台窗口被用户关闭会连带杀掉整棵进程树
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei)) or not sei.hProcess:
+        code = ctypes.windll.kernel32.GetLastError()
+        raise OSError(f"UAC 提权启动失败：hInstApp={sei.hInstApp & 0xFFFFFFFF} "
+                      f"GetLastError={code}（UAC 被取消也会落到这里）")
+    ctypes.windll.kernel32.WaitForSingleObject(sei.hProcess, 45 * 60 * 1000)
+    ctypes.windll.kernel32.CloseHandle(sei.hProcess)
+
+
+def _process_snapshot(path_prefix: str) -> list[dict]:
+    """按可执行文件路径前缀抓进程拓扑（elevated 下可见提权进程）。"""
+    p = run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             "$p = $env:MAARM_SNAPSHOT_PATTERN; "
+             "Get-CimInstance Win32_Process | "
+             "Where-Object { $_.ExecutablePath -like ($p + '*') } | "
+             "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath | "
+             "ConvertTo-Json -Compress"],
+            timeout=60, expected=None,
+            env_extra={"MAARM_SNAPSHOT_PATTERN": path_prefix})
+    text = p.stdout.strip()
+    if not text:
+        return []
+    data = json.loads(text)
+    return [data] if isinstance(data, dict) else data
+
+
+def _shell_running() -> bool:
+    p = run(["tasklist", "/FI", f"IMAGENAME eq {SHELL_EXE}", "/FO", "CSV", "/NH"],
+            timeout=15, expected=None)
+    return SHELL_EXE in p.stdout
+
+
+def _tail(path: Path, limit: int) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except Exception as exc:
+        return f"<unreadable: {exc!r}>"
+
+
+def _case_env(case: Path, tag: str) -> tuple[dict, Path, Path]:
+    """独立用户数据目录 + 版本报告文件；logs/UDF/报告全部落在隔离目录内。"""
+    userdata = case / ("userdata-" + tag)
+    userdata.mkdir(parents=True, exist_ok=True)
+    report = case / ("report-" + tag + ".json")
+    return ({"APPDATA": str(userdata), "MAARM_PROBE_REPORT": str(report)},
+            userdata, report)
+
+
+def _wait_report(report: Path, seconds: float) -> dict:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if report.is_file():
+            try:
+                return json.loads(report.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        time.sleep(0.3)
+    raise AssertionError(f"版本报告未出现: {report}")
+
+
+def _wait_marker(current: Path, version: str, seconds: float) -> None:
+    marker = current / "payload-version.txt"
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if marker.is_file() and marker.read_text(encoding="utf-8") == version:
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"磁盘标记未到 {version}: {marker}")
+
+
+def _recent_wer_events() -> str:
+    p = run(["powershell", "-NoProfile", "-Command",
+             "Get-WinEvent -FilterHashtable @{LogName='Application'; Level=2; "
+             "StartTime=(Get-Date).AddMinutes(-5)} -EA SilentlyContinue | "
+             "Where-Object { $_.Message -like '*msedgewebview2*' "
+             "-or $_.Message -like '*WebView2*' -or $_.Message -like '*MaaRacing*' } | "
+             "Select-Object -First 5 TimeCreated,Id,ProviderName | ConvertTo-Json -Compress"],
+            timeout=60, expected=None)
+    return p.stdout.strip() or "(无相关错误事件)"
+
+
+def _collect_live_evidence(live_root: Path, userdata: Path,
+                           report: Path | None = None) -> dict:
+    """双时点采证；每段独立容错，一段失败不丢其余证据。"""
+    time.sleep(30)  # 侧车导入与 WebView2 初始化需要几十秒
+    ev: dict = {}
+
+    def _sec(key, fn):
+        try:
+            ev[key] = fn()
+        except Exception as exc:
+            ev[key] = f"<error: {exc!r}>"
+
+    _sec("processes", lambda: _process_snapshot(str(live_root)))
+    _sec("msedgewebview2_running", lambda: "msedgewebview2.exe" in run(
+        ["tasklist", "/FI", "IMAGENAME eq msedgewebview2.exe", "/FO", "CSV", "/NH"],
+        timeout=15, expected=None).stdout)
+    logs = userdata / "MaaRacingMaster" / "logs"
+    _sec("log_files", lambda: (sorted(p.name for p in logs.iterdir())
+                               if logs.is_dir() else []))
+
+    def _session_logs():
+        sessions = sorted(p.name for p in logs.iterdir()) if logs.is_dir() else []
+        if not sessions:
+            return {}
+        session = logs / sessions[-1]
+        return {p.name: p.stat().st_size for p in session.iterdir() if p.is_file()}
+
+    _sec("session_logs", _session_logs)
+    _sec("sidecar_stderr_tail", lambda: _tail(logs / "sidecar_stderr.log", 1500))
+    current = live_root / "current" if (live_root / "current").is_dir() else live_root
+
+    def _udf_dirs():
+        return [p.name for p in current.glob("*.exe.WebView2")]
+
+    _sec("webview2_udf_dirs", _udf_dirs)
+
+    def _udf_tree():
+        dirs = list(current.glob("*.exe.WebView2"))
+        return ([str(p.relative_to(current)) for p in dirs[0].rglob("*")][:30]
+                if dirs else [])
+
+    _sec("webview2_udf_tree", _udf_tree)
+    if report is not None:
+        wv_report = Path(str(report) + ".webview2.txt")
+        _sec("webview2_init_evidence",
+             lambda: _tail(wv_report, 3000) if wv_report.exists() else "(未写出)")
+    _sec("recent_wer_events", _recent_wer_events)
+    return ev
+
+
+def _wait_user_close_window(ev: dict, case: Path) -> None:
+    print("GUI 窗口已打开（提权运行）。请目视确认界面与版本正常后关闭窗口；10 分钟未关将自动结束。",
+          flush=True)
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        if not _shell_running():
+            ev["window_close"] = "user-closed"
+            break
+        time.sleep(1)
+    else:
+        run(["taskkill", "/IM", SHELL_EXE, "/T", "/F"], timeout=30, expected=None)
+        ev["window_close"] = "timeout-killed"
+    # 关窗后清掉孤儿侧车（壳强杀路径不等待子进程，正是 P0 要记录的现状）
+    leftover = _process_snapshot(str(case))
+    for item in leftover:
+        run(["taskkill", "/PID", str(item["ProcessId"]), "/T", "/F"],
+            timeout=30, expected=None)
+    ev["orphan_cleaned"] = [item["Name"] for item in leftover]
+
+
+def _managed_update_chain() -> dict:
+    info = json.loads((OUT / "managed-case.json").read_text(encoding="utf-8"))
+    live = Path(info["live"])
+    feed = Path(info["feed"])
+    case = Path(info["case"])
+    current = live / "current"
+    shell_exe = current / SHELL_EXE
+    env, userdata, report = _case_env(case, "update")
+    profile = userdata / "profile.json"
+    profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
+    user_before = profile.read_bytes()
+    ev: dict = {"case": info["case"], "live": info["live"]}
+
+    # 1 经生成入口的探针启动（两跳转发命令行；证据用文件报告）
+    run([str(live / info["stub"]), "--update-adapter-probe"],
+        timeout=60, env_extra=env)
+    first = _wait_report(report, 20)
+    ev["stub_launch"] = first
+    assert first["version"] == "0.1.0", first
+    assert (current / "payload-version.txt").read_text(encoding="utf-8") == "0.1.0"
+
+    # 2 下载到本地（不动磁盘内容）
+    downloaded = run([str(shell_exe), "--download-local", str(feed)],
+                     timeout=600, env_extra=env)
+    assert "UPDATE_DOWNLOADED" in downloaded.stdout, downloaded.stdout + downloaded.stderr
+    ev["download"] = "ok"
+
+    # 3 普通启动不提交待更新包
+    run([str(shell_exe), "--update-adapter-probe"], timeout=60, env_extra=env)
+    assert (current / "payload-version.txt").read_text(encoding="utf-8") == "0.1.0", \
+        "普通启动擅自提交了待更新包"
+    ev["pending_not_applied_on_ordinary_start"] = True
+
+    # 4 提交：壳退出后由更新器整树替换并自动重启完整 GUI（提权上下文内不弹 UAC）
+    result = run([str(shell_exe), "--apply-local", str(feed)],
+                 timeout=600, expected=None, env_extra=env)
+    assert "UPDATE_QUEUED" in result.stdout, result.stdout + result.stderr
+    ev["apply_requested"] = True
+
+    # 5 磁盘替换 + 包外用户数据不变
+    _wait_marker(current, "0.2.0", 600)
+    ev["disk_replaced"] = "0.2.0"
+    assert profile.read_bytes() == user_before, "包外用户数据被改动"
+    ev["outside_user_data"] = "unchanged"
+
+    # 6 更新器自动重启的新版壳（完整 GUI）写版本报告
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(report.read_text(encoding="utf-8"))["version"] == "0.2.0":
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        raise AssertionError("新版未自动重启或未写版本报告")
+    ev["auto_restart_version"] = "0.2.0"
+    ev["restarted_report"] = json.loads(report.read_text(encoding="utf-8"))
+
+    # 7 证据：进程拓扑 / 日志落位 / WebView2 数据目录实际位置
+    ev.update(_collect_live_evidence(live, userdata, report))
+
+    # 8 用户目视确认后关闭窗口
+    _wait_user_close_window(ev)
+
+    # 9 升级后入口探针回归
+    run([str(shell_exe), "--update-adapter-probe"], timeout=60, env_extra=env)
+    ev["post_update_entry"] = "ok"
+    return ev
+
+
+def _launch_and_collect(target: Path, live_root: Path, userdata: Path,
+                        report: Path, env: dict, label: str,
+                        detach: bool = True, report_required: bool = True) -> dict:
+    """启动一次 GUI 并采证。detach=True 用裸启动（无任何标准句柄，与日常/生产
+    启动同形态）；detach=False 用文件重定向（已知会诱发 WebView2 初始化挂起，
+    仅作对照用）。report_required=False 用于未插仪器的构建（无版本报告可等）。
+    关窗后清孤儿。"""
+    ev: dict = {"label": label, "target": str(target), "detach": detach}
+    flags = 0x00000008 if detach else subprocess.CREATE_NO_WINDOW  # DETACHED_PROCESS
+    kwargs: dict = {}
+    err_log = report.parent / (report.name + f".{label}.shell-stderr.txt")
+    err_f = None
+    if not detach:
+        err_f = open(err_log, "w", encoding="utf-8")
+        kwargs = {"stdout": err_f, "stderr": err_f}
+    try:
+        proc = subprocess.Popen([str(target)], cwd=str(target.parent),
+                                env={**os.environ, **env},
+                                creationflags=flags, **kwargs)
+        ev["pid"] = proc.pid
+        if report_required:
+            ev["report"] = _wait_report(report, 60)
+        else:
+            time.sleep(10)
+        ev["evidence_25s"] = _collect_live_evidence(live_root, userdata)
+        ev["evidence_60s"] = _collect_live_evidence(live_root, userdata)
+        _wait_user_close_window(ev, report.parent)
+    finally:
+        if err_f is not None:
+            err_f.close()
+    if err_f is not None:
+        ev["shell_stderr"] = _tail(err_log, 3000)
+    return ev
+
+
+def _managed_launch_chain(poison: bool, via_stub: bool) -> dict:
+    info = json.loads((OUT / "managed-case.json").read_text(encoding="utf-8"))
+    live = Path(info["live"])
+    case = Path(info["case"])
+    ev: dict = {"case": info["case"], "poison": poison, "via_stub": via_stub}
+
+    if poison:
+        decoy = case / "旧版根目录"
+        (decoy / "runtime" / "python").mkdir(parents=True, exist_ok=True)
+        (decoy / "pyproject.toml").write_text("", encoding="utf-8")
+        env1, userdata1, report1 = _case_env(case, "poison")
+        env1["MaaRM_APP_ROOT"] = str(decoy)
+        target = (live / info["stub"]) if via_stub else (live / "current" / SHELL_EXE)
+        ev["exp_poison"] = _launch_and_collect(target, live, userdata1, report1,
+                                               env1, "poison")
+        return ev
+
+    # 判定轮：只变「构建形态 × 路径」，全部真实 APPDATA + 裸启动（与日常同款）。
+    # 已证：句柄重定向与裸启动都挂、深短路径都挂、探针/非探针构建都挂；
+    # 而日常 Debug 构建（依赖框架）今天 14:50 WebView2 仍成功。
+    # exp1（dbg_bin）已由上一轮人工确认：探针父进程无害，日常 Debug 构建渲染正常。
+    # 本轮只测自包含发布构建（已插仪器）：短路径 → 深路径。
+    real_ud = Path(os.environ["APPDATA"]) / "MaaRacingMaster"
+    short_root = Path("D:/mrt_short_test")
+    if short_root.exists():
+        shutil.rmtree(short_root)
+    shutil.copytree(OUT / "managed-stage", short_root)
+    try:
+        plans = [
+            ("pub_short", short_root / SHELL_EXE, short_root),
+            ("pub_deep", live / "current" / SHELL_EXE, live),
+        ]
+        for label, target, root in plans:
+            report = case / f"report-{label}.json"
+            env = {"MAARM_PROBE_REPORT": str(report)}
+            ev[f"exp_{label}"] = _launch_and_collect(
+                target, root, real_ud, report, env, label)
+    finally:
+        shutil.rmtree(short_root, ignore_errors=True)
+    return ev
+
+
+def _elevated_action(args: argparse.Namespace, chain) -> int:
+    result_path = Path(args.result) if args.result else (OUT / "managed-result.json")
+    if args.elevated_child:
+        try:
+            ev = chain()
+        except Exception as exc:
+            ev = {"error": f"{type(exc).__name__}: {exc}",
+                  "trace": traceback.format_exc()}
+        result_path.write_text(json.dumps(ev, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        print(json.dumps(ev, ensure_ascii=False))
+        return 0
+    if _is_elevated():
+        ev = chain()
+        result_path.write_text(json.dumps(ev, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+        print(json.dumps(ev, ensure_ascii=False))
+        return 0
+    print("需要提权上下文：将弹出一次 UAC 确认（唯一一次系统交互）……", flush=True)
+    started = time.time()
+    _run_elevated_child(result_path, [args.action]
+                        + (["--poison"] if args.poison else [])
+                        + (["--via-stub"] if args.via_stub else []))
+    fresh = result_path.exists() and result_path.stat().st_mtime >= started - 2
+    try:
+        if not fresh:
+            raise FileNotFoundError(result_path)
+        print(result_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        log = result_path.with_suffix(".launch.log")
+        detail = log.read_text(encoding="utf-8", errors="replace")[-2000:] \
+            if log.exists() else "(无启动日志)"
+        print(f"提权子进程未写出新结果（可能被关闭控制台/杀进程终止）：{result_path}\n"
+              f"启动日志尾部：\n{detail}")
+        return 1
+    return 0
+
+
+def managed_manifests() -> None:
+    feed = OUT / (OUT / "managed-feed.txt").read_text(encoding="utf-8")
+    archive = next(feed.glob("*Portable.zip"))
+    main = OUT / "managed-publish/MaaRacingMaster.Shell.exe"
+    with zipfile.ZipFile(archive) as z:
+        stub = OUT / "managed-generated-stub.exe"
+        stub.write_bytes(z.read("MaaRMRealShellProbe.exe"))
+    actual = {"shell": manifest_level(main), "generated_stub": manifest_level(stub)}
+    assert actual == {"shell": "requireAdministrator", "generated_stub": "requireAdministrator"}, actual
+    print(json.dumps({"check": "managed-elevation-manifests", **actual,
+                      "scope": "PE resources only; actual UAC exercised by managed-update"}))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["hooks", "update", "nested-update", "real-shell", "manifests"])
+    parser.add_argument("action", choices=["hooks", "update", "nested-update",
+                                           "real-shell", "manifests",
+                                           "managed-update", "managed-launch",
+                                           "managed-manifests", "fd-launch",
+                                           "targets-launch"])
+    parser.add_argument("--poison", action="store_true")
+    parser.add_argument("--via-stub", action="store_true")
+    parser.add_argument("--result", default="")
+    parser.add_argument("--elevated-child", action="store_true")
     args = parser.parse_args()
     if args.action == "hooks":
         hooks()
@@ -195,6 +615,35 @@ def main() -> int:
         real_shell()
     elif args.action == "manifests":
         manifests()
+    elif args.action == "managed-manifests":
+        managed_manifests()
+    elif args.action == "managed-update":
+        return _elevated_action(args, _managed_update_chain)
+    elif args.action == "managed-launch":
+        return _elevated_action(args, lambda: _managed_launch_chain(args.poison, args.via_stub))
+    elif args.action == "targets-launch":
+        def chain():
+            plans = json.loads((OUT / "launch-targets.json").read_text(encoding="utf-8"))
+            out = {}
+            real_ud = Path(os.environ["APPDATA"]) / "MaaRacingMaster"
+            for p in plans:
+                target = Path(p["exe"])
+                out[p["label"]] = _launch_and_collect(
+                    target, target.parent, real_ud,
+                    OUT / f"report-{p['label']}.json", {}, p["label"],
+                    detach=True, report_required=False)
+            return out
+        return _elevated_action(args, chain)
+    elif args.action == "fd-launch":
+        def chain():
+            target = OUT / "managed-publish-fd" / SHELL_EXE
+            assert target.is_file(), "先运行 prepare.py publish-fd"
+            report = OUT / "report-fd.json"
+            env = {"MAARM_PROBE_REPORT": str(report)}
+            return _launch_and_collect(target, target.parent,
+                                       Path(os.environ["APPDATA"]) / "MaaRacingMaster",
+                                       report, env, "fd")
+        return _elevated_action(args, chain)
     else:
         update(nested=args.action == "nested-update")
     return 0

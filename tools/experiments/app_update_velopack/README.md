@@ -30,17 +30,26 @@ status: active
 
 ```powershell
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py tool
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py probe
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py hooks
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py update
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py nested-update
+# 受管真实壳整链（标准布局内容树 + 双版本打包 + 提权链；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-managed
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-update
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-manifests
+# 白窗取证与拆分（历史判定轮，详见「白窗现象」）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py manifests
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py publish-fd
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-nl
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-v1
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-v1fd
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pure-sc-publish
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py targets-launch
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py fd-launch
 ```
 
-所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。
+所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。受管整链需要提权上下文：探针经一次 UAC 自提权，子进程无控制台窗口、进度写 `_out/managed-result.launch.log`；**运行期间不要关闭任何弹出的终端窗口**（关闭控制台会连带杀掉整棵实验进程树）。运行时复用主线检出的 `build/runtime-cache`（可用 `MAARM_RUNTIME_SOURCE` 覆盖）；worktree 检出无 `.venv` 时，实验脚本用主线虚拟环境的 Python 驱动。
 
 ## 已验证结果
 
@@ -54,6 +63,9 @@ status: active
 | 真实壳是否能加入 SDK | 隔离副本添加 SDK 引用与启动前置调用后编译、发布、打包成功；未修改正式工程 |
 | 真实壳钩子验证了什么 | 通过 `dotnet` 宿主调用程序集，证明钩子早于单实例与 GUI；该宿主定位不是壳自身路径，不证明真实受管版本识别或 UI/侧车已运行 |
 | 提权声明是否保留 | PE 资源读取确认壳与生成入口均请求管理员权限；不证明实际 UAC、取消提权和更新后提权链通过 |
+| 受管标准布局整包升级（真实壳） | 提权状态下全链完成：生成入口两跳启动、内容根与版本识别正确（appContentRoot=current）、下载、普通启动不提交待更新包、提交后磁盘替换为 0.2.0、包外用户数据未动、更新器自动重启新版并写报告、升级后入口探针正常；分发包自带 Python 侧车在受管副本中运行 | 重启后的 GUI 白窗（见下条），P0 通过线的「GUI 就绪」未达成 |
+| 中文与空格路径 | live 副本位于「中文 目录 空格」层级；入口启动、升级、重启全程无路径故障 | 无 |
+| 白窗现象 | 带完整注入（版本报告 + 下载/提交探针）的发布产物，WebView2 环境创建必然挂起：UDF 目录被创建但 EBWebView 结构不生成、无异常、无 WER 事件、壳自身 stderr 无输出；最小注入（仅 VelopackApp.Run + 探针参数早退）与无注入产物必正常渲染 | 根因机制未明：挂起/正常样本的文件级差异只有壳自身 IL（执行层面无差别）；已排除 Release/Debug、自包含/依赖框架、发布/构建、深/短路径、中/英文路径、stub/直启、句柄形态、APPDATA 重定向、VelopackLocator 访问、提权、侧车有无。已停止叠试，转入「最小注入 + 独立更新助手」路线与二机复现 |
 
 ## 独立复核裁决
 
@@ -62,6 +74,7 @@ status: active
 - 正式资源定位优先采信继承的应用根覆盖值；受管入口应优先使用更新器确认的内容根，开发与旧 ZIP 模式再保留原有路径规则。
 - 更新器的退出等待有上限；它只应在业务任务和模型安装收尾、必要数据快照完成后启动，不能用它等待游戏自然结束。
 - 真实 UAC、WebView/侧车握手与退出、业务数据迁移、自定义插件保留、旧 ZIP 首次迁移、损坏包与取消等仍未验收。样本成功不能写成完整产品已经适配。
+- 白窗矩阵推翻了句柄、路径、构建配置、发布方式、APPDATA、定位器访问等全部归因；「注入执行层无差但产物必挂」机制未明，属本机待解异常，不得以任何样本成功扩大为产品适配完成。
 
 ## 后续最小实施边界
 
