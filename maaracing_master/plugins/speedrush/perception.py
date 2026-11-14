@@ -62,6 +62,13 @@ class PerceptionResult:
     wait_ms: float = 0.0   # infer_ms 内等 DML 锁的时长（含锁竞争，见 yolo_detector）
     run_ms: float = 0.0    # infer_ms 内 DML run 本体时长
 
+    def age_ms(self, now: float | None = None) -> float | None:
+        """采集回调到消费的内容龄；缺源时间戳时诚实返回未知。"""
+        if self.ts_ns <= 0:
+            return None
+        now = time.perf_counter() if now is None else now
+        return max(0.0, (now - self.ts_ns / 1e9) * 1000.0)
+
 
 def _to_detections(dets: list[dict], class_name: str) -> list[Detection]:
     out = []

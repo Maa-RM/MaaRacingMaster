@@ -92,6 +92,43 @@ def test_no_corridor_holds_straight():
     assert m._control_last["state"] == "CRUISE"
 
 
+@pytest.mark.parametrize("with_depth", [False, True])
+def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_depth,
+                                                         with_depth):
+    m = _module()
+    chain = m._build_control_chain()
+    pushed = []
+    tracker_update = chain["tracker"].update
+
+    def track(*args, **kwargs):
+        assert pushed, "线推理必须先入队，物体跟踪与其后台并行"
+        assert kwargs["frame_age_ms"] == pytest.approx(20)
+        return tracker_update(*args, **kwargs)
+
+    monkeypatch.setattr(chain["tracker"], "update", track)
+    lane = {"fid": 8, "det_fid": 8, "det_ts_ns": 900_000_000,
+            "det_age_ms": 100, "state": "RELOCK", "usable": False,
+            "lines": [], "n_locked": 0, "x": None}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: lane, push=lambda *a, **k: pushed.append(k))
+    chain["depth_geo"].last_frame_ts_ns = 850_000_000
+    chain["depth_geo"].last_fid = 6
+    if with_depth:
+        _stub_depth["r"] = _dgeo_lanes(-2, 2)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+    per = PerceptionResult(10, 980_000_000)
+    m._control_tick(chain, StubPad(), None, per, 10, 980_000_000, 10, 1,
+                    cap_ts={"pick": 0.990, "det": 1.0})
+    assert chain["disabled"] is False
+    ages = chain["trace"][-1]["obs_age"]
+    assert ages["at_ns"] == 1_000_000_000
+    assert ages["yolo"] == {"fid": 10, "ts_ns": 980_000_000, "age_ms": 20.0}
+    assert ages["lane"] == {"fid": 8, "ts_ns": 900_000_000, "age_ms": 100.0}
+    # 深度此拍没有供数，不能拿槽中上次的元数据冒充在消费。
+    assert ages["depth"]["age_ms"] == (150 if with_depth else None)
+    assert pushed[-1]["frame_ts_ns"] == 980_000_000
+
+
 # ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
 
 def _plant_step(x: float, psi: float, u: float, v: float = 45.0,
@@ -707,7 +744,7 @@ def test_control_last_shape():
                                     "executed_lane", "x_target", "road_offset",
                                     "dgeo_age", "dgeo_new", "goal",
                                     "exec_branch", "sel_layer", "sel_why",
-                                    "sel_nwp", "maneuver"}
+                                        "sel_nwp", "maneuver", "obs_age"}
     assert m._control_last["frame_id"] == 3
     assert isinstance(m._control_last["executed_lane"], float)
 

@@ -242,6 +242,17 @@ def test_render_hud_lane_overlay_draws_line(frame):
     assert hit, f"lane overlay should paint yellow near x={x}, y={y}"
 
 
+def test_hud_shows_capture_ages_for_all_three_sources(frame, monkeypatch):
+    labels = []
+    monkeypatch.setattr(dv, "_put_text", lambda img, text, *a, **k: labels.append(text))
+    snap = _snap(obs_age={"at_ns": 1_000_000_000,
+                         "yolo": {"age_ms": 20}, "depth": {"age_ms": 140},
+                         "lane": {"age_ms": 65}})
+    render_hud(frame, snap, None)
+    assert any("YOLO=20ms" in s and "depth=140ms" in s and "lane=65ms" in s
+               for s in labels)
+
+
 def test_render_hud_input_band_pad_and_counterfactual(frame):
     """人工对照局：底部输入带同时画物理手柄杆量（主）与程序反事实（标记）。"""
     frame[:] = 255

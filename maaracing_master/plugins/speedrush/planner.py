@@ -139,9 +139,6 @@ _MODEL_CORR_BOOST_MERGE = 2.5
 _MODEL_INNOV_MAX = 0.15     # 单次校正的创新截断（rad）：坏线角不整段拖走影子
 _MODEL_AGE_MIN_S = 0.03     # 对齐用的测量龄下限/上限（线角到达时的检测龄）
 _MODEL_AGE_MAX_S = 0.30
-# 线角带的检测龄之外，观测链路（检测→滤波→控制拍）还有一段固定滞后；
-# 按实机口径补 0.10s（策略文件记的观测链 ≈0.15s，trace 线角龄 0.02~0.07s）。
-_MODEL_DELAY_EXTRA_S = 0.10
 _MODEL_HIST_S = 1.0         # 延迟对齐历史窗
 # 短预瞄控制器候选（2026-11-01）：幅度按归一杆值、宽度按秒。人工局满杆段
 # 0.10~0.12s、全段占 13.1%；程序旧律持续中位 0.3s、反向 0.6~0.85/s。
@@ -241,7 +238,7 @@ class HeadingObserver:
             self._m_innov = 0.0
             return
         age = (_MODEL_AGE_MIN_S if age_ms is None
-               else float(age_ms) / 1000.0 + _MODEL_DELAY_EXTRA_S)
+               else float(age_ms) / 1000.0)
         age = min(max(age, _MODEL_AGE_MIN_S), _MODEL_AGE_MAX_S)
         ref = self._m_hist[0]
         for h in self._m_hist:

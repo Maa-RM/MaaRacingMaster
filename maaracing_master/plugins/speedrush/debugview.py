@@ -354,7 +354,7 @@ def _draw_input_band(img: np.ndarray, snap: dict) -> None:
     if isinstance(th, (int, float)):
         parts.append(f"th={th:+.2f}")
     if isinstance(age, (int, float)):
-        parts.append(f"det={age:.0f}ms")
+        parts.append(f"age={age:.0f}ms")
     kept = lane.get("n_locked")
     parts.append(f"lines={len(lines)} kept={0 if kept is None else kept}")
     resids = [ln.get("resid") for ln in lines
@@ -779,12 +779,18 @@ def render_hud(frame_rgb: np.ndarray, snap: dict, cal: Calib) -> np.ndarray:
     dec = snap.get("decision") or {}
     hud = snap.get("hud") or {}
     fields = hud.get("fields") or {}
+    ages = snap.get("obs_age") or dec.get("obs_age") or {}
+
+    def age_label(source):
+        value = (ages.get(source) or {}).get("age_ms")
+        return "?" if value is None else f"{value:.0f}"
+
     lines = [
         f"#{snap.get('fid', 0)} p{snap.get('phase', 0)}"
         f" {dec.get('state', '')} {dec.get('reason', '')}",
         f"steer={dec.get('steer', 0)} el={_fmt(dec.get('executed_lane'))}",
-        f"ro={_fmt(dec.get('road_offset'))} dgeo age={dec.get('dgeo_age', '-')}"
-        f"ms new={dec.get('dgeo_new', '-')}",
+        f"ro={_fmt(dec.get('road_offset'))} age YOLO={age_label('yolo')}ms"
+        f" depth={age_label('depth')}ms lane={age_label('lane')}ms",
         f"S_a={_fmt(fields.get('score_a'))} R_a={_fmt(fields.get('rate_a'))}"
         f" | S_b={_fmt(fields.get('score_b'))} R_b={_fmt(fields.get('rate_b'))}",
         f"coins={len(result.coins) if result else 0}"

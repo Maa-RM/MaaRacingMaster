@@ -544,7 +544,8 @@ def _synth_points(v: np.ndarray, y_v: float, gm: tuple
 
 def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
                  y_v: float, box: tuple | None = None,
-                 with_evidence: bool = False):
+                 with_evidence: bool = False,
+                 gpu_slot: tuple[int, float] | None = None):
     """一帧 → (点图, fx, fy[, 证据包])；地面拟合失败 → (None, fx, fy[, None])。
 
     ``y_v``=当帧灭点行（全幅像素）；``box``=最大车框（全幅像素，地面拟合挖除）。
@@ -559,8 +560,20 @@ def infer_points(sess: ort.InferenceSession, rgb: np.ndarray,
     t_pre = time.perf_counter()
     blob = _da_preprocess(rgb)
     LAST_STAGE_MS["pre"] = (time.perf_counter() - t_pre) * 1000.0
+    if gpu_slot is not None:
+        seq, deadline = gpu_slot
+        t_wait = time.perf_counter()
+        dml_lock.SLOTS.wait_done(seq, timeout=max(0.0, deadline - t_wait))
+        LAST_STAGE_MS["slot_wait"] = (time.perf_counter() - t_wait) * 1000.0
+        if dml_lock.TICK_BEAT.snapshot()[0] != seq:
+            raise dml_lock.Busy("深度预处理已跨拍，放弃旧帧的 GPU 槽位")
+    else:
+        LAST_STAGE_MS["slot_wait"] = 0.0
     if not dml_lock.LOCK.acquire(blocking=False):
         raise dml_lock.Busy("DML 被感知推理占用，本帧放弃（latest-only 下一帧再来）")
+    if gpu_slot is not None and dml_lock.TICK_BEAT.snapshot()[0] != gpu_slot[0]:
+        dml_lock.LOCK.release()
+        raise dml_lock.Busy("深度拿锁时已跨拍，放弃旧帧的 GPU 槽位")
     dml_lock.RUN_WATCH.enter("depthart")
     try:
         t_fwd = time.perf_counter()
@@ -1629,6 +1642,7 @@ class DepthRoadObserver:
                       detections: tuple | None = None, fid: int | None = None,
                       frame_ts_ns: int | None = None,
                       y_v: float | None = None,
+                      gpu_slot: tuple[int, float] | None = None,
                       ) -> tuple[DepthRoadReading | None, dict | None]:
         """同 observe，另返回证据包（离线复算+实机渲染用；与 reading 同源同拍）。
 
@@ -1650,7 +1664,8 @@ class DepthRoadObserver:
                    * (int(d[4]) - int(d[2])))[1:5])
         try:
             ret = infer_points(
-                self._sess, frame_rgb, y_v=yh, box=box, with_evidence=True)
+                self._sess, frame_rgb, y_v=yh, box=box, with_evidence=True,
+                gpu_slot=gpu_slot)
             assert len(ret) == 4    # with_evidence=True 恒返回 4 元组（含证据包）
             pts, fx, fy, evid = ret
         except dml_lock.Busy:
@@ -2062,12 +2077,15 @@ class AsyncDepthRoadObserver:
         self._stale_starts = 0   # 开工即超龄的启动数（浪费算力账：observe 仍
                                  # 执行，只记账——value-driven 判据的原始数据）
         self._last_infer = float("-inf")   # 同上：进程早期不得被节流窗拦下首拍
+        self._gpu_slot: tuple[int, float] | None = None
         self._age_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._dur_win: deque[float] = deque(maxlen=self.PERF_WINDOW)
         self._stop = threading.Event()
         self._wakeup = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_age_ms = 0.0
+        self.last_frame_ts_ns: int | None = None
+        self.last_fid: int | None = None
         self.last_segments: dict | None = None   # 最近一次新消费的分段计时（take 内写）
 
     # ---------- 生命周期（阶段=chain：建即 start，收口 stop） ----------
@@ -2158,12 +2176,15 @@ class AsyncDepthRoadObserver:
         with self._lock:
             item = self._result
             if item is None:
+                self.last_frame_ts_ns = self.last_fid = None
                 return None, None, False
             reading, grid, captured_ts = item[1], item[2], item[3]
             frame_ts_ns = item[6] if len(item) > 6 else None
         age_ms = (time.perf_counter()
                   - (frame_ts_ns / 1e9 if frame_ts_ns else captured_ts)) * 1000.0
         self.last_age_ms = age_ms
+        self.last_frame_ts_ns = frame_ts_ns
+        self.last_fid = item[4].get("fid") if len(item) > 4 and item[4] else None
         is_new = item[0] != self._last_seq
         if is_new:
             self._last_seq = item[0]
@@ -2196,6 +2217,7 @@ class AsyncDepthRoadObserver:
                 if is_new:   # 发布后一拍都没喂上就超龄：时效链路的真浪费口径
                     self._stale_new_drops += 1
             self.last_sheet = None   # 超龄读数作废，锚点随之作废（同源同拍同命运）
+            self.last_frame_ts_ns = self.last_fid = None
             return None, None, False
         if is_new:
             with self._lock:
@@ -2413,7 +2435,7 @@ class AsyncDepthRoadObserver:
             return None if self._pending is None else self._pending[0]
 
     def _stagger_wait(self) -> bool:
-        """等控制拍放锁、等线观测让出槽位、再等本拍新帧落地；False=停机。
+        """等控制拍放锁及本拍新帧，记录前向交接窗；False=停机。
 
         v5 前向只占锁 5~7ms、全链约 38ms，锁冲突已不是主因；错峰保留的理由
         变成取帧相位：拍内 push 在感知之后约 6~10ms（掩码构建 + 入队），不等
@@ -2422,18 +2444,20 @@ class AsyncDepthRoadObserver:
         超时，用现有帧继续。
 
         槽位（2026-11-13）：线观测与深度共用一把 DML 锁时，控制拍放锁后先给
-        线观测（槽窗 30ms），深度等它 ``SLOTS.mark_done`` 再开工；线观测没跑
-        或让锁时按 SLOT_WAIT_S 超时自行开工，不抢锁也不会被无限拖住。
+        线观测（槽窗 30ms）。深度 CPU 预处理可与线推理重叠，前向之前才等
+        ``SLOTS.mark_done``；线未运行时只等本拍剩余槽窗，随后非阻塞取锁。
         """
+        self._gpu_slot = None
         seq_push = self._pending_seq()
         beat_seq, t_beat = dml_lock.TICK_BEAT.snapshot()
         if time.perf_counter() - t_beat <= self.STAGGER_FRESH_S:
             dml_lock.TICK_BEAT.wait_newer(beat_seq, timeout=self.STAGGER_WAIT_S)
             if self._stop.is_set():
                 return False
-            new_seq, _t_new = dml_lock.TICK_BEAT.snapshot()
+            new_seq, t_new = dml_lock.TICK_BEAT.snapshot()
             if new_seq > beat_seq:
-                dml_lock.SLOTS.wait_done(new_seq, timeout=self.SLOT_WAIT_S)
+                # 只记录本拍 GPU 交接窗。CPU 预处理先做，真正前向前才等线让锁。
+                self._gpu_slot = (new_seq, t_new + self.SLOT_WAIT_S)
             if self._pending_seq() == seq_push:
                 t_end = time.perf_counter() + self.PUSH_WAIT_S
                 while not self._stop.is_set() and self._pending_seq() == seq_push:
@@ -2483,7 +2507,8 @@ class AsyncDepthRoadObserver:
                 reading, evid = self._obs.observe_debug(
                     item[1], object_mask=item[3], detections=item[6],
                     fid=item[7], frame_ts_ns=item[5],
-                    y_v=item[9] if len(item) > 9 else None)
+                    y_v=item[9] if len(item) > 9 else None,
+                    gpu_slot=self._gpu_slot)
             except dml_lock.Busy:
                 # DML 被控制拍感知占用：弃本帧不排队（latest-only，下一帧再来），
                 # 单独计数——这是让锁的常规代价，不是故障。
@@ -2498,6 +2523,7 @@ class AsyncDepthRoadObserver:
             # 消费时刻由 take() 补——pub 段终点在控制拍）。LAST_STAGE_MS 快照
             # 属本帧（worker 串行，此刻字典内容即本帧 observe 的四段）
             timing = {"t_start": t_start, "t_pub": time.perf_counter(),
+                      "fid": item[7],
                       "stages": dict(LAST_STAGE_MS), "cap_ns": item[5],
                       "cap_pre": item[8] if len(item) > 8 else None,
                       "reason": "stale_at_start" if stale_at_start

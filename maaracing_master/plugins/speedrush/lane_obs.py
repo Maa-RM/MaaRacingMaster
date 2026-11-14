@@ -67,7 +67,6 @@ FOCAL_EMA = 0.25          # 逐帧焦距轻平滑（场景内容会让估计帧�
 # GPU 槽位（2026-11-13）：provider=dml 时不抢锁，等控制拍放锁后的槽位窗口开工；
 # 超窗就放弃本帧（latest-only），把锁让给深度。窗口从拍起点（感知放锁）算起。
 LANE_SLOT_S = 0.030       # 线观测槽窗：拍后 30ms 内必须开跑
-SLOT_BEAT_WAIT_S = 0.080  # 等下一拍的兜底（拍周期 50ms + 余量）
 SLOT_FRESH_S = 1.0        # 最近一拍在 1s 内 = 控制拍在跑，才按槽位排队
 # 线几何可用的相机高带（v5 2026-11-12）：输入已从「深度平面 c」换成车道线
 # 反解值，与视角守卫同源。带要覆盖两种合法机位（保险杠 ≈1.25、追尾 ≈1.9），
@@ -201,22 +200,30 @@ def _row_segments(prob: np.ndarray,
     点数——实验区分解诊断的主死因（见 speedrush_lane_model 实验区）。
 
     ``start`` 默认 206 保持现役口径；实验闸开时可上移（远线恢复）。"""
+    # 一次提取所有行的连续段，再批量归约；避免每条虚线反复进入 NumPy。
+    # 行尾与下一行行首即使在扁平索引中相邻，也必须分段。
+    ys = np.arange(int(start), 360)
+    scan = prob[ys]
+    width = scan.shape[1]
+    idx = np.flatnonzero(scan > PROB_THRESH)
+    if not len(idx):
+        return []
+    splits = np.flatnonzero((np.diff(idx) > 1)
+                           | (idx[1:] // width != idx[:-1] // width)) + 1
+    starts = np.r_[0, splits]
+    counts = np.diff(np.r_[starts, len(idx)])
+    p = scan.ravel()[idx]
+    sums = np.add.reduceat(p, starts)
+    centers = np.add.reduceat((idx % width) * p, starts) / sums
+    means = (sums / counts).astype(np.float32)
     rows = []
-    for yc in range(int(start), 360):
-        row = prob[yc]
-        idx = np.flatnonzero(row > PROB_THRESH)
-        if len(idx) == 0:
-            continue
-        splits = np.flatnonzero(np.diff(idx) > 1) + 1
-        segs = []
-        for seg in np.split(idx, splits):
-            if len(seg) == 0:
-                continue
-            p = row[seg]
-            segs.append({"yc": yc, "xc": float((seg * p).sum() / p.sum()),
-                         "p": float(p.mean())})
-        if segs:
-            rows.append((yc, segs))
+    for yc, xc, confidence in zip(ys[idx[starts] // width], centers, means):
+        yc = int(yc)
+        seg = {"yc": yc, "xc": float(xc), "p": float(confidence)}
+        if rows and rows[-1][0] == yc:
+            rows[-1][1].append(seg)
+        else:
+            rows.append((yc, [seg]))
     return rows
 
 
@@ -1383,6 +1390,7 @@ class LaneObsWorker:
         self._latest: dict | None = None
         self._last_det_t: float | None = None
         self._last_det_fid: int | None = None
+        self._last_det_ts_ns: int | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._sess = None
@@ -1400,7 +1408,6 @@ class LaneObsWorker:
         self._yv_refill = False            # 清史后补窗期：先保留旧发布值
         self.busy_skips = 0
         self.slot_skips = 0
-        self._slot_wait_s = 0.0
         self.hold_ms = 0.0
         self.cam_h_fb = 0
         # 节拍记账：真实检测频率=det_n/时长，不受推送节流口径误导
@@ -1492,7 +1499,8 @@ class LaneObsWorker:
              v_lat: float, dt: float, fid_jump: bool,
              focal: float | None = None,
              anchor: float | None = None,
-             anchor_strict: bool = False) -> None:
+             anchor_strict: bool = False,
+             frame_ts_ns: int | None = None) -> None:
         """入队一帧；``focal`` 是同帧深度读数的全幅焦距（线角用），``anchor``
         是同帧新鲜深度路心（None=复用/缺供），``anchor_strict`` 表示该锚
         同时看清两侧且中心稳定（线道号整道复核的唯一准入）。
@@ -1518,6 +1526,7 @@ class LaneObsWorker:
             self._q.put_nowait((rgb, int(fid), used_h,
                                 float(v_lat), float(dt), bool(fid_jump),
                                 None if focal is None else float(focal),
+                                frame_ts_ns, now,
                                 None if anchor is None else float(anchor),
                                 bool(anchor_strict)))
         except queue.Full:
@@ -1539,21 +1548,27 @@ class LaneObsWorker:
 
         2026-10-24 重写后不再把「最新预测横位」和「上一次检测的线」拼在一起：
         线和横位必须来自同一拍，否则调试图会画出与横位不对应的线，离线也
-        无法判断线锚是否算错。检测龄 ``det_age_ms`` 单列最近一次真实检测的
-        年龄；``pred=true`` 表示这一拍横位来自滑行预测（无可用线或跳帧），
-        不是线观测结果。"""
+        无法判断线锚是否算错。``det_age_ms`` 从真实检测输入的采集时刻计龄，
+        包含排队和推理；``result_age_ms`` 单列发布后的驻留时间。
+        ``pred=true`` 表示横位来自滑行预测；跳帧预测保留原检测源戳，
+        实际跑模型但无线时仍发布本次检测源戳，定位与航向按状态弃权。"""
         with self._lock:
             if self._latest is None:
                 return None
             out = dict(self._latest)
         t_done = out.pop("t_done", None)
-        t_det = out.pop("t_det", None)
-        out["det_fid"] = self._last_det_fid
-        out["det_age_ms"] = (None if t_det is None
-                             else round((time.perf_counter() - t_det) * 1000.0,
-                                        1))
-        out["age_ms"] = (0.0 if t_done is None
-                         else round((time.perf_counter() - t_done) * 1000.0, 1))
+        out.pop("t_det", None)
+        now = time.perf_counter()
+
+        def age(ts_ns):
+            return (None if not ts_ns else
+                    round(max(0.0, (now - ts_ns / 1e9) * 1000.0), 1))
+
+        # 帧号和源戳已经随快照一起发布，禁止另读下一帧的可变成员。
+        out["det_age_ms"] = age(out.get("det_ts_ns"))
+        out["age_ms"] = age(out.get("frame_ts_ns"))
+        out["result_age_ms"] = (None if t_done is None else
+                                round(max(0.0, (now - t_done) * 1000.0), 1))
         out["provider"] = "dml" if self._use_dml else "cpu"
         out["busy_skips"] = self.busy_skips
         out["slot_skips"] = self.slot_skips
@@ -1571,12 +1586,12 @@ class LaneObsWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                rgb, fid, cam_h, v_lat, dt, jump, focal, anchor, a_strict = \
+                (rgb, fid, cam_h, v_lat, dt, jump, focal, frame_ts_ns,
+                 t_push, anchor, a_strict) = \
                     self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
             self._set_focal(focal)
-            self._slot_wait_s = 0.0
             t0 = time.perf_counter()
             try:
                 self._n += 1
@@ -1611,7 +1626,9 @@ class LaneObsWorker:
                 if not pred:
                     self._last_det_t = t_done
                     self._last_det_fid = int(fid)
-                out = self._snapshot(res, fid, cam_h, t0, t_done, pred)
+                    self._last_det_ts_ns = frame_ts_ns
+                out = self._snapshot(res, fid, cam_h, t0, t_done, pred,
+                                     frame_ts_ns, t_push)
                 with self._lock:
                     self._latest = out
                 # 心跳只在产出结果之后记：面板的「车道观测 频率」必须等于有效
@@ -1622,7 +1639,9 @@ class LaneObsWorker:
                 self.error = repr(exc)
 
     def _snapshot(self, res: dict, fid: int, cam_h: float, t0: float,
-                  t_done: float, pred_fallback: bool) -> dict:
+                  t_done: float, pred_fallback: bool,
+                  frame_ts_ns: int | None = None,
+                  t_push: float | None = None) -> dict:
         """tracker 输出 → 线程对外快照。
 
         字段必须逐个显式搬运（不是 ``dict(res)``）：上游新增的位置原点判据
@@ -1636,10 +1655,16 @@ class LaneObsWorker:
         yv = self._current_yv(t_done)
         h_lane = None if is_pred else _cam_h_from_lines(res["lines"], yv)
         return {"fid": fid, "cam_h": round(cam_h, 3),
+                "frame_ts_ns": frame_ts_ns,
+                "det_fid": self._last_det_fid,
+                "det_ts_ns": self._last_det_ts_ns,
+                "queue_ms": None if t_push is None else
+                round(max(0.0, (t0 - t_push) * 1000.0), 1),
+                "cap_ms": None if not frame_ts_ns or t_push is None else
+                round(max(0.0, (t_push - frame_ts_ns / 1e9) * 1000.0), 1),
                 "pred": is_pred,
-                # 槽位等待不计入处理耗时：trace 的 ms 是这条帧自己的推理+后处理
-                "ms": round(max(0.0, (t_done - t0 - self._slot_wait_s) * 1000.0),
-                            1),
+                # 本帧推理与后处理耗时；内容龄另从采集源戳计算。
+                "ms": round(max(0.0, (t_done - t0) * 1000.0), 1),
                 "n_lines": res["n_lines"],
                 "x": None if res["x"] is None else round(res["x"], 3),
                 "theta": None if res["theta"] is None
@@ -1679,27 +1704,32 @@ class LaneObsWorker:
     def _run(self, rgb: np.ndarray):
         """DML 按槽位排队：等控制拍放锁后开工，超窗让给深度（latest-only）。"""
         assert self._sess is not None   # 线程只在 session 建好后才起
+        seq, t_beat = dml_lock.TICK_BEAT.snapshot()
         inp = self._sess.get_inputs()[0].name
         feed = {inp: _letterbox(rgb)}
         if not self._use_dml:
             return _prob_from_out(self._sess.run(None, feed))
-        seq, t_beat = dml_lock.TICK_BEAT.snapshot()
-        self._slot_wait_s = 0.0
-        if time.perf_counter() - t_beat <= SLOT_FRESH_S:
-            t_wait = time.perf_counter()
-            # 控制拍在跑：等下一拍（感知放锁）再开工，占槽位而不是抢锁
-            if not dml_lock.TICK_BEAT.wait_newer(seq, timeout=SLOT_BEAT_WAIT_S):
-                self._slot_wait_s = time.perf_counter() - t_wait
-                self.slot_skips += 1
-                return None
-            seq, t_beat = dml_lock.TICK_BEAT.snapshot()
-            self._slot_wait_s = time.perf_counter() - t_wait
-            if time.perf_counter() - t_beat > LANE_SLOT_S:
-                self.slot_skips += 1       # 槽窗已过：让深度先走
-                dml_lock.SLOTS.mark_done(seq)
-                return None
-        if not dml_lock.LOCK.acquire(timeout=0.02):
+        active = time.perf_counter() - t_beat <= SLOT_FRESH_S
+
+        def slot_open():
+            return (dml_lock.TICK_BEAT.snapshot()[0] == seq
+                    and time.perf_counter() - t_beat <= LANE_SLOT_S
+                    and not dml_lock.SLOTS.wait_done(seq, 0.0))
+
+        if active and not slot_open():
+            self.slot_skips += 1
+            dml_lock.SLOTS.mark_done(seq)
+            return None
+        # 活跃控制期不等锁：避免等到下一控制拍才拿锁执行旧帧。
+        acquired = (dml_lock.LOCK.acquire(blocking=False) if active else
+                    dml_lock.LOCK.acquire(timeout=0.02))
+        if not acquired:
             self.busy_skips += 1
+            dml_lock.SLOTS.mark_done(seq)
+            return None
+        if active and not slot_open():
+            self.slot_skips += 1
+            dml_lock.LOCK.release()
             dml_lock.SLOTS.mark_done(seq)
             return None
         dml_lock.RUN_WATCH.enter("lane")

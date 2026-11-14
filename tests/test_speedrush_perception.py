@@ -64,6 +64,12 @@ CLASSES = {0: "car", 1: "coin", 2: "bonus_car"}
 
 
 class TestDetectContract:
+    def test_result_age_starts_at_capture_and_grows_when_reused(self):
+        r = perc.PerceptionResult(frame_id=7, ts_ns=1_000_000_000, infer_ms=8)
+        assert r.age_ms(1.025) == pytest.approx(25)
+        assert r.age_ms(1.075) == pytest.approx(75)
+        assert perc.PerceptionResult(0, 0).age_ms(1.0) is None
+
     def test_groups_and_conversion(self, monkeypatch):
         sp = _make(monkeypatch, CLASSES, DETS)
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)

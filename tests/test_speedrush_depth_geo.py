@@ -715,7 +715,7 @@ class _StubObserver:
         return reading
 
     def observe_debug(self, frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None, y_v=None):
+                      fid=None, frame_ts_ns=None, y_v=None, gpu_slot=None):
         self.calls += 1
         item = self._script.pop(0) if self._script else None
         if isinstance(item, Exception):
@@ -800,7 +800,7 @@ class _BlockingStub(_StubObserver):
         self.frames: list = []
 
     def observe_debug(self, frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None, y_v=None):
+                      fid=None, frame_ts_ns=None, y_v=None, gpu_slot=None):
         self.frames.append(np.array(frame, copy=True))
         if len(self.frames) == 1:
             self.entered.set()
@@ -893,6 +893,95 @@ def test_async_age_starts_at_capture():
         assert a.last_age_ms >= 120.0, f"age 未含 cap 段：{a.last_age_ms:.1f}ms"
     finally:
         a.stop()
+
+
+def test_depth_late_pending_waits_for_next_tick_and_fresh_frame(monkeypatch):
+    """拍尾待帧不能立即开工，把深度前向挤进下一次 YOLO。"""
+    clock = [10.049]
+    seq = [7]
+    a = AsyncDepthRoadObserver(_StubObserver([_mk_reading()]))
+    a._pending = (1, _frame(), 10.005, None, None, None, None, 7, None, None)
+
+    class Beat:
+        def snapshot(self):
+            return seq[0], 10.0 if seq[0] == 7 else 10.05
+
+        def wait_newer(self, seq, timeout):
+            return advance()
+
+    def advance():
+        seq[0], clock[0] = 8, 10.055
+        a._pending = (2, _frame(), 10.055, None, None, None, None, 8, None, None)
+        return True
+
+    monkeypatch.setattr(dml_lock, "TICK_BEAT", Beat())
+    monkeypatch.setattr(dml_lock, "SLOTS", dml_lock._SlotGate())
+    dml_lock.SLOTS.mark_done(8)
+    monkeypatch.setattr(dg.time, "perf_counter", lambda: clock[0])
+    assert a._stagger_wait() is True
+    assert a._pop_latest()[7] == 8
+
+
+def test_depth_preprocesses_before_waiting_remaining_gpu_slot(monkeypatch):
+    """CPU 预处理不必等线 GPU；等待移至前向之前，且仅等剩余窗。"""
+    events = []
+    preprocess = dg._da_preprocess
+
+    def prepare(rgb):
+        events.append("prepare")
+        return preprocess(rgb)
+
+    class Slots:
+        def wait_done(self, seq, timeout):
+            assert events == ["prepare"]
+            assert seq == 7
+            assert timeout == pytest.approx(0.005)
+            events.append("wait")
+            return False
+
+    monkeypatch.setattr(dml_lock, "SLOTS", Slots())
+    monkeypatch.setattr(dg, "_da_preprocess", prepare)
+    monkeypatch.setattr(dg.time, "perf_counter", lambda: 10.025)
+    monkeypatch.setattr(dml_lock.TICK_BEAT, "snapshot", lambda: (7, 10.0))
+    pts, _, _ = infer_points(_FakeDepthSess(_fake_depth_v()), _frame_np(),
+                            y_v=360.0, gpu_slot=(7, 10.03))
+    assert pts is not None
+    assert events == ["prepare", "wait"]
+
+
+@pytest.mark.parametrize("advance_at", ["prepare", "acquire"])
+def test_depth_cannot_run_old_slot_after_tick_changes(monkeypatch, advance_at):
+    seq = [7]
+
+    def prepare(rgb):
+        if advance_at == "prepare":
+            seq[0] = 8
+        return np.zeros((1, 3, 448, 448), np.float32)
+
+    class Lock:
+        def acquire(self, *args, **kwargs):
+            if advance_at == "acquire":
+                seq[0] = 8
+            return True
+
+        def release(self):
+            pass
+
+    class Session:
+        def get_inputs(self):
+            return [type("I", (), {"name": "image"})()]
+
+        def run(self, *args):
+            pytest.fail("上一拍输入不能迁移到下一拍抢占 GPU")
+
+    monkeypatch.setattr(dg, "_da_preprocess", prepare)
+    monkeypatch.setattr(dg.time, "perf_counter", lambda: 10.005)
+    monkeypatch.setattr(dml_lock.TICK_BEAT, "snapshot", lambda: (seq[0], 10.0))
+    monkeypatch.setattr(dml_lock, "SLOTS", dml_lock._SlotGate())
+    monkeypatch.setattr(dml_lock, "LOCK", Lock())
+    dml_lock.SLOTS.mark_done(7)
+    with pytest.raises(dml_lock.Busy):
+        infer_points(Session(), _frame_np(), y_v=360.0, gpu_slot=(7, 10.03))
 
 
 def test_async_stale_at_start_counted():
@@ -1139,7 +1228,7 @@ def test_async_debug_writes_replayable_evidence(tmp_path):
     只有有损渲染时，实机读数故障无法离线重放（2026-09-25 21:41 局的教训）。"""
     stub = _StubObserver([_mk_reading()])
     def _evid_observe(frame, object_mask=None, detections=None,
-                      fid=None, frame_ts_ns=None, y_v=None):
+                      fid=None, frame_ts_ns=None, y_v=None, gpu_slot=None):
         stub.calls += 1
         return _mk_reading(), _mk_evid()
     stub.observe_debug = _evid_observe

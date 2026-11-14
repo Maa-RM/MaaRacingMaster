@@ -1902,7 +1902,8 @@ class SpeedRushModule(ActivityModule):
             lw = chain.get("lane_obs")
             lane = lw.latest() if lw is not None else None
             lane_usable = (lane is not None and bool(lane.get("usable"))
-                           and (lane.get("det_age_ms") or 0.0)
+                           and lane.get("det_age_ms") is not None
+                           and lane["det_age_ms"]
                            <= LANE_POS_AGE_MS)
             try:
                 # note=上一拍决策快照（state/杆/喂入路心/EMA/槽）：随帧进调试图
@@ -1937,12 +1938,7 @@ class SpeedRushModule(ActivityModule):
                 self._tick_view_guard(chain, gpad, lane)
             # 线观测快照已在深度 push 前取过（同一对象、同一拍）：这里只判语义门
             # ——线严格可用时它就是走廊中心原点，深度只填边界/宽度。
-            obs = chain["tracker"].update(result, frame_age_ms=age_ms, stage=phase,
-                                          anchors=anchor_sheet,
-                                          lane=lane if lane_usable else None)
-            obs = chain["agg"].update(obs)
             planner: LateralPlanner = chain["planner"]
-            tviews, tevents = chain["traffic_obs"].update(obs)
             # road_offset 供数源=分带走廊：供数主人选择合并进 _EgoRoadObserver
             # 内部的一条优先级链，此处不再两条供数路互相顶替；找边对心保留为
             # 审计列（ro_edge）。走廊 None=诚实弃权拍，退纯模型积分。
@@ -2022,6 +2018,41 @@ class SpeedRushModule(ActivityModule):
                                     "pair_slot", "wall_occl", "memory"))
             road_offset_new = (dgeo_new and corridor is not None
                                and not road_offset_hold)
+            if lw is not None:
+                # 相机高只认车道线反解（与视角守卫同源）。合成点图的平面 c
+                # 恒等于标称相机高，拿它当输入等于读常数：机位被打回追尾时
+                # 线几何仍按保险杠高度换算横位，静默错 1~2 道。反解只在检测
+                # 拍进历史、取中位（单点会飘到 0.73~2.93）；预测拍沿用当前
+                # 中位，首个检测拍之前传 None → lane_obs 回退标定值。
+                # 守卫吃的是未平滑的原始反解，两者独立、不互相污染。
+                if lane is not None and lane.get("cam_h_lane") is not None:
+                    chain["lane_cam_h_hist"].append(float(lane["cam_h_lane"]))
+                hist = chain["lane_cam_h_hist"]
+                cam_h = float(np.median(hist)) if hist else None
+                # 线观测的绝对锚点=同帧新鲜**独立深度**读数换算的自车横位
+                # （复用/历史拍不给，让线退回上一拍横位做子道细化，不让旧深度
+                # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
+                # 前的深度候选仍在 depth_anchor_ego 里，用它锚道号即可——既不
+                # 循环，也不剥夺线在短断/重锁时的独立参照。
+                # 共识闸（2026-11-13）：绿区与找边对两个定义差超阈值时不给锚，
+                # 线保持现有网格；等两者一致再恢复。宁可不改，不许静默整道翻号。
+                anchor = (chain["ego_road"].depth_anchor_ego
+                          if (road_offset_new and anchor_ok) else None)
+                lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
+                        fid_jump,
+                        focal=chain.get("focal_px"),
+                        anchor=anchor,
+                        anchor_strict=chain["ego_road"].anchor_strict,
+                        frame_ts_ns=ts_ns)
+            # 入参帧龄在取帧时测量；正式控制链还须计入此后的 YOLO 与前奏时间。
+            pick = None if cap_ts is None else cap_ts.get("pick")
+            perception_age = age_ms + (0.0 if pick is None else
+                                      max(0.0, t_c - pick) * 1000.0)
+            obs = chain["tracker"].update(result, frame_age_ms=perception_age, stage=phase,
+                                          anchors=anchor_sheet,
+                                          lane=lane if lane_usable else None)
+            obs = chain["agg"].update(obs)
+            tviews, tevents = chain["traffic_obs"].update(obs)
             # 参考系跳变标注（仅记录，不参与控制）：每次新鲜路心读数与上一次
             # 新鲜读数比，按物理可动包络判"运动 / 换档 / 黑视"——离线辨识
             # 车模、算观测真值先按此列过滤，避免把换档当成 6 道/s 的横移。
@@ -2110,6 +2141,26 @@ class SpeedRushModule(ActivityModule):
                        and lane.get("x") is not None)
             lane_relock = (lane is not None
                            and lane.get("state") == "RELOCK")
+            # 三路内容龄用同一消费时刻；复用结果保留原采集戳。
+            t_observe = time.perf_counter()
+
+            def source_age(source_fid, source_ts):
+                return {"fid": source_fid, "ts_ns": source_ts,
+                        "age_ms": None if not source_ts else
+                        round(max(0.0, (t_observe - source_ts / 1e9) * 1000), 1)}
+
+            dw = chain["depth_geo"]
+            yolo_age = result.age_ms(t_observe)
+            obs_age = {
+                "at_ns": round(t_observe * 1e9),
+                "yolo": {"fid": result.frame_id, "ts_ns": result.ts_ns or None,
+                         "age_ms": None if yolo_age is None else round(yolo_age, 1)},
+                "depth": source_age(dw.last_fid, dw.last_frame_ts_ns)
+                if dgeo is not None else source_age(None, None),
+                "lane": source_age(None if lane is None else lane.get("det_fid"),
+                                   None if lane is None else lane.get("det_ts_ns"))}
+            if lane is not None and obs_age["lane"]["age_ms"] is not None:
+                lane = dict(lane, det_age_ms=obs_age["lane"]["age_ms"])
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
                                  road_offset_new=road_offset_new,
                                  road_offset_hold=road_offset_hold,
@@ -2129,31 +2180,6 @@ class SpeedRushModule(ActivityModule):
                                  lane_n_locked=None if lane is None
                                  else int(lane.get("n_locked") or 0),
                                  plan=(plan if cfg.motion.mode == "live" else None))
-            if lw is not None:
-                # 相机高只认车道线反解（与视角守卫同源）。合成点图的平面 c
-                # 恒等于标称相机高，拿它当输入等于读常数：机位被打回追尾时
-                # 线几何仍按保险杠高度换算横位，静默错 1~2 道。反解只在检测
-                # 拍进历史、取中位（单点会飘到 0.73~2.93）；预测拍沿用当前
-                # 中位，首个检测拍之前传 None → lane_obs 回退标定值。
-                # 守卫吃的是未平滑的原始反解，两者独立、不互相污染。
-                if lane is not None and lane.get("cam_h_lane") is not None:
-                    chain["lane_cam_h_hist"].append(float(lane["cam_h_lane"]))
-                hist = chain["lane_cam_h_hist"]
-                cam_h = float(np.median(hist)) if hist else None
-                # 线观测的绝对锚点=同帧新鲜**独立深度**读数换算的自车横位
-                # （复用/历史拍不给，让线退回上一拍横位做子道细化，不让旧深度
-                # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
-                # 前的深度候选仍在 depth_anchor_ego 里，用它锚道号即可——既不
-                # 循环，也不剥夺线在短断/重锁时的独立参照。
-                # 共识闸（2026-11-13）：绿区与找边对两个定义差超阈值时不给锚，
-                # 线保持现有网格；等两者一致再恢复。宁可不改，不许静默整道翻号。
-                anchor = (chain["ego_road"].depth_anchor_ego
-                          if (road_offset_new and anchor_ok) else None)
-                lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
-                        fid_jump,
-                        focal=chain.get("focal_px"),
-                        anchor=anchor,
-                        anchor_strict=chain["ego_road"].anchor_strict)
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -2173,6 +2199,7 @@ class SpeedRushModule(ActivityModule):
                                   time.monotonic(), ts_ns)
         eng = chain["engine"]
         self._control_last = {
+            "obs_age": obs_age,
             "state": out.state.value, "reason": out.reason, "steer": cmd.steer_x,
             "frame_id": fid, "executed_lane": round(planner.state.executed_lane, 3),
             "x_target": out.x_target,
@@ -2227,6 +2254,7 @@ class SpeedRushModule(ActivityModule):
         _plan_ego = chain.get("last_plan_ego")   # plan 非 None 时必为本拍 EgoState
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
+            "obs_age": obs_age,
             # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
             # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
             "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
@@ -2626,6 +2654,7 @@ class SpeedRushModule(ActivityModule):
                        "rt": int(pad_st.right_trigger)}
         snap_dbg = {
             "fid": fid, "ts_ns": ts_ns, "age_ms": round(age_ms, 1),
+            "obs_age": obs_age,
             "phase": phase,
             "result": result, "reading": dgeo, "grid": dgrid,
             "lane": lane,               # 线观测（叠加回画面 + 底部摘要）

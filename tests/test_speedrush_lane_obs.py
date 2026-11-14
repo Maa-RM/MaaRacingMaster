@@ -832,7 +832,8 @@ def test_latest_is_one_consistent_snapshot():
             "n_locked": 1, "relock_src": "line", "anchor_src": "depth",
             "grid_reject": 0, "side_reject": 0,
             "lines": [{"L": 0.2, "k": 0, "resid": 0.2, "accepted": True}],
-            "t_done": now, "t_det": now}
+            "t_done": now, "t_det": now, "det_fid": 10,
+            "det_ts_ns": int(now * 1e9), "frame_ts_ns": int(now * 1e9)}
     w._latest = snap
     out = w.latest()
     assert out["x"] == 0.40
@@ -840,6 +841,157 @@ def test_latest_is_one_consistent_snapshot():
     assert out["anchor_src"] == "depth"
     assert out["pred"] is False
     assert out["det_age_ms"] is not None and out["det_age_ms"] >= 0.0
+
+
+def test_latest_age_includes_capture_queue_and_inference(monkeypatch):
+    w = LaneObsWorker(LaneObsConfig(enabled=True))
+    w._latest = {"fid": 10, "det_fid": 10, "frame_ts_ns": 1_000_000_000,
+                 "det_ts_ns": 1_000_000_000, "t_done": 1.08, "t_det": 1.08}
+    w._last_det_fid = 11  # 后台下一帧尚未发布，不得污染已发布快照。
+    monkeypatch.setattr(la.time, "perf_counter", lambda: 1.12)
+    first = w.latest()
+    assert first["det_fid"] == 10
+    assert first["det_age_ms"] == pytest.approx(120)
+    assert first["age_ms"] == pytest.approx(120)
+    assert first["result_age_ms"] == pytest.approx(40)
+    monkeypatch.setattr(la.time, "perf_counter", lambda: 1.17)
+    assert w.latest()["det_age_ms"] == pytest.approx(170)
+
+
+def test_push_keeps_capture_timestamp_with_frame():
+    w = LaneObsWorker(LaneObsConfig(enabled=True))
+    w._sess = object()
+    w.push(np.zeros((4, 4, 3), np.uint8), 7, 1.4, 0, 0.05, False,
+           frame_ts_ns=1_000_000_000, anchor=0.7, anchor_strict=True)
+    item = w._q.get_nowait()
+    assert item[1] == 7 and item[-2:] == (0.7, True)
+    assert 1_000_000_000 in item[2:-2]
+
+
+def test_row_segments_keeps_row_boundaries_and_weighted_centers():
+    prob = np.zeros((360, 640), np.float32)
+    prob[206, 637:] = [0.8, 0.9, 1.0]
+    prob[207, :3] = [1.0, 0.9, 0.8]
+    prob[207, 10:12] = [la.PROB_THRESH, 0.95]
+    rows = la._row_segments(prob)
+    assert [y for y, _ in rows] == [206, 207]
+    assert [len(s) for _, s in rows] == [1, 2]
+    assert rows[0][1][0]["xc"] == pytest.approx((637*.8+638*.9+639)/2.7, abs=1e-4)
+    assert rows[1][1][0]["xc"] == pytest.approx((.9+2*.8)/2.7, abs=1e-5)
+    assert rows[1][1][1]["xc"] == 11
+    assert la._row_segments(prob, start=208) == []
+
+
+def test_row_segments_fragmented_probability_matches_direct_weighted_sums():
+    rng = np.random.default_rng(1729)
+    prob = rng.random((360, 640), dtype=np.float32)
+    rows = la._row_segments(prob, start=350)
+    for yc, segments in rows:
+        active = np.flatnonzero(prob[yc] > la.PROB_THRESH)
+        groups = np.split(active, np.flatnonzero(np.diff(active) > 1)+1)
+        assert len(segments) == len(groups)
+        for seg, indices in zip(segments, groups):
+            p = prob[yc, indices]
+            assert seg["xc"] == pytest.approx(float((indices*p).sum()/p.sum()), abs=2e-4)
+            assert seg["p"] == pytest.approx(float(p.mean()), abs=2e-7)
+
+
+@pytest.mark.parametrize("detect_every, expected_fid", [(2, 10), (1, 11)])
+def test_prediction_keeps_detection_source_but_real_empty_inference_is_new(
+        monkeypatch, detect_every, expected_fid):
+    w = LaneObsWorker(LaneObsConfig(enabled=True, detect_every=detect_every))
+    w._sess = object()
+    w._last_det_fid, w._last_det_ts_ns, w._last_det_t = 10, 1_000_000_000, 1.02
+    w._tracker.x_last = 0.0
+    monkeypatch.setattr(w, "_infer", lambda *a: {"lines": []})
+    snapshot = w._snapshot
+
+    def finish(*args):
+        w._stop.set()
+        return snapshot(*args)
+
+    monkeypatch.setattr(w, "_snapshot", finish)
+    w.push(np.zeros((4, 4, 3), np.uint8), 11, 1.28, 0, 0.05, False,
+           frame_ts_ns=1_050_000_000)
+    w._loop()
+    result = w.latest()
+    assert result["pred"] and not result["usable"]
+    assert result["frame_ts_ns"] == 1_050_000_000
+    assert result["det_fid"] == expected_fid
+    assert result["det_ts_ns"] == (1_000_000_000 if detect_every == 2 else 1_050_000_000)
+
+
+@pytest.mark.parametrize("offset, handed_off, expected", [
+    (0.010, False, True), (0.035, False, False), (0.010, True, False)])
+def test_dml_uses_only_current_open_slot(monkeypatch, offset, handed_off, expected):
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="dml"))
+    w._use_dml = True
+    calls = []
+
+    class Session:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            calls.append(True)
+            return [None, np.zeros((1, 2, 384, 640), np.float32)]
+
+    class Beat:
+        def snapshot(self):
+            return 7, 1.0
+
+        def wait_newer(self, seq, timeout):
+            pytest.fail("本拍帧不得等下一拍再推理")
+
+    monkeypatch.setattr(la.time, "perf_counter", lambda: 1.0 + offset)
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", Beat())
+    monkeypatch.setattr(la.dml_lock, "SLOTS", la.dml_lock._SlotGate())
+    monkeypatch.setattr(la.dml_lock, "LOCK", __import__('threading').Lock())
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: None)
+    if handed_off:
+        la.dml_lock.SLOTS.mark_done(7)
+    w._sess = Session()
+    result = w._run(np.zeros((4, 4, 3), np.uint8))
+    assert bool(calls) is expected
+    assert (result is not None) is expected
+    assert la.dml_lock.SLOTS.wait_done(7, 0) is True
+
+
+def test_dml_rechecks_slot_after_lock_acquisition(monkeypatch):
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="dml"))
+    w._use_dml = True
+    clock = [1.029]
+
+    class Session:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            pytest.fail("过窗后不得启动推理")
+
+    class Lock:
+        def acquire(self, *args, **kwargs):
+            clock[0] = 1.048
+            return True
+
+        def release(self):
+            pass
+
+    class Beat:
+        def snapshot(self):
+            return 7, 1.0
+
+        def wait_newer(self, seq, timeout):
+            return True
+
+    monkeypatch.setattr(la.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", Beat())
+    monkeypatch.setattr(la.dml_lock, "LOCK", Lock())
+    monkeypatch.setattr(la.dml_lock, "SLOTS", la.dml_lock._SlotGate())
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: None)
+    w._sess = Session()
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert w.slot_skips == 1
 
 
 def test_worker_snapshot_carries_line_origin_flags():

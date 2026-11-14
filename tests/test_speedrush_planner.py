@@ -28,6 +28,14 @@ CFG = _read_decision(CFG_PATH)
 P = CFG.planner
 
 
+def test_heading_alignment_uses_capture_age_without_extra_delay():
+    h = HeadingObserver(P)
+    h._t, h.mpsi, h.mr = 1.0, 0.1, 0.0
+    h._m_hist = [(0.80, -0.1, 0), (0.90, 0.02, 0), (1.0, 0.1, 0)]
+    h._model_correct(0.02, 100.0)
+    assert h._m_innov == pytest.approx(0.0)
+
+
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
          maneuver=False, phase="keep",
          intent_precise=False) -> DecisionOutput:
@@ -110,10 +118,12 @@ class _Rig:
         """delay_s 之前的（ψ, x）——控制器能看到的最新的旧状态。"""
         cut = self._t - self.delay
         psi, x = self._hist[0][1], self._hist[0][2]
+        self._sample_t = self._hist[0][0]
         for t, ph, xx in self._hist:
-            if t > cut:
+            if t > cut + 1e-9:
                 break
             psi, x = ph, xx
+            self._sample_t = t
         return psi, x
 
     def tick(self, out, *, pos_obs: bool = True, plan=None,
@@ -129,7 +139,8 @@ class _Rig:
             road_offset=x_m if pos_obs else None,
             lane_x=x_m, lane_ok=True,
             lane_theta=psi_m, lane_theta_ok=True,
-            lane_fid=f, lane_age_ms=5.0, lane_n_locked=3,
+            lane_fid=f, lane_age_ms=round((self._t - self._sample_t) * 1000, 6),
+            lane_n_locked=3,
             plan=plan)
         u = cmd.steer_x / _STICK_FULL
         a = 1.0 - math.exp(-DT / self.tau_yaw)
