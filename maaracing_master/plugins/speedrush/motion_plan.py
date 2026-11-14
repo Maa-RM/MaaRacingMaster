@@ -194,6 +194,9 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
             in_corridor=_in_corridor(road, x, None),
             coarse=(src == "far"),
             id=getattr(b, "id", None), seen=getattr(b, "seen", None)))
+    # 回正只取「目标处相对自车站」的中心线位移差：分带中点相对 master
+    # 原点可以不对称（墙箱/单侧绿区，实测 0.83m），自车横位没吃这个偏移。
+    center0 = road.center_at(0.0)
     for c in cars:
         age = getattr(c, "age_ms", 0.0) or 0.0
         if age > value_age_ms:
@@ -202,7 +205,7 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
         if c.z_m is not None:
             center = road.center_at(c.z_m - cam_z_datum_m)
             if center is not None:
-                x -= center
+                x -= center - (0.0 if center0 is None else center0)
         z_scene = None if c.z_m is None else c.z_m - cam_z_datum_m
         objs.append(SceneObj(
             "car", x, c.t_meet_s, 1.0,

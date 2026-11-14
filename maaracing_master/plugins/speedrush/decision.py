@@ -301,10 +301,18 @@ def _monotonic_coin_t(prev: tuple[float, int] | None, raw_t: float,
     return raw_t
 
 
-def _center_at0(road: RoadFrame, z: float) -> float:
-    """中心线在 z 处；无带帧按 0 计（与选择层回中的兜底同一口径）。"""
+def _center_delta(road: RoadFrame, z: float) -> float:
+    """中心线从自车站到 z 处的横向位移差；无带帧按 0 计。
+
+    不能直接减 ``center_at(z)``：分带中点相对 master 原点可以不对称
+    （墙箱/单侧绿区把带拽偏，实测 0.83m），而自车横位（executed−origin）
+    没有吃这个偏移。减绝对值会把每一辆近车整体挪出那 0.83m，横距判远、
+    通过侧判反。只补曲线带来的位移差，z=0 处回正量恒为 0。"""
     c = road.center_at(z)
-    return 0.0 if c is None else c
+    c0 = road.center_at(0.0)
+    if c is None or c0 is None:
+        return 0.0
+    return c - c0
 
 
 def _sel_report_key(rep: SelectionReport) -> tuple:
@@ -1376,7 +1384,18 @@ class DecisionEngine:
                 if x is not None and m.x_m is not None and px is not None:
                     dis = abs(m.x_m / lane_w - px)
                     n, veto = self._car_xdis.get(m.target_id, (0, False))
-                    if veto:
+                    # 双像素证人互证（2026-11-14 并排碰撞）：框心尺子在近场
+                    # 会整道跳（框底变形/贴边裁剪，实测一局 0.8~1.4 道），
+                    # 车道线成员是几何量、同拍仍与米制一致。两个像素证人自
+                    # 相矛盾时，尺子不构成推翻米制的证据——保留米制；只有
+                    # 它们彼此一致才改信尺子。尺子缺席（px 来自线中位）不限。
+                    ruler_conflict = (
+                        v is not None and v.x_lane is not None
+                        and v.x_lane_line is not None
+                        and abs(v.x_lane - v.x_lane_line) > _XDIS_ON_LANE)
+                    if ruler_conflict:
+                        n, veto = 0, False
+                    elif veto:
                         if dis <= _XDIS_OFF_LANE:
                             n += 1
                             if n >= _XDIS_OFF_TICKS:
@@ -1766,7 +1785,7 @@ class DecisionEngine:
                        seen=bool(b.seen))
                    for b in reward_sel]
         cars = [Obj("car",
-                    c.x_m - origin - (_center_at0(road, c.z_m - CAM_Z_DATUM_M)
+                    c.x_m - origin - (_center_delta(road, c.z_m - CAM_Z_DATUM_M)
                                       if c.z_m is not None else 0.0),
                     c.t_meet_s,
                     oid=-1 if c.id is None else c.id,

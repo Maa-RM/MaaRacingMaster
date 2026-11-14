@@ -120,6 +120,23 @@ def test_scene_curve_approach_tracks_local_center():
     assert errs[1] == pytest.approx(0.0, abs=0.05)
 
 
+def test_scene_asymmetric_band_center_is_relative_to_ego_station():
+    """分带中点相对 master 不对称时，回正只补曲线位移差。
+
+    20261114_130650 并排局：带中点在自车站已偏 0.8m（右侧多一条肩道），
+    旧口径把每辆近车整体挪左 0.8m——同车道车读成偏一道、通过侧判反，
+    实际 0.84m 间隙撞上去。自车横位（executed−origin）没有吃带中点偏移，
+    车位也只能按 center(z)−center(0) 回正。"""
+    road = RoadFrame(
+        (RoadBand(0.0, 6.0, -3.0, 5.0, src="measured"),      # 中点 +1m
+         RoadBand(16.0, 24.0, -2.0, 6.0, src="measured")),   # 中点 +2m
+        8.0, -3.0, 5.0, True)
+    s = _scene(road=road, ego_m=1.0, cam_z_datum_m=0.0,
+               cars=[CarSource(2.0, 1.0, z_m=20.0, src="metric")])
+    # 源 2.0 −（2.0−1.0）= 1.0：与自车同帧；旧口径给 0
+    assert s.objs[0].x_m == pytest.approx(1.0)
+
+
 def test_scene_new_depth_adopts_full_correction():
     """接收正确纠错：纵深到达带来新的道路中心证据时，发布值必须立即采用
     完整回正，不得为求连续而保留旧值（修正错估优先于平滑）。"""

@@ -731,6 +731,25 @@ def test_metric_x_large_disagreement_reanchors_immediately():
     assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.1), "首拍即重锚到尺子"
 
 
+def test_conflicting_ruler_and_line_keep_metric():
+    """近场框心尺子整道跳、与车道线自相矛盾时不推翻米制（20261114 并排
+    碰撞）：米制 −1.0m（−0.29 道）、尺子 −1.263 道、车道线 −0.322 道——
+    尺子与车道线差 0.94 道，两个像素证人互斥，保留米制；连续多拍不重锚。
+    旧口径第 3 拍按尺子重锚到 −1.26 道，车被当成邻道，自车带着 0.84m
+    实际间隙撞上去。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (CarView(id=1, x_lane=-1.263, cy=456, rel_approach=4.3,
+                        d_min=1.263, age_ticks=10, x_lane_line=-0.322),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=6.2, x_m=-1.0,
+        v_close_mps=30.0, t_meet_s=0.2, anchor_age_ms=50.0),)
+    for _ in range(5):
+        src = e._reach_car_sources(0.0)
+        assert src[0].x_m == pytest.approx(-1.0, abs=0.2)
+
+
 def test_far_field_lane_line_median_veto():
     """远场尺子缺席（x_lane=None）时车道线顶替互证（2026-11-09）：最近线
     随框抖振荡，取中位去抖后与米制互证，>1 道两拍重锚。米制错 3 道、车道线
