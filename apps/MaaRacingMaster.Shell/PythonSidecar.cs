@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -23,6 +24,11 @@ public sealed class RpcErrorException : Exception
 {
     public RpcErrorException(string message) : base(message) { }
 }
+
+/// <summary>侧车关停结果：ExitCode=退出码（未知为 null）；ConfirmedExit=关停流程结束时
+/// 已确认进程真正退出。更新协调（P2 起）以 ConfirmedExit 判断能否进入提交，不允许把
+/// 「流程走完」误当「进程已退」。</summary>
+public sealed record SidecarShutdownResult(int? ExitCode, bool ConfirmedExit);
 
 /// <summary>
 /// PythonSidecar —— 进程生命周期 + JSONL transport（契约测试 11/11 验证通过后复用）。
@@ -292,8 +298,12 @@ public sealed class PythonSidecar : IDisposable
         }
     }
 
-    /// <summary>graceful shutdown：发 shutdown → 等进程自退（grace 内）→ 超时 Kill 整个进程树。不 Dispose。</summary>
-    public async Task<int?> ShutdownAsync(TimeSpan grace, CancellationToken ct = default)
+    /// <summary>
+    /// graceful shutdown：发 shutdown → 等进程自退（grace 内）→ 超时 Kill 整个进程树 →
+    /// 强杀后有界等待确认真实退出。不 Dispose。返回结果区分「流程走完」与「确认已退」：
+    /// 强杀后仍未退出时 ConfirmedExit=false 并记 shell.log，不吞掉残留事实。
+    /// </summary>
+    public async Task<SidecarShutdownResult> ShutdownAsync(TimeSpan grace, CancellationToken ct = default)
     {
         _closing = true; // 本壳主动关停：随后的 EOF 不再报后端异常退出
         if (!_process.HasExited)
@@ -316,10 +326,18 @@ public sealed class PythonSidecar : IDisposable
             }
             catch (TimeoutException)
             {
-                KillTree(); // grace 超时，强制终止
+                // grace 超时，强制终止；终止后必须有界等待确认（壳带 requireAdministrator，
+                // 子进程残留会让升级提交因文件占用失败，必须让上层知道真实退出状态）
+                KillTree();
+                bool confirmed;
+                try { confirmed = _process.WaitForExit(ShutdownConfirmTimeoutMs); }
+                catch { confirmed = false; }
+                if (!confirmed)
+                    ShellLog.Append($"[sidecar] 强制终止后 {ShutdownConfirmTimeoutMs}ms 仍未退出（pid={SafePid()}），存在残留进程");
+                return new SidecarShutdownResult(ExitCode, confirmed);
             }
         }
-        return ExitCode;
+        return new SidecarShutdownResult(ExitCode, ConfirmedExit: true);
     }
 
     private void KillTree()
@@ -344,7 +362,136 @@ public sealed class PythonSidecar : IDisposable
         try { _stdout.Dispose(); } catch { }
         try { _writeLock.Dispose(); } catch { }
         if (!_process.HasExited)
-            KillTree();
+        {
+            // 关流后先给一个短的 stdin EOF 自退窗口（侧车主循环读 stdin，父关即自退），
+            // 窗口过了才强杀；强杀后同样有界等待，不吞掉「仍有残留」的事实。
+            bool selfExited;
+            try { selfExited = _process.WaitForExit(DisposeSelfExitGraceMs); }
+            catch { selfExited = false; }
+            if (!selfExited)
+            {
+                KillTree();
+                bool confirmed;
+                try { confirmed = _process.WaitForExit(ShutdownConfirmTimeoutMs); }
+                catch { confirmed = false; }
+                if (!confirmed)
+                    ShellLog.Append($"[sidecar] Dispose 强杀后 {ShutdownConfirmTimeoutMs}ms 仍未退出（pid={SafePid()}），存在残留进程");
+            }
+        }
         _process.Dispose();
     }
+
+    /// <summary>强杀后确认退出的有界等待上限（毫秒）。</summary>
+    private const int ShutdownConfirmTimeoutMs = 5_000;
+
+    /// <summary>Dispose 关流后给子进程的 stdin EOF 自退窗口（毫秒）。</summary>
+    private const int DisposeSelfExitGraceMs = 1_500;
+
+    private int SafePid()
+    {
+        try { return _process.Id; }
+        catch { return -1; }
+    }
+
+    /// <summary>
+    /// 启动期清场：上一会话异常退出可能遗留侧车（父壳死了但侧车正忙、尚未走到 stdin EOF 自退）。
+    /// 只清理本应用根内的侧车（python 进程路径在本应用根内且命令行在跑本侧车模块）；
+    /// 其它检出 / 其它安装的进程不动。PowerShell 扫描失败只记日志并返回 -1，不阻断启动
+    /// （侧车 EOF 自退机制仍是兜底，见 experiments/app_update_velopack P0 取证）。
+    /// 返回清理掉的进程数。
+    /// </summary>
+    public static int CleanupLeftovers(string appRoot)
+    {
+        try
+        {
+            var candidates = ListLeftoverSidecarPids(appRoot);
+            var killed = 0;
+            foreach (var pid in candidates)
+            {
+                try
+                {
+                    using var k = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "taskkill.exe",
+                        Arguments = $"/PID {pid} /T /F",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    });
+                    k?.WaitForExit(3000);
+                    ShellLog.Append($"[sidecar] 启动清场：终止遗留侧车进程 pid={pid}");
+                    killed++;
+                }
+                catch (Exception ex)
+                {
+                    ShellLog.Append($"[sidecar] 启动清场：终止遗留侧车 pid={pid} 失败: {ex.Message}");
+                }
+            }
+            return killed;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[sidecar] 启动清场：扫描失败（不影响启动）: {ex.Message}");
+            return -1;
+        }
+    }
+
+    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块」的 pid。</summary>
+    private static IEnumerable<int> ListLeftoverSidecarPids(string appRoot)
+    {
+        const string script = """
+            [Console]::OutputEncoding=[System.Text.Encoding]::UTF8
+            Get-CimInstance Win32_Process -Filter "Name like 'python%'" | ForEach-Object {
+                '{0}|{1}|{2}' -f $_.ProcessId, $_.ExecutablePath, $_.CommandLine
+            }
+            """;
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = "-NoProfile -NonInteractive -EncodedCommand " +
+                        Convert.ToBase64String(Encoding.Unicode.GetBytes(script)),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+        };
+        using var ps = Process.Start(psi)
+            ?? throw new InvalidOperationException("powershell 启动失败");
+        string output;
+        using (ps)
+        {
+            if (!ps.WaitForExit(8_000))
+            {
+                try { ps.Kill(); } catch { }
+                throw new TimeoutException("遗留侧车扫描超时（8s）");
+            }
+            output = ps.StandardOutput.ReadToEnd();
+        }
+
+        var rootNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(appRoot));
+        var result = new List<int>();
+        foreach (var line in output.Split('\n'))
+        {
+            var parts = line.Trim('\r').Split('|', 3);
+            if (parts.Length < 3) continue;
+            if (!int.TryParse(parts[0], out var pid)) continue;
+            var exe = parts[1].Trim();
+            var cmd = parts[2];
+            if (cmd.Length == 0 || !cmd.Contains(SidecarModuleMarker, StringComparison.Ordinal))
+                continue;
+            if (exe.Length == 0) continue;
+            try
+            {
+                var exeNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(exe));
+                if (exeNorm.StartsWith(rootNorm + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Path.GetDirectoryName(exeNorm), rootNorm, StringComparison.OrdinalIgnoreCase))
+                    result.Add(pid);
+            }
+            catch { /* 非法路径条目跳过 */ }
+        }
+        return result;
+    }
+
+    /// <summary>侧车模块启动命令行标记（与 MainWindow 启动侧车的 -m 参数一致）。</summary>
+    private const string SidecarModuleMarker = "maaracing_master.core.sidecar";
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using MaaRacingMaster.Shell;
 using Velopack;
 
@@ -39,6 +40,7 @@ internal static class Program
         {
             case "approot": CheckAppRoot(); break;
             case "hook": CheckHook(args); break;
+            case "sidecar": CheckSidecarAsync(args).GetAwaiter().GetResult(); break;
             default:
                 Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar");
                 return 2;
@@ -84,6 +86,72 @@ internal static class Program
     }
 
     private sealed record ChildRun(int? ExitCode, bool TimedOut);
+
+    // ---------- 侧车关停合同 ----------
+
+    /// <summary>侧车关停合同：① 自退进程 → 死亡事件带退出码；② 优雅关停（协议应答）→
+    /// grace 内确认退出、退出码可得；③ 无应答关停 → 强杀后有界等待确认，不无限等也不吞结果。
+    /// 用法可带 --python &lt;解释器路径&gt;，缺省 "python"。</summary>
+    private static async Task CheckSidecarAsync(string[] args)
+    {
+        var python = GetOption(args, "--python") ?? "python";
+        var work = MakeTempDir("sidecar");
+        var exitScript = Path.Combine(work, "exit_child.py");
+        File.WriteAllText(exitScript, "import time\ntime.sleep(0.3)\n");
+        var gracefulScript = Path.Combine(work, "graceful_child.py");
+        File.WriteAllText(gracefulScript,
+            "import json, sys\n" +
+            "for line in sys.stdin:\n" +
+            "    try:\n" +
+            "        req = json.loads(line)\n" +
+            "    except Exception:\n" +
+            "        continue\n" +
+            "    if req.get('type') == 'request' and req.get('method') == 'shutdown':\n" +
+            "        sys.stdout.write(json.dumps({'type': 'response', 'id': req.get('id'), 'ok': True}) + '\\n')\n" +
+            "        sys.stdout.flush()\n" +
+            "        break\n");
+        var silentScript = Path.Combine(work, "silent_child.py");
+        File.WriteAllText(silentScript, "import time\nwhile True:\n    time.sleep(1)\n");
+
+        // ① 自退：EOF → BackendExited 事件（非关停路径的唯一死亡上报）
+        var exited = new TaskCompletionSource<int?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sc1 = new PythonSidecar(python, exitScript);
+        sc1.BackendExited += code => exited.TrySetResult(code);
+        try
+        {
+            var code1 = await exited.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Check("自退进程 → 死亡事件带退出码", true, $"exit={code1?.ToString() ?? "<未知>"}");
+        }
+        catch (TimeoutException)
+        {
+            Check("自退进程 → 死亡事件带退出码", false, "10s 内未收到 BackendExited");
+        }
+
+        // ② 优雅关停：协议应答后 grace 内退出
+        var sc2 = new PythonSidecar(python, gracefulScript);
+        var sw = Stopwatch.StartNew();
+        var r2 = await sc2.ShutdownAsync(TimeSpan.FromSeconds(5));
+        var elapsed2 = sw.ElapsedMilliseconds;
+        Check("优雅关停 → 确认退出且退出码可得",
+              r2.ConfirmedExit && r2.ExitCode == 0,
+              $"ConfirmedExit={r2.ConfirmedExit} exit={r2.ExitCode?.ToString() ?? "<未知>"}");
+        Check("优雅关停 → 未走到强杀（耗时 < grace）", elapsed2 < 5_000, $"{elapsed2}ms");
+
+        // ③ 无应答：grace 超时强杀 → 有界等待确认退出
+        var sc3 = new PythonSidecar(python, silentScript);
+        sw = Stopwatch.StartNew();
+        var r3 = await sc3.ShutdownAsync(TimeSpan.FromSeconds(1));
+        var elapsed3 = sw.ElapsedMilliseconds;
+        Check("无应答强杀 → 有界等待后确认退出",
+              r3.ConfirmedExit && elapsed3 < 15_000,
+              $"ConfirmedExit={r3.ConfirmedExit} {elapsed3}ms");
+    }
+
+    private static string? GetOption(string[] args, string name)
+    {
+        var idx = Array.IndexOf(args, name);
+        return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
+    }
 
     private static ChildRun RunChild(string fileName, string arguments)
     {

@@ -138,6 +138,12 @@ public sealed partial class MainWindow : Window
         // 1. 启动 Python sidecar（唯一业务后端；失败不阻塞窗口，前端显示 backend unavailable）
         if (projectRoot is not null)
         {
+            // 启动清场：上一会话异常退出可能遗留侧车（正忙未到 EOF 自退窗口），先清理
+            // 本应用根内的遗留进程再启动新侧车（只动本应用根，扫描失败不阻断启动）
+            var cleaned = PythonSidecar.CleanupLeftovers(projectRoot);
+            if (cleaned > 0)
+                Console.Error.WriteLine($"[shell] 启动清场：清理遗留侧车 {cleaned} 个");
+
             // 发布模式优先用随包的自带 runtime（runtime\python\python.exe），
             // 否则回退开发模式的 .venv\Scripts\python.exe，保证两种环境都能跑。
             var releasePython = Path.Combine(projectRoot, "runtime", "python", "python.exe");
@@ -614,9 +620,14 @@ public sealed partial class MainWindow : Window
                 // UI 线程同步 await 带 UI SynchronizationContext 的 async 会死锁
                 // （OnClosed 在 UI 线程，ShutdownAsync 内部 await 需要回 UI 上下文续体）。
                 // Task.Run 把整个调用挪到线程池（无 SynchronizationContext），
-                // 同步等待只阻塞本线程，不会死锁；最坏等待 grace 3s。
-                Task.Run(() => _sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)))
+                // 同步等待只阻塞本线程，不会死锁；最坏等待 grace 3s + 强杀确认 5s。
+                var shutdown = Task.Run(() => _sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)))
                     .GetAwaiter().GetResult();
+                if (!shutdown.ConfirmedExit)
+                {
+                    // 未确认退出的事实不吞掉：日志留痕（受管升级前由更新协调以此判断能否提交）
+                    ShellLog.Append("[sidecar] 关窗关停未确认退出（grace 3s + 强杀确认 5s 内仍未退出）");
+                }
             }
             catch (Exception ex)
             {
