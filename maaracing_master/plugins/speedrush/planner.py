@@ -630,6 +630,7 @@ class LateralPlanner:
         # 相位沿检测 + 本拍控制时长（_law 内积分用）。
         self._sustain_boost = 0.0
         self._was_merging = False
+        self._was_precise = False
         self._ctrl_dt_s = 0.0
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
@@ -1002,12 +1003,20 @@ class LateralPlanner:
         # 并线杆值上调的生命周期（平顶峰适配）：并线开始清零（上一段并线攒的
         # 上调量不带进新并线）；非并线拍衰减（回巡航不残留）。
         merging_now = getattr(decision, "phase", "keep") == "merging"
+        # 交付意图（pass/graze）与并线同吃这条上调：真车在浅杆段响应只有
+        # 线性模型的 1/4~1/3（20261114_140736：计划命令 0.14 rad、0.38 杆
+        # 实测线角 0.006~0.03），贴边 0.68 道在 1.5 s 内根本送不到；并线
+        # 早有缺口上调，贴边没有，于是数据修对了、车还是过不去。
+        precise_now = bool(getattr(decision, "intent_precise", False))
         if merging_now and not self._was_merging:
             self._sustain_boost = 0.0
-        elif not merging_now:
+        elif precise_now and not self._was_precise:
+            self._sustain_boost = 0.0
+        elif not (merging_now or precise_now):
             self._sustain_boost *= math.exp(
                 -dt_s / max(self.p.sustain_boost_decay_s, 1e-3))
         self._was_merging = merging_now
+        self._was_precise = precise_now
         if st is DecisionState.CONSERVE:
             # CONSERVE=**回到并停在路中心**（13:02 局：归零直开弯道怼护栏，badframe
             # fid_2325 侧滑胎烟；13:29 局二次修正：入拍冻结 executed 的"保持车道"
@@ -1160,7 +1169,9 @@ class LateralPlanner:
                        if getattr(plan, "layer", None) == 4
                        and getattr(plan, "collision_cost", 0.0) <= 0.0
                        else None)
-                steer_raw = self._law_psi(plan.psi_feedforward, cap=cap)
+                steer_raw = self._law_psi(
+                    plan.psi_feedforward, cap=cap,
+                    boost=bool(getattr(decision, "intent_precise", False)))
                 self._plan_hold_psi = plan.psi_feedforward
                 self._plan_hold_cap = cap
                 self._plan_hold_commit = False
@@ -1613,11 +1624,30 @@ class LateralPlanner:
             self.p.hold_stick_max if gentle else 1.0)
         return max(-cap_u, min(cap_u, u + self._sustain_boost))
 
-    def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
+    def _law_psi(self, psi_des: float, cap: float | None = None,
+                 boost: bool = False) -> float:
         """目标朝向直接入环（计划/决策给出的是车头角时）。
 
-        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。"""
+        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。
+
+        ``boost``：交付意图（pass/graze）吃「命令朝向−实测线角」缺口上调，
+        与并线同一条式、同一个积分器。观测只吃线角（影子按线性模型推进，
+        会高估缺口已闭合）；无新鲜线角时不上调但保留既有积分。"""
         if self._heading_stale:
-            return stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
-        return stick_of(psi_des, self.state.heading, self.state.yaw_rate,
-                        self.p, False, cap)
+            u = stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
+        else:
+            u = stick_of(psi_des, self.state.heading, self.state.yaw_rate,
+                         self.p, False, cap)
+        if not boost:
+            return u
+        psi_obs = (self.head.psi
+                   if self.head.psi is not None
+                   and self.head.psi_age_s() <= self.p.heading_vel_max_age_s
+                   else None)
+        if psi_obs is not None and self._ctrl_dt_s > 0:
+            self._sustain_boost += self.p.sustain_boost_gain * (
+                psi_des - psi_obs) * self._ctrl_dt_s
+            lim = self.p.sustain_boost_max
+            self._sustain_boost = max(-lim, min(lim, self._sustain_boost))
+        cap_u = 1.0 if cap is None else cap
+        return max(-cap_u, min(cap_u, u + self._sustain_boost))

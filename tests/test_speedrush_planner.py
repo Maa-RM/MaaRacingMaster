@@ -1838,6 +1838,32 @@ def test_preview_precise_behavior_bench():
     assert max(abs(u) for u in us) >= 0.85
 
 
+def test_precise_intent_gets_heading_gap_boost():
+    """pass/graze 也吃「命令朝向−实测线角」缺口上调（2026-11-14 实机）。
+
+    真车在浅杆段响应只有线性模型的 1/4~1/3：并排局计划命令 0.14 rad、
+    0.38 杆实测线角 0.006~0.03，贴边 0.68 道在 1.5 s 内送不到。并线早有
+    这条上调，交付意图没有。低增益车模台架对比：开上调的横移必须更大。"""
+    plan = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=0.14, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+
+    def run(precise):
+        pl = _planner()
+        rig = _Rig(pl, g=0.12, tau_yaw=0.25, delay_s=0.05)
+        for i in range(24):
+            rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1,
+                          maneuver=True, intent_precise=precise), plan=plan)
+        return rig.x, pl._sustain_boost
+
+    x0, b0 = run(False)
+    x1, b1 = run(True)
+    assert b0 == pytest.approx(0.0)
+    assert b1 > 0.1
+    assert x1 > x0 + 0.05
+
+
 def test_preview_maneuver_off_by_default():
     """默认关：同样的交付意图拍不进入 pass/机动态预瞄门。"""
     ok = types.SimpleNamespace(
