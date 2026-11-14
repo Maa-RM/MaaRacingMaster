@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import shutil
@@ -102,13 +103,24 @@ def test_version_match_passes(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _real_index(version: str) -> str:
+    """vpk CLI 实际产出的渠道索引形状：顶层集合 Assets，条目含 PackageId/Type/FileName。"""
+    return json.dumps({
+        "Assets": [{
+            "PackageId": "MaaRacingMaster", "Version": version, "Type": "Full",
+            "FileName": f"MaaRacingMaster-{version}-full.nupkg",
+            "SHA256": "0" * 64, "Size": 1,
+        }],
+    })
+
+
 def test_same_version_rerun_blocked(tmp_path):
-    """目标渠道索引已含同版本 → 拒绝重跑（覆盖阻断；不同版本放行）。"""
+    """目标渠道索引已含同版本 → 拒绝重跑（覆盖阻断；不同版本放行）。
+    夹具按 vpk CLI 真实产出：索引在输出目录根、顶层集合 Assets（评审复现的错形状不再放行）。"""
     stage = _stage_fixture(tmp_path, version="1.2.3")
     out = tmp_path / "out"
     out.mkdir()
-    _put(out, "Releases/stable/releases.stable.json",
-         '{"Releases":[{"Version":"1.2.3"}]}')
+    _put(out, "releases.stable.json", _real_index("1.2.3"))
     setup = (
         f"$StageDir={_ps(stage)}; $Version='1.2.3'; $Channel='stable'; "
         f"$OutDir={_ps(out)}; $VpkPath={_ps('vpk')}"
@@ -120,8 +132,7 @@ def test_same_version_rerun_blocked(tmp_path):
     # 不同版本（升级目标已存在但版本不同）放行
     out2 = tmp_path / "out2"
     out2.mkdir()
-    _put(out2, "Releases/stable/releases.stable.json",
-         '{"Releases":[{"Version":"1.2.2"}]}')
+    _put(out2, "releases.stable.json", _real_index("1.2.2"))
     setup2 = (
         f"$StageDir={_ps(stage)}; $Version='1.2.3'; $Channel='stable'; "
         f"$OutDir={_ps(out2)}; $VpkPath={_ps('vpk')}"
@@ -138,6 +149,23 @@ def test_channel_index_files_are_separate(tmp_path):
         "索引文件名必须按渠道参数拼接（分渠道发布）"
     )
     assert "releases.win.json" not in body, "不得回退到共用渠道文件（与渠道分离契约冲突）"
+
+
+def test_full_script_parses_without_errors():
+    """全脚本语法解析锁（历史回归：param 列表语法错误会让发布入口在解析期失效）。"""
+    command = (
+        "$tokens=$null; $parseErrors=$null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"{_ps(SCRIPT)}, [ref]$tokens, [ref]$parseErrors) | Out-Null; "
+        "if ($parseErrors.Count -gt 0) { "
+        "$parseErrors | ForEach-Object { Write-Host (\"PARSE: {0} (line {1})\" -f $_.Message, $_.Extent.StartLineNumber) }; "
+        "exit 1 }; exit 0"
+    )
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_dryrun_builds_expected_vpk_args(tmp_path):

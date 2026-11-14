@@ -44,15 +44,16 @@ Write-Host "[release] 版本一致: $Version (内容树/打包/索引)"
 
 # ---------- 2. 覆盖阻断：同版本重跑拒绝，不同版本放行 ----------
 # 已发布渠道条目不可覆盖——修补发布一律走新版本，不改已推送稳定线历史。
-$channelIndex = Join-Path $OutDir ("Releases\" + $Channel + "\releases.$Channel.json")
+# 索引形状按 vpk CLI 实际产出：输出目录根的 releases.<channel>.json，顶层集合 Assets。
+$channelIndex = Join-Path $OutDir ("releases." + $Channel + ".json")
 if (Test-Path $channelIndex) {
     try {
         $existing = Get-Content $channelIndex -Raw | ConvertFrom-Json
-        $sameVersion = @($existing.Releases | Where-Object { $_.Version -eq $Version })
+        $sameVersion = @($existing.Assets | Where-Object { $_.Version -eq $Version })
         if ($sameVersion.Count -gt 0) {
             & $Fail "渠道 $Channel 已存在同版本 $Version 的发行条目（$channelIndex）——同版本重复执行被阻断，修补请发新版本"
         }
-        Write-Host "[release] 渠道 $Channel 已有版本：$(@($existing.Releases | ForEach-Object { $_.Version }) -join ', ')；新增 $Version 放行"
+        Write-Host "[release] 渠道 $Channel 已有版本：$(@($existing.Assets | ForEach-Object { $_.Version }) -join ', ')；新增 $Version 放行"
     } catch {
         & $Fail "渠道索引无法解析：$channelIndex（$_.Exception.Message）——不盲发"
     }
