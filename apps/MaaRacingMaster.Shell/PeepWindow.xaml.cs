@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -57,9 +58,26 @@ public sealed partial class PeepWindow : Window
             web.Focus(FocusState.Programmatic);
             UpdateDragRects(); // 页面就绪时窗口尺寸已定，再校准一次拖动区
         };
-        web.Source = new Uri(peepHtmlPath);
+        _ = InitializeWebViewAsync(peepHtmlPath);
 
         UpdateDragRects();
+    }
+
+    /// <summary>与主窗共用 WebView2 显式环境（用户数据目录在用户数据根，升级不触碰），
+    /// 环境就绪后才加载页面；先 Ensure 再设 Source，否则控件会用默认环境抢先初始化。</summary>
+    private async Task InitializeWebViewAsync(string peepHtmlPath)
+    {
+        var env = await WebView2Runtime.GetOrCreateAsync();
+        try
+        {
+            await web.EnsureCoreWebView2Async(env);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[peep] 显式环境初始化失败，回落默认: {ex.Message}");
+            await web.EnsureCoreWebView2Async(null);
+        }
+        web.Source = new Uri(peepHtmlPath);
     }
 
     /// <summary>工具窗 + 置顶 + 无系统边框；不可缩放（悬浮窗只需拖动与关闭）。</summary>

@@ -176,6 +176,34 @@ public sealed partial class MainWindow : Window
             web.Focus(FocusState.Programmatic);
             SendMaximizedState();
         };
+        _ = InitializeWebViewAsync();
+    }
+
+    /// <summary>
+    /// WebView2 显式环境初始化：用户数据目录指定到用户数据根（升级适配 P1，升级不触碰前端存储），
+    /// 环境就绪后才加载前端页面。自定义环境不可用时回落默认初始化（源码/ZIP 兜底，见 WebView2Runtime）。
+    /// 必须先 Ensure 再设 Source：先设 Source 会触发控件用默认环境自动初始化，显式环境就接不上了。
+    /// </summary>
+    private async Task InitializeWebViewAsync()
+    {
+        var env = await WebView2Runtime.GetOrCreateAsync();
+        try
+        {
+            await web.EnsureCoreWebView2Async(env);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[webview2] 显式环境初始化失败，回落默认: {ex.Message}");
+            try
+            {
+                await web.EnsureCoreWebView2Async(null);
+            }
+            catch (Exception ex2)
+            {
+                ShellLog.Append($"[webview2] 默认初始化也失败，页面不可用: {ex2.Message}");
+                return;
+            }
+        }
         var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");
         if (indexPath is not null)
         {
