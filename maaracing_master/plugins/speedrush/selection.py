@@ -122,9 +122,14 @@ class Obj:
     # 纵深（米，对象表 z_m）：只用于贴边目标保持的读数有效性判定
     # （相邻拍横位/纵深跳变＝身份或锚点错挂）。None=无纵深读数。
     z: float | None = None
-    # 横位未知（CarSource.x_unknown 透传）：本拍横位读数不可信（相邻拍发布
-    # 跳 >0.8 道或锚点换锚）。只关邻道贴边得分候选；同道躲避不滤。
+    # 横位未知（CarSource.x_unknown 透传）：本拍发布横位不可信（相邻拍跳
+    # 超物理上限、锚点换锚，或硬跳变门正把旧 x 续着）。贴边/让位一律弃车
+    # ——旧 x 会把同道车判成邻道、把通过侧判反；保持闩负责把上一有效目标
+    # 续过坏读数拍。
     x_unknown: bool = False
+    # 目标实测半宽（米，框宽投票；None=标称 car_half_lane）。贴边净空按它
+    # 算：碰撞观测同一口径（ego_half + 目标半宽 + collision_margin）。
+    half_w_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -343,6 +348,9 @@ class SelectionParams:
     request_hold: bool = False
     car_half_lane: float = 0.27
     ego_half_lane: float = 0.27
+    # 贴边净空＝ego_half + 目标半宽（实测优先）+ 该余量；与碰撞观测
+    # （motion.collision_margin_m）同口径。数值真源 decision.json motion 节。
+    collision_margin_m: float = 0.05
     # 车道内安全区间的车身余量（道）：车心可在车道中心 ±(0.5−半宽−余量)
     # 内活动而不压线。0.06 道≈0.20m，配 0.27 道半宽得 ±0.17 道——实测
     # 车道内可偏 0.23 道，留 0.06 道给检测/执行抖动（20261027 局 134222_1
@@ -426,13 +434,12 @@ def _pass_window_blocked(cars: Sequence[Obj], x: float, t_target: float,
     局2 f3605 帧证：追尾刹车慢车后被夹停滞）。alongside=0 时窗缩回
     点判据同界（[−0.2, t+margin]），无 v_close 的对象行为不变。"""
     t_end = max(t_target, 0.0) + alongside + p.margin_s
-    half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     for c in cars:
-        if not c.safe:
+        if not c.safe or not _x_known(c, p):
             continue
         if c.t is None or c.t > t_end or c.t < -0.2:
             continue
-        if abs(c.x - x) < half:
+        if abs(c.x - x) < _pass_clear_m(c, p):
             return True
     return False
 
@@ -453,13 +460,16 @@ def _pass_path_blocked(cars: Sequence[Obj], ego: float, x: float,
     hi = max(ego, x) + half_ego
     t_end = move_s + p.margin_s
     for c in cars:
-        if not c.safe or c.t is None:
+        if not c.safe or c.t is None or not _x_known(c, p):
             continue
         # 已并排/已过的车（t<0）不构成横移路径障碍：自车与它同排，
         # 往任一方向挪都是分开（起点重叠不是"穿过"）。
         if c.t < 0.0 or c.t > t_end:
             continue
-        if lo <= c.x <= hi:
+        # 目标车的半宽也要算进扫过区间（宽体车车心在区间外、车身已压线）
+        car_half = (c.half_w_m if c.half_w_m is not None
+                    else p.car_half_lane * p.lane_w_m)
+        if lo - car_half <= c.x <= hi + car_half:
             return True
     return False
 
@@ -561,12 +571,36 @@ _SIDE_PIN_ESCAPE_S = 1.0    # 侧别锁定的逃生窗：车在 1s 内到站时�
                             # 理由（41 m/s 下 1s ≈ 41m，够横移两道）
 
 
+def _x_known(c: Obj, p: SelectionParams) -> bool:
+    """横位读数可用（贴边层的占用/否决面）：未知拍的车不能当「这里被占」
+    的证据——旧 x 既可能把空位报成占位，也可能把占位报成空位。闸关=恒可用。"""
+    return not (c.x_unknown and p.pass_x_unknown_enabled)
+
+
+def _pass_clear_m(c: Obj, p: SelectionParams) -> float:
+    """贴边目标距目标车心的最小净空（米）：两车半宽和 + 碰撞余量。
+
+    目标半宽优先吃实测（框宽投票，与碰撞观测同一口径）；缺失回退标称。
+    车宽 >2.2m 的大车（宽体卡车）按它自己的宽度判，名义 0.27 道会把目标
+    压进车体——20261114_094558 车 51 实测半宽 1.18m，名义口径差 0.235m。"""
+    car_half = (c.half_w_m if c.half_w_m is not None
+                else p.car_half_lane * p.lane_w_m)
+    return p.ego_half_lane * p.lane_w_m + car_half + p.collision_margin_m
+
+
 def _pass_x_side(c: Obj, road: RoadFrame, p: SelectionParams,
                  side: float) -> float | None:
-    """车心某一侧的通过目标；夹取后仍不足最小安全横距即 None。"""
-    margin = p.wall_margin_lane * p.lane_w_m
-    x = road.clamp(c.x + side * p.graze_gap_lane * p.lane_w_m, margin)
-    min_gap = p.pass_min_gap_lane * p.lane_w_m if p.pass_hold_enabled else 0.0
+    """车心某一侧的通过目标；夹取后仍不足最小安全横距即 None。
+
+    目标偏移取 ``max(graze_gap, 净空)``：graze_gap 是得分语义的贴靠带，
+    车更宽时由物理净空接管，避免把目标落在车体包络里。"""
+    lw = p.lane_w_m
+    margin = p.wall_margin_lane * lw
+    clear = _pass_clear_m(c, p)
+    gap = max(p.graze_gap_lane * lw, clear)
+    x = road.clamp(c.x + side * gap, margin)
+    min_gap = (max(p.pass_min_gap_lane * lw, clear)
+               if p.pass_hold_enabled else 0.0)
     if min_gap > 0.0 and abs(x - c.x) < min_gap:
         x = road.clamp(c.x - side * min_gap, margin)
         if abs(x - c.x) < min_gap:
@@ -586,16 +620,24 @@ def _pass_x(c: Obj, road: RoadFrame, p: SelectionParams) -> float | None:
     return _pass_x_side(c, road, p, side)
 
 
-def _pass_x_candidates(c: Obj, road: RoadFrame,
-                       p: SelectionParams) -> list[float]:
-    """两侧通过目标，空间大的一侧在前。
+def _pass_x_candidates(c: Obj, road: RoadFrame, p: SelectionParams,
+                       first_side: float | None = None) -> list[float]:
+    """两侧通过目标，首选侧在前（缺省=空间大的一侧）。
+
+    ``first_side``：同道通过优先走自车已在的那一侧。旧口径只按「空间更大」
+    选侧，自车已在一侧绕行时会把目标翻到车的另一边——那条横移路径必经
+    目标车本身（20261114_094558 车 51：自车在右、空间更大在左，目标从
+    1.01 道翻到 −0.05 道）。另一侧仍作后备（首选被占时 34% 案例可用）。
 
     占用窗（通过线上有其他车）只按首选侧判会直接弃车——2026-11-08 实测
     三回合里 34% 的贴边候选是「首选侧被占、另一侧完全可用」。候选按侧
     列出，由调用方逐侧过可达与占用检查。"""
     room_l = (c.x - road.left_m) if road.left_m is not None else 0.0
     room_r = (road.right_m - c.x) if road.right_m is not None else 0.0
-    sides = (1.0, -1.0) if room_r >= room_l else (-1.0, 1.0)
+    if first_side is not None and first_side != 0.0:
+        sides = (first_side, -first_side)
+    else:
+        sides = (1.0, -1.0) if room_r >= room_l else (-1.0, 1.0)
     out = []
     for side in sides:
         x = _pass_x_side(c, road, p, side)
@@ -626,7 +668,6 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
     """
     if not p.arrival_guard_enabled:
         return x
-    half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     worst = None
     worst_t: float | None = None
     for c in cars:
@@ -634,7 +675,9 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
             continue                    # 伪车源不驱动守卫（见 Obj.src 注释）
         if not c.safe or c.t is None or not (0.0 < c.t <= _ARRIVAL_GUARD_S):
             continue
-        if abs(x - c.x) >= half:
+        if not _x_known(c, p):
+            continue                    # 横位未知拍不能当占位证据
+        if abs(x - c.x) >= _pass_clear_m(c, p):
             continue
         if worst_t is None or c.t < worst_t:
             worst, worst_t = c, c.t
@@ -650,7 +693,8 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
             continue                    # 目标点在那个时刻会被别的车占住
         if all(c is worst or not c.safe or c.t is None
                or not (0.0 < c.t <= _ARRIVAL_GUARD_S)
-               or abs(cand - c.x) >= half for c in cars):
+               or not _x_known(c, p)
+               or abs(cand - c.x) >= _pass_clear_m(c, p) for c in cars):
             return cand
     return x
 
@@ -674,10 +718,11 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     区间（0.17 道），0 道上的车只让开 0.17（车半宽 0.27）＝迎面撞上去。
 
     主动贴边（闸 pass_graze_adjacent_enabled，2026-11-03）：邻道带
-    |Δx|∈(两车半宽和, pass_reach_lane]、到站 ≥ pass_lean_min_s 的车也是
-    候选——目标同为 graze_gap（_pass_x 选空间更大的一侧，邻道车天然落在
+    |Δx|∈(两车净空, pass_reach_lane]、到站 ≥ pass_lean_min_s 的车也是
+    候选——目标同为 graze_gap，侧别取「自车在车哪一侧」（邻道车天然落在
     靠自车一侧），到站前先贴到位＝150 分极限超车的入口。同道带（≤两车
-    半宽）语义不变＝紧急躲避；按到站排序保证同道车优先。
+    净空）语义不变＝紧急躲避；净空按目标实测半宽算；按到站排序保证同道
+    车优先。
     ``allow_adjacent=False``：承诺期调用位——贴边是得分动作，不改承诺期
     只紧急躲避的契约。
 
@@ -694,7 +739,6 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     全量可达门——那里来不及意味着撞车。
 
     返回 (目标 x, 到站 s, why, 命中车 oid)——oid 供保持闩跨拍跟车。"""
-    half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
     hold = p.pass_hold_s if p.pass_hold_enabled else 0.0
     # 擦边候选视界（闸 pass_horizon_s>0，2026-11-02）：主车 3.15s 出头时
     # 完全来得及（需 1.5s）却被 3.0s 视界排除，下一拍到站爆缩到 1.1s 已经
@@ -702,21 +746,29 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
     # 乱躲（够不着照样拒绝）。
     horizon = p.pass_horizon_s if p.pass_horizon_s > 0 else p.horizon_s
     reach = p.pass_reach_lane * p.lane_w_m
+
+    def _band(c: Obj) -> float:
+        # 同道带按目标实测宽度判（宽体车 0.6 道外就该算同道了），不是标称
+        clear = _pass_clear_m(c, p)
+        return max(clear, reach) if p.pass_graze_adjacent_enabled else clear
+
     cands = [c for c in cars
              if c.safe
-             and abs(c.x - ego) <= (half if not p.pass_graze_adjacent_enabled
-                                    else max(half, reach))
+             and abs(c.x - ego) <= _band(c)
              and ((c.t is not None and -hold <= c.t <= horizon)
                   # 挡道即候选：同道纵近车，算不出到站时间也进（2026-11-07）
-                  or (c.near and abs(c.x - ego) <= half))]
+                  or (c.near and abs(c.x - ego) <= _pass_clear_m(c, p)))]
     for c in sorted(cands, key=_pass_key):
         # t=None 只可能来自同道挡道分支：按已并排（0）处理，免可达但不免占用
         t_eff = 0.0 if c.t is None else c.t
-        adjacent = abs(c.x - ego) > half
+        clear = _pass_clear_m(c, p)
+        adjacent = abs(c.x - ego) > clear
         if adjacent and not (allow_adjacent and p.pass_graze_adjacent_enabled):
             continue
-        if adjacent and c.x_unknown and p.pass_x_unknown_enabled:
-            continue                # 横位未知拍弃车（只关得分贴边，躲避不滤）
+        if c.x_unknown and p.pass_x_unknown_enabled:
+            # 横位未知拍弃车：旧 x 会把同道车判成邻道、把通过侧判反，贴边
+            # 目标追着坏读数翻面。上一有效目标由贴边保持闩续过坏读数拍。
+            continue
         if adjacent and t_eff < p.pass_lean_min_s:
             continue                # 邻道贴边要「极为充足」的时间，临时起意=撞车
         # 两侧逐侧过三关（2026-11-08）：净空够（_pass_x_candidates 已夹
@@ -736,12 +788,18 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
             xs = [] if one is None else [one]
         elif t_eff > 0.0:
             # 未到站的目标才换侧；已并排（t≤0）换侧＝绕到另一头拉开距离，
-            # 丢贴合语义——保持原选侧。
-            xs = _pass_x_candidates(c, road, p)
+            # 丢贴合语义——保持原选侧。首选自车已在的一侧：换到另一侧要
+            # 横穿目标车本身，不是空间问题。
+            xs = _pass_x_candidates(c, road, p,
+                                    1.0 if ego >= c.x else -1.0)
         else:
-            xs = [x for x in [_pass_x(c, road, p)] if x is not None]
+            # 已并排/刚脱离：保持自车所在侧。旧口径按「空间更大」重选，自车
+            # 已在一侧时会把目标翻到车的另一侧——那条横移路径必经车体。
+            xs = [x for x in [_pass_x_side(c, road, p,
+                                           1.0 if ego >= c.x else -1.0)]
+                  if x is not None]
         for x in xs:
-            if abs(x - c.x) < half:
+            if abs(x - c.x) < clear:
                 continue                # 夹进走廊后仍压在车里：这侧过不去
             if c.t is not None and inflight \
                     and not _reachable(x, ego, t_eff, p):
@@ -1296,10 +1354,15 @@ class LayeredSelector:
             return None                    # pass 保持不跨承诺期；闸关不续
         if raw.why == "graze" or raw.layer in (0, 2) or raw.why == "reward":
             return None                    # 新贴边/紧急动作/更高价值接管
-        half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
         car = next((c for c in cars if c.oid == self._graze_oid
                     and c.kind == "car"), None)
-        if car is not None and car.safe:
+        if car is not None and car.safe \
+                and car.x_unknown and p.pass_x_unknown_enabled:
+            # 本拍发布横位不可信：不拿坏读数刷新保持线，沿用上一有效目标。
+            # 20261114_094558 车51：z 穿零那拍 x 塌到 0，刷新即把保持线
+            # 拖到车体上（旧 x 是 0.628 道、坏读数是 0.806 道）。
+            pass
+        elif car is not None and car.safe:
             # 保持原选侧：更换到空间更大的一侧＝横穿目标车，且目标会
             # 逐拍翻面（手动局贴边侧 56~61% 与人工同向，翻面只会更差）。
             if self._hold_side is not None \
@@ -1309,7 +1372,7 @@ class LayeredSelector:
                     x = None           # 夹取回退到了另一侧：宁可断也不翻边
             else:
                 x = _pass_x(car, road, p)
-            if x is not None and abs(x - car.x) >= half:
+            if x is not None and abs(x - car.x) >= _pass_clear_m(car, p):
                 self._graze_x = x
                 self._graze_miss_t = GRAZE_HOLD_MISS_S
             else:
@@ -1346,8 +1409,9 @@ class LayeredSelector:
             t_end = max(t_end, max(car.t, 0.0)
                         + _pass_alongside_s(car.v_close, p) + p.margin_s)
         if any(c.kind == "car" and c.oid != self._graze_oid and c.safe
+               and _x_known(c, p)
                and c.t is not None and -0.2 <= c.t <= t_end
-               and abs(c.x - x) < half for c in cars):
+               and abs(c.x - x) < _pass_clear_m(c, p) for c in cars):
             self._graze_oid = None         # 贴边位被别车占了：不挤缝
             self._side_oid = None
             return None

@@ -98,9 +98,16 @@ YV_GAP_S = 1.0
 # 发布值的 slew 限速（2026-11-13，六局实测）：中位窗口挡不住**成簇**离群——
 # 连续 3~4 拍偏 5~15px 时中位跟着走，段内发布值极差实测 16~33px（1px 约 40m
 # 处 5% 距离）。地平线是慢变量（俯仰随载重/坡度变，整段真实变化实测 ≤5px），
-# 所以给发布值加每检测拍 0.1px 的限速：单拍噪声被压成缓慢跟随，而 0.5px/s
-# 的真实坡度仍跟得上。断检超过 YV_GAP_S 清史时不受限速（新姿态直接采纳）。
+# 所以给发布值加每检测拍 0.1px 的限速：单拍噪声被压成缓慢跟随。
+# 2026-11-14 实机复核补两条：
+# ① 断检 >YV_GAP_S 清史后不能直接采纳第一帧——三局实测断检 2.2s 后第一帧
+#    是 378.8 假灭点（真实 ~360），直接采纳会被 0.1px/拍锁在错值上约 9 秒；
+#    改为保留旧发布值，凑满 YV_WIN 个新样本再发布中位。
+# ② 整窗 5 拍都偏离发布值超过 YV_STEP_ESCAPE_PX 时直接跟随中位：实测正常
+#    中位变化 5~10px/s，0.1px/拍（约 2px/s）会把正常变化拖住。要求整窗同侧
+#    而不是数连续拍，是为了让 3~4 拍的成簇离群仍被压住（窗里还留着旧样本）。
 YV_SLEW_PX = 0.1
+YV_STEP_ESCAPE_PX = 3.0
 # 单帧样本的质量门：少于这么多条有效线时两两交点只有 1~3 个、没有中位抗差，
 # 实测这些拍是假灭点的主要来源（n_lines=1~2 时 raw 落到 342/379）。
 # 历史为空（阶段头/断检恢复）时不过门，否则冷启动永远没有第一个样本。
@@ -633,27 +640,42 @@ def _vanish_row(lines: list[dict]) -> float | None:
 
 
 def _smooth_vanish(hist: deque, raw: float, now: float, last_t: float,
-                   prev: float | None = None) -> tuple[float, float]:
+                   prev: float | None = None,
+                   refill: bool = False) -> tuple[float, float, bool]:
     """单帧灭点行 → 发布值（近 YV_WIN 个检测拍的中位 + 每拍 slew 限速）。
-    返回 (发布值, 入史时刻)。
+    返回 ``(发布值, 入史时刻, 是否仍在补窗)``。
 
     长间隔（>YV_GAP_S）先清史：中间断过检就说明这段的俯仰证据不连续，拿旧
-    样本掺进中位会把一次真实的姿态变化当成噪声压掉；清史后 ``prev`` 一并作废，
-    新姿态直接采纳、不受限速（否则换段/复位后要爬很久）。
+    样本掺进中位会把一次真实的姿态变化当成噪声压掉。清史后**不直接发布第一
+    帧**：先保留上一发布值，凑满 YV_WIN 个新样本再发布它们的中位——断检恢复
+    后的第一帧可能是假灭点，单帧直发会被 slew 锁死（2026-11-14 三局实测
+    378.8 vs 真实 ~360，锁死约 9 秒）。
 
-    slew 限速只作用于**发布值**：中位仍是近 5 拍的抗差估计，物理门 341~381
-    与 MAD 剔除（``_vanish_row``）照旧。``prev``=None 表示无历史发布值。"""
+    正常窗口下 slew 只作用于**发布值**；整窗 5 拍都偏离发布值超过
+    ``YV_STEP_ESCAPE_PX`` 时直接跟随中位，避免正常中位变化被 0.1px/拍拖住。
+    物理门 341~381 与 MAD 剔除（``_vanish_row``）照旧。``prev``=None 表示
+    无历史发布值（冷启动）。"""
     if hist and now - last_t > YV_GAP_S:
         hist.clear()
-        prev = None
+        refill = True
     hist.append(float(raw))
     med = float(np.median(hist))
+    last_t = now
     if prev is None:
-        return med, now
+        return med, last_t, False
+    if refill:
+        if len(hist) < YV_WIN:
+            return float(prev), last_t, True
+        return med, last_t, False
     step = med - float(prev)
-    if abs(step) > YV_SLEW_PX:
-        med = float(prev) + math.copysign(YV_SLEW_PX, step)
-    return med, now
+    if abs(step) <= YV_SLEW_PX:
+        return med, last_t, False
+    side = 1.0 if step > 0.0 else -1.0
+    if (len(hist) == YV_WIN and abs(step) > YV_STEP_ESCAPE_PX
+            and all((float(v) - float(prev)) * side > YV_STEP_ESCAPE_PX
+                    for v in hist)):
+        return med, last_t, False
+    return float(prev) + math.copysign(YV_SLEW_PX, step), last_t, False
 
 
 def _cam_h_from_lines(lines: list[dict], y_v: float | None) -> float | None:
@@ -1217,7 +1239,8 @@ class LaneObsWorker:
         self._yv: float | None = None      # 灭点行（地平线）·发布值=近 N 个检测拍中位
         self._yv_raw: float | None = None  # 最近一次检测拍的单帧估计（未平滑，诊断用）
         self._yv_hist: deque = deque(maxlen=YV_WIN)
-        self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史，见 _push_vanish）
+        self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史）
+        self._yv_refill = False            # 清史后补窗期：先保留旧发布值
         self.busy_skips = 0
         self.slot_skips = 0
         self._slot_wait_s = 0.0
@@ -1418,9 +1441,10 @@ class LaneObsWorker:
                         yv = None
                     if yv is not None:
                         self._yv_raw = float(yv)
-                        self._yv, self._yv_t = _smooth_vanish(
+                        (self._yv, self._yv_t,
+                         self._yv_refill) = _smooth_vanish(
                             self._yv_hist, yv, time.perf_counter(), self._yv_t,
-                            self._yv)
+                            self._yv, self._yv_refill)
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
                                                jump, anchor, a_strict)
                 t_done = time.perf_counter()

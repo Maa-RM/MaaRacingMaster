@@ -465,6 +465,7 @@ class DecisionEngine:
             request_hold=cfg.route.request_hold,
             car_half_lane=s.car_half_lane,
             ego_half_lane=s.ego_half_lane,
+            collision_margin_m=cfg.motion.collision_margin_m,
             lane_clearance_lane=s.lane_clearance_lane,
             preposition_enabled=s.preposition_enabled,
             preposition_horizon_s=s.preposition_horizon_s,
@@ -1273,6 +1274,11 @@ class DecisionEngine:
                         if n_jump < self.cfg.traffic.metric_x_jump_hold_ticks:
                             xr = hold[0]
                             self._car_x_hold[tid] = (hold[0], n_jump)
+                            # 本拍发布的是被门挡下的旧 x，不是这辆车的新读数：
+                            # 贴边必须按未知处理（20261114_094558 车51：跳
+                            # 1.77m 落在 pass_x_unknown 的 2.8m 门内，旧 x
+                            # 被当成同道判据，通过侧翻到车另一侧）。
+                            x_unknown = True
                         else:
                             self._car_x_hold[tid] = (xr, 0)
                     else:
@@ -1769,7 +1775,8 @@ class DecisionEngine:
                     near=c.near,
                     src=c.src,
                     z=c.z_m,
-                    x_unknown=c.x_unknown)
+                    x_unknown=c.x_unknown,
+                    half_w_m=c.half_w_m)
                 for c in car_src]
         coins = [Obj("coin", c.x_m - origin, c.t_miss_s,
                      count=c.observed_count, conf=c.conf,

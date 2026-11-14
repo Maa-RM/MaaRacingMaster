@@ -848,17 +848,23 @@ class Tracker:
                     continue
                 rebase = True
                 rebased += 1
+            # 相对速度重建（用户方向 2026-11-03）：从近窗锚点史整段估
+            # （总位移÷总时间），单对锚差分退役为窗内无更早锚时的退化
+            # 形态——单对差分把跨簇跳变区间直接放大成荒值
+            # （20261103_143052 车48：76.9→25.8 跨 30m 跳报 61 m/s，
+            # 整段估 ~40 与帧证一致）。
+            hist = [p for p in t.anchor_hist
+                    if sheet.ts_ns - p[0] <= self.p.slope_window_s * 1e9]
+            # 评估下限按**锚点史窗跨度**判，不是单对锚间隔：深度锚流通常
+            # 50~100ms 一帧，单间隔永远够不到 150ms，速度只在检测断档那一
+            # 次被种下，然后整条轨道不再刷新（20261114_094558 车51：断档
+            # 期间一次跨簇跳变种出 67.26 m/s，真实闭速 ~27，其后 16s 不变；
+            # z=锚−67×锚龄 在并排段把 z 推过零，x=(cx−vpx)·z/fx 跟着塌到 0
+            # 再翻号）。窗跨度到龄即刷新，一次跳变只污染窗内那段。
+            span_s = ((sheet.ts_ns - hist[0][0]) / 1e9) if hist else dt_s
             if (not rebase and t.anchor_z is not None and dt_s > 0
-                    and dt_s * 1000.0 >= self.p.gate_eval_min_ms):
-                # 相对速度重建（用户方向 2026-11-03）：从近窗锚点史整段估
-                # （总位移÷总时间），单对锚差分退役为窗内无更早锚时的退化
-                # 形态——单对差分把跨簇跳变区间直接放大成荒值
-                # （20261103_143052 车48：76.9→25.8 跨 30m 跳报 61 m/s，
-                # 整段估 ~40 与帧证一致）。
-                hist = [p for p in t.anchor_hist
-                        if sheet.ts_ns - p[0] <= self.p.slope_window_s * 1e9]
-                t.v_inst = ((hist[0][1] - e.z_m)
-                            / max((sheet.ts_ns - hist[0][0]) / 1e9, 1e-3)
+                    and span_s * 1000.0 >= self.p.gate_eval_min_ms):
+                t.v_inst = ((hist[0][1] - e.z_m) / max(span_s, 1e-3)
                             if hist else (t.anchor_z - e.z_m) / dt_s)
                 t.v_close_mps = t.v_inst
             elif rebase:

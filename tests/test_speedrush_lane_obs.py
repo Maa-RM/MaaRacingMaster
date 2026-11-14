@@ -823,39 +823,82 @@ def test_smooth_vanish_rejects_single_outlier():
     """单帧离群被中位吸收：坏拍（假灭点）不得直接进合成点图的尺度基准。"""
     from collections import deque
     hist = deque(maxlen=la.YV_WIN)
+    val = None
     t = 0.0
-    for i, v in enumerate((361.0, 361.2, 360.8, 361.1)):
-        val, t = la._smooth_vanish(hist, v, i * 0.05, t)
-    assert val == pytest.approx(361.05, abs=0.15)
-    val, t = la._smooth_vanish(hist, 372.0, 0.30, t)      # 单帧跳 11px
+    refill = False
+    for i, v in enumerate((361.0, 361.2, 360.8, 361.1, 361.0)):
+        val, t, refill = la._smooth_vanish(hist, v, i * 0.05, t, val, refill)
+    assert val == pytest.approx(361.0, abs=0.2)
+    val, t, refill = la._smooth_vanish(hist, 372.0, 0.25, t, val, refill)
     assert abs(val - 361.0) < 1.0, f"离群没有被吸收：{val}"
 
 
-def test_smooth_vanish_clears_history_after_gap():
-    """断检超过 YV_GAP_S：旧姿态样本不得掺进新中位，且不受 slew 限速。"""
-    from collections import deque
-    hist = deque(maxlen=la.YV_WIN)
-    t = 0.0
-    for i in range(5):
-        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t)
-    assert val == pytest.approx(361.0)
-    val, t = la._smooth_vanish(hist, 350.0, t + 5.0, t, val)
-    assert val == pytest.approx(350.0)
-
-
-def test_smooth_vanish_slews_continuous_drift():
-    """连续同向漂移只按 YV_SLEW_PX/拍走：成簇离群不得整段拉动发布值。"""
+def test_smooth_vanish_gap_holds_prev_until_window_refills():
+    """断检超过 YV_GAP_S 后第一帧可能是假灭点：先保留旧发布值，凑满窗口再采纳中位。"""
     from collections import deque
     hist = deque(maxlen=la.YV_WIN)
     val = None
     t = 0.0
-    for i in range(10):
-        val, t = la._smooth_vanish(hist, 361.0, i * 0.05, t, val)
+    refill = False
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 361.0, i * 0.05, t, val, refill)
     assert val == pytest.approx(361.0)
-    for i in range(10, 20):
-        val, t = la._smooth_vanish(hist, 371.0, i * 0.05, t, val)
-    assert 361.0 < val <= 361.0 + 10 * la.YV_SLEW_PX + 1e-6, \
-        f"10 拍 10px 台阶不得整段跟上，只允许按陷速走：{val}"
+    val, t, refill = la._smooth_vanish(hist, 378.8, t + 2.2, t, val, refill)
+    assert val == pytest.approx(361.0), "断检后的第一帧不得直接进发布值"
+    assert refill is True
+    mine = (375.2, 362.4, 358.9, 350.4)
+    for i, v in enumerate(mine):
+        val, t, refill = la._smooth_vanish(hist, v, t + 0.05, t, val, refill)
+        if i < 3:
+            assert val == pytest.approx(361.0)
+    assert val == pytest.approx(362.4), "第五个新样本应发布窗口中位，且不受离群拖带"
+    assert refill is False
+
+
+def test_smooth_vanish_slews_short_cluster():
+    """3~4 拍的成簇离群仍被压住：整窗还留着旧样本，不得触发持续偏离出口。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    val = None
+    t = 0.0
+    refill = False
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 361.0, i * 0.05, t, val, refill)
+    for i in range(3):
+        val, t, refill = la._smooth_vanish(hist, 371.0, (5 + i) * 0.05, t, val, refill)
+    assert abs(val - 361.0) < 0.5, f"3 拍离群不得整段拉动发布值：{val}"
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 361.0, (8 + i) * 0.05, t, val, refill)
+    assert abs(val - 361.0) < 0.5
+
+
+def test_smooth_vanish_follows_sustained_step():
+    """整窗 5 拍同侧偏离超过阈值：直接跟到中位，不被 0.1px/拍拖住。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    val = None
+    t = 0.0
+    refill = False
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 361.0, i * 0.05, t, val, refill)
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 371.0, (5 + i) * 0.05, t, val, refill)
+    assert val == pytest.approx(371.0), f"持续偏离没有跟上：{val}"
+
+
+def test_smooth_vanish_slew_holds_subthreshold_drift():
+    """低于出口阈值的台阶仍只按 YV_SLEW_PX/拍走，不整段跟随。"""
+    from collections import deque
+    hist = deque(maxlen=la.YV_WIN)
+    val = None
+    t = 0.0
+    refill = False
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 361.0, i * 0.05, t, val, refill)
+    for i in range(5):
+        val, t, refill = la._smooth_vanish(hist, 363.0, (5 + i) * 0.05, t, val, refill)
+    assert 361.0 < val < 363.0
+    assert val == pytest.approx(361.0 + 3 * la.YV_SLEW_PX, abs=0.02)
 
 
 def test_fit_theta_uses_live_horizon_not_moge_constant():

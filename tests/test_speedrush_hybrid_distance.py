@@ -222,6 +222,37 @@ def test_slope_window_estimate_tempers_single_interval():
     assert d.v_close_mps > 10.0                        # 不是单对差分的 3.8
 
 
+def test_anchor_velocity_refreshes_from_history_span():
+    """速度刷新按锚点史窗跨度判（2026-11-14）：深度锚流 50~100ms 一帧，
+    单对锚间隔永远够不到 150ms 评估下限——速度只在检测断档那一次被种下，
+    然后整条轨道不再刷新（20261114_094558 车51：断档区间跨簇跳变种出
+    67.26 m/s，真实闭速 ~27，其后 16s 不变；z=锚−v×锚龄 在并排段把 z
+    推过零，x 跟着塌到 0 再翻号）。这里先种一个 76 m/s 的断档荒值，再以
+    15 m/s 真实闭速持续供锚：旧口径 v 恒定不变，新口径回到窗内趋势。"""
+    trk = Tracker(anchor_box_gate_enabled=True)
+    trk.update(_per(1, cars=[_car(h=30)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_car(h=30)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(1, z_m=80.0, h_px=30))
+    for fid in range(3, 9):                      # 断档 8 帧（264ms）
+        trk.update(_per(fid, cars=[_car(h=30)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(9, cars=[_car(h=30)]), frame_age_ms=10.0, stage=1,
+               anchors=_sheet(8, z_m=63.0, h_px=30))
+    d = _dist(trk._last_obs)
+    assert d.v_close_mps > 60.0                  # 荒值已种下
+    z = 63.0
+    obs = None
+    for fid in range(10, 72):
+        anchors = None
+        if fid % 3 == 0:                         # 每 3 帧（99ms）一个锚
+            z -= 1.5                             # 真实闭速 ~15 m/s
+            anchors = _sheet(fid - 1, z_m=z, h_px=30)
+        obs = trk.update(_per(fid, cars=[_car(h=30)]), frame_age_ms=10.0,
+                         stage=1, anchors=anchors)
+    d = _dist(obs)
+    assert d.v_close_mps == pytest.approx(15.0, abs=5.0)
+    assert d.v_close_mps < 30.0                  # 断档荒值已被窗口洗掉
+
+
 def test_new_anchor_resets_rescaled_lifecycle():
     """RESCALED 是锚点生命周期状态：确认后**新锚**重置生命周期（approach_
     confirmed 清零）——整段速度低于阈值不再确认，回 ANCHOR 持锚，但速度

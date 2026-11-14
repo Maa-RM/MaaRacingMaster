@@ -1119,10 +1119,12 @@ def test_graze_target_stays_outside_guard():
     assert abs(rep.target_x_m - 1.2 * LW) == pytest.approx(0.68 * LW, abs=0.06)
 
 
-def test_pass_x_unknown_blocks_adjacent_not_same_lane():
-    """横位未知态（2026-11-10 真值小集）：发布横位相邻跳 >0.8 道或锚点换锚
-    的拍，邻道贴边得分候选弃车（等读数回到连续再重新武装）；同道躲避不滤
-    （躲避宁多动不撞）；闸关=逐位回今天。"""
+def test_pass_x_unknown_drops_adjacent_and_same_lane():
+    """横位未知态（2026-11-10 真值小集；2026-11-14 扩到同道）：发布横位
+    相邻跳超物理上限、锚点换锚，或硬跳变门正把旧 x 续着的拍，贴边/让位
+    一律弃车——旧 x 正是坏读数，拿它判同道/选侧会把目标翻到车另一侧
+    （20261114_094558 车51：−1.79m 被旧 x 0.628 道遮住，通过侧从右翻左）。
+    上一有效目标由贴边保持闩续过坏读数拍；闸关=逐位回今天。"""
     p_on = _p(pass_graze_adjacent_enabled=True, pass_x_unknown_enabled=True)
     # 邻道 unknown 车不进贴边
     rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.5, x_unknown=True)],
@@ -1135,8 +1137,74 @@ def test_pass_x_unknown_blocks_adjacent_not_same_lane():
     rep = select(_road(), [], [Obj("car", 1.2 * LW, 2.5, x_unknown=True)],
                  [], 0.0, _p(pass_graze_adjacent_enabled=True))
     assert rep.why in ("pass", "graze")
-    # 同道 unknown 车仍躲避（挡道即候选语义不动）
+    # 同道 unknown 车也弃（旧 x 可能把邻道车伪装成同道，躲避方向不可信）
     rep = select(_road(), [],
                  [Obj("car", 0.0, None, near=True, x_unknown=True)],
                  [], 0.0, p_on)
-    assert rep.why in ("pass", "graze")
+    assert rep.why not in ("pass", "graze")
+
+
+def test_pass_same_lane_prefers_ego_side_and_measured_width():
+    """20261114_094558 车51 碰撞回归：锚点 −1.79m（绝对 0.30 道）、实测
+    半宽 1.18m、自车 0.811 道。旧口径按「空间更大」选左、按名义半宽夹
+    目标，输出 0.84 道落在车体包络内；新口径走自车所在右侧，且离车心
+    不小于 ego_half + 实测半宽 + 碰撞余量。"""
+    car_x = 0.30 * LW
+    ego = 0.81 * LW
+    ego_half = 0.27 * LW
+    margin = 0.05
+    hw = 1.18
+    clear = ego_half + hw + margin
+    rep = select(_road(), [],
+                 [Obj("car", car_x, None, near=True, half_w_m=hw)],
+                 [], ego, _p())
+    assert rep.layer == 2 and rep.why == "pass"
+    assert rep.target_x_m > ego                    # 自车在右：不横穿目标车
+    assert rep.target_x_m - car_x >= clear - 1e-9
+    # 旧输出 0.84 道在车体包络内——净空判据必须判它不可行
+    assert abs(0.84 * LW - car_x) < clear
+    # 更宽的车（实测半宽 1.6m）目标随物理净空外移，不受 graze_gap 封顶
+    wide = select(_road(), [], [Obj("car", car_x, None, near=True,
+                                    half_w_m=1.6)], [], ego, _p())
+    assert wide.why == "pass"
+    assert wide.target_x_m - car_x >= ego_half + 1.6 + margin - 1e-9
+
+
+def test_unknown_car_does_not_veto_held_target():
+    """横位未知拍的车不能当「通过位被占」的证据：并排碰撞局 2504 拍自车
+    已在右、原命中车读数消失，新车的坏 x 落在保持位 0.6m 内——占用否决
+    会释放保持闩、落回中心（左打 2.2m）。保持位应续住等读数恢复。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True,
+                             pass_x_unknown_enabled=True,
+                             pass_graze_adjacent_enabled=True))
+    r1 = sel.update(_road(), [],
+                    [Obj("car", 0.309 * LW, 2.0, oid=52)], [],
+                    0.761 * LW, 0.05)
+    assert r1.why == "pass"
+    x0 = r1.target_x_m
+    for _ in range(4):
+        r2 = sel.update(_road(), [],
+                        [Obj("car", 0.806 * LW, None, near=True, oid=51,
+                             half_w_m=1.142, x_unknown=True)],
+                        [], 0.790 * LW, 0.05)
+        assert r2.why == "pass" and r2.layer == 2
+        assert r2.target_x_m == pytest.approx(x0, abs=0.1)
+
+
+def test_graze_latch_freezes_target_on_unknown_reading():
+    """命中车读数未知时保持闩不刷新目标：坏 x 不能把保持线拖到车体上。
+
+    20261114_094558 车51 的 2504/2506 两拍：z 穿零时 x 塌到 0，下一拍又
+    跳到 −1.79m——按拍重算会把目标从 1.01 道翻到 −0.05 道。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True,
+                             pass_x_unknown_enabled=True))
+    rep = sel.update(_road(), [], [Obj("car", 0.3, 2.0, oid=7)], [],
+                     0.0, 0.05)
+    assert rep.why == "pass"
+    x0 = rep.target_x_m
+    for _ in range(4):
+        rep = sel.update(_road(), [],
+                         [Obj("car", 0.9, None, near=True, oid=7,
+                              x_unknown=True)], [], 0.0, 0.05)
+        assert rep.why == "pass" and rep.layer == 2
+        assert rep.target_x_m == pytest.approx(x0, abs=0.05)
