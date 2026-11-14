@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using MaaRacingMaster.Shell;
+using Velopack;
 
 namespace MaaRacingMaster.Shell.ContractProbe;
 
@@ -22,10 +25,20 @@ internal static class Program
 
     private static int Main(string[] args)
     {
+        // 子进程形态：先跑更新钩子（与正式壳同一位置语义），普通启动才会到达标记写入。
+        var markerIdx = Array.IndexOf(args, "--hook-child");
+        if (markerIdx >= 0)
+        {
+            VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+            File.WriteAllText(args[markerIdx + 1], "after-run");
+            return 0;
+        }
+
         var mode = args.Length > 0 ? args[0] : "";
         switch (mode)
         {
             case "approot": CheckAppRoot(); break;
+            case "hook": CheckHook(args); break;
             default:
                 Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar");
                 return 2;
@@ -33,6 +46,65 @@ internal static class Program
         Console.WriteLine(s_failures == 0 ? "ALL PASS" : $"FAILURES: {s_failures}");
         return s_failures == 0 ? 0 : 1;
     }
+
+    // ---------- 更新钩子自退出 ----------
+
+    /// <summary>以子进程实测固定版本库的钩子契约：钩子参数 → 库内自退出（后续代码不执行）；
+    /// 普通启动 → Run 返回继续执行。P0 打包契约检查只能证明「钩子会退出」，这里补证明
+    /// 「退出发生在库内、早于任何后续启动逻辑」。</summary>
+    private static void CheckHook(string[] args)
+    {
+        var self = Environment.ProcessPath
+            ?? throw new InvalidOperationException("探针需要以独立进程方式运行");
+        var work = MakeTempDir("hook");
+        var hookMarker = Path.Combine(work, "hook.marker");
+        var normalMarker = Path.Combine(work, "normal.marker");
+        var hookDir = Path.Combine(work, "install-target");
+        Directory.CreateDirectory(hookDir);
+
+        var sw = Stopwatch.StartNew();
+        // 钩子参数必须在命令行首位（更新器真实调起形态）；子进程里 Run 之后的参数仅用于定位标记
+        var hookRun = RunChild(self, $"--veloapp-install {Quote(hookDir)} --hook-child {Quote(hookMarker)}");
+        var hookElapsed = sw.ElapsedMilliseconds;
+        Check("钩子进程快速自退出（<10s）", hookRun.TimedOut == false && hookElapsed < 10_000,
+              hookRun.TimedOut == true ? "超时被强杀" : $"{hookElapsed}ms");
+        // 退出码是库自己的选择（合成假目标下实测 -1，真实钩子流程的退出码归受管链复验）；
+        // 壳侧契约只钉：库内自退出、早于任何后续启动逻辑。
+        Check("钩子路径不执行后续代码（标记未写）", !File.Exists(hookMarker), "钩子后标记文件存在");
+
+        var normalRun = RunChild(self, $"--hook-child {Quote(normalMarker)}");
+        Check("普通启动子进程退出码 0", normalRun.TimedOut == false && normalRun.ExitCode == 0,
+              normalRun.TimedOut == true ? "超时被强杀" : $"exit={normalRun.ExitCode?.ToString() ?? "<未知>"}");
+        Check("普通启动 Run 返回后继续执行（标记已写）", File.Exists(normalMarker),
+              "无钩子参数时 Run 未返回或未继续");
+
+        // 静态断言的另一半：同一进程内无钩子参数时 Run 直接返回（能走到这里本身就是证据）
+        VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+        Check("探针自身普通启动 Run 直通（能执行到这里）", true, "");
+    }
+
+    private sealed record ChildRun(int? ExitCode, bool TimedOut);
+
+    private static ChildRun RunChild(string fileName, string arguments)
+    {
+        using var p = Process.Start(new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        if (p is null)
+            return new ChildRun(null, TimedOut: true);
+        if (!p.WaitForExit(30_000))
+        {
+            p.Kill(entireProcessTree: true);
+            return new ChildRun(null, TimedOut: true);
+        }
+        return new ChildRun(p.ExitCode, TimedOut: false);
+    }
+
+    private static string Quote(string s) => "\"" + s + "\"";
 
     // ---------- 应用根解析 ----------
 
