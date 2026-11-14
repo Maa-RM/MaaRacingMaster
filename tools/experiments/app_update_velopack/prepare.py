@@ -162,6 +162,11 @@ def _isolated_shell_copy(copy: Path) -> Path:
     return csproj
 
 
+# 最小注入形态（本机实测必正常渲染）：仅更新器初始化 + 探针参数早退。
+MINIMAL_INJECT = '''\n        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+        if (args.Contains("--update-adapter-probe")) { Console.WriteLine("REAL_SHELL_PRE_UI_OK"); return; }'''
+
+
 def real_shell() -> None:
     copy = OUT / "shell-copy"
     csproj = _isolated_shell_copy(copy)
@@ -169,34 +174,41 @@ def real_shell() -> None:
     text = program.read_text(encoding="utf-8")
     needle = "private static void Main(string[] args)\n    {"
     assert needle in text
-    injected = (needle + "\n        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false).Run();"
-                '\n        if (args.Contains("--update-adapter-probe")) '
-                '{ Console.WriteLine("REAL_SHELL_PRE_UI_OK"); return; }')
-    program.write_text(text.replace(needle, injected, 1), encoding="utf-8")
+    program.write_text(text.replace(needle, needle + MINIMAL_INJECT, 1), encoding="utf-8")
     publish(csproj, OUT / "real-shell-publish")
 
 
 def managed_shell(*, nl: bool = False, fd: bool = False, stage: bool = True,
-                  mw_inject: bool = True, out_name: str = "") -> None:
+                  mw_inject: bool = True, out_name: str = "",
+                  minimal: bool = False) -> None:
     """真实壳接入 SDK 并组装标准受管布局内容树。
 
-    nl=True：版本报告改读磁盘标记、不触碰 VelopackLocator（挂起机制拆分实验）；
-    fd=True 按依赖框架发布（默认生产口径自包含）；stage=False 只发布不组树；
-    mw_inject=False 不注入 MainWindow 的 WebView2 双初始化仪器（v1 复刻）。
+    minimal=True：壳只保留最小注入（已验证必正常渲染的形态），下载/提交改由
+    内容树里的独立更新助手 MaaRM.UpdateProbe.exe 承担；nl=True：版本报告改读
+    磁盘标记、不触碰 VelopackLocator（挂起机制拆分实验）；fd=True 按依赖框架
+    发布（默认生产口径自包含）；stage=False 只发布不组树；mw_inject=False 不
+    注入 MainWindow 的 WebView2 双初始化仪器（v1 复刻）。
     """
     suffix = "-nl" if nl else ""
     if out_name:
         suffix = "-" + out_name
+    if minimal:
+        suffix = "-minimal"
     copy = OUT / f"managed-copy{suffix}"
     csproj = _isolated_shell_copy(copy)
     program = csproj.parent / "Program.cs"
     text = program.read_text(encoding="utf-8")
     needle = "private static void Main(string[] args)\n    {"
     assert needle in text
-    inject = MAIN_INJECT_NL if nl else MAIN_INJECT
-    program.write_text(text.replace(needle, HELPER_INJECT + needle + inject, 1),
-                       encoding="utf-8")
-    if mw_inject:
+    if minimal:
+        inject = MINIMAL_INJECT
+    elif nl:
+        inject = MAIN_INJECT_NL
+    else:
+        inject = MAIN_INJECT
+    body = (needle + inject) if minimal else (HELPER_INJECT + needle + inject)
+    program.write_text(text.replace(needle, body, 1), encoding="utf-8")
+    if mw_inject and not minimal:
         mainwindow = csproj.parent / "MainWindow.xaml.cs"
         text = mainwindow.read_text(encoding="utf-8")
         nav_needle = "            web.Source = new Uri(indexPath);"
@@ -255,8 +267,17 @@ def managed_shell(*, nl: bool = False, fd: bool = False, stage: bool = True,
     assert RUNTIME_SOURCE.is_dir(), (
         f"缺少已组装运行时缓存 {RUNTIME_SOURCE}；可设 MAARM_RUNTIME_SOURCE 指向 assemble 产物")
     shutil.copytree(RUNTIME_SOURCE, stage / "runtime" / "python")
+    # 独立更新助手进内容根：下载/提交由它驱动，壳保持最小注入形态
+    helper_dir = OUT / "update-helper"
+    publish(HERE / "Probe/HookProbe.csproj", helper_dir, timeout=600)
+    for name in ("MaaRM.UpdateProbe.exe", "MaaRM.UpdateProbe.dll",
+                 "MaaRM.UpdateProbe.deps.json", "MaaRM.UpdateProbe.runtimeconfig.json"):
+        src = helper_dir / name
+        assert src.is_file(), f"更新助手产物缺失: {src}"
+        shutil.copy2(src, stage / name)
     assert (stage / "pyproject.toml").is_file()
     assert (stage / "MaaRacingMaster.Shell.exe").is_file()
+    assert (stage / "MaaRM.UpdateProbe.exe").is_file()
     assert (stage / "apps/MaaRacingMaster.Shell/frontend/index.html").is_file()
     assert (stage / "runtime/python/python.exe").is_file()
     print("MANAGED_STAGE_OK", stage)
@@ -317,9 +338,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["sdk", "tool", "probe", "real-shell",
                                            "pack-real-shell", "managed-shell",
-                                           "pack-managed", "publish-fd",
-                                           "managed-shell-nl", "managed-shell-v1",
-                                           "managed-shell-v1fd", "pure-sc-publish"])
+                                           "managed-shell-minimal", "pack-managed",
+                                           "publish-fd", "managed-shell-nl",
+                                           "managed-shell-v1", "managed-shell-v1fd",
+                                           "pure-sc-publish"])
     args = parser.parse_args()
     sdk()
     if args.action == "tool":
@@ -344,6 +366,8 @@ def main() -> None:
         print("REAL_SHELL_PACK_OK")
     elif args.action == "managed-shell":
         managed_shell()
+    elif args.action == "managed-shell-minimal":
+        managed_shell(minimal=True)
     elif args.action == "publish-fd":
         # 同一份仪器化代码按「依赖框架」发布（对照自包含发布的 WebView2 挂起）
         copy = OUT / "managed-copy"

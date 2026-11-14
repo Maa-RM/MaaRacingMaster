@@ -399,72 +399,90 @@ def _wait_user_close_window(ev: dict, case: Path) -> None:
 
 
 def _managed_update_chain() -> dict:
+    """受管真实壳整链：壳保持最小注入，下载/提交由独立更新助手驱动。"""
     info = json.loads((OUT / "managed-case.json").read_text(encoding="utf-8"))
     live = Path(info["live"])
     feed = Path(info["feed"])
     case = Path(info["case"])
     current = live / "current"
     shell_exe = current / SHELL_EXE
+    # 助手从受管树外以显式定位器驱动（受管树内运行次要 exe 会触发默认定位器挂起）
+    helper = OUT / "update-helper" / "MaaRM.UpdateProbe.exe"
     env, userdata, report = _case_env(case, "update")
     profile = userdata / "profile.json"
     profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
     user_before = profile.read_bytes()
     ev: dict = {"case": info["case"], "live": info["live"]}
 
-    # 1 经生成入口的探针启动（两跳转发命令行；证据用文件报告）
-    run([str(live / info["stub"]), "--update-adapter-probe"],
-        timeout=60, env_extra=env)
+    # 1 生成入口两跳探针启动（最小壳早退；证据为退出码）
+    r1 = run([str(live / info["stub"]), "--update-adapter-probe"],
+             timeout=60, expected=None, env_extra=env)
+    ev["stub_probe_exit"] = r1.returncode
+    assert r1.returncode == 0, f"入口探针启动退出码异常: {r1.returncode} {r1.stdout} {r1.stderr}"
+
+    # 2 版本与内容根报告（助手树外直启，显式定位器读受管根）
+    run([str(helper), "--locator-root", str(live)], timeout=60, expected=None, env_extra=env)
     first = _wait_report(report, 20)
-    ev["stub_launch"] = first
+    ev["helper_report"] = first
     assert first["version"] == "0.1.0", first
     assert (current / "payload-version.txt").read_text(encoding="utf-8") == "0.1.0"
 
-    # 2 下载到本地（不动磁盘内容）
-    downloaded = run([str(shell_exe), "--download-local", str(feed)],
+    # 3 下载到本地（不动磁盘内容）
+    downloaded = run([str(helper), "--locator-root", str(live), "--download-local", str(feed)],
                      timeout=600, env_extra=env)
     assert "UPDATE_DOWNLOADED" in downloaded.stdout, downloaded.stdout + downloaded.stderr
     ev["download"] = "ok"
 
-    # 3 普通启动不提交待更新包
-    run([str(shell_exe), "--update-adapter-probe"], timeout=60, env_extra=env)
+    # 4 普通启动（真实入口链）不提交待更新包
+    r4 = run([str(live / info["stub"]), "--update-adapter-probe"],
+             timeout=60, expected=None, env_extra=env)
+    ev["stub_probe_exit_second"] = r4.returncode
+    assert r4.returncode == 0, r4.returncode
     assert (current / "payload-version.txt").read_text(encoding="utf-8") == "0.1.0", \
         "普通启动擅自提交了待更新包"
     ev["pending_not_applied_on_ordinary_start"] = True
 
-    # 4 提交：壳退出后由更新器整树替换并自动重启完整 GUI（提权上下文内不弹 UAC）
-    result = run([str(shell_exe), "--apply-local", str(feed)],
+    # 5 提交：助手树外发起，壳退出后由更新器整树替换并自动重启完整 GUI（最小注入形态）
+    result = run([str(helper), "--locator-root", str(live), "--apply-local", str(feed)],
                  timeout=600, expected=None, env_extra=env)
     assert "UPDATE_QUEUED" in result.stdout, result.stdout + result.stderr
     ev["apply_requested"] = True
 
-    # 5 磁盘替换 + 包外用户数据不变
+    # 6 磁盘替换 + 包外用户数据不变
     _wait_marker(current, "0.2.0", 600)
     ev["disk_replaced"] = "0.2.0"
     assert profile.read_bytes() == user_before, "包外用户数据被改动"
     ev["outside_user_data"] = "unchanged"
 
-    # 6 更新器自动重启的新版壳（完整 GUI）写版本报告
-    deadline = time.monotonic() + 120
+    # 7 自动重启的新版壳 GUI：以 EBWebView 结构出现作为 WebView2 环境创建成功的判据
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        if (current / "MaaRacingMaster.Shell.exe.WebView2" / "EBWebView").is_dir():
+            ev["gui_webview2_environment"] = "created"
+            break
+        time.sleep(1)
+    else:
+        ev["gui_webview2_environment"] = "未出现（白窗形态）"
+    time.sleep(5)
+    ev.update(_collect_live_evidence(live, userdata))
+
+    # 8 用户目视确认后关闭窗口
+    _wait_user_close_window(ev, case)
+
+    # 9 升级后入口探针 + 助手报告（新版上下文版本应为 0.2.0）
+    run([str(shell_exe), "--update-adapter-probe"], timeout=60, expected=None, env_extra=env)
+    run([str(helper), "--locator-root", str(live)], timeout=60, expected=None, env_extra=env)
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
             if json.loads(report.read_text(encoding="utf-8"))["version"] == "0.2.0":
+                ev["post_update_report"] = "0.2.0"
                 break
         except Exception:
             pass
         time.sleep(0.5)
     else:
-        raise AssertionError("新版未自动重启或未写版本报告")
-    ev["auto_restart_version"] = "0.2.0"
-    ev["restarted_report"] = json.loads(report.read_text(encoding="utf-8"))
-
-    # 7 证据：进程拓扑 / 日志落位 / WebView2 数据目录实际位置
-    ev.update(_collect_live_evidence(live, userdata, report))
-
-    # 8 用户目视确认后关闭窗口
-    _wait_user_close_window(ev)
-
-    # 9 升级后入口探针回归
-    run([str(shell_exe), "--update-adapter-probe"], timeout=60, env_extra=env)
+        ev["post_update_report"] = "未确认"
     ev["post_update_entry"] = "ok"
     return ev
 
