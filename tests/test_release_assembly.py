@@ -365,3 +365,21 @@ def test_legacy_launcher_reports_missing_source(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "missing launcher source" in result.stdout + result.stderr
+
+
+def test_full_script_parses_without_errors():
+    """全脚本语法解析锁：阶段抽取执行绕过了 param 参数列表，这里锁整个脚本能被
+    PowerShell 解析器接受（历史回归：新增参数漏逗号导致所有打包入口在解析期即失效）。"""
+    command = (
+        "$tokens=$null; $parseErrors=$null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"{_ps(ASSEMBLE)}, [ref]$tokens, [ref]$parseErrors) | Out-Null; "
+        "if ($parseErrors.Count -gt 0) { "
+        "$parseErrors | ForEach-Object { Write-Host (\"PARSE: {0} (line {1})\" -f $_.Message, $_.Extent.StartLineNumber) }; "
+        "exit 1 }; exit 0"
+    )
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

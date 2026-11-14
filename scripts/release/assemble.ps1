@@ -45,7 +45,7 @@ param(
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$Managed,       # 受管模式（升级适配 P4）：GUI 发布产物落内容根（更新器标准布局），
                             # 不编译根入口（入口 exe 由 SDK CLI 生成）；发布流程用 vpk 打包内容树
-    [string]$UpdateSource = ''  # 受管模式：随包更新源配置（update-source.txt，发行时写真实索引地址；
+    [string]$UpdateSource = '',  # 受管模式：随包更新源配置（update-source.txt，发行时写真实索引地址；
                             # 客户端按此检查/下载，用户不可改、前端不可传）
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
     [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MaaRM zero usage)
