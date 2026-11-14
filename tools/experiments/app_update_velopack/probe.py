@@ -654,6 +654,124 @@ def _managed_launch_chain(poison: bool, via_stub: bool) -> dict:
     return ev
 
 
+def _formal_update_chain() -> dict:
+    """P1 正式壳整链：发布正式工程（无任何实验注入）组装的受管副本上走完整升级。
+
+    正式壳没有探针参数早退——本链以「完整 GUI 启动 → 等侧车就绪 → 采证 → 收尾杀树」
+    替代仪器化副本的探针启动；P1 验证点：受管内容根识别（shell.log 决策行）、
+    WebView2 数据目录落用户数据根（不再是 exe 旁）、侧车会话日志（P0 遗留握手证据）、
+    普通启动不提交待更新包、整树替换与自动重启、包外用户数据不动。
+    """
+    info = json.loads((OUT / "formal-case.json").read_text(encoding="utf-8"))
+    live = Path(info["live"])
+    feed = Path(info["feed"])
+    case = Path(info["case"])
+    current = live / "current"
+    helper = OUT / "update-helper" / "MaaRM.UpdateProbe.exe"
+    ev: dict = {"case": info["case"], "shell": "formal"}
+    env, userdata, report = _case_env(case, "formal")
+    profile = userdata / "profile.json"
+    profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
+    user_before = profile.read_bytes()
+    shell_log = userdata / "MaaRacingMaster" / "logs" / "shell.log"
+    udf_root = userdata / "MaaRacingMaster" / "webview2"
+
+    def _wait_udf(seconds: int) -> bool:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if (udf_root / "EBWebView").is_dir():
+                return True
+            time.sleep(1)
+        return False
+
+    def _gui_session(tag: str) -> dict:
+        """完整启动 GUI（stub 两跳，DETACHED）→ 等侧车 → 采证 → 杀整树收尾。"""
+        out: dict = {"tag": tag}
+        logs_before = _log_session_count(userdata)
+        subprocess.Popen([str(live / info["stub"])], cwd=str(live),
+                         env={**os.environ, **env},
+                         creationflags=0x00000008)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            procs = _process_snapshot(str(live))
+            if any(p["Name"] == "python.exe" for p in procs):
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError(f"{tag}: 侧车 120 秒内未启动")
+        out["sidecar_started"] = True
+        out["webview2_udf_in_userdata"] = _wait_udf(60)
+        out["udf_exe_adjacent"] = (current / (SHELL_EXE + ".WebView2")).is_dir()
+        out["session_logs_delta"] = _log_session_count(userdata) - logs_before
+        out["shell_log_tail"] = _tail(shell_log, 2500)
+        run(["taskkill", "/IM", SHELL_EXE, "/T", "/F"], timeout=30, expected=None)
+        time.sleep(3)
+        out["python_after_kill"] = len(
+            [p for p in _process_snapshot(str(live)) if p["Name"] == "python.exe"])
+        return out
+
+    # 1 首次完整启动（0.1.0）：受管解析、UDF 迁移、侧车就绪
+    ev["first_launch"] = _gui_session("first")
+
+    # 2 助手版本报告（树外显式定位器）
+    run([str(helper), "--locator-root", str(live)], timeout=60, expected=None, env_extra=env)
+    first = _wait_report(report, 20)
+    ev["helper_report"] = first["version"]
+    assert first["version"] == "0.1.0", first
+
+    # 3 下载
+    downloaded = run([str(helper), "--locator-root", str(live), "--download-local", str(feed)],
+                     timeout=600, env_extra=env)
+    assert "UPDATE_DOWNLOADED" in downloaded.stdout, downloaded.stdout + downloaded.stderr
+    ev["download"] = "ok"
+
+    # 4 普通完整启动不提交待更新包
+    ev["second_launch"] = _gui_session("second")
+    ev["pending_not_applied"] = (current / "payload-version.txt").read_text(
+        encoding="utf-8") == "0.1.0"
+
+    # 5 提交 → 整树替换 + 自动重启新版完整 GUI
+    result = run([str(helper), "--locator-root", str(live), "--apply-local", str(feed)],
+                 timeout=600, expected=None, env_extra=env)
+    assert "UPDATE_QUEUED" in result.stdout, result.stdout + result.stderr
+    ev["apply_requested"] = True
+    _wait_marker(current, info["versions"][1], 600)
+    ev["disk_replaced"] = info["versions"][1]
+    assert profile.read_bytes() == user_before, "包外用户数据被改动"
+    ev["outside_user_data"] = "unchanged"
+
+    # 6 升级后自动重启的 GUI：侧车 + 用户数据根 UDF + 壳日志决策行 + 双时点采证
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if any(p["Name"] == "python.exe" for p in _process_snapshot(str(live))):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("升级后自动重启的 GUI 侧车未启动")
+    ev["post_update_udf_in_userdata"] = _wait_udf(60)
+    ev["post_update_shell_log_tail"] = _tail(shell_log, 2500)
+    ev.update(_collect_live_evidence(live, userdata))
+
+    # 7 用户目视确认后关闭窗口（P0 遗留项：重启窗口人工目视）
+    _wait_user_close_window(ev, case)
+
+    # 8 升级后版本（助手树外报告）
+    run([str(helper), "--locator-root", str(live)], timeout=60, expected=None, env_extra=env)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(report.read_text(encoding="utf-8"))["version"] == info["versions"][1]:
+                ev["post_update_report"] = info["versions"][1]
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        ev["post_update_report"] = "未确认"
+    ev["post_update_entry"] = "ok"
+    return ev
+
+
 def _elevated_action(args: argparse.Namespace, chain) -> int:
     result_path = Path(args.result) if args.result else (OUT / "managed-result.json")
     if args.elevated_child:
@@ -711,7 +829,8 @@ def main() -> int:
                                            "real-shell", "manifests",
                                            "managed-update", "managed-launch",
                                            "managed-manifests", "fd-launch",
-                                           "targets-launch", "p0-tail"])
+                                           "targets-launch", "p0-tail",
+                                           "formal-update"])
     parser.add_argument("--poison", action="store_true")
     parser.add_argument("--via-stub", action="store_true")
     parser.add_argument("--result", default="")
@@ -754,6 +873,8 @@ def main() -> int:
         return _elevated_action(args, chain)
     elif args.action == "p0-tail":
         return _elevated_action(args, _p0_tail_chain)
+    elif args.action == "formal-update":
+        return _elevated_action(args, _formal_update_chain)
     else:
         update(nested=args.action == "nested-update")
     return 0

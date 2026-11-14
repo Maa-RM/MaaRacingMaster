@@ -41,6 +41,14 @@ status: active
 # P0 收尾用例（孤儿侧车升级 + 旧应用根毒化；feed 追加 0.3.0，三轮窗口）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-p0-tail
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py p0-tail
+# P1 正式壳整链（直接发布正式工程，无任何注入；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py formal-shell
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-formal
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py formal-update
+# 壳合同探针（pytest 同级 .NET 侧合同锁；--python 供侧车关停用例指定解释器）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- approot
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- hook
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- sidecar --python .venv/Scripts/python.exe
 # 白窗取证与拆分（历史判定轮，详见「白窗现象」）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py real-shell
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py publish-fd

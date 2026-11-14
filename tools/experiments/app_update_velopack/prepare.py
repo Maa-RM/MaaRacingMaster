@@ -237,7 +237,12 @@ def managed_shell(*, nl: bool = False, fd: bool = False, stage: bool = True,
         print("PUBLISH_ONLY_OK", out_pub)
         return
 
-    stage = OUT / "managed-stage"
+    stage = _stage_content_tree(out_pub, OUT / "managed-stage")
+    print("MANAGED_STAGE_OK", stage)
+
+
+def _stage_content_tree(out_pub: Path, stage: Path) -> Path:
+    """把 GUI 发布产物与生产内容组装成标准受管内容树（受管链 / 正式壳链共用一套组装真相）。"""
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -280,7 +285,18 @@ def managed_shell(*, nl: bool = False, fd: bool = False, stage: bool = True,
     assert (stage / "MaaRM.UpdateProbe.exe").is_file()
     assert (stage / "apps/MaaRacingMaster.Shell/frontend/index.html").is_file()
     assert (stage / "runtime/python/python.exe").is_file()
-    print("MANAGED_STAGE_OK", stage)
+    return stage
+
+
+def formal_shell() -> None:
+    """P1 正式壳整链准备：直接发布正式工程（已含启动钩子、受管内容根解析、
+    WebView2 用户数据根、侧车关停确认），组装标准受管内容树。
+    无任何注入——本链验证的就是正式代码形态。"""
+    out_pub = OUT / "formal-publish"
+    publish(REPO / "apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj",
+            out_pub, MANAGED_PUBLISH_ARGS, timeout=900)
+    stage = _stage_content_tree(out_pub, OUT / "formal-stage")
+    print("FORMAL_STAGE_OK", stage)
 
 
 def _vpk_pack(stage: Path, version: str, feed: Path) -> None:
@@ -311,11 +327,17 @@ def pack_p0_tail() -> None:
     _pack_two_versions(("0.1.0", "0.3.0"))
 
 
-def _pack_two_versions(versions: tuple[str, str]) -> None:
-    stage = OUT / "managed-stage"
-    assert (stage / "MaaRacingMaster.Shell.exe").is_file(), "先运行 managed-shell-minimal"
-    feed = OUT / ("managed-feed-" + uuid.uuid4().hex[:8])
-    case = OUT / ("managed-case-" + uuid.uuid4().hex[:8])
+def pack_formal() -> None:
+    """P1 正式壳整链环境：正式壳内容树打两个版本（0.1.0→0.2.0），0.1.0 解压为 live 副本。"""
+    _pack_two_versions(("0.1.0", "0.2.0"), tag="formal")
+
+
+def _pack_two_versions(versions: tuple[str, str], tag: str = "managed") -> None:
+    stage = OUT / (tag + "-stage")
+    assert (stage / "MaaRacingMaster.Shell.exe").is_file(), (
+        f"先运行对应内容树准备（{tag}-stage 缺壳）")
+    feed = OUT / (f"{tag}-feed-" + uuid.uuid4().hex[:8])
+    case = OUT / (f"{tag}-case-" + uuid.uuid4().hex[:8])
     live = case / "中文 目录 空格" / "live"
     for version in versions:
         (stage / "payload-version.txt").write_text(version, encoding="utf-8")
@@ -334,11 +356,11 @@ def _pack_two_versions(versions: tuple[str, str]) -> None:
                         dst.write_bytes(z.read(member))
             assert (live / "current" / "payload-version.txt").read_text(
                 encoding="utf-8") == versions[0]
-    (OUT / "managed-feed.txt").write_text(feed.name, encoding="utf-8")
+    (OUT / f"{tag}-feed.txt").write_text(feed.name, encoding="utf-8")
     info = {"case": str(case), "live": str(live), "feed": str(feed),
             "pack_id": "MaaRM.RealShellProbe", "stub": "MaaRMRealShellProbe.exe",
             "versions": list(versions)}
-    (OUT / "managed-case.json").write_text(
+    (OUT / f"{tag}-case.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
     print("PACK_OK_PAIR", versions, live.name)
 
@@ -350,7 +372,8 @@ def main() -> None:
                                            "managed-shell-minimal", "pack-managed",
                                            "pack-p0-tail", "publish-fd",
                                            "managed-shell-nl", "managed-shell-v1",
-                                           "managed-shell-v1fd", "pure-sc-publish"])
+                                           "managed-shell-v1fd", "pure-sc-publish",
+                                           "formal-shell", "pack-formal"])
     args = parser.parse_args()
     sdk()
     if args.action == "tool":
@@ -401,6 +424,10 @@ def main() -> None:
         pack_managed()
     elif args.action == "pack-p0-tail":
         pack_p0_tail()
+    elif args.action == "formal-shell":
+        formal_shell()
+    elif args.action == "pack-formal":
+        pack_formal()
 
 
 if __name__ == "__main__":
