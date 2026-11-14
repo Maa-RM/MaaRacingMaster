@@ -51,6 +51,9 @@ status: active
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- approot
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- hook
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- sidecar --python .venv/Scripts/python.exe
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- cleanup --python .venv/Scripts/python.exe
+# P2 宿主更新协调器（真实库 + 本地源 + 显式定位器，树外驱动；需先 pack-formal 出夹具）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- update
 # 白窗取证与拆分（历史判定轮，详见「白窗现象」）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py real-shell
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py publish-fd

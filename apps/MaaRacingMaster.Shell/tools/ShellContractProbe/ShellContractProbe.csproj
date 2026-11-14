@@ -13,6 +13,7 @@
     <Compile Include="..\..\AppRootResolver.cs" Link="AppRootResolver.cs" />
     <Compile Include="..\..\PythonSidecar.cs" Link="PythonSidecar.cs" />
     <Compile Include="..\..\ShellLog.cs" Link="ShellLog.cs" />
+    <Compile Include="..\..\UpdateCoordinator.cs" Link="UpdateCoordinator.cs" />
     <!-- 钩子自退出断言与壳用同一固定版本（与正式接入版本绑定核验） -->
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>

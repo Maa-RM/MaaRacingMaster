@@ -523,6 +523,8 @@ HANDLERS = frozenset({
     # 生命周期与模块
     "get_initial_state", "set_run_queue", "set_start_from", "get_status",
     "start", "stop", "close", "shutdown",
+    # 升级准备冻结（壳宿主经管道直调，前端不可调；测试 SHELL_ONLY 锁定）
+    "prepare_update", "cancel_update_freeze",
     # 模块配置
     "get_module_config", "set_module_config",
     # 外部资源与下载引导
@@ -668,6 +670,10 @@ class SidecarService:
     # 组与降级分项计数留痕。
     WORKER_JOIN_TIMEOUT_S = 2.0
 
+    # 升级准备冻结的类级默认：跳过 __init__ 构造的测试桩（object.__new__）与任何
+    # 未显式初始化的形态都读到「未冻结」——冻结位缺省必须安全（不拦任务）。
+    _update_freeze = False
+
     def __init__(self, protocol_stdout):
         self._out = protocol_stdout
         self._out_lock = threading.Lock()
@@ -704,6 +710,10 @@ class SidecarService:
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
         self._remote_urls: dict[str, str] = {}
         self._closed = False
+        # 升级准备冻结（P2）：prepare_update 原子置位，start 据此拒绝新任务。
+        # 进程内状态，不持久化——宿主提交失败时由宿主解冻；宿主中途崩溃则随
+        # 进程消亡，下个会话自然是未冻结状态（已关闭后的恢复行为）。
+        self._update_freeze = False
         # 模块配置缓存：**按模块 id 分槽**，切走的模块配置留在自己的槽里不被覆盖。
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
         # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
@@ -1306,6 +1316,8 @@ class SidecarService:
         with self._lock:
             if self._closed:
                 return (False, None, "正在关闭")
+            if self._update_freeze:
+                return (False, None, "升级准备中，完成或放弃升级后再试")
             if self._worker is not None:  # slot 已占用，不以 is_alive() 判断
                 return (False, None, "已在运行")
             enabled = self._enabled_ids()
@@ -2364,6 +2376,35 @@ class SidecarService:
             self._achievement_ui_last.clear()
         logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
         return (True, {"scope": scope, "cleared": cleared}, None)
+
+    # ---------- 升级准备冻结（升级适配 P2） ----------
+
+    def prepare_update(self, params):
+        """升级准备第一步：原子「空闲检查＋冻结新任务」。
+
+        空闲 = 未关闭且无模块 worker 在跑。空闲判定与冻结置位在同一个受理锁内
+        完成——冻结之后到达的 start 在同一把锁里读到冻结位，不存在漏判窗口。
+        重复准备幂等（已冻结直接确认成功）。busy 时原因点名竞争者，且**不置
+        冻结位**（失败即无副作用，宿主无需解锁）。
+
+        模型安装占用是同层竞争者（其状态落地时——独立模型安装规划收敛后——
+        在此处补同一把锁内的占用检查）。
+        """
+        del params
+        with self._lock:
+            if self._closed:
+                return (False, None, "正在关闭，无法进入升级准备")
+            if self._worker is not None:
+                return (False, None, "任务运行中，等待停止后再升级")
+            self._update_freeze = True
+            return (True, {"frozen": True}, None)
+
+    def cancel_update_freeze(self, params):
+        """解除升级准备冻结（幂等）：宿主提交失败/用户放弃时调用。"""
+        del params
+        with self._lock:
+            self._update_freeze = False
+        return (True, {"frozen": False}, None)
 
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。

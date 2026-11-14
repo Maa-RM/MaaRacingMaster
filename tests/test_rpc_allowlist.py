@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""RPC 信任边界三方一致性回归锁。
+"""RPC 信任边界一致性回归锁（P2 起宿主与业务分流）。
 
-sidecar.py HANDLERS（Python 白名单）、RpcBridge.cs AllowedMethods（C# 前置闸）、
-SidecarService 公开 handler、前端 maarm.call 字面量四处必须同集合演进：
+sidecar.py HANDLERS（Python 业务白名单）、RpcBridge.cs AllowedMethods（C# 前置闸）、
+SidecarService 公开 handler、前端 maarm.call 字面量多处必须同集合演进：
 
 - HANDLERS ⊆ SidecarService 公开方法（表内方法必须真存在，防幽灵条目）
-- AllowedMethods == HANDLERS - {shutdown, close}（shell 生命周期通道不对前端开放）
+- AllowedMethods == (HANDLERS - SHELL_ONLY) ∪ HOST_METHODS
+  （业务方法扣除 shell 直发通道后对前端开放；宿主更新动作为壳自有能力，
+   不经 sidecar——所有者分离，宿主集与业务集不得交叠）
+- SHELL_ONLY：壳直发、不对前端开放的业务方法（生命周期 + 升级准备冻结）
 - 前端调用集 ⊆ AllowedMethods（JS 不得调白名单外方法）
 
 机制动机（2026-09-16 外部审查 §4.2）：_dispatch 曾以 getattr 反射全量暴露
@@ -33,8 +36,9 @@ SIDECAR = REPO / "maaracing_master" / "core" / "sidecar.py"
 RPC_BRIDGE = REPO / "apps" / "MaaRacingMaster.Shell" / "RpcBridge.cs"
 FRONTEND_DIR = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend"
 
-# shell 侧直接发起、不经前端通道的生命周期方法
-SHELL_ONLY = {"shutdown", "close"}
+# shell 侧直接发起、不经前端通道的业务方法：
+# 生命周期（shutdown/close）+ 升级准备冻结（宿主协调器经管道直调）
+SHELL_ONLY = {"shutdown", "close", "prepare_update", "cancel_update_freeze"}
 
 
 def test_handlers_subset_of_service_methods():
@@ -52,18 +56,33 @@ def test_handlers_subset_of_service_methods():
     assert not ghost, f"HANDLERS 含不存在/私有方法：{sorted(ghost)}"
 
 
-def test_cs_allowlist_matches_python_handlers():
-    """C# AllowedMethods 必须恰等于 HANDLERS 去掉 shell 生命周期方法。"""
-    src = RPC_BRIDGE.read_text(encoding="utf-8")
+def _parse_cs_set(src: str, field: str) -> set[str]:
+    """从 RpcBridge.cs 抽一个 HashSet 字面量块的字符串集合。"""
     m = re.search(
-        r"AllowedMethods = new\(StringComparer\.Ordinal\)\s*\{(.*?)\};",
+        rf"{field} = new\(StringComparer\.Ordinal\)\s*\{{(.*?)\}};",
         src, re.S,
     )
-    assert m, "RpcBridge.cs 找不到 AllowedMethods 字面量块"
-    cs_set = set(re.findall(r'"([a-z_]+)"', m.group(1)))
-    expected = set(sc.HANDLERS) - SHELL_ONLY
-    missing = expected - cs_set
-    extra = cs_set - expected
+    assert m, f"RpcBridge.cs 找不到 {field} 字面量块"
+    return set(re.findall(r'"([a-z_]+)"', m.group(1)))
+
+
+def test_host_and_business_sets_disjoint():
+    """宿主更新动作与业务方法所有者分离：同名即分流歧义。"""
+    src = RPC_BRIDGE.read_text(encoding="utf-8")
+    host = _parse_cs_set(src, "HostMethods")
+    assert host, "HostMethods 空集：宿主更新动作未接入 RPC 桥"
+    overlap = set(sc.HANDLERS) & host
+    assert not overlap, f"宿主集与业务集交叠：{sorted(overlap)}"
+
+
+def test_cs_allowlist_matches_python_handlers():
+    """C# AllowedMethods == (HANDLERS - SHELL_ONLY) ∪ HOST_METHODS。"""
+    src = RPC_BRIDGE.read_text(encoding="utf-8")
+    allowed = _parse_cs_set(src, "AllowedMethods")
+    host = _parse_cs_set(src, "HostMethods")
+    expected = (set(sc.HANDLERS) - SHELL_ONLY) | host
+    missing = expected - allowed
+    extra = allowed - expected
     assert not missing and not extra, (
         f"C#/Python 白名单漂移：仅 Python 有 {sorted(missing)}；"
         f"仅 C# 有 {sorted(extra)}"

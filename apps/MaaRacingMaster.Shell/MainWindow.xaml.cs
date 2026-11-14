@@ -25,6 +25,53 @@ public sealed partial class MainWindow : Window
     private const int MinWindowWidth = 1000;
     private const int MinWindowHeight = 700;
 
+    /// <summary>提交闸门（升级适配 P2 契约）：后端原子冻结 → 有界退出确认。
+    /// 任一步失败负责解冻并返回原因（协调器据此放弃提交、状态回 ready）；
+    /// 全部通过返回 null（可交更新器）。解冻失败只留日志：后端已断开时冻结随进程消亡。</summary>
+    private async Task<string?> PrepareForUpdateAsync()
+    {
+        var sidecar = _sidecar;
+        if (sidecar is null)
+            return "后端不可用，无法进入升级准备";
+        try
+        {
+            await sidecar.CallAsync("prepare_update", null, TimeSpan.FromSeconds(10));
+        }
+        catch (Exception ex)
+        {
+            return $"升级准备被拒绝: {ex.Message}";
+        }
+        try
+        {
+            var shutdown = await Task.Run(() => sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)));
+            if (!shutdown.ConfirmedExit)
+            {
+                await TryUnfreezeAsync(sidecar);
+                ShellLog.Append("[update] 后端未在时限内退出，放弃提交（已解冻，保留可继续使用的旧版）");
+                return "后端未在时限内退出，已放弃提交（保留可继续使用的旧版）";
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            await TryUnfreezeAsync(sidecar);
+            ShellLog.Append($"[update] 升级准备异常: {ex.Message}（已解冻）");
+            return $"升级准备失败: {ex.Message}";
+        }
+    }
+
+    private static async Task TryUnfreezeAsync(PythonSidecar sidecar)
+    {
+        try
+        {
+            await sidecar.CallAsync("cancel_update_freeze", null, TimeSpan.FromSeconds(5));
+        }
+        catch
+        {
+            // 后端已断开：冻结随进程消亡，无需解冻
+        }
+    }
+
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
     /// 解析单一真源在 AppRootResolver（Program 启动前检查与这里共用；进程内缓存，
@@ -126,6 +173,18 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new SizeInt32(
             (int)(MinWindowWidth * startupScale),
             (int)(MinWindowHeight * startupScale)));
+
+        // 宿主更新协调器（升级适配 P2）：与后端生命周期解耦（后端不可用不影响更新状态查询）。
+        // 来源固定——发布索引在 P4 接入前未配置，检查诚实返回不可用，不伪造结果；
+        // 提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并放弃提交（见 PrepareForUpdateAsync）。
+        RpcBridge.AttachCoordinator(new UpdateCoordinator(
+            feedSource: null,
+            managed: AppRootResolver.Resolve(
+                Environment.GetCommandLineArgs(),
+                Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
+                AppContext.BaseDirectory,
+                Environment.GetEnvironmentVariable("APPDATA")).Managed,
+            prepareGate: PrepareForUpdateAsync));
 
         // 仓库根（含 pyproject.toml 的目录）作为所有相对路径的锚：venv、前端 HTML 一律以其为基准。
         // 从 exe 基目录向上推导，彻底摆脱硬编码的本机绝对路径，仓库可 clone 到任意位置运行。

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using MaaRacingMaster.Shell;
 using Velopack;
+using Velopack.Locators;
 
 namespace MaaRacingMaster.Shell.ContractProbe;
 
@@ -42,6 +43,7 @@ internal static class Program
             case "hook": CheckHook(args); break;
             case "sidecar": CheckSidecarAsync(args).GetAwaiter().GetResult(); break;
             case "cleanup": CheckCleanup(args); break;
+            case "update": CheckUpdateCoordinator(args).GetAwaiter().GetResult(); break;
             default:
                 Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar");
                 return 2;
@@ -87,6 +89,105 @@ internal static class Program
     }
 
     private sealed record ChildRun(int? ExitCode, bool TimedOut);
+
+    // ---------- 宿主更新协调器合同 ----------
+
+    /// <summary>协调器合同（真实库 + 本地源 + 显式定位器，树外驱动）：
+    /// ①非受管降级 ②来源未配置诚实不可用 ③受管检查→下载→就绪→重复下载幂等
+    /// →非下载态取消被拒→提交闸门拒绝回 ready 且带原因→revision 单调。
+    /// 用法可带 --root &lt;live 树&gt; --feed &lt;更新源目录&gt;（缺省用最新 formal-case）。</summary>
+    private static async Task CheckUpdateCoordinator(string[] args)
+    {
+        var (live, feed) = ResolveUpdateFixture(args);
+        var marker = Path.Combine(live, "current", "payload-version.txt");
+        var liveVersion = File.ReadAllText(marker).Trim();
+
+        // ① 非受管：所有动作诚实降级
+        var degraded = new UpdateCoordinator(null, managed: false);
+        var s0 = await degraded.CheckAsync();
+        Check("非受管 → 检查返回降级快照", s0.Phase == UpdateSnapshot.Unavailable
+              && (s0.Error ?? "").Contains("非受管", StringComparison.Ordinal),
+              $"phase={s0.Phase} error={s0.Error}");
+
+        // ② 来源未配置：不伪造检查结果
+        var noFeed = new UpdateCoordinator(null, managed: true);
+        var s1 = await noFeed.CheckAsync();
+        Check("来源未配置 → 诚实不可用", (s1.Error ?? "").Contains("未配置", StringComparison.Ordinal),
+              $"error={s1.Error}");
+
+        // ③ 受管 + 本地源 + 显式定位器（树外驱动，规避树内次要 exe 挂起）
+        var gateCalls = 0;
+        string? gateReason = null;
+        var coordinator = new UpdateCoordinator(feed, managed: true,
+            locator: MakeExplicitLocator(live, liveVersion),
+            prepareGate: () => { gateCalls++; return Task.FromResult(gateReason); });
+
+        var s2 = await coordinator.CheckAsync();
+        Check("受管检查 → available 且带目标版本",
+              s2.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(s2.TargetVersion),
+              $"phase={s2.Phase} target={s2.TargetVersion} error={s2.Error}");
+
+        var s3 = await coordinator.StartDownloadAsync();
+        Check("下载 → ready 且进度满", s3.Phase == UpdateSnapshot.Ready && s3.Progress == 100,
+              $"phase={s3.Phase} progress={s3.Progress} error={s3.Error}");
+
+        var s4 = await coordinator.StartDownloadAsync();
+        Check("就绪后重复下载 → 幂等返回就绪", s4.Phase == UpdateSnapshot.Ready
+              && s4.Revision >= s3.Revision, $"phase={s4.Phase} rev={s4.Revision}");
+
+        var s5 = coordinator.CancelDownload();
+        Check("非下载态取消 → 拒绝", s5.Phase == UpdateSnapshot.Ready
+              && (s5.Error ?? "").Contains("不允许", StringComparison.Ordinal),
+              $"phase={s5.Phase} error={s5.Error}");
+
+        gateReason = "任务运行中，等待停止后再升级"; // 模拟后端拒绝冻结
+        var s6 = await coordinator.ApplyAsync();
+        Check("提交闸门拒绝 → 状态回 ready 且带原因",
+              s6.Phase == UpdateSnapshot.Ready && (s6.Error ?? "").Contains("任务运行中", StringComparison.Ordinal),
+              $"phase={s6.Phase} error={s6.Error}");
+        Check("闸门拒绝路径确实询问过后端", gateCalls == 1, $"gateCalls={gateCalls}");
+
+        gateReason = null; // 模拟闸门放行——探针到此为止：真实提交留给受管整链（会触发整树替换）
+        var revBefore = coordinator.GetStatus().Revision;
+        var s7 = await coordinator.CheckAsync(); // 刷新目标：状态实质变化 → revision 前进
+        Check("revision 随状态实质变化单调前进", s7.Revision > revBefore,
+              $"rev {revBefore} → {s7.Revision}");
+        Check("闸门放行前不触发提交（本轮未调 Apply）", gateCalls == 1, $"gateCalls={gateCalls}");
+    }
+
+    /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>
+    private static TestVelopackLocator MakeExplicitLocator(string live, string liveVersion)
+    {
+        return new TestVelopackLocator(
+            "MaaRM.RealShellProbe", liveVersion,
+            Path.Combine(live, "packages"),
+            Path.Combine(live, "current"), live,
+            Path.Combine(live, "Update.exe"));
+    }
+
+    private static (string Live, string Feed) ResolveUpdateFixture(string[] args)
+    {
+        var root = GetOption(args, "--root");
+        var feed = GetOption(args, "--feed");
+        if (root is not null && feed is not null)
+            return (root, feed);
+        // 缺省取最新 formal-case（prepare.py pack-formal 的产物）：从探针目录向上找仓库根
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        string? caseJson = null;
+        while (dir is not null && caseJson is null)
+        {
+            var outDir = Path.Combine(dir.FullName,
+                "tools", "experiments", "app_update_velopack", "_out");
+            if (Directory.Exists(outDir))
+                caseJson = Directory.GetFiles(outDir, "formal-case.json")
+                    .OrderByDescending(File.GetLastWriteTime).FirstOrDefault();
+            dir = dir.Parent;
+        }
+        if (caseJson is null)
+            throw new InvalidOperationException("找不到 formal-case.json：先运行 prepare.py pack-formal");
+        var info = System.Text.Json.JsonDocument.Parse(File.ReadAllText(caseJson)).RootElement;
+        return (info.GetProperty("live").GetString()!, info.GetProperty("feed").GetString()!);
+    }
 
     // ---------- 启动清场（遗留侧车扫描与终止） ----------
 
