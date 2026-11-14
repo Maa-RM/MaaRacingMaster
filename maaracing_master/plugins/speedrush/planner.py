@@ -118,11 +118,14 @@ _PSI_CORR_TAU_S = 0.5
 # 2026-10-31 试过降到物理上限 0.46：闭环台架里真实快转也被截断，朝向估计
 # 滞后、车发散到 −2.35 道（centering/bounded 两锁红），不可用。
 _HEAD_RATE_MAX = 0.8
-# 朝向车模影子（2026-11-01）：杆→偏航率一阶模型（两局 trace 最小二乘，
-# R²=0.94：满杆约 0.46 rad/s、τ 约 0.2 s）。ψ/r 由**实际发出的杆值**推进，
+# 朝向车模影子（2026-11-01）：杆→偏航率一阶模型（人工局手柄输入辨识：
+# 满杆约 0.28 rad/s、τ 约 0.2 s）。ψ/r 由**实际发出的杆值**推进，
 # 线角到达时按龄对齐做小增益校正。线角新鲜时它就是控制朝向的来源（观测器
 # 只做兜底与对照）：ψ 误差 0.047→0.014 rad，环路增益不再把观测噪声打进杆。
-_MODEL_YAW_GAIN = 0.46      # rad/s（满杆归一值 1.0）
+_MODEL_YAW_GAIN = 0.28      # rad/s（满杆归一值 1.0）：人工局手柄输入辨识
+                            # （高杆段 |u|>0.4，线角回归 0.28、观测器 AR(1)
+                            # 0.28~0.35）。旧值 0.46 高估 ~1.6 倍，浅杆段
+                            # 影子领先实测车头角，朝向环按假偏航反打。
 _MODEL_YAW_TAU_S = 0.2
 _MODEL_CORR_PSI = 0.12      # 每次线角更新对 ψ 的校正增益
 _MODEL_CORR_R = 0.04        # 每次线角更新对 r 的校正增益（rad/s）
@@ -560,6 +563,23 @@ class EgoLateralState:
 
 
 _PLAN_CENTER_DWELL_S = 0.2   # 计划维护态进入预瞄的驻留（与计划/选择层 0.2s 同口径）
+# 交付意图（pass/graze）目标限速：命中车横位在近场会单拍跳 0.3~0.7 道，
+# 目标跟着跳会把杆从一侧甩到另一侧。1.0 道/s 高于真车横移上限（实测
+# ≤0.43 道/s），跟得住真实车动、挡得住单拍坏读数。
+_PRECISE_TARGET_SLEW_LANE_S = 1.0
+# 交付意图的计划车头角放大：计划的 ``step`` 是一阶朝向模型（命令即到位），
+# 真车浅杆段是明显的慢响应（人工局高杆段辨识满杆 ≈0.28~0.35 rad/s，
+# 41 m/s 下 0.68 道需要 ~0.1 rad 的持续车头角，计划只给 0.04~0.05）。
+# 2.0 与并线台架验证过的 merge_klat_scale=2.0 同量级；作用是用前馈，
+# 而不是把缺口积分顶到上限。
+_PRECISE_PSI_SCALE = 2.0
+# 车模预测角速度的实测上限：控制阻尼/前瞻吃车模 r，但车模是**预测**，
+# 浅杆段会领先实测（同一拍模型 r≈−0.07、实测 ≈−0.01）。用实测 r 的慢
+# 平滑值 + 余量给预测 r 封顶，预测不能比车实际转得更快；实测跟上后
+# 封顶自然解除。观测器 r 逐拍噪声大（直线 std≈0.17），所以只吃 0.25s
+# 平滑值，且只做上限、不把噪声注进 r。
+_R_OBS_CLAMP_TAU_S = 0.25
+_R_OBS_CLAMP_MARGIN = 0.03
 
 
 class LateralPlanner:
@@ -632,10 +652,13 @@ class LateralPlanner:
         self._was_merging = False
         self._was_precise = False
         self._ctrl_dt_s = 0.0
+        # 交付意图的限速目标（None=非交付拍），见 _precise_target。
+        self._precise_x: float | None = None
         # 朝向观测（横向状态的唯一测量源：ψ / r / 在线比例）
         self.head = HeadingObserver(p)
         self._heading_stale = False
         self._heading_src = "none"       # 本拍控制朝向来源（trace csrc）
+        self._r_obs_sm: float | None = None  # 实测 r 慢平滑（预测 r 的封顶）
         # 短预瞄控制器（2026-11-01）：上一拍实际发出的杆值，换向/变化惩罚用；
         # 未接管（并线/安全/影子不新鲜）时置空，重入首拍不罚。
         self._preview_prev_u: float | None = None
@@ -831,6 +854,18 @@ class LateralPlanner:
         use_model = fresh and model_ok
         psi_ctrl = h.mpsi if use_model else h.psi
         r_ctrl = h.mr if use_model else h.r
+        # 预测 r 的实测封顶：车模是预测，浅杆段会领先实测；阻尼/前瞻按
+        # 预测 r 反打会抵消交付前馈。只对模型来源封顶，观测 r 是实测本身。
+        if fresh and h.r is not None and self._ctrl_dt_s > 0:
+            a = 1.0 - math.exp(-self._ctrl_dt_s
+                               / max(_R_OBS_CLAMP_TAU_S, 1e-3))
+            self._r_obs_sm = (float(h.r) if self._r_obs_sm is None
+                              else self._r_obs_sm + a * (float(h.r)
+                                                         - self._r_obs_sm))
+            if use_model and r_ctrl is not None:
+                lim = abs(self._r_obs_sm) + _R_OBS_CLAMP_MARGIN
+                if abs(r_ctrl) > lim:
+                    r_ctrl = math.copysign(lim, r_ctrl)
         self._heading_src = "model" if use_model else "obs"
         self._heading_stale = psi_ctrl is None
         if psi_ctrl is not None:
@@ -914,6 +949,7 @@ class LateralPlanner:
         self._t_vcorr += dt_s
         self.last_rebase = None          # 每拍清：只记本拍实际执行的重基分支
         self._ctrl_dt_s = dt_s           # 本拍控制时长（并线杆值上调的积分用）
+        precise_x = self._precise_target(decision, dt_s)
         # 逐拍诊断（2026-11-02，8750 型跳变的仪器面）：每拍重置，分支处赋值，
         # 全量落 trace（ctrl_debug）——跳变归因不再靠纸面推演。
         self._branch = None              # 本拍实际走的内部分支
@@ -1003,10 +1039,9 @@ class LateralPlanner:
         # 并线杆值上调的生命周期（平顶峰适配）：并线开始清零（上一段并线攒的
         # 上调量不带进新并线）；非并线拍衰减（回巡航不残留）。
         merging_now = getattr(decision, "phase", "keep") == "merging"
-        # 交付意图（pass/graze）与并线同吃这条上调：真车在浅杆段响应只有
-        # 线性模型的 1/4~1/3（20261114_140736：计划命令 0.14 rad、0.38 杆
-        # 实测线角 0.006~0.03），贴边 0.68 道在 1.5 s 内根本送不到；并线
-        # 早有缺口上调，贴边没有，于是数据修对了、车还是过不去。
+        # 交付意图（pass/graze）不再用这条缺口上调（见 _law_precise：目标位
+        # 放大前馈在车模校准后更准，积分会过冲）；进入交付段清零，避免并线
+        # 段攒下的上调量带进贴边。
         precise_now = bool(getattr(decision, "intent_precise", False))
         if merging_now and not self._was_merging:
             self._sustain_boost = 0.0
@@ -1089,8 +1124,9 @@ class LateralPlanner:
             # 并线承诺：位置误差直接驱动持续杆值（sustain，见 _law 注）。
             # 触发锚在「并线」本身——影子车头角收敛导致的塌缩与速度架构无关；
             # 范围只限并线，保持态仍走原朝向反馈。状态不可信的归零兜底
-            # （上一分支）不变。
+            # （上一分支）不变。交付意图的目标已限速（_precise_target）。
             sustain = getattr(decision, "phase", "keep") == "merging"
+            tgt = precise_x if precise_x is not None else decision.x_target
             # 并线承诺期提带宽（merge_klat_scale）：一条道要在 ~1.2s 内收完，
             # 1.2 道/s 的带宽在 0.2s 执行滞后下只剩 0.18 杆、一道走近 2 秒——
             # 台架 bench_merge_stick 实测 2.0 倍后到位 1.15s、超调 0.10 道。
@@ -1106,17 +1142,20 @@ class LateralPlanner:
             # 也走全权——墙是硬约束，gentle 的 0.45 杆幅把 1.4 道级回带拖成
             # 1s+（20261026 局：贴边拍 53/99 是计划走廊不可行被否决、PD 以
             # gentle 回带，整段停在墙侧）。回带方向仍由目标给出，不改目标。
-            if ((decision.maneuver and abs(
-                    decision.x_target - self.state.executed_lane)
+            if precise_x is not None:
+                steer_raw = self._law_precise(
+                    precise_x, cap=self.p.maneuver_stick_max)
+            elif ((decision.maneuver and abs(
+                    tgt - self.state.executed_lane)
                    > self.p.maneuver_full_error_lane)
                     or abs(self.state.executed_lane) > _WALL_ESCAPE_LANE):
                 steer_raw = self._pd(
-                    decision.x_target, gentle=False,
+                    tgt, gentle=False,
                     deadband=self.p.maneuver_deadband_lane,
                     cap=self.p.maneuver_stick_max, sustain=sustain,
                     klat=klat)
             else:
-                steer_raw = self._pd(decision.x_target, gentle=True,
+                steer_raw = self._pd(tgt, gentle=True,
                                      sustain=sustain, klat=klat)
         else:
             steer_raw = self.state.steer_norm    # 防御：非保守态却无目标，保持
@@ -1135,6 +1174,7 @@ class LateralPlanner:
         # 项，也就没有两套关于「车会怎么动」的说法。承诺并线例外：跟踪决策
         # 目标道（计划候选的视界是 2s，承诺道是决策层的事，不能让它静默换）。
         osc_fallback = False
+        precise_direct = False
         if (plan is not None and plan.valid and st is DecisionState.CRUISE
                 and not self.state_unverified):
             merge_commit = (getattr(decision, "phase", "keep") == "merging"
@@ -1149,6 +1189,16 @@ class LateralPlanner:
                 # 航向——断供后并线该由 PD 继续跟目标道。
                 self._plan_hold_left = 0
                 self._plan_hold_commit = True
+            elif precise_x is not None:
+                # 交付意图（pass/graze）走专用连续律（见 _law_precise）：
+                # 目标位放大前馈 + 原朝向环；预测 r 已按实测封顶。
+                precise_direct = True
+                steer_raw = self._law_precise(
+                    precise_x, cap=self.p.maneuver_stick_max)
+                self._plan_hold_psi = None
+                self._plan_hold_left = 0
+                self._plan_hold_commit = False
+                self._last_plan_u = None
             elif self.p.plan_osc_gate and self._osc_active:
                 # 计划命令振荡（闸 plan_osc_gate，2026-11-02 子代理设计）：
                 # 「怎么预测就怎么打杆」的前提是命令可信——滑窗翻转/饱和判
@@ -1169,20 +1219,19 @@ class LateralPlanner:
                        if getattr(plan, "layer", None) == 4
                        and getattr(plan, "collision_cost", 0.0) <= 0.0
                        else None)
-                steer_raw = self._law_psi(
-                    plan.psi_feedforward, cap=cap,
-                    boost=bool(getattr(decision, "intent_precise", False)))
+                steer_raw = self._law_psi(plan.psi_feedforward, cap=cap)
                 self._plan_hold_psi = plan.psi_feedforward
                 self._plan_hold_cap = cap
                 self._plan_hold_commit = False
                 self._plan_hold_left = self.p.plan_hold_max_ticks
             # 换目标时航向指令会阶跃；相对上一拍计划命令限速，避免方向盘一步
             # 打半圈。首帧/计划重入（None）不限制——那是交接，不是候选抖动。
-            if not osc_fallback and self._last_plan_u is not None:
+            if not (osc_fallback or precise_direct) \
+                    and self._last_plan_u is not None:
                 lim = self.p.plan_u_slew_s * dt_s
                 steer_raw = max(self._last_plan_u - lim,
                                 min(self._last_plan_u + lim, steer_raw))
-            if not osc_fallback:
+            if not (osc_fallback or precise_direct):
                 self._last_plan_u = steer_raw
         elif (plan is not None and st is DecisionState.CRUISE
               and not self.state_unverified
@@ -1448,6 +1497,11 @@ class LateralPlanner:
             and not stale_hold
             and not plan_held
             and not frame_shift
+            # 交付意图走连续的目标位放大前馈（见 _law_precise）；短预瞄的
+            # 脉冲候选按**原始**目标评，会绕开目标限速逐拍翻面（0.1s 级
+            # 脉冲把近场坏横位重新变成可见扭动）。预瞄的交付态扩展默认关，
+            # 这里显式隔离，不靠配置。
+            and not bool(getattr(decision, "intent_precise", False))
             and decision.x_target is not None
             and (getattr(decision, "phase", "keep") != "merging"
                  or self._plan_coverage_gated)
@@ -1577,6 +1631,25 @@ class LateralPlanner:
         return self._law(target - x_pred, gentle, deadband, cap, sustain,
                          klat)
 
+    def _precise_target(self, decision: DecisionOutput,
+                        dt_s: float) -> float | None:
+        """交付意图目标的限速面（None=本拍不是 pass/graze）。
+
+        近场命中车横位会被框/深度几何污染，单拍跳 0.3~0.7 道；目标逐拍
+        跟跳会把杆从一侧甩到另一侧。按 1.0 道/s 跟（高于真车横移上限），
+        单拍坏读数被压成小步；跳变超 1 道按换车/真实换道直接跟随。"""
+        if not getattr(decision, "intent_precise", False) \
+                or decision.x_target is None:
+            self._precise_x = None
+            return None
+        x = float(decision.x_target)
+        if self._precise_x is None or abs(x - self._precise_x) > 1.0:
+            self._precise_x = x
+        else:
+            step = _PRECISE_TARGET_SLEW_LANE_S * dt_s
+            self._precise_x += max(-step, min(step, x - self._precise_x))
+        return self._precise_x
+
     def _law(self, e: float, gentle: bool, deadband: float | None = None,
              cap: float | None = None, sustain: bool = False,
              klat: float | None = None) -> float:
@@ -1624,30 +1697,38 @@ class LateralPlanner:
             self.p.hold_stick_max if gentle else 1.0)
         return max(-cap_u, min(cap_u, u + self._sustain_boost))
 
-    def _law_psi(self, psi_des: float, cap: float | None = None,
-                 boost: bool = False) -> float:
+    def _law_psi(self, psi_des: float, cap: float | None = None) -> float:
         """目标朝向直接入环（计划/决策给出的是车头角时）。
 
-        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。
-
-        ``boost``：交付意图（pass/graze）吃「命令朝向−实测线角」缺口上调，
-        与并线同一条式、同一个积分器。观测只吃线角（影子按线性模型推进，
-        会高估缺口已闭合）；无新鲜线角时不上调但保留既有积分。"""
+        没有朝向证据时按 ``ψ̂=0、无角速度`` 解同一条式子。"""
         if self._heading_stale:
             u = stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
         else:
             u = stick_of(psi_des, self.state.heading, self.state.yaw_rate,
                          self.p, False, cap)
-        if not boost:
-            return u
-        psi_obs = (self.head.psi
-                   if self.head.psi is not None
-                   and self.head.psi_age_s() <= self.p.heading_vel_max_age_s
-                   else None)
-        if psi_obs is not None and self._ctrl_dt_s > 0:
-            self._sustain_boost += self.p.sustain_boost_gain * (
-                psi_des - psi_obs) * self._ctrl_dt_s
-            lim = self.p.sustain_boost_max
-            self._sustain_boost = max(-lim, min(lim, self._sustain_boost))
+        return u
+
+    def _law_precise(self, target: float, cap: float | None = None) -> float:
+        """交付意图（pass/graze）的连续律：目标位放大前馈 + 原朝向环。
+
+        目标位经 ``_precise_target`` 限速、选择层近场保持；车头角命令按
+        ``_PRECISE_PSI_SCALE`` 放大——计划的 ``step`` 是一阶朝向模型
+        （命令即到位），真车浅杆段响应慢，不放大时 0.68 道在 1.5s 内
+        送不到。阻尼/前瞻仍吃车模的朝向/角速度（与普通环同一条式），
+        不再叠缺口积分：车模按实测增益校准后，积分会在到位后来回过冲
+        （台架 0.68 道：积分开 0.45 时尾摆 0.5~0.9 道，关积分尾摆
+        0.07~0.13 道、1.05s 到位）。"""
+        x_pred = (self.state.executed_lane
+                  + self.state.v_lat * self.p.lookahead_tau_s)
+        e = target - x_pred
+        psi_des = heading_for_error(e, self.p)
+        psi_des = max(-self.p.heading_max_rad,
+                      min(self.p.heading_max_rad,
+                          psi_des * _PRECISE_PSI_SCALE))
+        if self._heading_stale:
+            u = stick_of(psi_des, 0.0, 0.0, self.p, False, cap)
+        else:
+            u = stick_of(psi_des, self.state.heading, self.state.yaw_rate,
+                         self.p, False, cap)
         cap_u = 1.0 if cap is None else cap
-        return max(-cap_u, min(cap_u, u + self._sustain_boost))
+        return max(-cap_u, min(cap_u, u))

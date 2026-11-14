@@ -969,6 +969,19 @@ def _sel_car(oid, x, t, safe=True):
     return Obj("car", x, t, oid=oid, safe=safe)
 
 
+def test_near_field_target_hold_rejects_x_jump():
+    """近场目标保持：命中车进入最后 0.6s 后横位读数单拍跳 0.8 道，
+    贴边目标保持进入近场前的值，不跟着把方向盘甩到另一侧。"""
+    sel = LayeredSelector(_p(pass_no_surrender_enabled=True))
+    road = _road()
+    rep = sel.update(road, [], [_sel_car(11, 0.0, 1.2)], [], 0.0, 0.05)
+    assert rep.why == "pass"
+    base = rep.target_x_m
+    rep = sel.update(road, [], [_sel_car(11, 0.3 * LW, 0.4)], [], 0.0, 0.05)
+    assert rep.why == "pass"
+    assert rep.target_x_m == pytest.approx(base, abs=0.02)
+
+
 def test_graze_hold_survives_time_reading_dropout():
     """贴边保持闩（20261103_125755 车51 帧证）：纵向时间读数拍拍乱跳，
     贴边一旦成立就按车 id 续住——时间读数丢失/闪断翻负不再 1 拍闪断。"""

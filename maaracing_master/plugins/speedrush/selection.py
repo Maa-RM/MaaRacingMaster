@@ -569,6 +569,10 @@ GRAZE_HOLD_MISS_S = 1.0     # 贴边保持闩：目标车读数消失的宽限�
 _SIDE_PIN_ESCAPE_S = 1.0    # 侧别锁定的逃生窗：车在 1s 内到站时，锁定侧若
                             # 比原生目标更远就走短路逃生；更远的车不给换边
                             # 理由（41 m/s 下 1s ≈ 41m，够横移两道）
+_NEAR_HOLD_S = 0.6          # 近场目标保持：命中车进入最后 0.6s 时，框底/
+                            # 深度几何已开始截断，横位单拍可跳 0.3~0.7 道
+                            # （真车横移上限约 0.04 道/拍）；这段时间冻结
+                            # 进入近场前的目标，别把方向盘甩到另一侧。
 
 
 def _x_known(c: Obj, p: SelectionParams) -> bool:
@@ -1204,6 +1208,7 @@ class LayeredSelector:
         self._hold_why = "graze"         # 保持闩续住的是 pass 还是 graze
         self._hold_side: float | None = None  # pass 保持原选侧（+1 右 / −1 左）
         self._side_oid: int | None = None  # 侧别锁定的对象身份（换车才重选侧）
+        self._near_target: dict[int, float] = {}  # 近场保持：车 id → 入近场前目标
         self._tgt_hold: dict[int, float] = {}     # 贴边目标保持：车 id → 目标
         self._read_prev: dict[int, tuple] = {}    # 车 id → (x, z) 上一有效读数
         self._read_miss: dict[int, int] = {}      # 车 id → 连续缺席拍数
@@ -1327,6 +1332,34 @@ class LayeredSelector:
         if not hit_invalid:
             self._tgt_hold[raw.hit_oid] = raw.target_x_m
         return raw
+
+    def _near_hold(self, raw: SelectionReport, road: RoadFrame,
+                   cars: Sequence[Obj], coins: Sequence[Obj],
+                   ego: float, p: SelectionParams) -> SelectionReport:
+        """近场目标保持：命中车进入最后 ``_NEAR_HOLD_S`` 时冻结目标。
+
+        近场（车头 0.6s 内）框底被自车/画面截断，锚点横位读数单拍跳
+        0.3~0.7 道（真车上限 ~0.04 道/拍），贴边目标跟着跳会把杆从原侧
+        甩到另一侧。冻结进入近场前最后一次有效目标；更远时正常刷新。
+        只改目标，不改安全/占用判据。"""
+        if raw.why not in ("pass", "graze") or raw.hit_oid is None:
+            return raw
+        car = next((c for c in cars if c.oid == raw.hit_oid
+                    and c.kind == "car"), None)
+        if car is None or car.t is None:
+            return raw
+        if car.t >= _NEAR_HOLD_S:
+            self._near_target = {raw.hit_oid: raw.target_x_m}
+            return raw
+        held = self._near_target.get(raw.hit_oid)
+        if held is None or abs(held - raw.target_x_m) <= 1e-9:
+            return raw
+        t_wp = raw.waypoints[-1].t if raw.waypoints else 0.0
+        return SelectionReport(
+            raw.layer, _waypoints(2, held, t_wp, cars, coins, road, ego, p),
+            held, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,
+            req_live=raw.req_live, req_oid=raw.req_oid,
+            req_action=raw.req_action, hit_oid=raw.hit_oid)
 
     def _graze_hold(self, raw: SelectionReport, prev: SelectionReport | None,
                     road: RoadFrame,
@@ -1495,8 +1528,10 @@ class LayeredSelector:
         held = self._graze_hold(raw, prev, road, cars, coins, ego, dt_s, p,
                                 commit_x_m=commit_x_m, committed=committed)
         if held is not None:
+            held = self._near_hold(held, road, cars, coins, ego, p)
             self.last = held
             return held
+        raw = self._near_hold(raw, road, cars, coins, ego, p)
         # 承诺期：目标是路线定的道，驻留/金币短承诺都不参与——拖住或沿用
         # 旧目标都等于在并线中改道。
         if committed:

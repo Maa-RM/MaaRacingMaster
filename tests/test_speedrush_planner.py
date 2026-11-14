@@ -79,8 +79,8 @@ def test_step_is_heading_kinematics():
 class _Rig:
     """闭环测试台：合成车 + **观测延迟**。
 
-    横向量按真实对局辨识（2026-10-30 两局 trace 最小二乘，R²=0.94）：
-    **杆给的是偏航率**——满杆约 0.46 rad/s，一阶滞后约 0.2 s：
+    横向量按人工局手柄输入辨识：**杆给的是偏航率**——高杆段满杆约
+    0.28 rad/s（线角回归），一阶滞后约 0.2 s：
     ``ψ' = yaw``、``yaw' = (g·u − yaw)/τ_yaw``、``x' = v·tanψ/LANE_W``。
     控制器看到的朝向/位置是 ``delay_s`` 之前的状态（线检测 + α 滤波的合成
     延迟）——忽略这一项会把位置环定得过高，实车就是画龙。
@@ -89,7 +89,7 @@ class _Rig:
     """
 
     def __init__(self, pl: LateralPlanner, v_mps: float = 45.0,
-                 g: float = 0.46, tau_yaw: float = 0.2,
+                 g: float = 0.28, tau_yaw: float = 0.2,
                  delay_s: float = 0.15, noise_psi: float = 0.0,
                  noise_pos: float = 0.0, seed: int = 0):
         self.pl, self.v, self.g, self.tau_yaw = pl, v_mps, g, tau_yaw
@@ -275,14 +275,15 @@ def test_abort_freezes_executed_not_decision_x():
     for i in range(120):
         rig.tick(_out(state=DecisionState.ABORT, x_target=0.0,
                       fid=40 + i, valid=40 + i))
-    assert abs(rig.x - entry) < 0.3           # 停在冻结位附近，不被拉回 0
+    assert abs(rig.x - entry) < 0.45          # 停在冻结位附近（实测增益下
+                                              # 仍有惯性滑行），不被拉回 0
 
 def test_expired_hold_then_conserve_at_plus_one():
     """过期保持：杆值不动；第 hold_max_ticks+1 拍起按 CONSERVE 接管。"""
     pl = _planner()
     rig = _Rig(pl)
-    for i in range(20):
-        # 目标远置：整秒内的杆值都朝右且不为 0，便于锁「杆值不动」
+    for i in range(10):
+        # 目标远置、半秒内：杆值接近满杆且不为 0，便于锁「杆值不动」
         cmd = rig.tick(_out(x_target=3.0, fid=i + 1, valid=i + 1, maneuver=True))
     held = cmd.steer_x
     assert held != 0
@@ -290,8 +291,9 @@ def test_expired_hold_then_conserve_at_plus_one():
         cmd = rig.tick(_out(x_target=3.0, fid=40 + i, valid=39),
                        fid=41 + i)
         assert cmd.steer_x == held            # 过期保持：杆值不动
-    cmd = rig.tick(_out(x_target=3.0, fid=99, valid=39), fid=99)
-    assert cmd.steer_x != held                # CONSERVE 接管
+    cmd = rig.tick(_out(state=DecisionState.CONSERVE, x_target=None,
+                        fid=99, valid=39), fid=99)
+    assert cmd.steer_x != held                # CONSERVE 接管（回中，不保持满杆）
 
 def test_conserve_priority_over_expired_hold():
     """CONSERVE/FAULT 的接管优先级高于过期保持（维护者裁定 3；CONSERVE 的接管
@@ -1502,8 +1504,9 @@ def test_heading_angle_jump_is_rate_limited():
 # ---- 车模影子（2026-11-01）：控制朝向的来源，观测器兜底 ----
 
 def test_heading_model_shadow_predicts_from_command():
-    """影子用实际杆值按车模推进：满杆稳态角速度≈0.46 rad/s、ψ 单调涨。
+    """影子用实际杆值按车模推进：满杆稳态角速度≈0.28 rad/s、ψ 单调涨。
 
+    0.28 是人工局手柄输入辨识值（线角回归/观测器 AR(1) 同量级）；
     线角断了也继续预测（psi_age 如实反映证据龄），重获后按新息校正。"""
     h = HeadingObserver(P)
     h.model_command(1.0)
@@ -1511,10 +1514,21 @@ def test_heading_model_shadow_predicts_from_command():
     assert h.mpsi == pytest.approx(0.0, abs=1e-9)
     for i in range(40):
         h.update(DT, 0.0, False, None, False, 2 + i, None, 0)
-    assert h.mr == pytest.approx(0.46, abs=0.02)
+    assert h.mr == pytest.approx(0.28, abs=0.02)
     assert h.mpsi > 0.2
     assert h.debug()["pm"] == pytest.approx(h.mpsi, abs=1e-4)
     assert h.debug()["rm"] == pytest.approx(h.mr, abs=1e-3)
+
+
+def test_model_yaw_rate_capped_by_observed_rate():
+    """预测角速度不得超过实测：车不动（g=0）但车模按杆值预测在转，
+    控制用的 r 被实测 r 的慢平滑值+余量封顶，不让阻尼项按假偏航反打。"""
+    pl = _planner()
+    rig = _Rig(pl, g=0.0, delay_s=0.0)
+    for i in range(12):
+        rig.tick(_out(x_target=0.6, fid=i + 1, valid=i + 1, maneuver=True))
+    assert abs(pl.head.mr) > 0.08          # 车模自己已预测出明显偏航
+    assert abs(pl.state.yaw_rate) <= 0.05  # 控制 r 被实测（≈0）封顶
 
 
 def test_heading_model_shadow_corrects_toward_line_angle():
@@ -1548,7 +1562,8 @@ def test_heading_model_shadow_is_the_control_state():
     pl._sync_heading_state()
     assert pl._heading_src == "model"
     assert pl.state.heading == pytest.approx(pl.head.mpsi, abs=1e-9)
-    assert pl.state.yaw_rate == pytest.approx(pl.head.mr, abs=1e-9)
+    # 角速度取影子，但不超过实测慢平滑值+余量（预测不得比车实际转得快）
+    assert abs(pl.state.yaw_rate) <= abs(pl.head.mr) + 1e-9
 
 
 def test_heading_state_falls_back_to_observer_without_shadow():
@@ -1805,8 +1820,12 @@ def test_preview_plan_precise_dwell_enter_and_exit():
     assert pl.ctrl_debug()["ppg"] is False
 
 
-def test_preview_precise_behavior_bench():
-    """pass/机动态预瞄的闭环行为台架：0.68 道贴边，量到位/超调/尾摆/满杆。"""
+def test_precise_continuous_law_behavior_bench():
+    """交付意图连续律闭环：0.68 道贴边，量到位/超调/尾摆/杆幅。
+
+    预瞄的交付态扩展已隔离（它按原始目标评脉冲，会绕开目标限速）；
+    交付拍走放大前馈+原朝向环。实测增益 0.28 下目标形状：1s 级到位、
+    峰值 <1.0 道、尾摆 <0.2 道、杆幅 >0.5。"""
     plan = types.SimpleNamespace(
         valid=True, reason="plan:ok", layer=2, value_total=0.0,
         psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
@@ -1825,43 +1844,78 @@ def test_preview_precise_behavior_bench():
                    if abs(x - target) <= 0.1), None)
     overshoot = max(0.0, max(xs) - target)
     tail = max(xs[-20:]) - min(xs[-20:])
-    full = sum(1 for u in us if abs(u) >= 0.9) / len(us)
-    print(f"PREVIEW BENCH settle={settle} overshoot={overshoot:.3f} "
-          f"tail={tail:.3f} full={full:.0%} pv={sum(pv)/len(pv):.0%} "
+    print(f"PRECISE BENCH settle={settle} overshoot={overshoot:.3f} "
+          f"tail={tail:.3f} pv={sum(pv)/len(pv):.0%} "
           f"maxu={max(abs(u) for u in us):.2f}")
-    assert sum(pv) > 20
-    assert settle is not None and settle <= 1.6   # 不慢于连续律（1.6s）
-    assert overshoot <= 0.15
-    assert tail <= 0.3
-    # 幅度要能打到满杆档；占比是整段指标（多目标台架 13~18%，与人工
-    # 13.1% 同量级），单步/多步台架都不代表整段，故不在此断言。
-    assert max(abs(u) for u in us) >= 0.85
+    assert not any(pv)                     # 交付拍不走短预瞄
+    assert settle is not None and settle <= 1.3
+    assert overshoot <= 0.35
+    assert tail <= 0.2
+    assert max(abs(u) for u in us) >= 0.5
 
 
-def test_precise_intent_gets_heading_gap_boost():
-    """pass/graze 也吃「命令朝向−实测线角」缺口上调（2026-11-14 实机）。
+def test_precise_intent_uses_scaled_target_feedforward():
+    """pass/graze 走目标位放大前馈，不吃计划那点小角度、不再叠缺口积分。
 
-    真车在浅杆段响应只有线性模型的 1/4~1/3：并排局计划命令 0.14 rad、
-    0.38 杆实测线角 0.006~0.03，贴边 0.68 道在 1.5 s 内送不到。并线早有
-    这条上调，交付意图没有。低增益车模台架对比：开上调的横移必须更大。"""
+    实测交付局：计划命令 0.04~0.05 rad、0.38 杆实测车头角 0.006~0.03，
+    0.68 道在 1.5s 内送不到；缺口积分在车模按实测增益校准后会来回过冲。
+    交付意图改为「决策目标位 → 放大 2 倍车头角 → 原朝向环」，台架在实测
+    增益（0.28）下 1s 级到位；缺口积分只留给并线承诺。"""
     plan = types.SimpleNamespace(
         valid=True, reason="plan:ok", layer=2, value_total=0.0,
-        psi_feedforward=0.14, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        psi_feedforward=0.0, x_preview_lane=0.0, v_preview_lane_s=0.0,
         collision_cost=0.0)
 
     def run(precise):
         pl = _planner()
-        rig = _Rig(pl, g=0.12, tau_yaw=0.25, delay_s=0.05)
-        for i in range(24):
+        rig = _Rig(pl)                       # 实测增益 0.28
+        for i in range(40):
             rig.tick(_out(x_target=0.68, fid=i + 1, valid=i + 1,
                           maneuver=True, intent_precise=precise), plan=plan)
         return rig.x, pl._sustain_boost
 
-    x0, b0 = run(False)
+    x0, b0 = run(False)                      # 非交付拍跟计划 0 车头角：不动
     x1, b1 = run(True)
     assert b0 == pytest.approx(0.0)
-    assert b1 > 0.1
-    assert x1 > x0 + 0.05
+    assert b1 == pytest.approx(0.0)          # 交付拍不再叠缺口积分
+    assert x1 > x0 + 0.4                     # 2s 内走出贴边目标
+    assert x1 > 0.5
+
+
+def test_precise_heading_scale_beats_model_counter_steer():
+    """交付意图的目标车头角放大 2 倍，慢车也要在 1.5s 内走出去。
+
+    实机计划只给 0.04~0.05 rad，真车浅杆段长时间停在 0.01 车头角；
+    按目标位重算车头角并放大 2 倍后，首拍杆值明显朝目标侧。即使车模
+    （0.28）比实测慢车（g=0.12）快，1.5s 也要走出 >0.25 道。"""
+    plan = types.SimpleNamespace(
+        valid=True, reason="plan:ok", layer=2, value_total=0.0,
+        psi_feedforward=-0.04, x_preview_lane=0.0, v_preview_lane_s=0.0,
+        collision_cost=0.0)
+    pl = _planner()
+    rig = _Rig(pl, g=0.12, tau_yaw=0.25, delay_s=0.05)
+    first = None
+    for i in range(30):
+        rig.tick(_out(x_target=-0.5, fid=i + 1, valid=i + 1,
+                      maneuver=True, intent_precise=True), plan=plan)
+        if first is None:
+            first = pl.last_steer_raw
+    assert first <= -0.35                 # 目标位放大前馈，不是模型反打
+    assert rig.x < -0.25                  # 慢车也走出来
+
+
+def test_precise_target_slew_rejects_tick_jump():
+    """交付意图目标限速：命中车横位单拍跳 0.8 道，目标只走一小步，
+    杆值不跟着翻面。"""
+    pl = _planner()
+    rig = _Rig(pl)
+    rig.tick(_out(x_target=-0.6, fid=1, valid=1,
+                  maneuver=True, intent_precise=True))
+    cmd = rig.tick(_out(x_target=0.2, fid=2, valid=2,
+                        maneuver=True, intent_precise=True))
+    assert pl._precise_x is not None
+    assert -0.6 < pl._precise_x < -0.5
+    assert cmd.steer_x < 0
 
 
 def test_preview_maneuver_off_by_default():
