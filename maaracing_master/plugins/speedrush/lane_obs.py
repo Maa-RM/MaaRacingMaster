@@ -342,38 +342,184 @@ def _fit(pts, cam_h: float, y_lo: float, y_hi: float,
 MEMBERSHIP_SPAN_PX = 60.0
 # 实测线距尺的道差下限：|ΔL| 更小的线对（近重合/重复道号）不参与定尺
 SCALE_MIN_DL = 0.5
+# 续接门以图像切线与当地车道宽度衡量；位置门只负责排除邻线，续接后的
+# 实际偏移还必须落在原有 LINE_RMS_MAX 残差预算内，不能平移远段去迎合近段。
+JOIN_ANGLE_MAX = 0.35
+JOIN_LANE_MAX = 0.15
+
+
+def _fits_joinable(inner: dict, outer: dict, cam_h: float,
+                   y_v: float | None) -> bool:
+    gap = max(0.0, inner["y0"] - outer["y1"])
+    if gap > min(inner["y1"] - inner["y0"], outer["y1"] - outer["y0"]):
+        return False                   # 缺口超过任一侧证据跨度，不造连接
+    if abs(math.atan(inner["s"]) - math.atan(outer["s"])) > JOIN_ANGLE_MAX:
+        return False
+    y = 0.5 * (inner["y0"] + outer["y1"])
+    lane_px = LANE_W * max(0.0, y - (Y_H if y_v is None else y_v)) / cam_h
+    dx = abs((inner["s"] - outer["s"]) * y + inner["a"] - outer["a"])
+    return dx <= max(LINE_RMS_MAX, JOIN_LANE_MAX * lane_px)
+
+
+def _join_track_fragments(tracks: list, cam_h: float,
+                         focal: float | None, y_v: float | None,
+                         windows: list) -> list:
+    """虚线/遮挡碎片只在两端互为唯一续接对象时合并；歧义保留给身份门。"""
+    pending = [list(pts) for pts in tracks]
+    while True:
+        fits = [_fit(p, cam_h, 0, 720, focal, y_v, min_span=10)
+                for p in pending]
+        edges = []
+        for i, inner in enumerate(fits):
+            if inner is None or inner["rms"] > LINE_RMS_MAX:
+                continue
+            for j, outer in enumerate(fits):
+                if (outer is None or outer["rms"] > LINE_RMS_MAX
+                        or inner["y0"] <= outer["y1"]):
+                    continue
+                if _fits_joinable(inner, outer, cam_h, y_v):
+                    merged = pending[i] + pending[j]
+                    trial = [_fit(merged, cam_h, *win, focal, y_v, min_span=span)
+                             for win, span in windows]
+                    if all(ft is None or ft["rms"] <= LINE_RMS_MAX for ft in trial):
+                        edges.append((i, j))
+        unique = [(i, j) for i, j in edges
+                  if sum(a == i for a, _ in edges) == 1
+                  and sum(b == j for _, b in edges) == 1]
+        if not unique:
+            return pending
+        i, j = max(unique, key=lambda pair: fits[pair[0]]["y1"])
+        pending[i] = sorted(pending[i] + pending[j], key=lambda q: q["yc"])
+        pending.pop(j)
+
+
+def _finalize_fits(fits: list, pts: list, cam_h: float,
+                   focal: float | None, y_v: float | None) -> list[dict]:
+    """近段优先，逐段验收并在接缝约束位置；坏段之后不再续接或外推。"""
+    good = [f for f in fits if f is not None and f["rms"] <= LINE_RMS_MAX]
+    if not good:
+        return []
+    anchor = good[0]
+    start = next(i for i, f in enumerate(fits) if f is anchor)
+    result = [dict(anchor)]
+    span = anchor["y1"] - anchor["y0"]
+    result[0]["eval_y1"] = anchor["y1"] + span if start == 0 else anchor["y1"]
+    blocked = False
+    for raw in fits[start + 1:]:
+        if raw is None:
+            continue
+        inner = result[-1]
+        if raw["rms"] > LINE_RMS_MAX or not _fits_joinable(inner, raw, cam_h, y_v):
+            blocked = True
+            break
+        outer = dict(raw)
+        seam = 0.5 * (inner["y0"] + outer["y1"])
+        x_seam = inner["s"] * seam + inner["a"]
+        use = [q for q in pts if outer["y0"] <= 2 * q["yc"] <= outer["y1"]]
+        dy = np.array([2 * q["yc"] - seam for q in use])
+        dx = np.array([2 * q["xc"] - x_seam for q in use])
+        wt = np.array([max(0.1, q["p"]) for q in use])
+        # 固定近端接缝，只调整远段切线；与平移整段相比，能保住正常的小接缝误差。
+        outer["s"] = float(np.sum(wt ** 2 * dy * dx) / np.sum(wt ** 2 * dy ** 2))
+        outer["a"] = x_seam - outer["s"] * seam
+        rms = float(np.sqrt(np.average(
+            [(2 * q["xc"] - outer["s"] * 2 * q["yc"] - outer["a"]) ** 2
+             for q in use], weights=[max(0.1, q["p"]) for q in use])))
+        if (rms > LINE_RMS_MAX
+                or abs(math.atan(outer["s"]) - math.atan(raw["s"])) > JOIN_ANGLE_MAX
+                or not _fits_joinable(inner, outer, cam_h, y_v)):
+            blocked = True
+            break
+        outer["rms"] = rms
+        outer["L"] = outer["s"] * cam_h / LANE_W
+        if outer["theta"] is not None:
+            outer["theta"] = math.atan((VPX - outer["a"] - outer["s"] *
+                                       (Y_H if y_v is None else y_v)) / focal)
+        inner["eval_y0"] = outer["eval_y1"] = seam
+        result.append(outer)
+    last = result[-1]
+    last["eval_y0"] = max((Y_H if y_v is None else y_v) + 1,
+                          last["y0"] if blocked else
+                          last["y0"] - (last["y1"] - last["y0"]))
+    return result
+
+
+def _line_fit_at(line: dict, y: float) -> dict | None:
+    """唯一的逐行几何查询；新快照只认上游给定范围，旧快照沿用一倍跨度。"""
+    best, best_d = None, math.inf
+    for ft in line.get("fits") or ():
+        if any(ft.get(k) is None for k in ("s", "a", "y0", "y1")):
+            continue
+        span = ft["y1"] - ft["y0"]
+        if not ft.get("eval_y0", ft["y0"] - span) <= y <= ft.get(
+                "eval_y1", ft["y1"] + span):
+            continue
+        d = max(ft["y0"] - y, y - ft["y1"], 0)
+        if d < best_d:
+            best, best_d = ft, d
+    return best
+
+
+def _local_line_good(line: dict) -> bool:
+    return (line.get("local") is not False
+            and (line.get("rms") is None or float(line["rms"]) <= LINE_RMS_MAX)
+            and abs(float(line.get("theta") or 0)) <= LINE_THETA_MAX)
+
+
+def _clip_line_order(lines: list[dict]) -> None:
+    """共同近场已区分的线不能在远处交换身份；冲突处及其远侧停止供数。"""
+    cuts: dict[int, float] = {}
+    for i, left in enumerate(lines):
+        if not _local_line_good(left):
+            continue
+        for j in range(i + 1, len(lines)):
+            right = lines[j]
+            if not _local_line_good(right) or abs(left["L"] - right["L"]) < SCALE_MIN_DL:
+                continue
+            a, b = left["fits"][0], right["fits"][0]
+            lo, hi = max(a["y0"], b["y0"]), min(a["y1"], b["y1"])
+            if hi <= lo:
+                continue
+            ref = 0.5 * (lo + hi)
+            ref_dx = (a["s"] - b["s"]) * ref + a["a"] - b["a"]
+            if abs(ref_dx) < MEMBERSHIP_SPAN_PX:
+                continue               # 近场未可靠分开，不据此裁决身份
+            sign = math.copysign(1, ref_dx)
+            for a in left["fits"]:
+                for b in right["fits"]:
+                    lo = max(a["eval_y0"], b["eval_y0"])
+                    hi = min(a["eval_y1"], b["eval_y1"], ref)
+                    if hi <= lo:
+                        continue
+                    ds, da = a["s"] - b["s"], a["a"] - b["a"]
+                    if min(sign * (ds * lo + da), sign * (ds * hi + da)) > 0:
+                        continue
+                    cross = -da / ds if abs(ds) > 1e-9 else hi
+                    cut = min(hi, max(lo, cross) + 1.0)
+                    for idx in (i, j):
+                        cuts[idx] = max(cuts.get(idx, -math.inf), cut)
+    for idx, cut in cuts.items():
+        line = lines[idx]
+        line["fits"] = [f for f in line["fits"] if f["eval_y1"] > cut]
+        for f in line["fits"]:
+            f["eval_y0"] = max(f["eval_y0"], cut)
 
 
 def _line_evals(y_b: float, lines: list[dict]) -> list[tuple[float, float]]:
     """框底行处各 accepted 线的像素位与横向量（夹逼与最近线回退共用）。
 
-    接受门/残差门/线角门/拟合覆盖一倍跨度同口径：每条线带近/远两段拟合，
-    吃覆盖 y_b 的那一段；越出数据范围允许外推不超过拟合自身跨度（线方程
-    线性，外推一倍跨度 σ 至多翻倍，仍在近场 A1 量级 0.15~0.25 道；远车
-    框底 ~390px 本就在两段范围之外，严格卡范围会把这门修成摆设）。"""
+    仅查询上游定稿的分段方程与有效行窗。拒绝段不再出现于 fits 中，截断
+    一侧的外推范围也由上游收紧，夹逼与最近线回退不能各自恢复坏段。"""
     evals: list[tuple[float, float]] = []
     for c in lines:
         if not c.get("accepted"):
             continue
-        if c.get("rms") is not None and float(c["rms"]) > LINE_RMS_MAX:
+        if not _local_line_good(c):
             continue
-        if abs(float(c.get("theta") or 0.0)) > LINE_THETA_MAX:
+        ft = _line_fit_at(c, y_b)
+        if ft is None:
             continue
-        best = None
-        for ft in c.get("fits") or ():
-            s, a = ft.get("s"), ft.get("a")
-            y0, y1 = ft.get("y0"), ft.get("y1")
-            if s is None or a is None or y0 is None or y1 is None:
-                continue
-            span = y1 - y0
-            if not (y0 - span) <= y_b <= (y1 + span):
-                continue               # 越出拟合范围一倍跨度：外推不可信
-            d = max(y0 - y_b, y_b - y1, 0.0)   # 距数据范围的外推距离
-            if best is None or d < best[0]:
-                best = (d, s, a)
-        if best is None:
-            continue
-        evals.append((best[1] * y_b + best[2], float(c["L"])))
+        evals.append((ft["s"] * y_b + ft["a"], float(c["L"])))
     return evals
 
 
@@ -457,23 +603,23 @@ def _lines_from_prob(prob: np.ndarray, cam_h: float,
     else:
         scan_start, near_ys, mid_ys, far_ys = bands
     lines = []
-    for pts in _build_tracks(_row_segments(prob, scan_start)):
+    tracks = _build_tracks(_row_segments(prob, scan_start))
+    windows = [(ys, span) for ys, span in
+               ((near_ys, 40.0), (mid_ys, 40.0), (far_ys, 10.0)) if ys is not None]
+    for pts in _join_track_fragments(tracks, cam_h, focal, y_v, windows):
         near = _fit(pts, cam_h, *near_ys, focal, y_v)
         mid = (_fit(pts, cam_h, *mid_ys, focal, y_v)
                if mid_ys is not None else None)
         far = (_fit(pts, cam_h, *far_ys, focal, y_v, min_span=10.0)
                if far_ys is not None else None)
-        # 采纳段优先级：近 > 中 > 远（L/theta 仍来自近场；中/远只补几何）
-        f = near or mid or far
-        if f is None:
+        for band, ft in zip(("near", "mid", "far"), (near, mid, far)):
+            if ft is not None:
+                ft["band"] = band
+        fits = _finalize_fits([near, mid, far], pts, cam_h, focal, y_v)
+        if not fits:
             continue
+        f = fits[0]
         x_near = _near_x(pts)
-        # 双线同行插值用：每条线的像素位来自各自的 2D 拟合（s·y+a）。
-        # 三段拟合都带，采纳段排第一（fits[0] 是 _line_in_badge 的口径）。
-        ordered = [f] + [ft for ft in (near, mid, far)
-                         if ft is not None and ft is not f]
-        fits = [{"s": ft["s"], "a": ft["a"],
-                 "y0": ft["y0"], "y1": ft["y1"]} for ft in ordered]
         lines.append({"L": round(f["L"], 3),
                       "theta": None if f["theta"] is None
                       else round(f["theta"], 4),
@@ -483,7 +629,8 @@ def _lines_from_prob(prob: np.ndarray, cam_h: float,
                       "x_near": None if x_near is None
                       else round(x_near, 1),
                       "side": _side_from_x(x_near),
-                      "fits": fits})
+                      "local": f["band"] != "far", "fits": fits})
+    _clip_line_order(lines)
     return lines
 
 
@@ -607,6 +754,8 @@ def _vanish_row(lines: list[dict]) -> float | None:
     偏移项共线，**深度本身给不出地平线**（y_h 扫值残差恒定，2026-11-11 探针）。"""
     fits = []
     for c in lines:
+        if not _local_line_good(c):
+            continue
         fts = c.get("fits") or ()
         if not fts:
             continue
@@ -694,7 +843,7 @@ def _cam_h_from_lines(lines: list[dict], y_v: float | None) -> float | None:
         return None
     fs: list[tuple[int, float, float, float, float]] = []
     for c in lines:
-        if not c.get("accepted"):
+        if not c.get("accepted") or not _local_line_good(c):
             continue
         k = c.get("k")
         fts = c.get("fits") or ()
@@ -912,6 +1061,8 @@ class LineTracker:
             c["k"], c["resid"], c["accepted"] = None, None, False
             cur.append(c)
         for c in cur:
+            if not _local_line_good(c):
+                continue
             best, bd = None, 1e9
             for t in self.tracks:
                 gap = fid - t.idx
@@ -987,7 +1138,7 @@ class LineTracker:
             # 两根线会整齐地支持错误网格（残差照样很小），必须仍走两拍确认。
             ks = set()
             for c in cur:
-                if self._side_bad(c):
+                if self._side_bad(c) or not _local_line_good(c):
                     continue
                 L = float(c["L"])
                 k_a = int(round(x_anchor + L))
@@ -997,6 +1148,12 @@ class LineTracker:
         cand = []
         for c in cur:
             L = float(c["L"])
+            if c.get("local") is False:
+                c["reject"] = "remote"
+                continue
+            if not _local_line_good(c):
+                c["reject"] = "geometry"
+                continue
             if self._side_bad(c):
                 c["reject"] = "side"
                 self.side_reject += 1
@@ -1148,6 +1305,8 @@ class LineTracker:
             c.pop("_init_k", None)
             c.pop("_xi", None)
             tk = c.pop("_track", None)
+            if not _local_line_good(c):
+                continue
             if tk is not None:
                 # 没通过门的线不更新身份：野线被关联到真线上时若照写 L/k，
                 # 下一帧真线会接上这条被带偏的轨迹，继承错道号。
@@ -1171,10 +1330,7 @@ class LineTracker:
         self.last_lines = [dict(c) for c in lines]
         # 位置原点可用性（严格）：线连续锁定 + 至少两条高质量线 + 左右两侧
         # 都在 + 线角不过分。上游据此把线当绝对位置；不满足时深度才重建。
-        good = [c for c in lines if c.get("accepted")
-                and (c.get("rms") is None
-                     or float(c["rms"]) <= LINE_RMS_MAX)
-                and abs(float(c.get("theta") or 0.0)) <= LINE_THETA_MAX]
+        good = [c for c in lines if c.get("accepted") and _local_line_good(c)]
         sides = {c.get("side") for c in good}
         both = len(good) >= 2 and sides == {-1, 1}
         if self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS and both:
@@ -1240,6 +1396,7 @@ class LaneObsWorker:
         self._yv_raw: float | None = None  # 最近一次检测拍的单帧估计（未平滑，诊断用）
         self._yv_hist: deque = deque(maxlen=YV_WIN)
         self._yv_t: float = 0.0            # 上一次入史时刻（长间隔后清史）
+        self._yv_evidence_t: float | None = None  # 已发布窗口的证据时刻，不随补窗刷新
         self._yv_refill = False            # 清史后补窗期：先保留旧发布值
         self.busy_skips = 0
         self.slot_skips = 0
@@ -1439,12 +1596,15 @@ class LaneObsWorker:
                     if yv is not None and self._yv_hist \
                             and len(rec["lines"]) < YV_MIN_LINES:
                         yv = None
+                    self._yv_raw = yv
                     if yv is not None:
                         self._yv_raw = float(yv)
                         (self._yv, self._yv_t,
                          self._yv_refill) = _smooth_vanish(
                             self._yv_hist, yv, time.perf_counter(), self._yv_t,
                             self._yv, self._yv_refill)
+                        if not self._yv_refill:
+                            self._yv_evidence_t = self._yv_t
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
                                                jump, anchor, a_strict)
                 t_done = time.perf_counter()
@@ -1471,7 +1631,10 @@ class LaneObsWorker:
         is_pred = bool(res.get("pred", pred_fallback))
         # 相机高反解只在真实检测拍上算：预测拍的线是上一拍的，重复发布等于把
         # 同一个样本数两遍（守卫按「新样本」计数）。
-        h_lane = None if is_pred else _cam_h_from_lines(res["lines"], self._yv)
+        yv_age = (None if self._yv_evidence_t is None else
+                  max(0.0, t_done - self._yv_evidence_t))
+        yv = self._current_yv(t_done)
+        h_lane = None if is_pred else _cam_h_from_lines(res["lines"], yv)
         return {"fid": fid, "cam_h": round(cam_h, 3),
                 "pred": is_pred,
                 # 槽位等待不计入处理耗时：trace 的 ms 是这条帧自己的推理+后处理
@@ -1498,7 +1661,8 @@ class LaneObsWorker:
                 # 灭点行（地平线）：合成点图与逐车距离的米制骨架。``y_v`` 是
                 # 近 YV_WIN 个检测拍的中位（发布值，深度链吃这个）；``y_v_raw``
                 # 是本拍单帧估计，只作诊断——两者的差就是平滑吃掉的噪声。
-                "y_v": None if self._yv is None else round(self._yv, 2),
+                "y_v": None if yv is None else round(yv, 2),
+                "y_v_age_ms": None if yv_age is None else round(yv_age * 1000, 1),
                 "y_v_raw": None if self._yv_raw is None
                 else round(self._yv_raw, 2),
                 # 相机高反解（线间距法）：视角守卫的唯一诚实判据，证据不足=None
@@ -1506,6 +1670,11 @@ class LaneObsWorker:
                 "t_done": t_done, "t_det": self._last_det_t,
                 # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
                 "lines": res["lines"]}
+
+    def _current_yv(self, now: float) -> float | None:
+        if self._yv_evidence_t is None or now - self._yv_evidence_t > YV_GAP_S:
+            return None
+        return self._yv
 
     def _run(self, rgb: np.ndarray):
         """DML 按槽位排队：等控制拍放锁后开工，超窗让给深度（latest-only）。"""
@@ -1553,7 +1722,7 @@ class LaneObsWorker:
         # 的目标带内，若进 tracker 会被当成真线锁道号，事后无法区分。
         lines = _drop_badge_lines(
             _lines_from_prob(
-                prob, cam_h, focal, self._yv,
+                prob, cam_h, focal, self._current_yv(time.perf_counter()),
                 near_max_m=float(getattr(self.cfg, "near_max_m", NEAR_MAX_M)),
                 mid_max_m=float(getattr(self.cfg, "mid_max_m", MID_MAX_M)),
                 far_max_m=float(getattr(self.cfg, "far_max_m", FAR_MAX_M))), rgb)

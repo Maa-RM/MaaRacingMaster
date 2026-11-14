@@ -188,6 +188,42 @@ def test_lane_line_x_reconstructs_fit():
     assert dv._lane_line_x(line, cam_h, 600.0, None) is None
 
 
+def test_lane_overlay_uses_final_segments_without_private_prediction():
+    """已发布方程是唯一几何：焦距缺席、摘要舍入和控制帧差均不能改画线。"""
+    line = {"L": -0.5, "theta": 0.1, "v": 0.1, "color": "w",
+            "accepted": True, "k": 0, "y0": 440, "y1": 600,
+            "fits": [{"s": 0.0, "a": 400.0, "y0": 440, "y1": 600},
+                     {"s": 0.1, "a": 356.0, "y0": 380, "y1": 438}]}
+    assert dv._lane_line_x(line, 1.28, 400, None) == pytest.approx(396)
+    image = np.zeros((720, 1280, 3), np.uint8)
+    dv._draw_lane_overlay(image, {"fid": 15, "lane": {
+        "det_fid": 10, "lines": [line], "cam_h": 1.28}})
+    assert image[500, 400].max() > 200
+    assert image[400, 396].max() > 200
+
+
+def test_lane_overlay_distinguishes_bands_and_stops_at_published_limit():
+    """实机图区分近中远；外推画虚线，终点之外不得继续画线。"""
+    fits = [
+        {"band": "near", "s": 0, "a": 400, "y0": 500, "y1": 620,
+         "eval_y0": 480, "eval_y1": 640},
+        {"band": "mid", "s": 0, "a": 400, "y0": 440, "y1": 478,
+         "eval_y0": 420, "eval_y1": 480},
+        {"band": "far", "s": 0, "a": 400, "y0": 390, "y1": 418,
+         "eval_y0": 380, "eval_y1": 420}]
+    line = {"L": -0.5, "theta": 0, "color": "?", "accepted": True,
+            "y0": 500, "y1": 620, "fits": fits}
+    image = np.zeros((720, 1280, 3), np.uint8)
+    dv._draw_lane_overlay(image, {"lane": {"lines": [line]}})
+    near, mid, far = image[550, 400], image[460, 400], image[400, 400]
+    assert near[1] > near[0] and near[1] > near[2]
+    assert mid[0] > mid[2]
+    assert far[2] > far[0]
+    assert image[365:375, 395:405].max() == 0
+    assert image[380, 396:405].max() > 0   # 远端有效范围终点标记
+    assert 0 < np.count_nonzero(image[422:438, 400].max(axis=1)) < 16
+
+
 def test_render_hud_lane_overlay_draws_line(frame):
     """线观测叠加：拟合线按参数回投到画面，近端像素着黄边界色。"""
     cam_h = 1.469

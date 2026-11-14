@@ -105,6 +105,188 @@ def test_line_evals_picks_segment_covering_row():
     assert la._line_evals(400.0, [line])[0][0] == pytest.approx(340.0)
 
 
+def _extract_track(monkeypatch, pts):
+    monkeypatch.setattr(la, "_build_tracks", lambda rows: [pts])
+    return la._lines_from_prob(np.zeros((360, 640), np.float32),
+                               1.276, 807.7, 360.4)
+
+
+def test_reversed_far_segment_is_cut_without_extrapolating_back(monkeypatch):
+    """实帧 7301：接缝只差约 2.55px，但远段反向；中段不得再外推到坏段。"""
+    pts = (_synth_line(1.5997139594, -97.2158436774, 376, 386, 6)
+           + _synth_line(-3.5932883343, 1909.929057664, 388, 428, 21))
+    line, = _extract_track(monkeypatch, pts)
+    assert len(line["fits"]) == 1
+    line["accepted"] = True
+    assert la._line_evals(408, [line])[0][0] == pytest.approx(443.867, abs=0.01)
+    assert la._line_evals(381, [line]) == []
+    assert la.lane_pos_nearest(512, 381, [line], 1.276, 360.4) is None
+
+
+@pytest.mark.parametrize("bad", ["noisy", "offset"])
+def test_far_segment_needs_own_quality_and_position(monkeypatch, bad):
+    mid = _synth_line(-0.8, 930, 388, 428, 21)
+    far = _synth_line(-0.8, 930 + (50 if bad == "offset" else 0), 376, 386, 6)
+    if bad == "noisy":
+        for i, p in enumerate(far):
+            p["xc"] += 5 * (-1 if i % 2 else 1)
+    line, = _extract_track(monkeypatch, far + mid)
+    assert len(line["fits"]) == 1
+
+
+def test_smooth_bend_keeps_anchor_and_connects_all_segments(monkeypatch):
+    near = _synth_line(-0.8, 930, 430, 700, 100)
+    # 逐段缓弯，接缝处连续；远段不改变近段的位置与车头角。
+    mid = _synth_line(-0.9, 973, 388, 428, 21)
+    far = _synth_line(-1.0, 1011.7, 376, 386, 6)
+    line, = _extract_track(monkeypatch, far + mid + near)
+    assert len(line["fits"]) == 3
+    anchor = _fit(near, 1.276, 430, 720, 807.7, 360.4)
+    assert line["L"] == pytest.approx(anchor["L"], abs=0.001)
+    for inner, outer in zip(line["fits"], line["fits"][1:]):
+        seam = (inner["y0"] + outer["y1"]) / 2
+        assert inner["s"] * seam + inner["a"] == pytest.approx(
+            outer["s"] * seam + outer["a"], abs=1e-6)
+    line["accepted"] = True
+    assert la._line_evals(381, [line])
+
+
+def test_bad_near_does_not_hide_good_mid(monkeypatch):
+    near = _synth_line(-0.8, 930, 430, 700, 100)
+    for i, p in enumerate(near):
+        p["xc"] += 8 * (-1 if i % 2 else 1)
+    mid = _synth_line(-0.8, 930, 388, 428, 21)
+    line, = _extract_track(monkeypatch, mid + near)
+    assert line["rms"] <= la.LINE_RMS_MAX
+    assert line["y1"] == 428
+    line["accepted"] = True
+    assert la._line_evals(600, [line]) == []
+
+
+def test_far_only_geometry_cannot_establish_ego_lock(monkeypatch):
+    lines = _extract_track(monkeypatch, _synth_line(-0.8, 930, 376, 386, 6))
+    assert len(lines) == 1 and lines[0]["fits"]
+    tracker = LineTracker()
+    for fid in range(1, 9):
+        res = tracker.update(lines, fid, 0.05, anchor=0.2)
+    assert res["n_locked"] == 0
+    assert res["locked"] == 0
+    assert res["theta"] is None
+
+
+def test_remote_only_cannot_supply_horizon_or_camera_height(monkeypatch):
+    lines = _extract_track(monkeypatch, _synth_line(-0.8, 930, 376, 386, 6))
+    left, right = dict(lines[0]), dict(lines[0])
+    for line, s, k in ((left, -1, -1), (right, 1, 1)):
+        line.update(accepted=True, k=k)
+        line["fits"] = [dict(line["fits"][0], s=s, a=640 - s * 360)]
+    assert la._vanish_row([left, right]) is None
+    assert la._cam_h_from_lines([left, right], 360) is None
+
+
+def test_worker_expires_horizon_evidence():
+    worker = LaneObsWorker(LaneObsConfig(enabled=True))
+    worker._yv, worker._yv_raw, worker._yv_t = 360.4, 360.5, 10.0
+    worker._yv_evidence_t = 10.0
+    res = LineTracker().update([], 1, 0.05)
+    fresh = worker._snapshot(res, 1, 1.276, 10, 10.1, False)
+    assert fresh["y_v"] == pytest.approx(360.4)
+    stale = worker._snapshot(res, 2, 1.276, 12, 12.1, False)
+    assert stale["y_v"] is None
+    assert stale["cam_h_lane"] is None
+    assert stale["y_v_age_ms"] == pytest.approx(2100)
+
+
+def test_new_raw_sample_does_not_freshen_expired_published_horizon():
+    worker = LaneObsWorker(LaneObsConfig(enabled=True))
+    worker._yv, worker._yv_t, worker._yv_evidence_t = 360.0, 10.0, 10.0
+    worker._yv_hist.extend([360.0] * la.YV_WIN)
+    worker._yv, worker._yv_t, worker._yv_refill = la._smooth_vanish(
+        worker._yv_hist, 378.0, 12.0, worker._yv_t, worker._yv)
+    assert worker._yv_refill
+    res = LineTracker().update([], 1, 0.05)
+    assert worker._snapshot(res, 1, 1.276, 12, 12.01, False)["y_v"] is None
+
+
+def test_extraction_does_not_use_expired_horizon(monkeypatch):
+    worker = LaneObsWorker(LaneObsConfig(enabled=True))
+    worker._yv, worker._yv_t, worker._yv_evidence_t = 378.0, 10.0, 10.0
+    monkeypatch.setattr(la.time, "perf_counter", lambda: 12.0)
+    monkeypatch.setattr(worker, "_run", lambda rgb: np.zeros((360, 640), np.float32))
+    captured = []
+    def extract(prob, cam_h, focal, y_v, **kwargs):
+        captured.append(y_v)
+        return []
+    monkeypatch.setattr(la, "_lines_from_prob", extract)
+    worker._infer(np.zeros((720, 1280, 3), np.uint8), 1.276, 807.7)
+    assert captured == [None]
+
+
+@pytest.mark.parametrize("bad", [{"rms": 9.0}, {"theta": 0.8}])
+def test_bad_geometry_never_updates_ego_or_identity(bad):
+    tracker = LineTracker()
+    line = dict(_line(-0.2), **bad)
+    for fid in range(1, 9):
+        res = tracker.update([line], fid, 0.05, anchor=0.2)
+    assert res["x"] == pytest.approx(0.2)
+    assert res["n_locked"] == 0
+    assert not res["lines"][0]["accepted"]
+
+
+def test_normal_recorded_three_segments_survive_seam_fit(monkeypatch):
+    """正常实帧 1448 的方程：接缝的小误差由受约束拟合吸收，不能一刀砍远场。"""
+    pts = (_synth_line(-1.2019878539, 1075.66851532, 376, 386, 6)
+           + _synth_line(-1.3018569161, 1112.76487779, 388, 428, 21)
+           + _synth_line(-1.2957035893, 1113.96575837, 430, 698, 135))
+    line, = _extract_track(monkeypatch, pts)
+    assert len(line["fits"]) == 3
+    line["accepted"] = True
+    for y in (564, 408, 381):
+        assert la._line_evals(y, [line])
+
+
+def test_crossing_far_lines_cannot_swap_near_identities(monkeypatch):
+    left = (_synth_line(-1.8, 1336.6, 376, 386, 6)
+            + _synth_line(-1.3, 1143, 388, 428, 21)
+            + _synth_line(-0.8, 928, 430, 700, 100))
+    right = (_synth_line(1.8, -56.6, 376, 386, 6)
+             + _synth_line(1.3, 137, 388, 428, 21)
+             + _synth_line(0.8, 352, 430, 700, 100))
+    monkeypatch.setattr(la, "_build_tracks", lambda rows: [left, right])
+    lines = la._lines_from_prob(np.zeros((360, 640), np.float32),
+                               1.276, 807.7, 360.4)
+    for c in lines:
+        c["accepted"] = True
+    assert len(la._line_evals(600, lines)) == 2
+    for y in (376, 381, 386, 388, 400, 428):
+        evals = sorted(la._line_evals(y, lines))
+        assert len(evals) < 2 or evals[0][1] < evals[1][1]
+
+
+@pytest.mark.parametrize("offset, expected", [(0, 1), (150, 2)])
+def test_dash_gap_joins_only_aligned_fragments(offset, expected):
+    prob = np.zeros((360, 640), np.float32)
+    for lo, hi, dx in ((215, 260, offset), (273, 350, 0)):
+        for y in range(lo, hi):
+            x = round((-0.8 * 2 * y + 930 + dx) / 2)
+            prob[y, x - 2:x + 3] = 0.9
+    lines = la._lines_from_prob(prob, 1.276, 807.7, 360.4)
+    assert len(lines) == expected
+    if not offset:
+        assert min(f["y0"] for f in lines[0]["fits"]) <= 430
+        assert max(f["y1"] for f in lines[0]["fits"]) >= 698
+
+
+def test_gap_merge_cannot_destroy_good_near_evidence(monkeypatch):
+    inner = _synth_line(-0.8, 930, 580, 700, 61)
+    outer = _synth_line(-0.8, 950, 450, 540, 46)
+    monkeypatch.setattr(la, "_build_tracks", lambda rows: [outer, inner])
+    lines = la._lines_from_prob(np.zeros((360, 640), np.float32),
+                               1.276, 807.7, 360.4)
+    assert len(lines) == 2
+    assert all(c["rms"] <= la.LINE_RMS_MAX for c in lines)
+
+
 def test_config_defaults_off_and_detect_every_frame():
     assert LaneObsConfig().enabled is False
     assert LaneObsConfig().detect_every == 1

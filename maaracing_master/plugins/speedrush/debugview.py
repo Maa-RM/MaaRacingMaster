@@ -61,6 +61,7 @@ from maaracing_master.plugins.speedrush.depth_geo import (
     GRID_Z_LO, REGION_WIDTH_Z_HI, REGION_Z_HI, ROAD_Z_HI,
     X_MAX_M)
 from maaracing_master.plugins.speedrush.lane_obs import (
+    _line_fit_at,
     DEFAULT_CAM_H, LANE_W, VPX, Y_H)
 from maaracing_master.plugins.speedrush.session_layout import (
     SOURCE_CONTROL,
@@ -159,17 +160,17 @@ def _edge_side_pts(eps, side: int) -> list[tuple[float, float]]:
 
 # 车道线叠加配色：黄边界亮黄、白线亮白、无法判色品红（与线观测语义同源）
 _LANE_BGR = {"y": (0, 220, 255), "w": (235, 235, 235), "?": (255, 0, 255)}
+_LANE_BAND_BGR = {"near": (60, 220, 70), "mid": (255, 180, 20),
+                  "far": (20, 170, 255)}
 _BAND_BGR = (18, 18, 18)
 
 
 def _lane_line_x(line: dict, cam_h: float, y: float,
                  focal: float | None) -> float | None:
-    """按线观测的拟合参数回投全幅像素横坐标。
-
-    线方程（lane_obs 同源）：``x_px = a + s*y``，其中 ``s=L*LANE_W/cam_h``，
-    截距由 theta 反解 ``a = VPX - s*Y_H - tan(theta)*focal``。焦距必须用
-    观测器当拍使用的逐帧估计（``lane.focal``）；缺值不猜尺度，返回 None。
-    """
+    """与消费端查询同一份最终方程；只有缺原始拟合的历史记录才反解摘要。"""
+    if line.get("fits"):
+        ft = _line_fit_at(line, y)
+        return None if ft is None else ft["s"] * y + ft["a"]
     if focal is None or not math.isfinite(focal):
         return None
     L = float(line.get("L") or 0.0)
@@ -180,7 +181,7 @@ def _lane_line_x(line: dict, cam_h: float, y: float,
 
 
 def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
-    """左联：把线观测的拟合线回投到游戏画面（黄/白/未知按颜色着色）。
+    """左联：最终近中远段分色，实线为支撑、虚线为外推，横杠为远端有效界。
 
     只画观测器实际锁到的线（``lines`` 来自最近一次检测，含证据龄），
     预测帧沿用同一组线并保留标注。坐标按 1280×720 设计域缩放，帧尺寸
@@ -199,17 +200,8 @@ def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
         cam_h = DEFAULT_CAM_H
     cam_h = float(cam_h)
     focal = lane.get("focal")
-    if not (isinstance(focal, (int, float))
-            and 400.0 <= float(focal) <= 1400.0):
-        return                       # 无逐帧焦距（旧 trace/深度未就绪）：不画，不猜
-    focal = float(focal)
-    # 检测帧与当前控制帧的差：按线的跨帧速度把 L 外推到当前帧再画，
-    # 消掉「图上线比车慢一拍」的肉眼延迟（身份/k 仍用检测帧的值）。
-    det_fid = lane.get("det_fid")
-    cur_fid = snap.get("fid")
-    gap = 0
-    if isinstance(det_fid, int) and isinstance(cur_fid, int):
-        gap = max(0, min(6, cur_fid - det_fid))
+    if not (isinstance(focal, (int, float)) and 400 <= focal <= 1400):
+        focal = None
     for ln in lines:
         if ln.get("L") is None:
             continue
@@ -224,23 +216,46 @@ def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
         y1 = max(0.0, min(720.0, y1))
         if y1 <= y0:
             continue
-        use = dict(ln)
-        if gap:
-            use["L"] = float(ln["L"]) + float(ln.get("v") or 0.0) * gap
-        xa = _lane_line_x(use, cam_h, y0, focal)
-        xb = _lane_line_x(use, cam_h, y1, focal)
-        if xa is None or xb is None:
-            continue
-        xa, xb = xa * sx, xb * sx
         acc = bool(ln.get("accepted", True))
         col = _LANE_BGR.get(ln.get("color"), _LANE_BGR["?"])
         if not acc:
             col = (120, 120, 120)      # 被残差/等间距门淘汰：灰线保留可审计
-        # 黄边界是绝对路心锚，画粗一档；白线只作补充
-        thick = 2 if (acc and ln.get("color") == "y") else 1
-        cv2.line(img, (int(xa), int(y0 * sy)), (int(xb), int(y1 * sy)),
-                 col, thick)
+        thick = 2 if acc else 1
+        drawn = []
+        for ft in ln.get("fits") or [ln]:
+            lo = max(float(ft["y0"]), ft.get("eval_y0", 0))
+            hi = min(float(ft["y1"]), ft.get("eval_y1", 720))
+            if hi < lo:
+                continue
+            xa = _lane_line_x(ln, cam_h, lo, focal)
+            xb = _lane_line_x(ln, cam_h, hi, focal)
+            if xa is None or xb is None:
+                continue
+            xa, xb = xa * sx, xb * sx
+            segment_col = _LANE_BAND_BGR.get(ft.get("band"), col) if acc else col
+            cv2.line(img, (int(xa), int(lo * sy)), (int(xb), int(hi * sy)),
+                     segment_col, thick)
+            # 外推与缺口用虚线标示；方程与可用范围仍直接取发布值。
+            for a, b in ((ft.get("eval_y0", lo), lo),
+                         (hi, ft.get("eval_y1", hi))):
+                for row in np.arange(max(0, a), min(720, b), 6):
+                    end = min(row + 3, b)
+                    x0 = (ft["s"] * row + ft["a"]) * sx
+                    x1 = (ft["s"] * end + ft["a"]) * sx
+                    cv2.line(img, (int(x0), int(row * sy)),
+                             (int(x1), int(end * sy)), segment_col, 1)
+            drawn.append((hi, xb))
+        if not drawn:
+            continue
+        y1, xb = max(drawn)
         cv2.circle(img, (int(xb), int(y1 * sy)), 2, col, -1)
+        if ln.get("fits"):
+            limit = min(ft.get("eval_y0", ft["y0"]) for ft in ln["fits"])
+            limit_x = _lane_line_x(ln, cam_h, limit, focal)
+            if limit_x is not None and 0 <= limit <= 720:
+                x, y = int(limit_x * sx), int(limit * sy)
+                cv2.line(img, (x - 4, y), (x + 4, y),
+                         (235, 235, 235) if acc else col, 1)
         k = ln.get("k")
         resid = ln.get("resid")
         label = f"k{k:+d}" if k is not None else "k-"
@@ -251,6 +266,11 @@ def _draw_lane_overlay(img: np.ndarray, snap: dict) -> None:
         lx = int(min(max(xb + 3, 2), W - 2))
         ly = int(min(max(y1 * sy + 12, 12), H - 68))   # 避开底部输入带
         _put_text(img, label, (lx, ly), scale=0.36, color=col)
+    if any(ft.get("band") in _LANE_BAND_BGR for ln in lines for ft in ln.get("fits", ())):
+        for x, band, label in ((8, "near", "near"), (65, "mid", "mid"), (112, "far", "far")):
+            _put_text(img, label, (x, H - 74), scale=0.36, color=_LANE_BAND_BGR[band])
+        _put_text(img, "solid=observed  dash=extrap  cap=limit  gray=rejected",
+                  (157, H - 74), scale=0.36, color=(220, 220, 220))
 
 
 def _draw_input_band(img: np.ndarray, snap: dict) -> None:
