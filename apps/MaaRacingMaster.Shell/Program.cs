@@ -41,6 +41,9 @@ public static class Program
             Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
             AppContext.BaseDirectory,
             Environment.GetEnvironmentVariable("APPDATA"));
+        // 应用根决策落日志：受管判定、被拒覆盖值（「忽略并记录」的记录半）都从这里可查
+        ShellLog.Append($"[approot] {appRoot.Decision}" +
+                        (appRoot.RefusedReason is null ? "" : $"；拒绝启动: {appRoot.RefusedReason}"));
         if (appRoot.RefusedReason is not null)
         {
             MessageBoxW(IntPtr.Zero,

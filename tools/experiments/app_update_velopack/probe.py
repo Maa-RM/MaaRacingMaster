@@ -349,7 +349,8 @@ def _collect_live_evidence(live_root: Path, userdata: Path,
                                if logs.is_dir() else []))
 
     def _session_logs():
-        sessions = sorted(p.name for p in logs.iterdir()) if logs.is_dir() else []
+        # logs/ 根上同时有壳日志（shell.log 等）文件，只把目录当会话
+        sessions = sorted(p.name for p in logs.iterdir() if p.is_dir()) if logs.is_dir() else []
         if not sessions:
             return {}
         session = logs / sessions[-1]
@@ -772,6 +773,46 @@ def _formal_update_chain() -> dict:
     return ev
 
 
+def _dev_smoke_chain(args) -> dict:
+    """dev 启动回归烟囘（P1 非受管口径）：工作树 Debug 壳 + MaaRM_APP_ROOT 指向主线检出
+    （工作树无 .venv，借主线运行时与前端），用户数据隔离到临时目录。
+    取证：非受管解析决策行（环境变量覆盖值被采纳并记录）、侧车启动、WebView2 数据目录
+    落隔离用户数据根、exe 旁不再有数据目录、窗口人工目视确认。"""
+    shell = Path(args.shell)
+    app_root = Path(args.dev_root)
+    assert shell.is_file(), f"壳不存在: {shell}"
+    assert (app_root / ".venv").is_dir(), f"主线检出缺 .venv: {app_root}"
+    case = OUT / ("devsmoke-" + uuid.uuid4().hex[:8])
+    case.mkdir(parents=True)
+    userdata = case / "userdata"
+    userdata.mkdir()
+    env = {"APPDATA": str(userdata), "MaaRM_APP_ROOT": str(app_root)}
+    ev: dict = {"case": str(case), "shell": str(shell), "dev_root": str(app_root)}
+    subprocess.Popen([str(shell)], cwd=str(shell.parent),
+                     env={**os.environ, **env}, creationflags=0x00000008)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        procs = _process_snapshot(str(case))
+        if any(p["Name"] == "python.exe" for p in procs):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("侧车 120 秒内未启动")
+    ev["sidecar_started"] = True
+    udf = userdata / "MaaRacingMaster" / "webview2" / "EBWebView"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if udf.is_dir():
+            break
+        time.sleep(1)
+    ev["webview2_udf_in_userdata"] = udf.is_dir()
+    ev["udf_exe_adjacent"] = (shell.parent / (SHELL_EXE + ".WebView2")).is_dir()
+    ev["shell_log_tail"] = _tail(userdata / "MaaRacingMaster" / "logs" / "shell.log", 2500)
+    ev.update(_collect_live_evidence(shell.parent, userdata))
+    _wait_user_close_window(ev, case)
+    return ev
+
+
 def _elevated_action(args: argparse.Namespace, chain) -> int:
     result_path = Path(args.result) if args.result else (OUT / "managed-result.json")
     if args.elevated_child:
@@ -794,7 +835,9 @@ def _elevated_action(args: argparse.Namespace, chain) -> int:
     started = time.time()
     _run_elevated_child(result_path, [args.action]
                         + (["--poison"] if args.poison else [])
-                        + (["--via-stub"] if args.via_stub else []))
+                        + (["--via-stub"] if args.via_stub else [])
+                        + (["--shell", args.shell] if args.shell else [])
+                        + (["--dev-root", args.dev_root] if args.dev_root else []))
     fresh = result_path.exists() and result_path.stat().st_mtime >= started - 2
     try:
         if not fresh:
@@ -830,9 +873,11 @@ def main() -> int:
                                            "managed-update", "managed-launch",
                                            "managed-manifests", "fd-launch",
                                            "targets-launch", "p0-tail",
-                                           "formal-update"])
+                                           "formal-update", "dev-smoke"])
     parser.add_argument("--poison", action="store_true")
     parser.add_argument("--via-stub", action="store_true")
+    parser.add_argument("--shell", default="")
+    parser.add_argument("--dev-root", default="")
     parser.add_argument("--result", default="")
     parser.add_argument("--elevated-child", action="store_true")
     args = parser.parse_args()
@@ -875,6 +920,8 @@ def main() -> int:
         return _elevated_action(args, _p0_tail_chain)
     elif args.action == "formal-update":
         return _elevated_action(args, _formal_update_chain)
+    elif args.action == "dev-smoke":
+        return _elevated_action(args, lambda: _dev_smoke_chain(args))
     else:
         update(nested=args.action == "nested-update")
     return 0
