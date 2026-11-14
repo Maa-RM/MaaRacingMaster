@@ -127,13 +127,30 @@ internal static class Program
               s2.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(s2.TargetVersion),
               $"phase={s2.Phase} target={s2.TargetVersion} error={s2.Error}");
 
+        // ③-1 启动即回包（评审回归：等待整段下载会让首次下载期间界面拿不到进度、无法取消）：
+        // 清掉包缓存走真实拷贝，启动调用应立即返回 downloading，进度由独立状态查询推进。
+        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
+            File.Delete(cached);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var s3 = await coordinator.StartDownloadAsync();
-        Check("下载 → ready 且进度满", s3.Phase == UpdateSnapshot.Ready && s3.Progress == 100,
-              $"phase={s3.Phase} progress={s3.Progress} error={s3.Error}");
+        sw.Stop();
+        Check("下载启动即回包 → downloading（不等整段下载）",
+              s3.Phase == UpdateSnapshot.Downloading && sw.ElapsedMilliseconds < 1500,
+              $"phase={s3.Phase} elapsed={sw.ElapsedMilliseconds}ms error={s3.Error}");
+        var deadline = DateTime.UtcNow.AddSeconds(120);
+        UpdateSnapshot polled;
+        do
+        {
+            await Task.Delay(200).ConfigureAwait(false); // 前端状态轮询的等价物
+            polled = coordinator.GetStatus();
+        } while (polled.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < deadline);
+        Check("独立状态查询观察下载完成 → ready 且进度满",
+              polled.Phase == UpdateSnapshot.Ready && polled.Progress == 100,
+              $"phase={polled.Phase} progress={polled.Progress} error={polled.Error}");
 
         var s4 = await coordinator.StartDownloadAsync();
         Check("就绪后重复下载 → 幂等返回就绪", s4.Phase == UpdateSnapshot.Ready
-              && s4.Revision >= s3.Revision, $"phase={s4.Phase} rev={s4.Revision}");
+              && s4.Revision >= polled.Revision, $"phase={s4.Phase} rev={s4.Revision}");
 
         var s5 = coordinator.CancelDownload();
         Check("非下载态取消 → 拒绝", s5.Phase == UpdateSnapshot.Ready
@@ -170,6 +187,56 @@ internal static class Program
         Check("全部源不可达 → 诚实失败（可重试，不换目标）",
               sd.Phase == UpdateSnapshot.Idle && (sd.Error ?? "").Contains("不可达", StringComparison.Ordinal),
               $"phase={sd.Phase} error={sd.Error}");
+
+        // ⑤ 下载失败镜像回退（评审回归：索引可达不等于包可达）——主源只有索引没有包，
+        // 镜像完整；下载失败自动换到同目标镜像并完成，最终 ready。
+        var indexOnly = Path.Combine(MakeTempDir("index-only"), "feed");
+        Directory.CreateDirectory(indexOnly);
+        foreach (var f in Directory.GetFiles(feed))
+            if (!f.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase))
+                File.Copy(f, Path.Combine(indexOnly, Path.GetFileName(f)));
+        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
+            File.Delete(cached);
+        var fallback = new UpdateCoordinator(indexOnly + "\n" + feed, managed: true,
+            locator: MakeExplicitLocator(live, liveVersion));
+        var sf1 = await fallback.CheckAsync();
+        Check("索引可达包缺失 → 检查仍 available", sf1.Phase == UpdateSnapshot.Available,
+              $"phase={sf1.Phase} error={sf1.Error}");
+        var sf2 = await fallback.StartDownloadAsync();
+        var fbDeadline = DateTime.UtcNow.AddSeconds(120);
+        UpdateSnapshot fb;
+        do
+        {
+            await Task.Delay(200).ConfigureAwait(false);
+            fb = fallback.GetStatus();
+        } while (fb.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < fbDeadline);
+        Check("包下载失败 → 镜像同目标回退完成下载 → ready",
+              fb.Phase == UpdateSnapshot.Ready && fb.Progress == 100,
+              $"phase={fb.Phase} progress={fb.Progress} target={fb.TargetVersion} error={fb.Error}");
+
+        // ⑥ 交接失败恢复（评审回归：更新器启动失败不得把关窗变成既成事实）——
+        // 定位器指向不存在的 Update.exe：状态回 ready 带原因，关窗事件不触发。
+        var applyFired = 0;
+        var broken = new UpdateCoordinator(feed, managed: true,
+            locator: new TestVelopackLocator("MaaRM.RealShellProbe", liveVersion,
+                Path.Combine(live, "packages"), Path.Combine(live, "current"), live,
+                Path.Combine(live, "missing-dir", "Update.exe")),
+            prepareGate: () => Task.FromResult<string?>(null));
+        broken.ApplyingStarted += () => applyFired++;
+        var sb1 = await broken.CheckAsync();
+        var sb2 = await broken.StartDownloadAsync();
+        var sbDeadline = DateTime.UtcNow.AddSeconds(120);
+        UpdateSnapshot sb;
+        do
+        {
+            await Task.Delay(200).ConfigureAwait(false);
+            sb = broken.GetStatus();
+        } while (sb.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < sbDeadline);
+        var sb3 = await broken.ApplyAsync();
+        Check("更新器启动失败 → 状态回 ready 带原因（非 applying）",
+              sb3.Phase == UpdateSnapshot.Ready && (sb3.Error ?? "").Contains("启动失败", StringComparison.Ordinal),
+              $"phase={sb3.Phase} error={sb3.Error}");
+        Check("更新器启动失败 → 关窗事件未触发", applyFired == 0, $"applyFired={applyFired}");
     }
 
     /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>

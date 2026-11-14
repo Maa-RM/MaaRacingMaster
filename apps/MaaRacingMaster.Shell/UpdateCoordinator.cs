@@ -63,6 +63,7 @@ public sealed class UpdateCoordinator
     private string? _targetVersion;
     private string? _error;
     private UpdateManager? _manager;               // 锁定为检查成功的源（下载/提交绑定同一已验证来源）
+    private string? _lockedSource;                 // 与 _manager 配对：镜像回退时跳过已锁源
     private UpdateInfo? _pending;
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
@@ -128,6 +129,7 @@ public sealed class UpdateCoordinator
                 lock (_gate)
                 {
                     _manager = manager; // 锁定本源：下载/提交绑定同一已验证来源
+                    _lockedSource = source;
                     if (update is null)
                     {
                         _targetVersion = null;
@@ -171,69 +173,146 @@ public sealed class UpdateCoordinator
             : new UpdateManager(source, new UpdateOptions(), _locator);
     }
 
-    /// <summary>开始下载：仅 available/ready 允许；下载中重复调用复用当前任务（幂等）。</summary>
-    public async Task<UpdateSnapshot> StartDownloadAsync()
+    /// <summary>开始下载：仅 available 允许；下载中重复调用复用当前任务（幂等）；
+    /// ready 重复调用幂等返回（已就绪无需重下）。启动即回包 downloading 快照——
+    /// 下载在后台任务进行，进度与结果由独立状态查询获得（评审回归：等待整段下载
+    /// 会让首次下载期间界面拿不到进度、也无法取消）。</summary>
+    public Task<UpdateSnapshot> StartDownloadAsync()
     {
-        Task? running;
+        UpdateInfo? pending;
         lock (_gate)
         {
             if (_phase == UpdateSnapshot.Downloading && _downloadTask is not null)
-                running = _downloadTask; // 复用当前任务
-            else if (_phase is UpdateSnapshot.Available or UpdateSnapshot.Ready)
-            {
-                if (_pending is null)
-                    return Snapshot("没有可安装目标，请先检查更新");
-                _downloadCts = new CancellationTokenSource();
-                _downloadTask = DownloadAsync(_pending, _downloadCts.Token);
-                _revision++;
-                _phase = UpdateSnapshot.Downloading;
-                _error = null;
-                running = _downloadTask;
-            }
-            else
-                return Snapshot(BusyReason());
+                return Task.FromResult(Snapshot()); // 复用当前任务
+            if (_phase == UpdateSnapshot.Ready)
+                return Task.FromResult(Snapshot()); // 已下载完成：重复调用幂等返回
+            if (_phase != UpdateSnapshot.Available)
+                return Task.FromResult(Snapshot(BusyReason()));
+            if (_pending is null)
+                return Task.FromResult(Snapshot("没有可安装目标，请先检查更新"));
+            pending = _pending;
+            _downloadCts = new CancellationTokenSource();
+            _revision++;
+            _phase = UpdateSnapshot.Downloading;
+            _error = null;
+            // 任务在锁外创建：DownloadAsync 的同步前段与完成翻转都拿同一把锁，
+            // 持锁启动会在同步完成路径上自我死锁。
         }
-        await running.ConfigureAwait(false);
-        return GetStatus();
+        var token = _downloadCts!.Token;
+        _downloadTask = Task.Run(() => DownloadAsync(pending!, token));
+        return Task.FromResult(GetStatus());
     }
 
     private async Task DownloadAsync(UpdateInfo update, CancellationToken ct)
     {
+        string? failure = null;
         try
         {
             var manager = _manager
                 ?? throw new InvalidOperationException("未锁定更新源（先检查更新）");
-            // 进度回调来自库的下载线程：跨线程进入 UI 无关的锁内状态即可（revision 单调）
-            await manager.DownloadUpdatesAsync(update, p =>
-            {
-                lock (_gate)
-                {
-                    if (_phase == UpdateSnapshot.Downloading)
-                    {
-                        _progress = p;
-                        _revision++;
-                    }
-                }
-            }, ct).ConfigureAwait(false);
-            lock (_gate)
-            {
-                if (_phase == UpdateSnapshot.Downloading) // 取消竞态下不再翻转
-                    SetState(UpdateSnapshot.Ready, progress: 100);
-            }
+            await DownloadOnManagerAsync(manager, update, ct).ConfigureAwait(false);
+            MarkReadyIfDownloading();
+            return;
         }
         catch (OperationCanceledException)
         {
-            lock (_gate)
-            {
-                SetState(UpdateSnapshot.Available, error: "下载已取消");
-            }
+            BackToAvailable("下载已取消");
+            return;
         }
         catch (Exception ex)
         {
+            failure = ex.Message;
+        }
+        // 镜像回退（评审回归：索引可达不等于包可达）：锁定源下载失败时按序尝试其余源，
+        // 仅当镜像给出「同目标」发行（版本与内容指纹一致）才换源重试；同版本不同内容
+        // 视为不同发行，不换。全部失败回可重试的 available，目标不换。
+        try
+        {
+            if (await TryDownloadMirrorAsync(update, ct).ConfigureAwait(false))
+            {
+                MarkReadyIfDownloading();
+                return;
+            }
+            failure = $"{failure}（镜像回退未找到同目标源）";
+        }
+        catch (OperationCanceledException)
+        {
+            BackToAvailable("下载已取消");
+            return;
+        }
+        catch (Exception ex)
+        {
+            failure = $"{failure}；镜像回退也失败: {ex.Message}";
+        }
+        BackToAvailable($"下载失败: {failure}");
+    }
+
+    private async Task DownloadOnManagerAsync(UpdateManager manager, UpdateInfo update, CancellationToken ct)
+    {
+        // 进度回调来自库的下载线程：跨线程进入 UI 无关的锁内状态即可（revision 单调）
+        await manager.DownloadUpdatesAsync(update, p =>
+        {
             lock (_gate)
             {
-                SetState(UpdateSnapshot.Available, error: $"下载失败: {ex.Message}");
+                if (_phase == UpdateSnapshot.Downloading)
+                {
+                    _progress = p;
+                    _revision++;
+                }
             }
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>镜像回退：按序尝试其余源；候选给出同目标发行才换源下载。
+    /// 换源成功即重绑管理器与目标（提交绑定到已验证的镜像）。</summary>
+    private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CancellationToken ct)
+    {
+        foreach (var source in _sources)
+        {
+            if (source == _lockedSource || !IsSourceReachable(source))
+                continue;
+            try
+            {
+                var manager = GetManagerFor(source);
+                var info = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+                if (info?.TargetFullRelease is null || !SameTarget(update.TargetFullRelease, info.TargetFullRelease))
+                    continue;
+                await DownloadOnManagerAsync(manager, info, ct).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _manager = manager;
+                    _lockedSource = source;
+                    _pending = info;
+                }
+                return true;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* 该镜像不可用或下载失败：继续下一候选 */ }
+        }
+        return false;
+    }
+
+    /// <summary>「同目标」判定：版本与内容指纹（SHA256）一致——回退只换源，不换发行。</summary>
+    private static bool SameTarget(VelopackAsset a, VelopackAsset b)
+    {
+        return a.Version == b.Version
+            && string.Equals(a.SHA256, b.SHA256, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void MarkReadyIfDownloading()
+    {
+        lock (_gate)
+        {
+            if (_phase == UpdateSnapshot.Downloading) // 取消竞态下不再翻转
+                SetState(UpdateSnapshot.Ready, progress: 100);
+        }
+    }
+
+    private void BackToAvailable(string error)
+    {
+        lock (_gate)
+        {
+            SetState(UpdateSnapshot.Available, error: error);
         }
     }
 
@@ -250,7 +329,9 @@ public sealed class UpdateCoordinator
     }
 
     /// <summary>提交安装：仅 ready 允许。闸门拒绝/失败 → 状态回 ready 并带原因；
-    /// 全部确认 → applying（等本进程退出后由更新器整树替换并重启）。</summary>
+    /// 更新器交接成功（等本进程退出后整树替换）才进入 applying 并触发计划内关窗；
+    /// 交接失败（更新器缺失/无法启动）→ 回 ready 带原因：关窗未排、旧版继续可用，
+    /// 前端保留重启升级入口（评审回归：先排关窗再交接会把启动失败变成关窗既成事实）。</summary>
     public async Task<UpdateSnapshot> ApplyAsync()
     {
         lock (_gate)
@@ -280,16 +361,35 @@ public sealed class UpdateCoordinator
                 }
             }
         }
+        var manager = _manager;
+        var pending = _pending;
+        if (manager is null || pending is null)
+        {
+            lock (_gate)
+            {
+                return SetState(UpdateSnapshot.Ready, error: "未锁定更新源（先检查更新）");
+            }
+        }
+        try
+        {
+            manager.WaitExitThenApplyUpdates(pending.TargetFullRelease, silent: true, restart: true);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 更新器交接失败: {ex.Message}（保留旧版，可重试）");
+            lock (_gate)
+            {
+                return SetState(UpdateSnapshot.Ready,
+                    error: $"升级程序启动失败: {ex.Message}（旧版本仍可继续使用，可重试）");
+            }
+        }
         lock (_gate)
         {
             _revision++;
             _phase = UpdateSnapshot.Applying;
         }
-        ApplyingStarted?.Invoke();
-        var manager = _manager
-            ?? throw new InvalidOperationException("未锁定更新源（先检查更新）");
-        manager.WaitExitThenApplyUpdates(_pending.TargetFullRelease, silent: true, restart: true);
-        ShellLog.Append($"[update] 提交已排队：目标 {_pending.TargetFullRelease.Version}，等本进程退出后整树替换");
+        ApplyingStarted?.Invoke(); // 交接成功后才安排计划内关窗
+        ShellLog.Append($"[update] 提交已排队：目标 {pending.TargetFullRelease.Version}，等本进程退出后整树替换");
         return GetStatus();
     }
 
