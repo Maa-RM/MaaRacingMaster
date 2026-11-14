@@ -398,6 +398,96 @@ def _wait_user_close_window(ev: dict, case: Path) -> None:
     ev["orphan_cleaned"] = [item["Name"] for item in leftover]
 
 
+def _log_session_count(userdata: Path) -> int:
+    logs = userdata / "MaaRacingMaster" / "logs"
+    return len([p for p in logs.iterdir() if p.is_dir()]) if logs.is_dir() else 0
+
+
+def _p0_tail_chain() -> dict:
+    """P0 收尾：①壳崩溃遗留侧车后再升级 ②旧应用根毒化（环境变量覆盖内容根）。"""
+    info = json.loads((OUT / "managed-case.json").read_text(encoding="utf-8"))
+    live = Path(info["live"])
+    feed = Path(info["feed"])
+    case = Path(info["case"])
+    current = live / "current"
+    helper = OUT / "update-helper" / "MaaRM.UpdateProbe.exe"
+    target = info["versions"][1]
+    ev: dict = {"case": info["case"]}
+
+    # ---- 用例①：壳崩溃遗留侧车后再升级 ----
+    env_o, userdata_o, _ = _case_env(case, "orphan")
+    subprocess.Popen([str(live / info["stub"])], cwd=str(live),
+                     env={**os.environ, **env_o},
+                     creationflags=0x00000008)
+    procs = []
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        procs = _process_snapshot(str(live))
+        if any(p["Name"] == "python.exe" for p in procs):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("侧车 90 秒内未启动")
+    ev["orphan_sidecar_spawned"] = True
+    shells = [p for p in procs if p["Name"] == SHELL_EXE]
+    assert shells, "壳进程未找到"
+    # 模拟崩溃：只杀壳不杀树 → 提权侧车成为孤儿
+    run(["taskkill", "/PID", str(shells[0]["ProcessId"]), "/F"],
+        timeout=15, expected=None)
+    time.sleep(2)
+    orphan = [p for p in _process_snapshot(str(live)) if p["Name"] == "python.exe"]
+    ev["orphan_count_after_crash"] = len(orphan)
+    # 侧车主循环读 stdin（sidecar.py:762），父死即 EOF 自退——孤儿不成立是正面证据
+    ev["orphan_verdict"] = ("无孤儿：侧车父死即自退（stdin EOF）"
+                            if not orphan else "存在孤儿，继续观察升级行为")
+
+    d = run([str(helper), "--locator-root", str(live), "--download-local", str(feed)],
+            timeout=600, env_extra=env_o)
+    assert "UPDATE_DOWNLOADED" in d.stdout, d.stdout + d.stderr
+    ev["orphan_download"] = "ok"
+    a = run([str(helper), "--locator-root", str(live), "--apply-local", str(feed)],
+            timeout=600, expected=None, env_extra=env_o)
+    ev["orphan_apply_exit"] = a.returncode
+    ev["orphan_apply_stdout"] = (a.stdout or "")[:300]
+    try:
+        _wait_marker(current, target, 600)
+        ev["orphan_disk_after"] = target
+    except AssertionError as exc:
+        ev["orphan_disk_after"] = f"未替换: {exc}"
+    orphan_after = [p for p in _process_snapshot(str(live)) if p["Name"] == "python.exe"]
+    ev["orphan_count_after_apply"] = len(orphan_after)
+    # 重启出来的 GUI（新版本）给用户看一眼后关闭
+    _wait_user_close_window(ev, case)
+
+    # ---- 用例②：旧应用根毒化 ----
+    decoy = case / "旧版根目录"
+    (decoy / "runtime" / "python").mkdir(parents=True, exist_ok=True)
+    (decoy / "pyproject.toml").write_text("", encoding="utf-8")
+    env_p, userdata_p, _ = _case_env(case, "poison")
+    env_p["MaaRM_APP_ROOT"] = str(decoy)
+    err_log = case / "poison-shell-stderr.txt"
+    logs_before = _log_session_count(userdata_p)
+    with open(err_log, "w", encoding="utf-8") as err_f:
+        proc = subprocess.Popen([str(live / info["stub"])], cwd=str(live),
+                                stdout=err_f, stderr=err_f,
+                                env={**os.environ, **env_p},
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        ev["poison_pid"] = proc.pid
+        time.sleep(20)
+        procs_p = _process_snapshot(str(case))
+        ev["poison_processes"] = procs_p
+        ev["poison_python_from_decoy"] = [str(p.get("ExecutablePath")) for p in procs_p
+                                          if "旧版根目录" in str(p.get("ExecutablePath", ""))]
+        ev["poison_session_logs_delta"] = _log_session_count(userdata_p) - logs_before
+        ev["poison_stderr_tail"] = _tail(err_log, 2000)
+    _wait_user_close_window(ev, case)
+    ev["poison_verdict"] = (
+        "环境变量覆盖内容根成立：无侧车进程、无新会话日志（前端落旧根不可用）"
+        if not ev["poison_python_from_decoy"] and ev["poison_session_logs_delta"] == 0
+        else "行为与预期不同，见证据")
+    return ev
+
+
 def _managed_update_chain() -> dict:
     """受管真实壳整链：壳保持最小注入，下载/提交由独立更新助手驱动。"""
     info = json.loads((OUT / "managed-case.json").read_text(encoding="utf-8"))
@@ -621,7 +711,7 @@ def main() -> int:
                                            "real-shell", "manifests",
                                            "managed-update", "managed-launch",
                                            "managed-manifests", "fd-launch",
-                                           "targets-launch"])
+                                           "targets-launch", "p0-tail"])
     parser.add_argument("--poison", action="store_true")
     parser.add_argument("--via-stub", action="store_true")
     parser.add_argument("--result", default="")
@@ -662,6 +752,8 @@ def main() -> int:
                                        Path(os.environ["APPDATA"]) / "MaaRacingMaster",
                                        report, env, "fd")
         return _elevated_action(args, chain)
+    elif args.action == "p0-tail":
+        return _elevated_action(args, _p0_tail_chain)
     else:
         update(nested=args.action == "nested-update")
     return 0

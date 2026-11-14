@@ -34,10 +34,13 @@ status: active
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py update
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py nested-update
 # 受管真实壳整链（标准布局内容树 + 双版本打包 + 提权链；UAC 与关窗需人工配合）
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-minimal
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-managed
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-update
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-manifests
+# P0 收尾用例（孤儿侧车升级 + 旧应用根毒化；feed 追加 0.3.0，三轮窗口）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-p0-tail
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py p0-tail
 # 白窗取证与拆分（历史判定轮，详见「白窗现象」）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py real-shell
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py publish-fd
@@ -67,6 +70,8 @@ status: active
 | 中文与空格路径 | live 副本位于「中文 目录 空格」层级；入口启动、升级、重启全程无路径故障 | 无 |
 | 白窗现象 | 带完整注入（版本报告 + 下载/提交探针）的发布产物，WebView2 环境创建必然挂起：UDF 目录被创建但 EBWebView 结构不生成、无异常、无 WER 事件、壳自身 stderr 无输出；最小注入（仅 VelopackApp.Run + 探针参数早退）与无注入产物必正常渲染（各 7:5 样本，含同二进制复跑） | 根因机制未明：挂起/正常样本的文件级差异只有壳自身 IL（执行层面无差别）；已排除 Release/Debug、自包含/依赖框架、发布/构建、深/短路径、中/英文路径、stub/直启、句柄形态、APPDATA 重定向、VelopackLocator 访问、提权、侧车有无。**已绕开**：壳保持最小注入，下载/提交改由受管树外的独立助手以显式定位器（TestVelopackLocator）驱动，整链实测通过 |
 | 受管树内运行次要 exe | 独立更新助手（非注册主程序）在受管安装树内直启必挂（默认定位器解析），与路径无关；以主程序身份运行无此问题 | 机制未明（默认定位器对「运行 exe ≠ 注册主程序」的处理）；规避方式：助手住树外，经 TestVelopackLocator 显式指定受管根 |
+| 崩溃遗留侧车（孤儿用例） | 强杀壳后侧车无遗留：侧车主循环读 stdin（sidecar.py:762），父死即 EOF 自退；其后下载与提交照常完成（0.1.0→0.3.0） | 无（孤儿风险对侧车不成立；有序关闭路径的退出确认仍由 P1 覆盖） |
+| 旧应用根毒化 | 壳带 MaaRM_APP_ROOT 覆盖值启动：环境变量压过内容根——无侧车进程、无新会话日志（前端落旧根不可用） | 无（确认受管模式必须拒绝冲突覆盖值，归 P1） |
 
 ## 独立复核裁决
 

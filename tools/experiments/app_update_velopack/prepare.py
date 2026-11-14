@@ -303,15 +303,24 @@ def pack_managed() -> None:
     便携 zip 文件名不含版本号，第二次打包会覆盖同名文件；因此必须在打 0.2.0
     之前把 0.1.0 便携包解压出来（与样本 probe 的 update 流程同口径）。
     """
+    _pack_two_versions(("0.1.0", "0.2.0"))
+
+
+def pack_p0_tail() -> None:
+    """P0 收尾用例环境：0.1.0 新 live 副本 + feed 追加 0.3.0 目标（孤儿/毒化用例）。"""
+    _pack_two_versions(("0.1.0", "0.3.0"))
+
+
+def _pack_two_versions(versions: tuple[str, str]) -> None:
     stage = OUT / "managed-stage"
-    assert (stage / "MaaRacingMaster.Shell.exe").is_file(), "先运行 managed-shell 组装内容树"
+    assert (stage / "MaaRacingMaster.Shell.exe").is_file(), "先运行 managed-shell-minimal"
     feed = OUT / ("managed-feed-" + uuid.uuid4().hex[:8])
     case = OUT / ("managed-case-" + uuid.uuid4().hex[:8])
     live = case / "中文 目录 空格" / "live"
-    for version in ("0.1.0", "0.2.0"):
+    for version in versions:
         (stage / "payload-version.txt").write_text(version, encoding="utf-8")
         _vpk_pack(stage, version, feed)
-        if version == "0.1.0":
+        if version == versions[0]:
             archives = list(feed.glob("*Portable.zip"))
             assert len(archives) == 1, [str(p) for p in feed.iterdir()]
             with zipfile.ZipFile(archives[0]) as z:
@@ -324,14 +333,14 @@ def pack_managed() -> None:
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         dst.write_bytes(z.read(member))
             assert (live / "current" / "payload-version.txt").read_text(
-                encoding="utf-8") == "0.1.0"
+                encoding="utf-8") == versions[0]
     (OUT / "managed-feed.txt").write_text(feed.name, encoding="utf-8")
     info = {"case": str(case), "live": str(live), "feed": str(feed),
             "pack_id": "MaaRM.RealShellProbe", "stub": "MaaRMRealShellProbe.exe",
-            "versions": ["0.1.0", "0.2.0"]}
+            "versions": list(versions)}
     (OUT / "managed-case.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("MANAGED_PACK_OK", feed.name)
+    print("PACK_OK_PAIR", versions, live.name)
 
 
 def main() -> None:
@@ -339,9 +348,9 @@ def main() -> None:
     parser.add_argument("action", choices=["sdk", "tool", "probe", "real-shell",
                                            "pack-real-shell", "managed-shell",
                                            "managed-shell-minimal", "pack-managed",
-                                           "publish-fd", "managed-shell-nl",
-                                           "managed-shell-v1", "managed-shell-v1fd",
-                                           "pure-sc-publish"])
+                                           "pack-p0-tail", "publish-fd",
+                                           "managed-shell-nl", "managed-shell-v1",
+                                           "managed-shell-v1fd", "pure-sc-publish"])
     args = parser.parse_args()
     sdk()
     if args.action == "tool":
@@ -390,6 +399,8 @@ def main() -> None:
                 OUT / "pure-sc-publish", MANAGED_PUBLISH_ARGS, timeout=900)
     elif args.action == "pack-managed":
         pack_managed()
+    elif args.action == "pack-p0-tail":
+        pack_p0_tail()
 
 
 if __name__ == "__main__":
