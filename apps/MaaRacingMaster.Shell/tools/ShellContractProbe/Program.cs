@@ -153,6 +153,23 @@ internal static class Program
         Check("revision 随状态实质变化单调前进", s7.Revision > revBefore,
               $"rev {revBefore} → {s7.Revision}");
         Check("闸门放行前不触发提交（本轮未调 Apply）", gateCalls == 1, $"gateCalls={gateCalls}");
+
+        // ④ 镜像回退（同目标）：多行来源按序尝试，主源失败锁镜像；全部失败诚实报错不换目标
+        var deadDir = Path.Combine(MakeTempDir("dead-source"), "empty");
+        Directory.CreateDirectory(deadDir);
+        var mirror = new UpdateCoordinator(deadDir + "\n" + feed, managed: true,
+            locator: MakeExplicitLocator(live, liveVersion));
+        var sm = await mirror.CheckAsync();
+        Check("主源不可达 → 镜像回退检查成功",
+              sm.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(sm.TargetVersion),
+              $"phase={sm.Phase} target={sm.TargetVersion} error={sm.Error}");
+
+        var allDead = new UpdateCoordinator(deadDir + "\n" + deadDir, managed: true,
+            locator: MakeExplicitLocator(live, liveVersion));
+        var sd = await allDead.CheckAsync();
+        Check("全部源不可达 → 诚实失败（可重试，不换目标）",
+              sd.Phase == UpdateSnapshot.Idle && (sd.Error ?? "").Contains("不可达", StringComparison.Ordinal),
+              $"phase={sd.Phase} error={sd.Error}");
     }
 
     /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>

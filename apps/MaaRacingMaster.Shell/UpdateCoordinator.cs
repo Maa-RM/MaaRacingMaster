@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Linq;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,7 +51,7 @@ public sealed class UpdateCoordinator
     /// 壳订阅它做「计划内关闭」（窗口收尾 → Update.exe 检测退出 → 替换 → 重启）。</summary>
     public event Action? ApplyingStarted;
 
-    private readonly string? _feedSource;
+    private readonly string[] _sources;            // 按序尝试的固定来源（主源 + 镜像；同目标发行集）
     private readonly IVelopackLocator? _locator;   // 显式定位器注入（合同探针用）；null = 默认定位器
     private readonly PrepareGateAsync? _prepareGate;
     private readonly bool _managed;
@@ -60,7 +62,7 @@ public sealed class UpdateCoordinator
     private int _progress;
     private string? _targetVersion;
     private string? _error;
-    private UpdateManager? _manager;
+    private UpdateManager? _manager;               // 锁定为检查成功的源（下载/提交绑定同一已验证来源）
     private UpdateInfo? _pending;
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
@@ -69,7 +71,12 @@ public sealed class UpdateCoordinator
                              IVelopackLocator? locator = null,
                              PrepareGateAsync? prepareGate = null)
     {
-        _feedSource = string.IsNullOrWhiteSpace(feedSource) ? null : feedSource;
+        // 多源支持：随包配置每行一个来源（主源 + 镜像），按序尝试；全部失败不换目标。
+        _sources = (feedSource ?? string.Empty)
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0 && !s.StartsWith('#'))
+            .ToArray();
         _managed = managed;
         _locator = locator;
         _prepareGate = prepareGate;
@@ -88,45 +95,80 @@ public sealed class UpdateCoordinator
         }
     }
 
-    /// <summary>检查更新：仅在 idle/available/up_to_date/ready 允许（刷新目标）。</summary>
+    /// <summary>检查更新：仅在 idle/available/up_to_date/ready 允许（刷新目标）。
+    /// 多源按序尝试：第一个「可达且给出结论」的源胜出并锁定（下载/提交绑定同一已验证
+    /// 来源）；全部不可达/失败时诚实报错并可重试——不换目标，不把空/坏镜像误报为
+    /// 「已是最新」（P4 契约：来源故障不得换目标或误报已可安装）。</summary>
     public async Task<UpdateSnapshot> CheckAsync()
     {
         lock (_gate)
         {
             if (!CanRunCheck())
                 return Snapshot(BusyReason());
-        }
-        try
-        {
-            var manager = GetManager();
-            if (manager is null)
-            {
-                lock (_gate) { _targetVersion = null; _pending = null; }
-                return SetState(UpdateSnapshot.Idle, error: "更新源未配置");
-            }
-            var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
-            lock (_gate)
-            {
-                if (update is null)
-                {
-                    _targetVersion = null;
-                    _pending = null;
-                    return SetState(UpdateSnapshot.UpToDate);
-                }
-                _pending = update;
-                _targetVersion = update.TargetFullRelease.Version.ToString();
-                return SetState(UpdateSnapshot.Available);
-            }
-        }
-        catch (Exception ex)
-        {
-            lock (_gate)
+            if (_sources.Length == 0)
             {
                 _targetVersion = null;
                 _pending = null;
-                return SetState(UpdateSnapshot.Idle, error: $"检查更新失败: {ex.Message}");
+                return SetState(UpdateSnapshot.Idle, error: "更新源未配置");
             }
         }
+        string? lastError = null;
+        for (var i = 0; i < _sources.Length; i++)
+        {
+            var source = _sources[i];
+            if (!IsSourceReachable(source))
+            {
+                lastError = $"{source}（不可达或未就绪）";
+                continue;
+            }
+            try
+            {
+                var manager = GetManagerFor(source);
+                var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _manager = manager; // 锁定本源：下载/提交绑定同一已验证来源
+                    if (update is null)
+                    {
+                        _targetVersion = null;
+                        _pending = null;
+                        return SetState(UpdateSnapshot.UpToDate);
+                    }
+                    _pending = update;
+                    _targetVersion = update.TargetFullRelease.Version.ToString();
+                    return SetState(UpdateSnapshot.Available);
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = $"{source}（{ex.Message}）";
+            }
+        }
+        lock (_gate)
+        {
+            _targetVersion = null;
+            _pending = null;
+            return SetState(UpdateSnapshot.Idle, error: $"所有更新源均不可达：{lastError}");
+        }
+    }
+
+    /// <summary>源可达性预检：本地目录必须存在且非空（空目录 = 镜像未就绪——
+    /// 更新库对空目录返回「无更新」，直接信任会把故障误报为已是最新）；网络源
+    /// 的可达性由检查调用的异常区分（网络错误抛出，正常无更新返回 null）。</summary>
+    private static bool IsSourceReachable(string source)
+    {
+        if (Directory.Exists(source))
+            return Directory.EnumerateFileSystemEntries(source).Any();
+        if (source.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
+    private UpdateManager GetManagerFor(string source)
+    {
+        return _locator is null
+            ? new UpdateManager(source)
+            : new UpdateManager(source, new UpdateOptions(), _locator);
     }
 
     /// <summary>开始下载：仅 available/ready 允许；下载中重复调用复用当前任务（幂等）。</summary>
@@ -159,8 +201,8 @@ public sealed class UpdateCoordinator
     {
         try
         {
-            var manager = GetManager()
-                ?? throw new InvalidOperationException("更新源未配置");
+            var manager = _manager
+                ?? throw new InvalidOperationException("未锁定更新源（先检查更新）");
             // 进度回调来自库的下载线程：跨线程进入 UI 无关的锁内状态即可（revision 单调）
             await manager.DownloadUpdatesAsync(update, p =>
             {
@@ -244,32 +286,14 @@ public sealed class UpdateCoordinator
             _phase = UpdateSnapshot.Applying;
         }
         ApplyingStarted?.Invoke();
-        var manager = GetManager();
-        if (manager is null)
-        {
-            lock (_gate)
-            {
-                return SetState(UpdateSnapshot.Ready, error: "更新源未配置，无法提交");
-            }
-        }
+        var manager = _manager
+            ?? throw new InvalidOperationException("未锁定更新源（先检查更新）");
         manager.WaitExitThenApplyUpdates(_pending.TargetFullRelease, silent: true, restart: true);
         ShellLog.Append($"[update] 提交已排队：目标 {_pending.TargetFullRelease.Version}，等本进程退出后整树替换");
         return GetStatus();
     }
 
     // ---------- 内部 ----------
-
-    private UpdateManager? GetManager()
-    {
-        if (_feedSource is null)
-            return null;
-        if (_manager is not null)
-            return _manager;
-        _manager = _locator is null
-            ? new UpdateManager(_feedSource)
-            : new UpdateManager(_feedSource, new UpdateOptions(), _locator);
-        return _manager;
-    }
 
     private bool CanRunCheck()
     {
