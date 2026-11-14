@@ -27,40 +27,17 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
-    /// 优先级（见 .trae/documents 报告 §5.3）：--app-root 参数 > MaaRM_APP_ROOT 环境变量 > exe 向上探测 pyproject.toml。
-    /// 第一版 PoC：native Launcher 经环境变量 MaaRM_APP_ROOT 传入安装根（避免命令行 quoting），
-    /// 此处用 Path.GetFullPath 归一化为绝对路径（不变量：启动期只解析一次，此后不因 cwd/exe 位置再推导）。
+    /// 解析单一真源在 AppRootResolver（Program 启动前检查与这里共用；进程内缓存，
+    /// 启动期只解析一次）：非受管沿用「--app-root 参数 > MaaRM_APP_ROOT 环境变量 > 向上探测」，
+    /// 受管安装以内容根为唯一权威并拒绝冲突覆盖值。
     /// 找不到返回 null。
     /// </summary>
     private static string? ResolveRepoRoot()
-    {
-        // --app-root 参数（未来 CLI 用，当前 Launcher 未走此路径）
-        var argRoot = Environment.GetCommandLineArgs()
-            .SkipWhile(a => a != "--app-root").Skip(1).FirstOrDefault();
-        if (argRoot is not null && argRoot.Length > 0)
-        {
-            try { return Path.GetFullPath(argRoot); }
-            catch { /* 非法路径，继续降级 */ }
-        }
-
-        // MaaRM_APP_ROOT 环境变量（第一版 PoC transport）
-        var envRoot = Environment.GetEnvironmentVariable("MaaRM_APP_ROOT");
-        if (!string.IsNullOrWhiteSpace(envRoot))
-        {
-            try { return Path.GetFullPath(envRoot); }
-            catch { /* 非法路径，继续降级 */ }
-        }
-
-        // 开发模式回退：从 exe 运行目录逐级向上找含 pyproject.toml 的目录（repo marker）
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "pyproject.toml")))
-                return dir.FullName;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+        => AppRootResolver.Resolve(
+            Environment.GetCommandLineArgs(),
+            Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
+            AppContext.BaseDirectory,
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)).Root;
 
     /// <summary>
     /// 从仓库根向上查找指定相对路径的资源文件（sidecar / venv 等一律以仓库根为锚）。

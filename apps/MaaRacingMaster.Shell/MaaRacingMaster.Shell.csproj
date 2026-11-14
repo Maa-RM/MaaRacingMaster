@@ -22,4 +22,9 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260710003" />
   </ItemGroup>
 
+  <!-- 壳专用工具（合同探针等）有自己的入口与工程，不进壳本体编译 -->
+  <ItemGroup>
+    <Compile Remove="tools\**" />
+  </ItemGroup>
+
 </Project>
