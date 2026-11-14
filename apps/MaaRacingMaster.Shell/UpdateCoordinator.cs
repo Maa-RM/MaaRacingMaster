@@ -45,6 +45,10 @@ public sealed class UpdateCoordinator
     /// false/异常 = 不能提交（实现内部负责解冻）。返回原因经 out 参数带给快照。</summary>
     public delegate Task<string?> PrepareGateAsync();
 
+    /// <summary>提交进入 applying 相位（等本进程退出后整树替换）时触发一次：
+    /// 壳订阅它做「计划内关闭」（窗口收尾 → Update.exe 检测退出 → 替换 → 重启）。</summary>
+    public event Action? ApplyingStarted;
+
     private readonly string? _feedSource;
     private readonly IVelopackLocator? _locator;   // 显式定位器注入（合同探针用）；null = 默认定位器
     private readonly PrepareGateAsync? _prepareGate;
@@ -239,6 +243,7 @@ public sealed class UpdateCoordinator
             _revision++;
             _phase = UpdateSnapshot.Applying;
         }
+        ApplyingStarted?.Invoke();
         var manager = GetManager();
         if (manager is null)
         {

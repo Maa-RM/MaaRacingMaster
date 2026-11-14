@@ -25,6 +25,52 @@ public sealed partial class MainWindow : Window
     private const int MinWindowWidth = 1000;
     private const int MinWindowHeight = 700;
 
+    /// <summary>读安装树内随包的更新源配置（壳 exe 同目录 update-source.txt，发行时写入）。
+    /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随受管树整体替换，受信任。</summary>
+    private static string? ReadUpdateSourceFile()
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "update-source.txt");
+            if (!File.Exists(path)) return null;
+            var value = File.ReadAllText(path).Trim();
+            return value.Length == 0 ? null : value;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 更新源配置读取失败（按未配置处理）: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>提交进入替换相位（applying）后的计划内关窗：给前端一帧渲染
+    /// 「即将关闭」提示，再走正常关窗收尾（侧车已退出，收尾幂等）。
+    /// 与异常关闭的区分：本路径先置关窗态，Update.exe 重启属预期行为。</summary>
+    private void ScheduleApplyShutdown()
+    {
+        if (_roundState == RoundState.Closing) return;
+        EnterClosing();
+        if (_closeScheduled) return;
+        _closeScheduled = true;
+        var dispatcher = DispatcherQueue;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
+            dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    if (!_windowClosed) Close();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[shell] 升级关窗失败: {ex.Message}");
+                }
+            });
+        });
+        ShellLog.Append("[update] 提交已进入替换相位，壳计划内关闭");
+    }
+
     /// <summary>提交闸门（升级适配 P2 契约）：后端原子冻结 → 有界退出确认。
     /// 任一步失败负责解冻并返回原因（协调器据此放弃提交、状态回 ready）；
     /// 全部通过返回 null（可交更新器）。解冻失败只留日志：后端已断开时冻结随进程消亡。</summary>
@@ -175,16 +221,19 @@ public sealed partial class MainWindow : Window
             (int)(MinWindowHeight * startupScale)));
 
         // 宿主更新协调器（升级适配 P2）：与后端生命周期解耦（后端不可用不影响更新状态查询）。
-        // 来源固定——发布索引在 P4 接入前未配置，检查诚实返回不可用，不伪造结果；
-        // 提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并放弃提交（见 PrepareForUpdateAsync）。
-        RpcBridge.AttachCoordinator(new UpdateCoordinator(
-            feedSource: null,
+        // 来源固定 = 安装树内随包配置（发行时写入，用户不可改、前端不可传；缺失 = 未配置，
+        // 检查诚实返回不可用）；提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并
+        // 放弃提交（见 PrepareForUpdateAsync）；提交进入替换相位后由壳做计划内关窗。
+        var coordinator = new UpdateCoordinator(
+            feedSource: ReadUpdateSourceFile(),
             managed: AppRootResolver.Resolve(
                 Environment.GetCommandLineArgs(),
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
                 AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("APPDATA")).Managed,
-            prepareGate: PrepareForUpdateAsync));
+            prepareGate: PrepareForUpdateAsync);
+        coordinator.ApplyingStarted += ScheduleApplyShutdown;
+        RpcBridge.AttachCoordinator(coordinator);
 
         // 仓库根（含 pyproject.toml 的目录）作为所有相对路径的锚：venv、前端 HTML 一律以其为基准。
         // 从 exe 基目录向上推导，彻底摆脱硬编码的本机绝对路径，仓库可 clone 到任意位置运行。

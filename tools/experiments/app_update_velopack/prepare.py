@@ -339,6 +339,12 @@ def _pack_two_versions(versions: tuple[str, str], tag: str = "managed") -> None:
     feed = OUT / (f"{tag}-feed-" + uuid.uuid4().hex[:8])
     case = OUT / (f"{tag}-case-" + uuid.uuid4().hex[:8])
     live = case / "中文 目录 空格" / "live"
+    if tag == "formal":
+        # P3 整链受控源：随包更新源配置在打包前写入内容树（两版都带上，升级后仍有效）。
+        # 正式发行由发布流程写入真实索引地址（同机制，不另开通道）；本地路径只存在于
+        # 实验输出，不入库。
+        feed.mkdir(parents=True, exist_ok=True)
+        (stage / "update-source.txt").write_text(str(feed), encoding="utf-8")
     for version in versions:
         (stage / "payload-version.txt").write_text(version, encoding="utf-8")
         _vpk_pack(stage, version, feed)

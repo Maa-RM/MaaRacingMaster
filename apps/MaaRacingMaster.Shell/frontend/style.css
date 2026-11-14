@@ -1471,6 +1471,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .new-release .nr-info { flex: 1; min-width: 0; }
 .new-release .nr-title { font-size: 13px; font-weight: 700; color: var(--maarm-primary); }
 .new-release .nr-sub { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 2px; }
+/* 升级进度条（P3）：轨道 + 单色内条，宽度由 JS 按快照百分比写入 */
+.update-progress-track {
+  flex: 1; height: 6px; border-radius: 3px; overflow: hidden;
+  background: color-mix(in srgb, var(--maarm-primary) 12%, transparent);
+}
+.update-progress-bar {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: var(--maarm-primary);
+  transition: width 0.3s ease;
+}
 .maarm-btn--primary { background: var(--maarm-primary); color: var(--maarm-primary-foreground); border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent); }
 .maarm-btn--primary:hover { background: var(--maarm-primary-hover); }
 .maarm-btn--primary:active { background: var(--maarm-primary-active); }

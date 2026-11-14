@@ -203,51 +203,220 @@
     statusEl.appendChild(document.createTextNode(text));
   }
 
+  // ---------- 版本与更新卡（升级适配 P3：宿主更新协调器驱动） ----------
+  // 主流程只发固定意图（update_* 宿主动作；不携带来源/路径/目标版本组合——来源由
+  // 壳从安装树随包配置读取）。下载任务在壳内协调器：跨页面切换不中断，关于页重开
+  // 时用 update_status 恢复快照；进度渲染带修订守卫（revision 只前进才渲染，旧响应
+  // 不回退进度）。升级操作区动态文案一律 textContent 落地，不进 HTML 解析。
+
+  let lastUpdateRevision = -1;
+  let updatePollTimer = null;
+
+  function updateElements() {
+    return {
+      btn: $('btn-check-update'),
+      statusEl: $('about-update-status'),
+      releaseEl: $('about-new-release'),
+    };
+  }
+
+  function stopUpdatePolling() {
+    if (updatePollTimer) {
+      clearInterval(updatePollTimer);
+      updatePollTimer = null;
+    }
+  }
+
+  function startUpdatePolling() {
+    if (updatePollTimer) return;
+    updatePollTimer = setInterval(async () => {
+      try {
+        const d = await maarm.call('update_status');
+        renderSnapshot(d);
+      } catch (e) {
+        // 状态轮询失败不打断下载任务本身，下一拍重试
+      }
+    }, 500);
+  }
+
+  function manualDownloadButton() {
+    const btn = mkEl('button', 'maarm-btn maarm-btn--primary', '前往下载');
+    btn.type = 'button';
+    appendIcon(btn, 'arrow-up-right');
+    btn.addEventListener('click', () => openTarget('download'));
+    return btn;
+  }
+
+  function clearReleaseArea() {
+    const { releaseEl } = updateElements();
+    releaseEl.textContent = '';
+    releaseEl.style.display = 'none';
+  }
+
+  // 快照 → 状态行 + 操作区。单一渲染出口：phase 决定按钮集合，取消按钮只出现在
+  // downloading 相位；error 原因如实显示且不清空操作区（保留重试入口）。
+  function renderSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot.revision !== 'number') return;
+    if (snapshot.revision < lastUpdateRevision) return; // 修订守卫：旧响应不回退进度
+    lastUpdateRevision = snapshot.revision;
+    const { btn, statusEl, releaseEl } = updateElements();
+    if (!btn || !statusEl) return;
+    const phase = snapshot.phase;
+    const target = snapshot.target_version ? ' v' + snapshot.target_version : '';
+
+    if (phase !== 'downloading') stopUpdatePolling();
+
+    clearReleaseArea();
+    switch (phase) {
+      case 'unavailable':
+        renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '自动升级不可用');
+        releaseEl.style.display = 'flex';
+        releaseEl.appendChild(manualDownloadButton());
+        break;
+      case 'idle':
+        renderUpdateStatus(statusEl, 'ver-status--ok', snapshot.error || '');
+        break;
+      case 'checking':
+        renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
+        break;
+      case 'up_to_date':
+        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本');
+        break;
+      case 'available': {
+        renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本' + target);
+        releaseEl.style.display = 'flex';
+        const dlBtn = mkEl('button', 'maarm-btn maarm-btn--primary', '下载更新');
+        dlBtn.type = 'button';
+        appendIcon(dlBtn, 'arrow-up-right');
+        dlBtn.addEventListener('click', downloadUpdate);
+        releaseEl.appendChild(dlBtn);
+        break;
+      }
+      case 'downloading': {
+        renderUpdateStatus(statusEl, 'ver-status--checking',
+          '下载中 ' + snapshot.progress + '%', { spinner: true });
+        releaseEl.style.display = 'flex';
+        const track = mkEl('div', 'update-progress-track');
+        const bar = mkEl('div', 'update-progress-bar');
+        bar.style.width = snapshot.progress + '%';
+        track.appendChild(bar);
+        releaseEl.appendChild(track);
+        const cancelBtn = mkEl('button', 'maarm-btn', '取消下载');
+        cancelBtn.type = 'button';
+        cancelBtn.addEventListener('click', cancelDownload);
+        releaseEl.appendChild(cancelBtn);
+        startUpdatePolling();
+        break;
+      }
+      case 'ready': {
+        renderUpdateStatus(statusEl, 'ver-status--ok',
+          snapshot.error ? '下载完成，但上一次提交未成功：' + snapshot.error
+                         : '已就绪，可升级到' + target);
+        releaseEl.style.display = 'flex';
+        const applyBtn = mkEl('button', 'maarm-btn maarm-btn--primary', '重启升级');
+        applyBtn.type = 'button';
+        appendIcon(applyBtn, 'arrow-up-right');
+        applyBtn.addEventListener('click', applyUpdate);
+        releaseEl.appendChild(applyBtn);
+        const laterBtn = mkEl('button', 'maarm-btn', '稍后');
+        laterBtn.type = 'button';
+        laterBtn.addEventListener('click', () => {
+          // 稍后：保留下载结果，收起操作区；重开关于页可再次恢复
+          clearReleaseArea();
+          renderUpdateStatus(statusEl, 'ver-status--ok',
+            '已就绪' + target + '，可在关于页随时重启升级');
+        });
+        releaseEl.appendChild(laterBtn);
+        break;
+      }
+      case 'preparing':
+      case 'applying':
+        // 提交临界区由 applyUpdate 单独渲染（不提供取消）
+        renderUpdateStatus(statusEl, 'ver-status--checking',
+          phase === 'applying' ? '即将关闭并完成升级…' : '正在准备升级（释放任务与文件占用）…',
+          { spinner: true });
+        break;
+      default:
+        renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '未知状态');
+    }
+  }
+
+  async function refreshUpdateStatus() {
+    // 关于页初始化/重开时恢复快照（下载任务在壳内跨页面持续）
+    try {
+      const d = await maarm.call('update_status');
+      renderSnapshot(d);
+    } catch (e) {
+      // 协调器不可用（极端情况）：状态行静默，检查按钮仍可用
+    }
+  }
+
   async function checkUpdate() {
-    const btn = $('btn-check-update');
-    const statusEl = $('about-update-status');
-    const releaseEl = $('about-new-release');
+    const { btn, statusEl } = updateElements();
     if (!btn || !statusEl) return;
     btn.disabled = true;
-    const sourceBtn = $('btn-update-source');
-    if (sourceBtn) sourceBtn.disabled = true;
     closeUpdateSourceMenu();
-    const requested = updateSourceLabel(updateSource);
-    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…（' + requested + '）',
-      { spinner: true });
-    releaseEl.style.display = 'none';
+    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
     try {
-      const d = await maarm.call('check_update', { source: updateSource });
-      const used = updateSourceLabel(d.source || updateSource);
-      if (d.error) {
-        renderUpdateStatus(statusEl, 'ver-status--err', d.error + '（' + requested + '）');
-      } else if (d.status === 'no_release') {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '暂无发布版本（' + used + '）');
-      } else if (d.has_update) {
-        renderUpdateStatus(statusEl, 'ver-status--new',
-          '发现新版本 v' + d.latest_tag + '（' + used + '）');
+      const d = await maarm.call('update_check');
+      renderSnapshot(d);
+      if (d.phase === 'unavailable' || (d.error && d.error.indexOf('未配置') >= 0)) {
+        // 非受管安装 / 来源未配置：明确的手动升级入口
+        const { releaseEl } = updateElements();
         releaseEl.style.display = 'flex';
-        releaseEl.textContent = '';
-        const info = mkEl('div', 'nr-info');
-        info.appendChild(mkEl('div', 'nr-title', 'v' + d.latest_tag + ' 已发布'));
-        info.appendChild(mkEl('div', 'nr-sub',
-          (d.published_at ? '发布于 ' + d.published_at + ' · ' : '') + '建议更新到最新版本'));
-        releaseEl.appendChild(info);
-        const goBtn = mkEl('button', 'maarm-btn maarm-btn--primary', '前往下载');
-        goBtn.id = 'btn-go-download';
-        goBtn.type = 'button';
-        appendIcon(goBtn, 'arrow-up-right');
-        goBtn.addEventListener('click', () => openTarget('download'));
-        releaseEl.appendChild(goBtn);
-      } else {
-        renderUpdateStatus(statusEl, 'ver-status--ok', '已是最新版本（' + used + '）');
+        releaseEl.appendChild(manualDownloadButton());
       }
     } catch (e) {
       console.error(e);
       renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
     } finally {
       btn.disabled = false;
-      if (sourceBtn) sourceBtn.disabled = false;
+    }
+  }
+
+  async function downloadUpdate() {
+    const { btn, statusEl } = updateElements();
+    if (btn) btn.disabled = true;
+    try {
+      const d = await maarm.call('update_start_download');
+      renderSnapshot(d);
+    } catch (e) {
+      console.error(e);
+      renderUpdateStatus(statusEl, 'ver-status--err', '下载启动失败：' + e.message);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function cancelDownload() {
+    try {
+      const d = await maarm.call('update_cancel_download');
+      renderSnapshot(d);
+    } catch (e) {
+      console.error(e);
+      const { statusEl } = updateElements();
+      renderUpdateStatus(statusEl, 'ver-status--err', '取消失败：' + e.message);
+    }
+  }
+
+  async function applyUpdate() {
+    const { statusEl } = updateElements();
+    try {
+      const d = await maarm.call('update_apply');
+      if (d.phase === 'preparing' || d.phase === 'applying') {
+        // 提交临界区：壳接管收尾与计划内关窗，界面只如实显示，不提供取消（虚假取消）。
+        // 与异常关闭的区分：applying 相位由壳计划内关闭、更新器随后重启新版。
+        clearReleaseArea();
+        renderUpdateStatus(statusEl, 'ver-status--checking',
+          d.phase === 'applying' ? '即将关闭并完成升级…'
+                                 : '正在准备升级（释放任务与文件占用）…',
+          { spinner: true });
+        return;
+      }
+      renderSnapshot(d); // 闸门拒绝：状态回 ready，原因与重启升级入口都保留
+    } catch (e) {
+      console.error(e);
+      renderUpdateStatus(statusEl, 'ver-status--err', '提交失败：' + e.message);
     }
   }
 
@@ -311,6 +480,7 @@
       window.addEventListener('scroll', closeUpdateSourceMenu, true);
     }
     renderUpdateSource();
+    refreshUpdateStatus(); // 恢复壳内协调器快照（下载任务跨页面持续，重开关于页不丢状态）
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }
   initAbout();
