@@ -176,8 +176,16 @@ def _discover_plugins() -> None:
         _register_entry(entry, f"maaracing_master.plugins.{entry.name}", "内置根")
     user_root = user_data_dir() / "plugins"
     for entry in _plugin_entries(user_root):
-        _ensure_user_plugin_pkg(entry)
-        _register_entry(entry, f"{_USER_PLUGIN_PACKAGE}.{entry.name}", "用户根")
+        # 包包裹载（执行用户 __init__.py）与注册同属单插件容错边界：
+        # 初始化缺依赖/语法错误只跳过自身，不阻断扫描（评审回归：曾冒泡到模块级
+        # 导入，单个坏插件拖垮整个后端启动）
+        try:
+            pkg_name = _ensure_user_plugin_pkg(entry)
+        except Exception as exc:  # noqa: BLE001 —— 缺依赖等按插件隔离
+            logger.log(f"[registry] 用户插件 {entry.name} 包初始化失败，跳过: {exc!r}", "WARNING")
+            sys.modules.pop(f"{_USER_PLUGIN_PACKAGE}.{entry.name}", None)  # 半成品模块不得残留
+            continue
+        _register_entry(entry, pkg_name, "用户根")
 
 
 _discover_plugins()

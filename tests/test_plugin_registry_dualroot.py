@@ -13,6 +13,7 @@ teardown 恢复真实环境后重扫还原。
 
 from __future__ import annotations
 
+import sys
 import textwrap
 
 import pytest
@@ -141,6 +142,28 @@ def test_user_plugin_load_failure_isolated(rescan):
 
     assert "userplug_broken" not in reg.MODULE_REGISTRY
     assert "userplug_ok" in reg.MODULE_REGISTRY
+
+
+def test_user_plugin_broken_init_isolated_and_cache_cleaned(rescan):
+    """包初始化失败（__init__.py 抛异常/语法错误）与注册同一容错边界：
+    只跳过自身，不阻断扫描（更不阻断后端启动）；失败的导入缓存必须清理，
+    修复后的插件下次扫描可重新装载。"""
+    reg, user_root = rescan
+    d = _make_plugin(user_root, "userplug_badinit")
+    (d / "__init__.py").write_text("raise RuntimeError('包初始化即炸')\n", encoding="utf-8")
+    _make_plugin(user_root, "userplug_ok")
+
+    reg._discover_plugins()  # 不得抛异常冒泡出扫描
+
+    assert "userplug_badinit" not in reg.MODULE_REGISTRY
+    assert "userplug_ok" in reg.MODULE_REGISTRY
+    broken_pkg = f"{reg._USER_PLUGIN_PACKAGE}.userplug_badinit"
+    assert broken_pkg not in sys.modules, "失败插件的半成品模块不得残留导入缓存"
+
+    # 用户修复插件后（去掉坏 __init__）：下次扫描可正常装载
+    (d / "__init__.py").unlink()
+    reg._discover_plugins()
+    assert "userplug_badinit" in reg.MODULE_REGISTRY
 
 
 def test_user_root_missing_is_fine(rescan):
