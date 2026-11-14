@@ -47,6 +47,8 @@ status: active
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py formal-update
 # P1 dev 启动回归烟囘（工作树 Debug 壳 + 主线检出借用运行时；UAC 与关窗需人工配合）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py dev-smoke --shell <Debug壳路径> --dev-root <主线检出路径>
+# P3 整链：真实按钮驱动全链（用户在关于页检查/下载/重启升级；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py p3-chain
 # 壳合同探针（pytest 同级 .NET 侧合同锁；--python 供侧车关停用例指定解释器）
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- approot
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- hook
@@ -88,6 +90,8 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- upda
 | P1 正式壳整链（2026-11-14 第二轮，修复后） | 发布正式工程（含启动钩子/受管解析/WebView2 迁移/侧车关停确认）组装标准布局：三段完整 GUI 会话全过——首次启动侧车就绪、助手报告 0.1.0、下载、普通启动不提交、提交后整树替换 0.2.0、包外用户数据不动、自动重启新版报告 0.2.0；**WebView2 数据目录三轮均落隔离用户数据根（EBWebView 完整生成），exe 旁不再创建**；随包侧车真实工作（框架配置写出 + 中文路径兼容日志）；无 WER 事件；**人工目视确认已取得（用户确认所见窗口渲染正常）** | 首轮暴露两问题已修复：壳与 Python 用户数据根口径分裂（C# 已知目录 API 不认环境变量重定向，改取 APPDATA 环境变量）；启动清场 PowerShell/WMI 扫描提权下超时（改 ntdll 原生读命令行，毫秒级）。窗口由探针按上限自动收尾 |
 | dev 启动回归烟囘（非受管口径） | 工作树 Debug 壳 + 主线检出借用运行时：应用根决策落壳日志（环境变量覆盖值被采纳并记录）、单实例替换实机运转（新实例询问后接管、旧实例被清）、WebView2 数据目录落隔离用户数据根（EBWebView 实体）、侧车启动并完整初始化（框架配置写出）、关窗后无残留、无 WER | 取证链路与单实例对话框竞态导致部分链内字段时序失真，实体证据以目录与日志为准；遗留侧车观察：父壳死后自退存在延迟窗口（非瞬时），实证启动清场能力的必要性 |
 | 启动清场合同（原生扫描） | 探针造命令行含侧车标记的子进程：扫描命中 1、毫秒级完成、目标进程终止；无关 python 进程（常驻工具）正确不命中 | 无 |
+| P3 整链（真实按钮驱动，2026-11-14） | 用户在关于页亲手完成检查→下载→重启升级：壳日志时间线完整还原（受管识别 → 提交排队目标 0.2.0 → 计划内关闭 → 7 秒后新版自动重启）；磁盘替换、包外数据不动、升级后助手报告 0.2.0；随包受控源配置被正确读取 | 无（用户确认渲染正常） |
+| 白窗终验（壳内 UpdateManager + 新前端，受管树内） | 壳内协调器形态下两轮渲染环境都完整生成（EBWebView 落用户数据根、exe 旁无创建、无 WER 事件、用户目视正常）——壳内直接用更新管理器的形态成立；白窗异常未再复现 | 注入产物挂起机制仍未明（历史样本保留）；该形态随 CI/二机复验 |
 
 ## 独立复核裁决
 
@@ -96,7 +100,7 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- upda
 - 正式资源定位优先采信继承的应用根覆盖值；受管入口以内容根为唯一权威并拒绝冲突覆盖值（P1 已实现并落壳日志），开发与旧 ZIP 模式保留原有路径规则。
 - 更新器的退出等待有上限；它只应在业务任务和模型安装收尾、必要数据快照完成后启动，不能用它等待游戏自然结束。
 - 真实 UAC 取消路径、业务数据迁移、自定义插件保留、旧 ZIP 首次迁移、损坏包与取消等仍未验收；侧车会话日志级握手仍未取得（文件日志默认关闭）。人工目视确认已取得（2026-11-14）。样本成功不能写成完整产品已经适配。
-- 白窗矩阵推翻了句柄、路径、构建配置、发布方式、APPDATA、定位器访问等全部归因；「注入执行层无差但产物必挂」机制未明，属本机待解异常，不得以任何样本成功扩大为产品适配完成。已绕开（最小注入 + 树外助手显式定位器），P1 正式接入沿用此形态，正式壳受管整链在本机复验通过；CI 与第二台机器复验仍待做。
+- 白窗矩阵推翻了句柄、路径、构建配置、发布方式、APPDATA、定位器访问等全部归因；「注入执行层无差但产物必挂」机制未明，属本机待解异常。P0/P1 曾以「最小注入 + 树外助手」绕开；P3 壳内 UpdateManager + 新前端在受管树内实测渲染正常（真实按钮整链），壳内形态成立——挂起机制仍未明，历史注入样本保留，随 CI/二机复验。
 - 受管树内运行非注册主程序必挂默认定位器解析；任何「在受管树内跑工具 exe」的想法都必须改走树外显式定位器模式。
 - 壳与 Python 的用户数据根必须同口径（APPDATA 环境变量）：.NET 已知目录 API 不认环境变量重定向，隔离场景两边分叉（2026-11-14 实测踩坑）。
 

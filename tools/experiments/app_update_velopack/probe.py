@@ -822,6 +822,87 @@ def _dev_smoke_chain(args) -> dict:
     return ev
 
 
+def _p3_chain() -> dict:
+    """P3 整链：真实按钮驱动全链——用户在关于页完成检查/下载/重启升级，
+    探针只负责启动、等磁盘替换与采证。白窗终验：壳内 UpdateManager + 新前端
+    在受管树内的渲染（用户目视 + EBWebView 客观代理）。"""
+    info = json.loads((OUT / "formal-case.json").read_text(encoding="utf-8"))
+    live = Path(info["live"])
+    case = Path(info["case"])
+    current = live / "current"
+    helper = OUT / "update-helper" / "MaaRM.UpdateProbe.exe"
+    target = info["versions"][1]
+    ev: dict = {"case": info["case"], "shell": "formal-p3", "driven_by": "real-buttons"}
+    env, userdata, report = _case_env(case, "p3")
+    profile = userdata / "profile.json"
+    profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
+    user_before = profile.read_bytes()
+    shell_log = userdata / "MaaRacingMaster" / "logs" / "shell.log"
+    udf_root = userdata / "MaaRacingMaster" / "webview2"
+
+    # 1 启动 0.1.0（stub 两跳，DETACHED）
+    subprocess.Popen([str(live / info["stub"])], cwd=str(live),
+                     env={**os.environ, **env}, creationflags=0x00000008)
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if any(p["Name"] == "python.exe" for p in _process_snapshot(str(live))):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("侧车 120 秒内未启动")
+    ev["first_sidecar"] = True
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if (udf_root / "EBWebView").is_dir():
+            break
+        time.sleep(1)
+    ev["first_udf_created"] = (udf_root / "EBWebView").is_dir()
+    ev["udf_exe_adjacent"] = (current / (SHELL_EXE + ".WebView2")).is_dir()
+    ev["source_file"] = _tail(current / "update-source.txt", 300) \
+        if (current / "update-source.txt").is_file() else "(缺)"
+    ev["first_shell_log_tail"] = _tail(shell_log, 1200)
+
+    # 2 等用户在关于页完成 检查 → 下载 → 重启升级；以磁盘替换为完成判据
+    print("等待用户在窗口中完成升级操作（磁盘替换为判据，15 分钟上限）……", flush=True)
+    _wait_marker(current, target, 900)
+    ev["disk_replaced"] = target
+    assert profile.read_bytes() == user_before, "包外用户数据被改动"
+    ev["outside_user_data"] = "unchanged"
+
+    # 3 重启的新版采证（白窗终验：EBWebView + msedgewebview2 + 壳日志）
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        if any(p["Name"] == "python.exe" for p in _process_snapshot(str(live))):
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError("升级后 GUI 未自动重启（侧车未出现）")
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if (udf_root / "EBWebView").is_dir():
+            break
+        time.sleep(1)
+    ev["post_udf_created"] = (udf_root / "EBWebView").is_dir()
+    ev["post_shell_log_tail"] = _tail(shell_log, 2500)
+    ev.update(_collect_live_evidence(live, userdata))
+    run([str(helper), "--locator-root", str(live)], timeout=60, expected=None, env_extra=env)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(report.read_text(encoding="utf-8"))["version"] == target:
+                ev["post_update_report"] = target
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    else:
+        ev["post_update_report"] = "未确认"
+
+    # 4 用户目视新版后关闭
+    _wait_user_close_window(ev, case)
+    return ev
+
+
 def _elevated_action(args: argparse.Namespace, chain) -> int:
     result_path = Path(args.result) if args.result else (OUT / "managed-result.json")
     if args.elevated_child:
@@ -882,7 +963,7 @@ def main() -> int:
                                            "managed-update", "managed-launch",
                                            "managed-manifests", "fd-launch",
                                            "targets-launch", "p0-tail",
-                                           "formal-update", "dev-smoke"])
+                                           "formal-update", "dev-smoke", "p3-chain"])
     parser.add_argument("--poison", action="store_true")
     parser.add_argument("--via-stub", action="store_true")
     parser.add_argument("--shell", default="")
@@ -931,6 +1012,8 @@ def main() -> int:
         return _elevated_action(args, _formal_update_chain)
     elif args.action == "dev-smoke":
         return _elevated_action(args, lambda: _dev_smoke_chain(args))
+    elif args.action == "p3-chain":
+        return _elevated_action(args, _p3_chain)
     else:
         update(nested=args.action == "nested-update")
     return 0
