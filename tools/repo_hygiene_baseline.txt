@@ -34,3 +34,5 @@ R11|maaracing_master/plugins/speedrush/CODE_WIKI.md|日期|2026-10-29
 R11|maaracing_master/plugins/speedrush/CODE_WIKI.md|日期|2026-10-30
 R11|maaracing_master/plugins/speedrush/CODE_WIKI.md|日期|2026-10-31
 R11|maaracing_master/plugins/speedrush/CODE_WIKI.md|日期|2026-11-01
+R7|tools/experiments/app_update_velopack/prepare.py|盘符绝对路径
+R7|tools/experiments/app_update_velopack/probe.py|盘符绝对路径
