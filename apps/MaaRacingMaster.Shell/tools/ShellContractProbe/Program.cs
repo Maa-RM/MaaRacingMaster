@@ -443,6 +443,31 @@ internal static class Program
         Check("清理毫秒级完成（<3s）", elapsed < 3_000, $"{elapsed}ms");
         Check("目标进程已退出", child.WaitForExit(10_000) && child.HasExited,
               $"exit={child.HasExited}");
+
+        // 跨检出不误杀（合并前检查）：其它检出内的侧车标记进程不在清场范围——
+        // 开发者多检出并行时，一个检出的壳启动清场绝不能杀另一个检出的后端。
+        var foreignPython = GetOption(args, "--python-foreign");
+        if (foreignPython is not null)
+        {
+            using var foreign = Process.Start(new ProcessStartInfo
+            {
+                FileName = foreignPython,
+                Arguments = "-c \"import time; print('FOREIGN_READY', flush=True); time.sleep(60)\" " +
+                            "maaracing_master.core.sidecar",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+            });
+            var foreignReady = foreign!.StandardOutput.ReadLine();
+            Check("外部检出模拟侧车已就绪", foreignReady == "FOREIGN_READY",
+                  $"stdout={foreignReady ?? "<空>"}");
+            var killedForeign = PythonSidecar.CleanupLeftovers(appRoot);
+            Check("跨检出侧车不被清场误杀",
+                  killedForeign == 0 && foreign.HasExited == false,
+                  $"killed={killedForeign} exited={foreign.HasExited}");
+            if (!foreign.HasExited) // 探针收尾：终止反例进程，不留残留
+                Process.GetProcessById(foreign.Id).Kill(entireProcessTree: true);
+        }
     }
 
     // ---------- 侧车关停合同 ----------
