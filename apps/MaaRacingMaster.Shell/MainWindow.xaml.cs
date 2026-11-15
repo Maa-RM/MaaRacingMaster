@@ -339,21 +339,35 @@ public sealed partial class MainWindow : Window
     private async Task InitializeWebViewAsync()
     {
         var env = await WebView2Runtime.GetOrCreateAsync();
+        // 隐私模式（评审裁决）：界面浏览数据不落盘——持久化目录不再累积几十 MB 缓存；
+        // 站点偏好无真实消费者（业务偏好住后端 config），丢失无影响。
         try
         {
-            await web.EnsureCoreWebView2Async(env);
+            if (env is null)
+                throw new InvalidOperationException("自定义环境不可用");
+            var options = env.CreateCoreWebView2ControllerOptions();
+            options.IsInPrivateModeEnabled = true;
+            await web.EnsureCoreWebView2Async(env, options);
         }
         catch (Exception ex)
         {
-            ShellLog.Append($"[webview2] 显式环境初始化失败，回落默认: {ex.Message}");
+            ShellLog.Append($"[webview2] 隐私模式初始化失败，回落共享环境: {ex.Message}");
             try
             {
-                await web.EnsureCoreWebView2Async(null);
+                await web.EnsureCoreWebView2Async(env);
             }
             catch (Exception ex2)
             {
-                ShellLog.Append($"[webview2] 默认初始化也失败，页面不可用: {ex2.Message}");
-                return;
+                ShellLog.Append($"[webview2] 显式环境初始化失败，回落默认: {ex2.Message}");
+                try
+                {
+                    await web.EnsureCoreWebView2Async(null);
+                }
+                catch (Exception ex3)
+                {
+                    ShellLog.Append($"[webview2] 默认初始化也失败，页面不可用: {ex3.Message}");
+                    return;
+                }
             }
         }
         var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");

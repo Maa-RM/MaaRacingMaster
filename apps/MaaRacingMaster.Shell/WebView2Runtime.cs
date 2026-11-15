@@ -10,6 +10,8 @@ namespace MaaRacingMaster.Shell;
 /// WebView2 共享运行时：用户数据目录显式指定到用户数据根（升级不触碰前端存储）。
 /// 不指定时 WebView2 默认落在 exe 旁（{exe}.exe.WebView2）——受管升级整体替换内容树，
 /// 前端存储随升级丢失；显式指定到安装树之外后升级不再触碰。
+/// 界面以隐私模式初始化（见 MainWindow）：站点数据不落盘，该目录只承载引擎基础
+/// 结构，不再累积缓存（评审裁决：业务偏好住后端 config，浏览器侧无真实持久需求）。
 /// 主窗与悬浮窗共用同一环境实例（同享浏览器进程与存储分区）。
 /// </summary>
 public static class WebView2Runtime
