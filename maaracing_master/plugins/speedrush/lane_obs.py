@@ -974,7 +974,8 @@ class LineTracker:
 
     def _assign_k(self, c: dict, x_anchor: float | None,
                   fid: int, strong_anchor: bool = False,
-                  grid_frozen: bool = False) -> bool:
+                  grid_frozen: bool = False,
+                  anchor_strict: bool = False) -> bool:
         """给一条线定/重锚持久道号；False=本拍不能参选横位。
 
         网格已冻结时（``grid_frozen``：线已连续锁定且未 RELOCK）：道号只跟
@@ -1000,6 +1001,9 @@ class LineTracker:
                 c["k"] = tk.k
                 return True
             return self._assign_k_from_grid(c, L)
+        # 校准（改判已有道号）只认严格锚（同源 + 双侧都在 + 连续两拍中心
+        # 步长 ≤0.2 道）；单侧/换源/逐拍跳的锚只能给新线初始化，不能整道
+        # 改判。见 CODE_WIKI「整道复核的锚必须严格」与「线追踪为主」。
         if x_anchor is not None:
             k_a = int(round(x_anchor + L))
             resid = x_anchor + L - k_a
@@ -1014,6 +1018,15 @@ class LineTracker:
                 tk.k_pending = None
                 tk.k_pending_n = 0
                 c["k"] = tk.k
+                return True
+            if not anchor_strict:
+                # 非严格锚不许改判：保持持久道号，且本拍仍用这条线算横位
+                # （线追踪为主）。不参选会让 keep 变空、横位退回锚值，等于
+                # 把要挡的跳变又请回来。单侧/换源的锚整道偏一道是常态
+                # （实测三局贴墙段逐拍跳 0.4 道以上），拿它改判会把整张网格
+                # 平移并保持数十秒。
+                c["k"] = tk.k
+                c["reanchor"] = True
                 return True
             if tk.k_pending == k_a:
                 tk.k_pending_n += 1
@@ -1146,9 +1159,11 @@ class LineTracker:
         # ③ 颜色/侧别质量门 + 持久道号分配/重锚
         strong_anchor = False
         if not grid_frozen and x_anchor is not None and self.x_last is not None \
+                and anchor_strict \
                 and abs(x_anchor - self.x_last) <= self.ANCHOR_AGREE_TOL:
-            # 只有离当前横位不远的锚点才享受当拍重锚：整道级深度跳变时
-            # 两根线会整齐地支持错误网格（残差照样很小），必须仍走两拍确认。
+            # 只有离当前横位不远的**严格**锚点才享受当拍重锚：整道级深度
+            # 跳变时两根线会整齐地支持错误网格（残差照样很小），必须仍走
+            # 两拍确认；单侧/换源的锚连当拍重锚都不给。
             ks = set()
             for c in cur:
                 if self._side_bad(c) or not _local_line_good(c):
@@ -1172,7 +1187,7 @@ class LineTracker:
                 self.side_reject += 1
                 continue
             if not self._assign_k(c, x_anchor, fid, strong_anchor,
-                                  grid_frozen):
+                                  grid_frozen, anchor_strict):
                 continue
             xi = float(c["k"]) - L
             c["_xi"] = xi
@@ -1237,7 +1252,12 @@ class LineTracker:
                                and bool(self._last_ks & ks_now))
                 # 新鲜深度锚同意新横位，或刚从长盲窗 RELOCK 出来：这是
                 # 独立见证/重新捕获，不是少线抖动，直接接受换锚。
-                anchor_supports = (x_anchor is not None
+                # 新鲜**严格**深度锚同意新横位，或刚从长盲窗 RELOCK 出来：
+                # 这是独立见证/重新捕获，不是少线抖动，直接接受换锚。单侧/
+                # 换源/逐拍跳的锚不算见证——深度和线可能同源误差，拿它给
+                # 跳变背书等于把噪声原样灌进横位（145900/183348 两局实测：
+                # 213/247 次超限跳变发生在「锚在场」的拍上）。
+                anchor_supports = (x_anchor is not None and anchor_strict
                                    and abs(x_raw - float(x_anchor))
                                    <= self.ANCHOR_AGREE_TOL)
                 was_relock = (self.state == "RELOCK"

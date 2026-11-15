@@ -451,11 +451,13 @@ def test_anchor_jump_reanchors_after_confirm():
     """2 道级锚跳变：首拍横位跟深度兜底，连续两拍后持久道号才改。"""
     tr = LineTracker()
     tr.update([_line(-0.2)], 1, 0.05, anchor=0.0)
-    first = tr.update([_line(-0.2)], 2, 0.05, anchor=2.0)
+    first = tr.update([_line(-0.2)], 2, 0.05, anchor=2.0,
+                      anchor_strict=True)
     assert first["anchor_src"] == "depth"
     assert first["n_locked"] == 0
     assert first["x"] == pytest.approx(2.0, abs=1e-6)
-    jump = tr.update([_line(-0.2)], 3, 0.05, anchor=2.0)
+    jump = tr.update([_line(-0.2)], 3, 0.05, anchor=2.0,
+                     anchor_strict=True)
     assert jump["anchor_src"] == "depth"
     assert jump["x"] == pytest.approx(2.2, abs=1e-6)
 
@@ -466,7 +468,8 @@ def test_stale_k_fixed_same_frame_when_two_lines_confirm_anchor():
     tr.update([_line(-0.25), _line(0.86)], 1, 0.05, anchor=-1.0)
     assert [ln["k"] for ln in tr.last_lines] == [-1, 0]
     tr.tracks[1].k = 1                       # 模拟空窗里被带偏的陈旧道号
-    r = tr.update([_line(-0.25), _line(0.86)], 2, 0.05, anchor=-1.0)
+    r = tr.update([_line(-0.25), _line(0.86)], 2, 0.05, anchor=-1.0,
+                  anchor_strict=True)
     assert r["anchor_src"] == "depth"
     assert r["n_locked"] == 2
     assert [ln["k"] for ln in r["lines"]] == [-1, 0]
@@ -1452,3 +1455,26 @@ def test_gross_reanchor_requires_strict_two_sided_anchor():
     for i in range(3):
         out = tr.update(lines, 50 + i, 0.05, 0.0, False, 1.5, True)
     assert tr.gross_reanchor == 1
+
+
+def test_non_strict_anchor_cannot_reanchor_grid():
+    """常规道号改判同样要求严格锚：非严格锚连续多拍不许整道平移。
+
+    20261115_183348 局实录：深度锚逐拍跳 0.3~0.5 道，同一根线的道号从
+    −2 被改成 −1，整组横位平移一道，再被步长门压成匀速斜坡。严格门此前
+    只用在整道复核（gross），常规改判没有任何门。"""
+    tr = la.LineTracker()
+    lines = [_line(-0.4, side=-1), _line(0.6, side=1)]
+    for i in range(8):
+        tr.update(lines, i + 1, 0.05, 0.0, False, 0.0, True)
+    ks0 = [ln["k"] for ln in tr.last_lines]
+    for i in range(20):
+        out = tr.update(lines, 30 + i, 0.05, 0.0, False, 1.0, False)
+    assert [ln["k"] for ln in out["lines"]] == ks0
+    # 横位仍由线自身给出（0.4），没有被锚值 1.0 带走
+    assert out["x"] == pytest.approx(0.4, abs=0.05)
+    # 线锁建立后，连严格锚也不能改判（只有整道复核能动网格）
+    for i in range(20):
+        out = tr.update(lines, 60 + i, 0.05, 0.0, False, 1.0, True)
+    assert [ln["k"] for ln in out["lines"]] == ks0
+    assert out["x"] == pytest.approx(0.4, abs=0.05)
