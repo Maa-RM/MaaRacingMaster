@@ -397,10 +397,12 @@ public sealed class PythonSidecar : IDisposable
 
     /// <summary>
     /// 启动期清场：上一会话异常退出可能遗留侧车（父壳死了但侧车正忙、尚未走到 stdin EOF 自退）。
-    /// 只清理本应用根内的侧车（python 进程路径在本应用根内且命令行在跑本侧车模块）；
-    /// 其它检出 / 其它安装的进程不动。PowerShell 扫描失败只记日志并返回 -1，不阻断启动
-    /// （侧车 EOF 自退机制仍是兜底，见 experiments/app_update_velopack P0 取证）。
-    /// 返回清理掉的进程数。
+    /// 只清理本应用根内的**孤儿**侧车：python 进程路径在本应用根内、命令行在跑本侧车模块、
+    /// 且父进程已不存在——解释器路径与命令行特征不足以区分「遗留」与「仍被使用的调试后端」
+    /// （借用解释器的活跃后端同在这两个特征上，独立调试后端是贡献指南明确入口），父进程
+    /// 存活 = 使用中，绝不清理。其它检出 / 其它安装 / 父存活的进程一律不动；父信息读不出
+    /// 或父进程 ID 被复用时保守不清理，遗留由输入管道 EOF 自退兜底。扫描失败只记日志并
+    /// 返回 -1，不阻断启动。返回清理掉的进程数。
     /// </summary>
     public static int CleanupLeftovers(string appRoot)
     {
@@ -437,9 +439,10 @@ public sealed class PythonSidecar : IDisposable
         }
     }
 
-    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块」的 pid。
-    /// 命令行经 NtQueryInformationProcess 读目标进程 PEB（毫秒级，不依赖 PowerShell/WMI——
-    /// 提权环境下 CIM 查询实测超时）；读取失败的进程跳过。</summary>
+    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块 +
+    /// 父进程已不存在（孤儿）」的 pid。命令行与父进程 ID 经 NtQueryInformationProcess
+    /// 读目标进程 PEB（毫秒级，不依赖 PowerShell/WMI——提权环境下 CIM 查询实测超时）；
+    /// 读取失败的进程跳过（保守不清理）。</summary>
     private static IEnumerable<int> ListLeftoverSidecarPids(string appRoot)
     {
         var rootNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(appRoot));
@@ -467,7 +470,14 @@ public sealed class PythonSidecar : IDisposable
                 var exeNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(exe));
                 if (exeNorm.StartsWith(rootNorm + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(Path.GetDirectoryName(exeNorm), rootNorm, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 孤儿判定（评审回归：解释器路径+命令行特征不足以证明是遗留——
+                    // 借用解释器的活跃调试后端同在这两个特征上）。父进程存活 = 仍被
+                    // 使用（调试后端/另一壳的活跃会话），不清理；父已死 = 遗留，清理。
+                    if (!IsOrphaned(proc.Id))
+                        continue;
                     result.Add(proc.Id);
+                }
             }
             catch
             {
@@ -511,6 +521,58 @@ public sealed class PythonSidecar : IDisposable
 
     private const int ProcessQueryInformation = 0x0400;
     private const int ProcessVmRead = 0x0010;
+
+    /// <summary>读目标进程的父进程 ID（进程基础信息，与命令行读取共用同一次结构布局）；
+    /// 失败返回 false。</summary>
+    private static bool TryReadParentProcessId(int pid, out int parentPid)
+    {
+        parentPid = 0;
+        IntPtr h = OpenProcess(ProcessQueryInformation, false, pid);
+        if (h == IntPtr.Zero)
+            return false;
+        try
+        {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            var status = NtQueryInformationProcess(h, 0, ref pbi,
+                Marshal.SizeOf<PROCESS_BASIC_INFORMATION>(), out _);
+            if (status != 0)
+                return false;
+            parentPid = (int)pbi.InheritedFromUniqueProcessId;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    /// <summary>孤儿判定：父进程已不存在 = 遗留进程（壳异常退出后的残留）。
+    /// 父信息读不出或访问失败时按「不判定为孤儿」处理——保守不清理，遗留进程由
+    /// 输入管道 EOF 自退兜底（评审回归：解释器路径+命令行特征不能区分「遗留」与
+    /// 「仍在被使用的调试后端」，父进程存活才是使用中的判据）；父进程 ID 被复用
+    /// 时误判为父存活，同向安全（漏杀由 EOF 兜底），不会误杀活跃进程。</summary>
+    private static bool IsOrphaned(int pid)
+    {
+        if (!TryReadParentProcessId(pid, out var ppid) || ppid <= 0)
+            return false;
+        try
+        {
+            using var parent = Process.GetProcessById(ppid);
+            return parent.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true; // 父进程不存在：孤儿
+        }
+        catch
+        {
+            return false; // 访问失败：保守不清理
+        }
+    }
 
     /// <summary>读目标进程的完整命令行（UTF-16）；失败返回 null。仅本进程与目标同完整性级别时可用。</summary>
     private static string? ReadProcessCommandLine(int pid)

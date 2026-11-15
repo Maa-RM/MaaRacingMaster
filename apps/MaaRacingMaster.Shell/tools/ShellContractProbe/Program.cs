@@ -421,7 +421,55 @@ internal static class Program
     private static void CheckCleanup(string[] args)
     {
         var python = GetOption(args, "--python") ?? "python";
-        using var child = Process.Start(new ProcessStartInfo
+        // 应用根取解释器上两层目录（venv 场景：.venv/Scripts/python.exe → venv 父目录）
+        var fullPython = Path.GetFullPath(python);
+        var appRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullPython))!;
+
+        // ① 孤儿命中例：中间进程 spawn 侧车标记子进程后退出——子进程成为孤儿（父已死），
+        // 正是启动清场的清理对象。孙进程 stdout 落文件，父把孙 pid 落文件供探针追踪。
+        var work = MakeTempDir("cleanup");
+        var spawner = Path.Combine(work, "orphan_spawner.py");
+        File.WriteAllText(spawner, string.Join("\n",
+            "import subprocess, sys, time",
+            $"out = open(sys.argv[1], \"w\", encoding=\"utf-8\")",
+            $"pidf = open(sys.argv[2], \"w\", encoding=\"utf-8\")",
+            "p = subprocess.Popen([sys.executable, \"-c\",",
+            "    \"import time; print('READY', flush=True); time.sleep(60)\",",
+            "    \"maaracing_master.core.sidecar\"],",
+            "    stdout=out, stderr=subprocess.DEVNULL)",
+            "pidf.write(str(p.pid)); pidf.flush()",
+            "out.close(); pidf.close()",
+            "time.sleep(0.2)"));
+        var readyFile = Path.Combine(work, "orphan_ready.txt");
+        var pidFile = Path.Combine(work, "orphan_pid.txt");
+        using (var mid = Process.Start(new ProcessStartInfo
+        {
+            FileName = python,
+            Arguments = $"\"{spawner}\" \"{readyFile}\" \"{pidFile}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        }))
+        {
+            mid!.WaitForExit(10_000); // 中间进程退出 → 孙成孤儿
+        }
+        var orphanDeadline = DateTime.UtcNow.AddSeconds(15);
+        while (!File.Exists(readyFile) && DateTime.UtcNow < orphanDeadline)
+            Thread.Sleep(100);
+        Check("孤儿遗留侧车已就绪", File.Exists(readyFile), $"readyFile={File.Exists(readyFile)}");
+        var orphanPid = int.Parse(File.ReadAllText(pidFile).Trim());
+        var sw = Stopwatch.StartNew();
+        var killed = PythonSidecar.CleanupLeftovers(appRoot);
+        Check("孤儿遗留后端被清场命中 1 个", killed == 1, $"killed={killed}");
+        Check("清理毫秒级完成（<3s）", sw.ElapsedMilliseconds < 3_000, $"{sw.ElapsedMilliseconds}ms");
+        Process? orphan = null;
+        try { orphan = Process.GetProcessById(orphanPid); } catch (ArgumentException) { }
+        Check("孤儿后端已终止",
+              orphan is null || (orphan.WaitForExit(10_000) && orphan.HasExited),
+              $"exit={orphan?.HasExited.ToString() ?? "<已消失>"}");
+
+        // ② 父进程存活反例（评审回归：独立调试后端是贡献指南明确入口，且存在借用
+        // 解释器的活跃后端）——父活 = 仍被使用，清场不得终止。
+        using var live = Process.Start(new ProcessStartInfo
         {
             FileName = python,
             Arguments = "-c \"import time; print('READY', flush=True); time.sleep(60)\" " +
@@ -430,22 +478,17 @@ internal static class Program
             CreateNoWindow = true,
             RedirectStandardOutput = true,
         });
-        var ready = child!.StandardOutput.ReadLine();
-        Check("模拟遗留侧车已就绪", ready == "READY", $"stdout={ready ?? "<空>"}");
+        var liveReady = live!.StandardOutput.ReadLine();
+        Check("父进程存活的调试后端已就绪", liveReady == "READY", $"stdout={liveReady ?? "<空>"}");
+        var killedLive = PythonSidecar.CleanupLeftovers(appRoot);
+        Check("父进程存活的调试后端不被清场终止",
+              killedLive == 0 && live.HasExited == false,
+              $"killed={killedLive} exited={live.HasExited}");
+        if (!live.HasExited) // 探针收尾：终止反例进程，不留残留
+            Process.GetProcessById(live.Id).Kill(entireProcessTree: true);
 
-        // 应用根取解释器上两层目录（venv 场景：.venv/Scripts/python.exe → venv 父目录）
-        var fullPython = Path.GetFullPath(python);
-        var appRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullPython))!;
-        var sw = Stopwatch.StartNew();
-        var killed = PythonSidecar.CleanupLeftovers(appRoot);
-        var elapsed = sw.ElapsedMilliseconds;
-        Check("遗留侧车扫描+清理命中 1 个", killed == 1, $"killed={killed}");
-        Check("清理毫秒级完成（<3s）", elapsed < 3_000, $"{elapsed}ms");
-        Check("目标进程已退出", child.WaitForExit(10_000) && child.HasExited,
-              $"exit={child.HasExited}");
-
-        // 跨检出不误杀（合并前检查）：其它检出内的侧车标记进程不在清场范围——
-        // 开发者多检出并行时，一个检出的壳启动清场绝不能杀另一个检出的后端。
+        // ③ 跨检出不误杀：其它检出内的侧车标记进程不在清场范围——
+        // 多检出并行时，一个检出的壳启动清场绝不能杀另一个检出的后端。
         var foreignPython = GetOption(args, "--python-foreign");
         if (foreignPython is not null)
         {
