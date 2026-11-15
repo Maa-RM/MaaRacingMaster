@@ -585,7 +585,7 @@ def test_master_jump_gate_waits_for_second_frame():
     wl, wr = -2.0 + 1.2, 2.0 + 1.2        # 双墙同移 +1.2 道（同宽、纯平移）
     c1 = o.update(_bnd(wl, wr, edge_pts=_walls(wl, wr)), now=1001.8, fid=33)
     assert c1 is not None and c1.src == "memory"
-    assert _off(c1) == pytest.approx(0.0, abs=0.15)   # EMA 记忆仍在旧路心
+    assert _off(c1) == pytest.approx(0.0, abs=0.15)   # 记忆外推仍在旧路心
     c2 = o.update(_bnd(wl, wr, edge_pts=_walls(wl, wr)), now=1001.85, fid=34)
     assert c2 is not None and c2.src == "wall"
     assert _off(c2) == pytest.approx(-1.2, abs=0.01)
@@ -819,3 +819,23 @@ def test_far_veto_tick_sustains_and_resets():
     assert veto == frozenset()                       # 1 道断拍清零，2 道第 2 拍
     runs, veto = far_veto_tick(runs, frozenset({2}))
     assert veto == frozenset({2})
+
+
+def test_jump_gate_ignores_memory_extrapolated_baseline():
+    """跳变门基线只认真实测量：记忆外推值不得把基线拖走。
+
+    memory 分支给的是「上次采信 − v_lat·age」的外推值，它不过门却曾每拍写进
+    门基线。于「复用帧→新证据帧」这一拍（三局实测里 2/3 的换源台阶落在这一
+    拍）实际是在跟一个跟着信念横速漂的值比：外推误差被当成跳变，真跳变也可能
+    被吃掉。"""
+    o = _master_wall_observer()               # 双侧墙在 0.0 处采信
+    assert o._last_measured == pytest.approx(0.0, abs=0.05)
+    # 复用帧 + 横速 3 道/s 走记忆：输出外推到 −0.6，门基线不动
+    o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
+             now=1001.8, fid=33, new=False, v_lat=3.0)
+    assert o._last_center == pytest.approx(-0.6, abs=0.08)   # 输出走外推值
+    assert o._last_measured == pytest.approx(0.0, abs=0.05)  # 基线仍是真实测量
+    # 新证据回到 +0.3：距外推基线 0.9（旧口径拒），距真实测量 0.3（放行）
+    c = o.update(_bnd(-1.7, 2.3, edge_pts=_walls(-1.7, 2.3)),
+                 now=1001.85, fid=34)
+    assert c is not None and c.src == "wall"

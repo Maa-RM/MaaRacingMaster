@@ -3466,7 +3466,13 @@ class _EgoRoadObserver:
         self._anchor_prev: tuple[str, float, int, float] | None = None
         self._v_lat = 0.0                     # 当拍横速（记忆位移补偿用）
         self._mem: tuple | None = None        # 朝向记忆 (center, width, 时刻)
-        self._last_center: float | None = None   # 最近一次采信的路心（跳变门基线）
+        self._last_center: float | None = None   # 最近一次采信的路心（输出面）
+        # 跳变门基线只认**真实测量**：memory 分支给的是「上次采信 − v_lat·age」
+        # 的外推值，它不过门却曾每拍写进 _last_center，于是门的比较基准变成
+        # 一个跟着信念横速漂的量——外推误差被当成跳变（或把真跳变吃掉）。
+        # 2026-11-15 三局复算：换源台阶 2/3 落在「复用帧→新证据帧」这一拍，
+        # 而该拍的比较基准正是上一帧的外推值。
+        self._last_measured: float | None = None
         self._jump_pending: tuple | None = None  # 待确认的跳变 (center, 连续拍数)
         self._frame_gate_used = False         # 本拍跳变门只判一次（候选链共享）
         self._plane_ok = True                 # 本拍平面尺度门（master）
@@ -3713,6 +3719,9 @@ class _EgoRoadObserver:
                 return None
         corridor = self._build(bnd, grid, fid, center, width, src, now)
         self._last_center = center
+        if jump:
+            # 只有过门的新证据更新门基线；记忆/保鲜槽是外推或历史值，不更新。
+            self._last_measured = center
         if mem_update:
             self._mem = self._mem_update(center, width, now)
         self.last = self._snapshot(now, src, -center, off_raw, grid_off,
@@ -3723,7 +3732,8 @@ class _EgoRoadObserver:
         """来源切换/单帧跳变门：与最近采信路心差 ≤0.4 道直接放行；更大的
         变化要有连续 JUMP_CONFIRM 拍同向一致（一帧野值/换源不拽目标）。
         ``advance=False``＝本拍已有候选计过数（候选链同帧多源不重复计数）。"""
-        last = self._last_center
+        last = (self._last_measured if self._last_measured is not None
+                else self._last_center)
         if last is None or abs(center - last) <= self.JUMP_TOL_LANE:
             self._jump_pending = None
             return True
@@ -3748,7 +3758,7 @@ class _EgoRoadObserver:
                   region_pair: tuple[float, float] | None = None) -> Corridor | None:
         """候选链（候选缺席/复用拍）：master=墙（绝对）→ 绿区（新鲜双侧）
         → 绝对记忆；回放链=墙 → 保鲜槽 → 区兜底（只在新鲜拍）→ 记忆。
-        链尾记忆 TTL 内按 EMA 延伸，超时诚实 None。复用拍的栅格是旧证据，
+        链尾记忆 TTL 内按横速线性外推（`c − v_lat·age`，不是 EMA），超时诚实 None。复用拍的栅格是旧证据，
         不得冒充新鲜（黑视纪律：宁可 None）。"""
         def slot_c():
             fresh = self._fresh(now)
@@ -3811,6 +3821,7 @@ class _EgoRoadObserver:
             # 基线随线走（2026-11-02，8750 拍实证）：line 路径原不更新
             # _last_center，跳变门拿陈旧基线比对，wall 错值差得小直接放行。
             self._last_center = self._center_override
+            self._last_measured = self._center_override
             corr = self._build(bnd, grid, fid, self._center_override,
                                self.width or self.W_PRIOR_LANE, "line", now)
             self.last = self._snapshot(now, "line", -self._center_override,
