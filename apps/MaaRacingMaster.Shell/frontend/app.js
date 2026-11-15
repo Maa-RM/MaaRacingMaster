@@ -357,6 +357,7 @@
     btn.disabled = true;
     closeUpdateSourceMenu();
     renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
+    clearReleaseArea(); // 检查在途：旧相位的操作按钮一并撤下（慢网络下迟到的点击不可靠）
     try {
       const d = await maarm.call('update_check');
       renderSnapshot(d);

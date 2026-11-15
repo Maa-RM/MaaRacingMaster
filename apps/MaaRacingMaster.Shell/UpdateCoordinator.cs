@@ -47,6 +47,10 @@ public sealed class UpdateCoordinator
     /// false/异常 = 不能提交（实现内部负责解冻）。返回原因经 out 参数带给快照。</summary>
     public delegate Task<string?> PrepareGateAsync();
 
+    /// <summary>交接失败恢复委托：闸门通过 = 后端已确认退出；更新器交接失败后由实现方
+    /// 重启后端，返回 true = 旧版本已恢复可用（错误提示据此措辞，不谎称可继续使用）。</summary>
+    public delegate Task<bool> HandoffRecoveryAsync();
+
     /// <summary>提交进入 applying 相位（等本进程退出后整树替换）时触发一次：
     /// 壳订阅它做「计划内关闭」（窗口收尾 → Update.exe 检测退出 → 替换 → 重启）。</summary>
     public event Action? ApplyingStarted;
@@ -54,6 +58,7 @@ public sealed class UpdateCoordinator
     private readonly string[] _sources;            // 按序尝试的固定来源（主源 + 镜像；同目标发行集）
     private readonly IVelopackLocator? _locator;   // 显式定位器注入（合同探针用）；null = 默认定位器
     private readonly PrepareGateAsync? _prepareGate;
+    private readonly HandoffRecoveryAsync? _handoffRecovery;
     private readonly bool _managed;
     private readonly object _gate = new();
 
@@ -70,7 +75,8 @@ public sealed class UpdateCoordinator
 
     public UpdateCoordinator(string? feedSource, bool managed,
                              IVelopackLocator? locator = null,
-                             PrepareGateAsync? prepareGate = null)
+                             PrepareGateAsync? prepareGate = null,
+                             HandoffRecoveryAsync? handoffRecovery = null)
     {
         // 多源支持：随包配置每行一个来源（主源 + 镜像），按序尝试；全部失败不换目标。
         _sources = (feedSource ?? string.Empty)
@@ -81,6 +87,7 @@ public sealed class UpdateCoordinator
         _managed = managed;
         _locator = locator;
         _prepareGate = prepareGate;
+        _handoffRecovery = handoffRecovery;
         if (!managed)
         {
             _phase = UpdateSnapshot.Unavailable;
@@ -99,9 +106,13 @@ public sealed class UpdateCoordinator
     /// <summary>检查更新：仅在 idle/available/up_to_date/ready 允许（刷新目标）。
     /// 多源按序尝试：第一个「可达且给出结论」的源胜出并锁定（下载/提交绑定同一已验证
     /// 来源）；全部不可达/失败时诚实报错并可重试——不换目标，不把空/坏镜像误报为
-    /// 「已是最新」（来源故障不得换目标，也不得误报已可安装）。</summary>
+    /// 「已是最新」（来源故障不得换目标，也不得误报已可安装）。
+    /// 检查在途期间状态可能被下载/提交推进（网络慢源是常态）：返回时校验发起时的
+    /// 相位，不一致即丢弃结果并返回当前快照——迟到的检查不得覆盖下载/提交状态
+    /// （评审回归：迟到覆盖让进度消失、取消失效、下载完成进不了 ready）。</summary>
     public async Task<UpdateSnapshot> CheckAsync()
     {
+        string startPhase;
         lock (_gate)
         {
             if (!CanRunCheck())
@@ -112,6 +123,7 @@ public sealed class UpdateCoordinator
                 _pending = null;
                 return SetState(UpdateSnapshot.Idle, error: "更新源未配置");
             }
+            startPhase = _phase;
         }
         string? lastError = null;
         for (var i = 0; i < _sources.Length; i++)
@@ -128,6 +140,8 @@ public sealed class UpdateCoordinator
                 var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
                 lock (_gate)
                 {
+                    if (_phase != startPhase)
+                        return Snapshot(); // 迟到结果丢弃；不重绑源（下载正绑定旧源）
                     _manager = manager; // 锁定本源：下载/提交绑定同一已验证来源
                     _lockedSource = source;
                     if (update is null)
@@ -148,6 +162,8 @@ public sealed class UpdateCoordinator
         }
         lock (_gate)
         {
+            if (_phase != startPhase)
+                return Snapshot(); // 迟到的失败结果同理不覆盖
             _targetVersion = null;
             _pending = null;
             return SetState(UpdateSnapshot.Idle, error: $"所有更新源均不可达：{lastError}");
@@ -330,7 +346,8 @@ public sealed class UpdateCoordinator
 
     /// <summary>提交安装：仅 ready 允许。闸门拒绝/失败 → 状态回 ready 并带原因；
     /// 更新器交接成功（等本进程退出后整树替换）才进入 applying 并触发计划内关窗；
-    /// 交接失败（更新器缺失/无法启动）→ 回 ready 带原因：关窗未排、旧版继续可用，
+    /// 交接失败（更新器缺失/无法启动）→ 走恢复委托重启后端（闸门通过 = 后端已确认
+    /// 退出，不恢复则「旧版可继续使用」是假话），再回 ready 带原因：关窗未排，
     /// 前端保留重启升级入口（评审回归：先排关窗再交接会把启动失败变成关窗既成事实）。</summary>
     public async Task<UpdateSnapshot> ApplyAsync()
     {
@@ -376,11 +393,25 @@ public sealed class UpdateCoordinator
         }
         catch (Exception ex)
         {
-            ShellLog.Append($"[update] 更新器交接失败: {ex.Message}（保留旧版，可重试）");
+            var recovered = false;
+            if (_handoffRecovery is not null)
+            {
+                try
+                {
+                    recovered = await _handoffRecovery().ConfigureAwait(false);
+                }
+                catch (Exception recEx)
+                {
+                    ShellLog.Append($"[update] 交接失败恢复异常: {recEx.Message}");
+                }
+            }
+            ShellLog.Append($"[update] 更新器交接失败: {ex.Message}（后端恢复: {(recovered ? "已重启" : "失败，需重启应用")}）");
             lock (_gate)
             {
                 return SetState(UpdateSnapshot.Ready,
-                    error: $"升级程序启动失败: {ex.Message}（旧版本仍可继续使用，可重试）");
+                    error: recovered
+                        ? $"升级程序启动失败: {ex.Message}（旧版本可继续使用，可重试升级）"
+                        : $"升级程序启动失败: {ex.Message}（自动恢复失败，请重启应用后再试）");
             }
         }
         lock (_gate)

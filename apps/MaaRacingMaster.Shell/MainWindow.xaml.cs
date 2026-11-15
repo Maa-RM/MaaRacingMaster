@@ -118,6 +118,69 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>创建并接线上业务后端：启动清场 → 解释器选择（发布版随包 runtime 优先，
+    /// 开发模式回退 .venv）→ 事件接线（轮次/退出）→ RPC 绑定。启动与交接失败恢复共用；
+    /// 失败返回 null（调用方自行降级，前端显示后端不可用）。</summary>
+    private PythonSidecar? CreateSidecar(string projectRoot)
+    {
+        // 启动清场：上一会话异常退出可能遗留侧车（正忙未到 EOF 自退窗口），先清理
+        // 本应用根内的遗留进程再启动新侧车（只动本应用根，扫描失败不阻断启动）
+        var cleaned = PythonSidecar.CleanupLeftovers(projectRoot);
+        if (cleaned > 0)
+            Console.Error.WriteLine($"[shell] 启动清场：清理遗留侧车 {cleaned} 个");
+        var releasePython = Path.Combine(projectRoot, "runtime", "python", "python.exe");
+        var pythonExe = File.Exists(releasePython)
+            ? releasePython
+            : Path.Combine(projectRoot, ".venv", "Scripts", "python.exe");
+        try
+        {
+            var sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
+            // 轮次开始/结束 → 任务栏与通知；自动退出 → 延迟关窗；EOF → 后端死亡提示
+            sidecar.SidecarEvent += OnSidecarEvent;
+            sidecar.BackendExited += OnBackendExited;
+            // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
+            RpcBridge.Attach(sidecar);
+            return sidecar;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] sidecar 启动失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>交接失败恢复（升级闸门通过后后端已确认退出）：重启后端让旧版本立即可用，
+    /// 业务查询与重试升级都恢复。成功返回 true；失败返回 false（协调器据此把提示改为
+    /// 「请重启应用」，不谎称旧版可继续使用）。</summary>
+    private async Task<bool> RestartSidecarAfterHandoffFailureAsync()
+    {
+        await Task.CompletedTask; // 保持异步签名与恢复委托一致（重启本身是同步启动）
+        try
+        {
+            var old = _sidecar;
+            if (old is not null)
+            {
+                try { old.Dispose(); }
+                catch { /* 进程已退出：仅句柄清理 */ }
+                _sidecar = null;
+            }
+            var projectRoot = ResolveRepoRoot();
+            if (projectRoot is null)
+                return false;
+            var sidecar = CreateSidecar(projectRoot);
+            if (sidecar is null)
+                return false;
+            _sidecar = sidecar;
+            ShellLog.Append("[update] 交接失败已重启后端，旧版本可继续使用");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 交接失败后重启后端失败: {ex.Message}");
+            return false;
+        }
+    }
+
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
     /// 解析单一真源在 AppRootResolver（Program 启动前检查与这里共用；进程内缓存，
@@ -145,7 +208,7 @@ public sealed partial class MainWindow : Window
         return File.Exists(candidate) ? candidate : null;
     }
 
-    private readonly PythonSidecar? _sidecar;
+    private PythonSidecar? _sidecar; // 交接失败恢复会整实例替换（非只读）
 
     /// <summary>壳侧轮次状态：轮次事件的亮灭/通知只以这四态为准。</summary>
     private enum RoundState
@@ -223,7 +286,8 @@ public sealed partial class MainWindow : Window
         // 宿主更新协调器：与后端生命周期解耦（后端不可用不影响更新状态查询）。
         // 来源固定 = 安装树内随包配置（发行时写入，用户不可改、前端不可传；缺失 = 未配置，
         // 检查诚实返回不可用）；提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并
-        // 放弃提交（见 PrepareForUpdateAsync）；提交进入替换相位后由壳做计划内关窗。
+        // 放弃提交（见 PrepareForUpdateAsync）；交接失败由壳重启后端（闸门通过 = 后端已
+        // 确认退出，见 RestartSidecarAfterHandoffFailureAsync）；提交进入替换相位后由壳做计划内关窗。
         var coordinator = new UpdateCoordinator(
             feedSource: ReadUpdateSourceFile(),
             managed: AppRootResolver.Resolve(
@@ -231,7 +295,8 @@ public sealed partial class MainWindow : Window
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
                 AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("APPDATA")).Managed,
-            prepareGate: PrepareForUpdateAsync);
+            prepareGate: PrepareForUpdateAsync,
+            handoffRecovery: RestartSidecarAfterHandoffFailureAsync);
         coordinator.ApplyingStarted += ScheduleApplyShutdown;
         RpcBridge.AttachCoordinator(coordinator);
 
@@ -245,34 +310,7 @@ public sealed partial class MainWindow : Window
 
         // 1. 启动 Python sidecar（唯一业务后端；失败不阻塞窗口，前端显示 backend unavailable）
         if (projectRoot is not null)
-        {
-            // 启动清场：上一会话异常退出可能遗留侧车（正忙未到 EOF 自退窗口），先清理
-            // 本应用根内的遗留进程再启动新侧车（只动本应用根，扫描失败不阻断启动）
-            var cleaned = PythonSidecar.CleanupLeftovers(projectRoot);
-            if (cleaned > 0)
-                Console.Error.WriteLine($"[shell] 启动清场：清理遗留侧车 {cleaned} 个");
-
-            // 发布模式优先用随包的自带 runtime（runtime\python\python.exe），
-            // 否则回退开发模式的 .venv\Scripts\python.exe，保证两种环境都能跑。
-            var releasePython = Path.Combine(projectRoot, "runtime", "python", "python.exe");
-            var pythonExe = File.Exists(releasePython)
-                ? releasePython
-                : Path.Combine(projectRoot, ".venv", "Scripts", "python.exe");
-            try
-            {
-                _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
-                // 轮次开始/结束 → 任务栏与通知；自动退出 → 延迟关窗；EOF → 后端死亡提示
-                _sidecar.SidecarEvent += OnSidecarEvent;
-                _sidecar.BackendExited += OnBackendExited;
-                // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
-                RpcBridge.Attach(_sidecar);
-            }
-            catch (Exception ex)
-            {
-                _sidecar = null;
-                Console.Error.WriteLine($"[shell] sidecar 启动失败: {ex.Message}");
-            }
-        }
+            _sidecar = CreateSidecar(projectRoot);
 
         web.WebMessageReceived += OnWebMessageReceived;
         Closed += OnClosed;

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using MaaRacingMaster.Shell;
 using Velopack;
@@ -216,14 +218,19 @@ internal static class Program
               fb.Phase == UpdateSnapshot.Ready && fb.Progress == 100,
               $"phase={fb.Phase} progress={fb.Progress} target={fb.TargetVersion} error={fb.Error}");
 
-        // ⑥ 交接失败恢复（评审回归：更新器启动失败不得把关窗变成既成事实）——
-        // 定位器指向不存在的 Update.exe：状态回 ready 带原因，关窗事件不触发。
+        // ⑥ 交接失败恢复（评审回归二轮）：真实闸门在通过前会确认后端退出——闸门桩把
+        // 后端置为已退出，交接失败（定位器指向不存在的 Update.exe）后必须恢复后端，
+        // 否则「旧版可继续使用」是假话（业务查询与重试升级都撞上已退出的后端）。
         var applyFired = 0;
+        var backendAlive = true;
+        var brokenGateCalls = 0;
+        var recoveryCalls = 0;
         var broken = new UpdateCoordinator(feed, managed: true,
             locator: new TestVelopackLocator("MaaRM.RealShellProbe", liveVersion,
                 Path.Combine(live, "packages"), Path.Combine(live, "current"), live,
                 Path.Combine(live, "missing-dir", "Update.exe")),
-            prepareGate: () => Task.FromResult<string?>(null));
+            prepareGate: () => { brokenGateCalls++; backendAlive = false; return Task.FromResult<string?>(null); },
+            handoffRecovery: () => { recoveryCalls++; backendAlive = true; return Task.FromResult(true); });
         broken.ApplyingStarted += () => applyFired++;
         var sb1 = await broken.CheckAsync();
         var sb2 = await broken.StartDownloadAsync();
@@ -239,6 +246,68 @@ internal static class Program
               sb3.Phase == UpdateSnapshot.Ready && (sb3.Error ?? "").Contains("启动失败", StringComparison.Ordinal),
               $"phase={sb3.Phase} error={sb3.Error}");
         Check("更新器启动失败 → 关窗事件未触发", applyFired == 0, $"applyFired={applyFired}");
+        Check("交接失败 → 恢复委托被调用且后端恢复可用",
+              backendAlive && recoveryCalls == 1, $"backendAlive={backendAlive} recoveryCalls={recoveryCalls}");
+        Check("恢复成功 → 提示与实际能力一致（可重试升级）",
+              (sb3.Error ?? "").Contains("可重试", StringComparison.Ordinal), $"error={sb3.Error}");
+        var sb4 = await broken.ApplyAsync(); // 恢复后重试升级：闸门再次走完整生命周期
+        Check("恢复后重试升级 → 闸门再次冻结并再次恢复",
+              sb4.Phase == UpdateSnapshot.Ready && brokenGateCalls == 2 && recoveryCalls == 2 && backendAlive,
+              $"phase={sb4.Phase} gateCalls={brokenGateCalls} recoveryCalls={recoveryCalls} backendAlive={backendAlive}");
+
+        // ⑥-2 恢复失败路径：提示必须诚实（不谎称旧版可继续使用）
+        var broken2 = new UpdateCoordinator(feed, managed: true,
+            locator: new TestVelopackLocator("MaaRM.RealShellProbe", liveVersion,
+                Path.Combine(live, "packages"), Path.Combine(live, "current"), live,
+                Path.Combine(live, "missing-dir", "Update.exe")),
+            prepareGate: () => Task.FromResult<string?>(null),
+            handoffRecovery: () => Task.FromResult(false));
+        await broken2.CheckAsync();
+        var b2d = await broken2.StartDownloadAsync();
+        var b2Deadline = DateTime.UtcNow.AddSeconds(120);
+        UpdateSnapshot b2w;
+        do
+        {
+            await Task.Delay(200).ConfigureAwait(false);
+            b2w = broken2.GetStatus();
+        } while (b2w.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < b2Deadline);
+        var b3 = await broken2.ApplyAsync();
+        Check("恢复失败 → 提示明确要求重启应用（不谎称可继续使用）",
+              (b3.Error ?? "").Contains("重启", StringComparison.Ordinal), $"error={b3.Error}");
+
+        // ⑦ 检查与下载并发（评审回归二轮）：已有目标后再次检查、检查在途时点击仍在
+        // 显示的下载按钮——迟到的检查结果不得覆盖 downloading（否则进度消失、取消失效、
+        // 下载完成进不了 ready）。本地慢 HTTP 源：索引响应延迟制造检查窗口。
+        using var slowHttp = new SlowHttpServer(
+            File.ReadAllText(Path.Combine(feed, "releases.win.json")),
+            TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(6));
+        var concurrent = new UpdateCoordinator($"http://127.0.0.1:{slowHttp.Port}", managed: true,
+            locator: MakeExplicitLocator(live, liveVersion));
+        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
+            File.Delete(cached);
+        var s7a = await concurrent.CheckAsync(); // 第一次检查（慢）→ 锁定 HTTP 源
+        Check("HTTP 源检查 → available 且带目标版本",
+              s7a.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(s7a.TargetVersion),
+              $"phase={s7a.Phase} target={s7a.TargetVersion} error={s7a.Error}");
+        var lateCheck = concurrent.CheckAsync(); // 第二次检查在途（索引延迟中）
+        await Task.Delay(100);
+        var s7b = await concurrent.StartDownloadAsync(); // 检查在途时点仍显示的下载按钮
+        Check("检查在途时下载可发起 → downloading",
+              s7b.Phase == UpdateSnapshot.Downloading, $"phase={s7b.Phase} error={s7b.Error}");
+        var s7c = await lateCheck; // 迟到的检查结果返回
+        Check("迟到的检查结果不覆盖下载状态",
+              s7c.Phase == UpdateSnapshot.Downloading, $"phase={s7c.Phase} error={s7c.Error}");
+        var s7d = concurrent.CancelDownload();
+        var c7Deadline = DateTime.UtcNow.AddSeconds(15);
+        UpdateSnapshot s7e;
+        do
+        {
+            await Task.Delay(100).ConfigureAwait(false); // 前端状态轮询的等价物：取消异步生效
+            s7e = concurrent.GetStatus();
+        } while (s7e.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < c7Deadline);
+        Check("下载中取消有效（不被迟到检查破坏）",
+              s7e.Phase == UpdateSnapshot.Available && (s7e.Error ?? "").Contains("取消", StringComparison.Ordinal),
+              $"phase={s7e.Phase} error={s7e.Error}");
     }
 
     /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>
@@ -261,6 +330,88 @@ internal static class Program
             throw new InvalidOperationException(
                 "update 用例必须显式给夹具：--root <受管安装树> --feed <更新源目录>");
         return (root, feed);
+    }
+
+    /// <summary>本地最小 HTTP 源（TcpListener，无 URL ACL 依赖）：索引响应延迟制造
+    /// 检查在途窗口，包请求挂起模拟大文件下载（取消会打断真实 HTTP 下载任务）。
+    /// 仅 update 用例并发场景用；Dispose 即停服。</summary>
+    private sealed class SlowHttpServer : IDisposable
+    {
+        private readonly TcpListener _listener;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly string _indexJson;
+        private readonly TimeSpan _indexDelay;
+        private readonly TimeSpan _packageDelay;
+
+        public SlowHttpServer(string indexJson, TimeSpan indexDelay, TimeSpan packageDelay)
+        {
+            _indexJson = indexJson;
+            _indexDelay = indexDelay;
+            _packageDelay = packageDelay;
+            _listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
+            _listener.Start();
+            Port = ((System.Net.IPEndPoint)_listener.LocalEndpoint).Port;
+            _ = AcceptLoopAsync();
+        }
+
+        public int Port { get; }
+
+        private async Task AcceptLoopAsync()
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                System.Net.Sockets.TcpClient client;
+                try { client = await _listener.AcceptTcpClientAsync().WaitAsync(_cts.Token); }
+                catch { break; }
+                _ = HandleClientAsync(client);
+            }
+        }
+
+        private async Task HandleClientAsync(System.Net.Sockets.TcpClient client)
+        {
+            try
+            {
+                using var _ = client;
+                var stream = client.GetStream();
+                var head = new byte[4096];
+                var n = await stream.ReadAsync(head, _cts.Token);
+                var text = System.Text.Encoding.ASCII.GetString(head, 0, n);
+                var m0 = text.IndexOf(' ') + 1;
+                var m1 = m0 > 0 ? text.IndexOf(' ', m0) : -1;
+                var path = m1 > m0 ? text[m0..m1] : "/";
+                if (path.Contains("releases", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Task.Delay(_indexDelay, _cts.Token);
+                    var body = System.Text.Encoding.UTF8.GetBytes(_indexJson);
+                    await stream.WriteAsync(
+                        System.Text.Encoding.ASCII.GetBytes(
+                            $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"),
+                        _cts.Token);
+                    await stream.WriteAsync(body, _cts.Token);
+                }
+                else if (path.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 挂起不响应：模拟大文件下载；取消后由 Dispose/断连收尾
+                    await Task.Delay(_packageDelay, _cts.Token);
+                }
+                else
+                {
+                    await stream.WriteAsync(
+                        System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                        _cts.Token);
+                }
+            }
+            catch
+            {
+                // 客户端断开 / 服务停止：收尾
+            }
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { /* 已停止 */ }
+        }
     }
 
     // ---------- 启动清场（遗留侧车扫描与终止） ----------
