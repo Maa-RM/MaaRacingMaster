@@ -202,10 +202,10 @@ class CarSource:
     seen: bool | None = None
     # 对象表 safety_ok：False=超龄/退役/无横位，安全消费点跳过；价值项不看。
     safety_ok: bool = True
-    # 横位未知（2026-11-10 真值小集）：本拍发布横位相邻跳 >0.8 道（真实横移
-    # 单拍上限 ~0.43 道，超限必是并号/锚错挂）或锚点口径换锚（新锚横位首拍
-    # 无可信历史，且其弯道修正项会跳）。只关贴边得分入口（邻道候选弃车），
-    # 同道躲避/障碍/安全照旧用原读数——躲避宁多动不撞。闸
+    # 横位未知（2026-11-10 真值小集）：本拍发布横位相邻跳超过物理上限、
+    # 锚点换锚首拍，或米制与有效像素证人差 >1 道（2026-11-15 换约）。
+    # 未知拍不发起任何**新**贴边/让位目标；已贴住的车由保持闩续上一有效
+    # 目标。对象表/占用仍用原读数，安全消费不受影响。闸
     # pass_x_unknown_enabled 关=恒 False（逐位回今天）。
     x_unknown: bool = False
 
@@ -770,8 +770,9 @@ def _pick_pass(cars: Sequence[Obj], road: RoadFrame, ego: float,
         if adjacent and not (allow_adjacent and p.pass_graze_adjacent_enabled):
             continue
         if c.x_unknown and p.pass_x_unknown_enabled:
-            # 横位未知拍弃车：旧 x 会把同道车判成邻道、把通过侧判反，贴边
-            # 目标追着坏读数翻面。上一有效目标由贴边保持闩续过坏读数拍。
+            # 横位未知拍不发起任何新贴边/让位目标：旧 x 会把同道车判成邻道、
+            # 把通过侧判反，目标追着坏读数翻面。已贴住的车由保持闩续上一
+            # 有效目标；对象表/占用仍用原读数，安全消费不受影响。
             continue
         if adjacent and t_eff < p.pass_lean_min_s:
             continue                # 邻道贴边要「极为充足」的时间，临时起意=撞车

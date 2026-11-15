@@ -81,6 +81,9 @@ class CarView:
     # age_ticks 是轨道生命期（first_fid 起算），不是新鲜度——拿它当龄会
     # 让一辆持续被检出的车在 0.25s 后从场景里蒸发。
     last_seen_fid: int = 0
+    # 最近一帧 2D 框 xyxy（全幅像素）：决策层据此判定框心是否被画面左右缘
+    # 裁切——贴着边缘的框心会让像素横向尺子飞出路面。空=旧构造未带。
+    box: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -193,7 +196,8 @@ class TrafficObserver:
                                  age_ticks=fid - rec.first_fid, v_lat=rec.v_lat,
                                  x_memb=memb, w_m=w_m, w_m_age=w_m_age,
                                  last_seen_fid=t.last_seen_fid,
-                                 x_lane_line=getattr(t, "x_lane_line", None)))
+                                 x_lane_line=getattr(t, "x_lane_line", None),
+                                 box=getattr(t, "box", ())))
 
         events: list[PassEvent] = []
         for tid in sorted(set(self._live) - seen):

@@ -138,10 +138,14 @@ LINE_RMS_MAX = 3.0         # 单线拟合残差（px，短段/坏拟合不参与
 # 强锁：曾用「双侧都在」的严格条件建立过线锁。此后单侧/一条线也继续作
 # 绝对位置（k 已稳定，深度只会更差）；只要 RELOCK 或横位跳变才作废。
 LINE_JUMP_RESET = 0.5      # 线横位单拍跳超此值（道）= 连续性中断，重新锁定
-# 单线（只有一条 accepted）时的单拍横位步长封顶（道）：单条线的 L 误差会直接
-# 写进 x_last，下一拍 k=round(x_last+L) 就可能整道错判（2026-11-12 局 p2
-# idx316 起漂到 −3.4 道）。0.10 道/拍 = 2 道/s，仍高于实测最大横移 1.4 道/s。
-LINE_SINGLE_STEP = 0.10
+# 横位输出步长门（线集合稳定）：单拍超过 `LINE_X_STEP_MAX` 视为坏读数，
+# 先冻结上一稳定横位；同向持续 `LINE_X_PERSIST_TICKS` 拍才按限速跟过去。
+# 单条线的 L 误差会直接写进 x_last（2026-11-12 局 p2 起漂到 −3.4 道），
+# 少线/换线时同样不能把单拍跳变灌给控制器。
+LINE_X_STEP_MAX = 0.06      # 道/检测拍（≈0.6 道/s @10Hz；实测最大横移 ~0.43 道/s）
+# 线集合（accepted 的整数道号集合）变化时用更紧的门：这是换段/丢线，
+# 新横位必须先连续出现，不能一拍就改位置原点。
+LINE_SET_STEP_MAX = 0.03
 # 黄边界侧别硬约束：用最靠车头的几个点判画面左右侧，压中线留死区。
 SIDE_NEAR_PTS = 5
 SIDE_DEADBAND_PX = 20.0
@@ -932,6 +936,8 @@ class LineTracker:
         self.last_theta: float | None = None
         self.last_lines: list[dict] = []
         self.anchor_src = "none"
+        # 横位步长门：上一拍 accepted 的整数道号集合。
+        self._last_ks: frozenset[int] | None = None
 
     @staticmethod
     def _side_bad(c: dict) -> bool:
@@ -1213,47 +1219,79 @@ class LineTracker:
                 keep = [best]
 
         # ⑥ 输出：有可用线=线横位；无可用线但深度新鲜=跟深度；否则滑行
+        hold = False
         if keep:
             for c in keep:
                 c["accepted"] = True
             x_raw = float(np.median([c["_xi"] for c in keep]))
-            if len(keep) < 2 and self.x_last is not None \
-                    and x_anchor is None:
-                # 单线只做子道细化，单拍步长封顶（2026-11-12 实机 p2 定案）：
-                # 一条线的 L 误差会直接写进 x_last，下一拍 k=round(x_last+L)
-                # 就可能整道错判，错判后的 x 又反过来喂 k——闭环正反馈。
-                # 实测 220717 局 p2 idx316：线质量崩到只剩一条 accepted，L 从
-                # −0.52 抖到 −0.32，x 跳 0.19；随后 k 从 {−1,0} 变 {−1,−2}、
-                # 再到 {−5,−4,−3}，横位漂到 −3.4（同拍真实 ro 只有 −0.4），
-                # 决策目标整道错位。该局单线拍的横位跳变率 18%，双线 2.4%。
-                # 封顶不冻结：单侧线仍能做子道细化（深度空窗靠它保持连续）。
-                d = float(np.clip(x_raw - self.x_last,
-                                  -LINE_SINGLE_STEP, LINE_SINGLE_STEP))
-                x_out = self.x_last + d
+            ks_now = frozenset(int(c["k"]) for c in keep)
+            support = len(keep)
+            set_changed = (self._last_ks is not None
+                           and ks_now != self._last_ks)
+            step_raw = (None if self.x_last is None
+                        else x_raw - self.x_last)
+            if step_raw is not None:
+                # 单线只有在本拍与上一拍是同一根线（道号有交集）时才允许
+                # 子道细化；换线/新线先按换线门处理，避免新身份的 L 改写 x。
+                same_single = (support == 1 and self._last_ks is not None
+                               and bool(self._last_ks & ks_now))
+                # 新鲜深度锚同意新横位，或刚从长盲窗 RELOCK 出来：这是
+                # 独立见证/重新捕获，不是少线抖动，直接接受换锚。
+                anchor_supports = (x_anchor is not None
+                                   and abs(x_raw - float(x_anchor))
+                                   <= self.ANCHOR_AGREE_TOL)
+                was_relock = (self.state == "RELOCK"
+                              or self.lost > COAST_MAX_TICKS)
+                limit = (LINE_SET_STEP_MAX if set_changed
+                         else LINE_X_STEP_MAX)
+                jump = (abs(step_raw) > limit
+                        or (support == 1 and not same_single))
+                if anchor_supports or was_relock:
+                    jump = False
+                if jump:
+                    # 不冻结：按物理步长限速跟过去；本拍仍标 hold（不是
+                    # 新测量），单拍大跳不会原样灌给控制器。
+                    d = float(np.clip(step_raw, -LINE_X_STEP_MAX,
+                                      LINE_X_STEP_MAX))
+                    x_out = self.x_last + d
+                    hold = abs(x_raw - x_out) > 1e-9
+                    # 只有「单线新身份」或整道级跳变才作废线锁；多线集合
+                    # 变化但横位被限速跟随时保留锁定，位置权威不因丢一条
+                    # 远线就掉半拍（否则控制器退深度/盲推，响应变慢）。
+                    if (support == 1 and not same_single) \
+                            or abs(step_raw) > LINE_JUMP_RESET:
+                        self.locked = 1
+                        self.lock_strong = False
+                else:
+                    x_out = x_raw
             else:
                 x_out = x_raw
-            # 稳定性计数：只有横位连续（单拍不跳 >LINE_JUMP_RESET）才累加；
-            # 跳变=连续性中断，从 1 重新数（线锁的要件）。
+            self._last_ks = ks_now
+            # 稳定性计数：只有非保持拍才累加；跳变/保持=连续性中断，从 1 重数。
             step = (abs(x_out - self.x_last)
                     if self.x_last is not None else 0.0)
-            if step > LINE_JUMP_RESET:
-                self.lock_strong = False      # 横位跳变=换线/换帧，强锁作废
-            self.locked = (self.locked + 1
-                           if step <= LINE_JUMP_RESET else 1)
-            if self.x_prev is not None and dt > 1e-3:
+            if not hold:
+                if step > LINE_JUMP_RESET:
+                    self.lock_strong = False  # 横位跳变=换线/换帧，强锁作废
+                self.locked = (self.locked + 1
+                               if step <= LINE_JUMP_RESET else 1)
+            if self.x_prev is not None and dt > 1e-3 and not hold:
                 assert self.x_last is not None   # x_prev 就是上一拍的 x_last
                 dvx = float(np.clip((x_out - self.x_last) / dt, -1.5, 1.5))
                 self.x_vel = 0.6 * self.x_vel + 0.4 * dvx
             self.x_prev, self.x_last = self.x_last, x_out
             self.lost = 0
             self.state = "TRACK"
-            ths = [(float(c["theta"]), max(1, int(c.get("n") or 1)))
-                   for c in keep if c.get("theta") is not None]
-            if ths:
-                w = sum(w for _, w in ths)
-                self.last_theta = sum(t * w for t, w in ths) / w
+            # 少于两条线或本拍保持时线角不可信：沿用上一有效角度（观测器
+            # 另有 ≥2 条线的门；这里避免单线/换段把角度也刷成假值）。
+            if support >= 2 and not hold:
+                ths = [(float(c["theta"]), max(1, int(c.get("n") or 1)))
+                       for c in keep if c.get("theta") is not None]
+                if ths:
+                    w = sum(w for _, w in ths)
+                    self.last_theta = sum(t * w for t, w in ths) / w
             relock_src = "line"
-            pred = False
+            pred = hold
         elif x_anchor is not None:
             if self.x_prev is not None and self.x_last is not None \
                     and dt > 1e-3:
@@ -1305,7 +1343,7 @@ class LineTracker:
                 c["resid"] = round(float(xi) - x_out, 3)
         self._commit_tracks(cur, fid)
         return self._out(x_out, len(keep), cur, self.anchor_src,
-                         relock_src=relock_src, pred=pred)
+                         relock_src=relock_src, pred=pred, hold=hold)
 
     def _commit_tracks(self, cur: list[dict], fid: int) -> None:
         for c in cur:
@@ -1331,7 +1369,7 @@ class LineTracker:
         self.tracks = [t for t in self.tracks if fid - t.idx <= TRACK_GAP]
 
     def _out(self, x, n_locked, lines, anchor_src,
-             relock_src, pred) -> dict:
+             relock_src, pred, hold: bool = False) -> dict:
         if x is not None:
             x = round(float(x), 3)
         self.last_lines = [dict(c) for c in lines]
@@ -1343,6 +1381,9 @@ class LineTracker:
         if self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS and both:
             # 双侧严格条件建立了强锁：此后单侧/一条线也继续作绝对位置
             self.lock_strong = True
+        # 限速跟随拍（hold）保留锁定：x 已按物理步长限幅，仍是可用位置
+        # 原点；只有单线新身份/整道跳变才重置 locked（见 update）。hold 只
+        # 作为 trace 的「本拍不是新测量」标记，不再单独撤位置权威。
         usable = (self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
                   and bool(good) and (both or self.lock_strong))
         return {"state": self.state, "x": x, "theta": self.last_theta,
@@ -1351,6 +1392,7 @@ class LineTracker:
                 "n_lines": len(lines), "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": anchor_src, "lines": lines, "pred": pred,
+                "hold": bool(hold),
                 "usable": bool(usable), "locked": int(self.locked)}
 
     def predict(self, dt: float, v_lat: float = 0.0) -> dict:
@@ -1370,13 +1412,14 @@ class LineTracker:
                     "lost": int(self.lost),
                     "anchor_src": self.anchor_src,
                     "usable": False, "locked": int(self.locked),
+                    "hold": True,
                     "lines": [dict(c) for c in self.last_lines], "pred": True}
         return {"state": "RELOCK", "x": None, "theta": self.last_theta,
                 "n_locked": 0, "relock_src": None, "n_lines": 0,
                 "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": "none", "usable": False,
-                "locked": int(self.locked),
+                "locked": int(self.locked), "hold": True,
                 "lines": [], "pred": True}
 
 

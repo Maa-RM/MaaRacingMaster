@@ -2592,6 +2592,9 @@ class SpeedRushModule(ActivityModule):
             # 车米制状态快照（横向位/纵向距/到站/接近速/锚龄，与 dist 同 id
             # 同拍 join）：机会漏点（可达门 vs 碰撞判据）的离线复算输入
             "mcars": chain["engine"].metric_cars_snap or None,
+            # 车源横向链（m.x_m → off → xr → origin/cd → 选择层 x）：跨源
+            # 横位缺口（1.255 m 类）只能靠这列同拍逐项对账；只读观测。
+            "carsrc": chain["engine"].car_src_trace or None,
             # 存在性占用影子（只读观测）：None=本拍无占用；有值时含
             # blocked/ids/m/modes/veto/sel_*——选道影子的逐事件供数面
             "occ": chain["engine"].occ_snap(),

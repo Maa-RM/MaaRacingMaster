@@ -37,8 +37,8 @@ from maaracing_master.plugins.speedrush.lane_obs import (
     lane_membership, lane_pos_nearest)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult
 from maaracing_master.plugins.speedrush.world_model import (
-    KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, t_meet_car_s,
-    x_lane_of)
+    KIND_BONUS, KIND_CAR, KIND_COIN, Calib, load_calib, metric_x_of,
+    t_meet_car_s, x_lane_of)
 
 SCHEMA_VERSION = 1
 
@@ -244,8 +244,9 @@ class MetricCarState:
 
     - z_m：当前米制距离（RESCALED=锚点按区间速度外推，ANCHOR=持锚原值，
       BOX_SIZE=无锚时的框高粗距离——相对误差中位 ~15%/p90 ~40%，只够近/远）。
-    - x_m = (cx−vpx)·z/fx：cx=当前框心、fx=锚点帧焦距、z=当前米制距离——
-      三个量各差半拍（锚点帧 vs 当前帧），横向慢变量，误差二阶，如实记。
+    - x_m = metric_x_of(cx, z, fx)：cx=当前框心、fx=锚点帧焦距、z=当前米制
+      距离——三个量各差半拍（锚点帧 vs 当前帧），横向慢变量，误差二阶，如实
+      记。侧别只看框心相对消失点，纵深取量级（z 过零不翻边）。
       BOX_SIZE 无锚帧焦距，x_m 恒 None（横向回退像素尺子）。
     - v_close_mps：锚点门控估计（锚龄 ≥ gate_eval_min_ms 才出，None=估计窗
       未开——消费端此时回退像素 t_meet，不算 pacing）。
@@ -859,8 +860,9 @@ class Tracker:
             # 50~100ms 一帧，单间隔永远够不到 150ms，速度只在检测断档那一
             # 次被种下，然后整条轨道不再刷新（20261114_094558 车51：断档
             # 期间一次跨簇跳变种出 67.26 m/s，真实闭速 ~27，其后 16s 不变；
-            # z=锚−67×锚龄 在并排段把 z 推过零，x=(cx−vpx)·z/fx 跟着塌到 0
-            # 再翻号）。窗跨度到龄即刷新，一次跳变只污染窗内那段。
+            # z=锚−67×锚龄 在并排段把 z 推过零，旧式 x=(cx−vpx)·z/fx 跟着
+            # 翻号；metric_x_of 已按 |z| 保住侧别。窗跨度到龄即刷新，一次
+            # 跳变只污染窗内那段。
             span_s = ((sheet.ts_ns - hist[0][0]) / 1e9) if hist else dt_s
             if (not rebase and t.anchor_z is not None and dt_s > 0
                     and span_s * 1000.0 >= self.p.gate_eval_min_ms):
@@ -1007,7 +1009,8 @@ class Tracker:
 
     def _metric_of(self, d: ObjectDistance, t: _Track) -> MetricCarState:
         """ObjectDistance → 米制状态（C 线；z 复用 _distance_of 的当前米制值——
-        RESCALED=锚+速度外推、ANCHOR=持锚，无第二套公式）。x_m=(cx−vpx)·z/fx：
+        RESCALED=锚+速度外推、ANCHOR=持锚，无第二套公式）。x_m 由
+        metric_x_of 统一：侧别看框心、纵深取量级（z 过零不翻边）：
         cx 当前框、fx 锚点帧焦距、z 当前米制——三者各差半拍（锚帧 vs 当前帧），
         横向慢变量误差二阶（MetricCarState docstring）。t_meet 只在 v_close>0
         时出：≤0=掠过/远离（占用语义），None（有锚）=估计窗未开（回退像素），
@@ -1026,7 +1029,7 @@ class Tracker:
         if (d.source in (DistanceSource.ANCHOR, DistanceSource.RESCALED_ANCHOR,
                          DistanceSource.HELD)
                 and z is not None and t.anchor_fx and t.anchor_fx > 0):
-            x_m = (t.cx - self.cal.vpx) * z / t.anchor_fx
+            x_m = metric_x_of(t.cx, z, t.anchor_fx, self.cal.vpx)
         v = d.v_close_mps
         t_meet = z / v if (z is not None and v is not None and v > 0.0) else None
         bridged = False

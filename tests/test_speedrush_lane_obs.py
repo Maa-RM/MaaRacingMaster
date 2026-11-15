@@ -501,13 +501,55 @@ def test_single_line_still_waits_for_anchor_confirm():
 
 
 def test_no_fresh_anchor_refines_against_last_x():
-    """深度空窗：锚点退回上一拍横位，线只做子道细化，不自漂绝对位。"""
+    """深度空窗：锚点退回上一拍横位，线只做子道细化，不自漂绝对位。
+
+    单线单拍 0.1 道超过物理步长门：按 0.06 道/拍限速跟过去，
+    不原样灌进 x_last（不再像旧口径那样一拍跟满）。"""
     tr = LineTracker()
     tr.update([_line(-0.2)], 1, 0.05, anchor=0.0)
-    r = tr.update([_line(-0.3)], 2, 0.05, anchor=None)
-    assert r["state"] == "TRACK"
-    assert r["anchor_src"] == "lines"
-    assert r["x"] == pytest.approx(0.3, abs=1e-6)
+    r1 = tr.update([_line(-0.3)], 2, 0.05, anchor=None)
+    assert r1["state"] == "TRACK"
+    assert r1["anchor_src"] == "lines"
+    assert r1["x"] == pytest.approx(0.26, abs=1e-6)  # 单拍 0.1 只走 0.06
+    assert r1["hold"] is True
+    r2 = tr.update([_line(-0.3)], 3, 0.05, anchor=None)
+    assert r2["x"] == pytest.approx(0.3, abs=1e-6)
+    assert r2["hold"] is False
+
+
+def test_line_set_change_rate_limits_x():
+    """换段/丢线：accepted 道号集合变了且横位跳超门，按物理步长限速；
+    本拍输出标 hold、不作绝对位置原点，不能一拍改写位置原点。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    new = [_line(-0.2, "w"), _line(0.8, "w")]
+    r1 = tr.update(new, 8, 0.05, anchor=None)
+    assert r1["x"] == pytest.approx(0.16, abs=1e-6)   # 0.1→0.2，限速 0.06
+    assert r1["hold"] is True
+    assert r1["usable"] is True                       # 多线换段保留线锁
+    r2 = tr.update(new, 9, 0.05, anchor=None)
+    assert r2["x"] == pytest.approx(0.2, abs=1e-6)
+    assert r2["hold"] is False
+    # 新集合持续、横位收敛后，连续稳定拍恢复绝对位置权威
+    for fid in range(10, 18):
+        r = tr.update(new, fid, 0.05, anchor=None)
+    assert r["x"] == pytest.approx(0.2, abs=0.01)
+    assert r["hold"] is False
+    assert r["usable"] is True
+
+
+def test_single_line_new_identity_rate_limits():
+    """单线但道号是新身份（不在上一拍集合里）：横位按限速过渡，
+    本拍标 hold，不用新身份的 L 一拍改写 x。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    new = [_line(2.02, "w")]                 # 新道号 2，旧集合 {-1,1}
+    r1 = tr.update(new, 8, 0.05, anchor=None)
+    assert r1["x"] == pytest.approx(0.04, abs=1e-6)   # 0.1→-0.02，限速 0.06
+    assert r1["hold"] is True
+    r2 = tr.update(new, 9, 0.05, anchor=None)
+    assert r2["x"] == pytest.approx(-0.02, abs=1e-6)
+    assert r2["hold"] is False
 
 
 def test_yellow_wrong_fit_sign_is_rejected():

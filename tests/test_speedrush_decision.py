@@ -644,6 +644,80 @@ def test_box_size_metric_car_without_lateral_near_enters_as_block():
     assert e._reach_car_sources(0.0) == []
 
 
+def test_metric_x_keeps_side_when_depth_crosses_zero():
+    """车头系 z 过零不翻边（20261115_131153 实测：z>0 的 318 帧横位与
+    像素同侧 318/318，z<0 的 7 帧 7/7 反向）。"""
+    from maaracing_master.plugins.speedrush.world_model import metric_x_of
+    ahead = metric_x_of(700.0, 2.0, 807.7, 640.7)
+    passed = metric_x_of(700.0, -2.0, 807.7, 640.7)
+    assert ahead > 0
+    assert passed == pytest.approx(ahead)
+
+
+def test_edge_clipped_pixel_witness_cannot_override_metric():
+    """框心贴画面右缘=框被裁：尺子作废，保留米制横位。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._corridor = _corridor(-6.75, 6.75)
+    road, _, origin = e._road_frame(0.0, 1)
+    e._views = (CarView(id=1, x_lane=2.46, cy=409, rel_approach=0.0,
+                        d_min=0.3, age_ticks=10,
+                        box=(900.0, 180.0, 1279.5, 640.0)),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.RESCALED_ANCHOR, z_m=-2.43,
+        x_m=1.7, v_close_mps=3.0, t_meet_s=None, anchor_age_ms=200.0),)
+    e._reach_car_sources(0.0, road=road, origin=origin)   # 首拍换锚：先建基线
+    s = e._reach_car_sources(0.0, road=road, origin=origin)[0]
+    assert s.x_m == pytest.approx(1.7, abs=0.1)
+    assert s.x_unknown is False
+
+
+def test_out_of_road_pixel_witness_is_invalid():
+    """框没被裁但换到路心系已出路面：同样作废，保留米制。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._corridor = _corridor(-6.75, 6.75)
+    road, _, origin = e._road_frame(0.0, 1)
+    e._views = (CarView(id=1, x_lane=3.0, cy=409, rel_approach=0.0,
+                        d_min=0.3, age_ticks=10,
+                        box=(800.0, 180.0, 1100.0, 640.0)),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.RESCALED_ANCHOR, z_m=-2.43,
+        x_m=1.7, v_close_mps=3.0, t_meet_s=None, anchor_age_ms=200.0),)
+    e._reach_car_sources(0.0, road=road, origin=origin)   # 首拍换锚：先建基线
+    s = e._reach_car_sources(0.0, road=road, origin=origin)[0]
+    assert s.x_m == pytest.approx(1.7, abs=0.1)
+    assert s.x_unknown is False
+
+
+def test_metric_pixel_disagreement_marks_unknown_without_switching():
+    """两仪器差 >1 道：保留米制并标未知，不按尺子二选一。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._corridor = _corridor(-6.75, 6.75)
+    road, _, origin = e._road_frame(0.0, 1)
+    e._views = (CarView(id=1, x_lane=-1.0, cy=500, rel_approach=8.0,
+                        d_min=1.0, age_ticks=10,
+                        box=(400.0, 300.0, 700.0, 640.0)),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=5.0,
+        v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
+    e._reach_car_sources(0.0, road=road, origin=origin)   # 首拍换锚：先建基线
+    s = e._reach_car_sources(0.0, road=road, origin=origin)[0]
+    assert s.x_m == pytest.approx(5.0, abs=0.1), "米制不被尺子覆盖"
+    assert s.x_unknown is True
+
+
+def test_pass_x_unknown_gate_is_wired_into_selection_params():
+    """安全闸从配置接进选择参数（不再停在默认 False）。"""
+    e = _eng()
+    assert e.selector.p.pass_x_unknown_enabled is \
+        e.cfg.selection.pass_x_unknown_enabled
+
+
 def test_lane_ttc_map_keeps_earliest_per_lane():
     """车道到站时间表：同一道多车取最早；无到站时间/视界外的车不进表；
     道号按 ±0.5 道就近归属（路线层的时间面真源）。"""
@@ -688,38 +762,35 @@ def test_coin_group_far_time_is_later_than_near():
     assert sc.t_far_s > sc.t_miss_s
 
 
-def test_metric_x_ruler_disagreement_takes_urgent_reading():
-    """米制 x ↔ 尺子互证（20261103 雨 p2 车5 帧证）：0.6~1 道分歧 3 拍接管、
-    贴回 0.3 道 2 拍恢复；>1 道按重锚单拍接管（2026-11-09 车道归属，不走
-    EMA 慢拖）。"""
+def test_metric_x_ruler_disagreement_keeps_metric_and_flags_unknown():
+    """米制 x ↔ 尺子互证（2026-11-15 换约）：分歧不再按尺子接管——0.8 道
+    分歧保留米制且不标未知；>1 道保留米制并标横位未知，不二选一。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     e = _eng()
-    # 0.8 道分歧（0.6~1 带）：前 2 拍不接管，第 3 拍按尺子入账
     e._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
-    for _ in range(2):
-        e._metric_cars = (MetricCarState(
-            target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.8 * 3.5,
-            v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
-        src = e._reach_car_sources(0.0)
-        assert len(src) == 1
-        assert src[0].x_m == pytest.approx(-1.8 * 3.5, abs=0.4), "未满持续拍数不接管"
     e._metric_cars = (MetricCarState(
         target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.8 * 3.5,
         v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
-    src = e._reach_car_sources(0.0)
-    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), "持续分歧后按尺子读数入账"
-    # 贴回 1 拍不恢复，2 拍恢复
-    e._metric_cars = (MetricCarState(
-        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-1.05 * 3.5,
+    e._reach_car_sources(0.0)                 # 首拍换锚：先建基线
+    for _ in range(4):
+        src = e._reach_car_sources(0.0)
+        assert len(src) == 1
+        assert src[0].x_m == pytest.approx(-1.8 * 3.5, abs=0.4), "不按尺子接管"
+        assert src[0].x_unknown is False
+    e2 = _eng()
+    e2._views = (_cv(tid=1, x=-1.0, cy=620, rel=8.0),)
+    e2._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-2.5 * 3.5,
         v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
-    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4)
-    assert e._reach_car_sources(0.0)[0].x_m == pytest.approx(-1.05 * 3.5, abs=0.4), "贴回 2 拍恢复米制"
+    s = e2._reach_car_sources(0.0)[0]
+    assert s.x_m == pytest.approx(-2.5 * 3.5, abs=0.4), ">1 道仍保留米制"
+    assert s.x_unknown is True                             # 但标未知
 
 
-def test_metric_x_large_disagreement_reanchors_immediately():
-    """>1 道分歧单拍重锚（2026-11-09）：尺子在场且与米制差 >1 道时立即以
-    尺子入账，不等 3 拍、不被 EMA 拖住（oid67 远场错 1.7 道案）。"""
+def test_metric_x_large_disagreement_marks_unknown_without_reanchor():
+    """>1 道分歧单拍即标未知（2026-11-15）：不再按尺子重锚，也不再清
+    平滑基线——坏尺子（贴边裁切）会借重锚把车推到另一侧。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     e = _eng()
@@ -727,8 +798,9 @@ def test_metric_x_large_disagreement_reanchors_immediately():
     e._metric_cars = (MetricCarState(
         target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=-3.0 * 3.5,
         v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
-    src = e._reach_car_sources(0.0)
-    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.1), "首拍即重锚到尺子"
+    s = e._reach_car_sources(0.0)[0]
+    assert s.x_m == pytest.approx(-3.0 * 3.5, abs=0.2)
+    assert s.x_unknown is True
 
 
 def test_conflicting_ruler_and_line_keep_metric():
@@ -750,10 +822,9 @@ def test_conflicting_ruler_and_line_keep_metric():
         assert src[0].x_m == pytest.approx(-1.0, abs=0.2)
 
 
-def test_far_field_lane_line_median_veto():
-    """远场尺子缺席（x_lane=None）时车道线顶替互证（2026-11-09）：最近线
-    随框抖振荡，取中位去抖后与米制互证，>1 道两拍重锚。米制错 3 道、车道线
-    真值 ~1.2 夹一个 2.5 离群，中位收敛后按车道线入账。"""
+def test_far_field_lane_line_median_flags_unknown():
+    """远场尺子缺席（x_lane=None）时车道线只作互证（2026-11-15 换约）：
+    中位去抖后与米制差 >1 道＝标未知、保留米制，不再按车道线重锚。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     import dataclasses
@@ -769,16 +840,20 @@ def test_far_field_lane_line_median_veto():
         e._metric_cars = (MetricCarState(
             target_id=1, source=DistanceSource.ANCHOR, z_m=60.0, x_m=3.0 * 3.5,
             v_close_mps=20.0, t_meet_s=3.0, anchor_age_ms=50.0),)
-        last = e._reach_car_sources(0.0)[0].x_m
-    assert last == pytest.approx(1.2 * 3.5, abs=0.3), "中位去抖后按车道线重锚"
-    # 闸关（默认）：车道线不参与互证，远场无尺子时信米制
+        last = e._reach_car_sources(0.0)[0]
+    assert last.x_m == pytest.approx(3.0 * 3.5, abs=0.3), "保留米制"
+    assert last.x_unknown is True, "车道线互证分歧 >1 道：标未知"
+    # 闸关（默认）：车道线不参与互证，远场无尺子时信米制且不标未知
     e2 = _eng()
     e2._views = (CarView(id=1, x_lane=None, cy=380, rel_approach=8.0,
                          d_min=1.2, age_ticks=10, x_lane_line=1.2),)
     e2._metric_cars = (MetricCarState(
         target_id=1, source=DistanceSource.ANCHOR, z_m=60.0, x_m=3.0 * 3.5,
         v_close_mps=20.0, t_meet_s=3.0, anchor_age_ms=50.0),)
-    assert e2._reach_car_sources(0.0)[0].x_m == pytest.approx(3.0 * 3.5, abs=0.3)
+    e2._reach_car_sources(0.0)                # 首拍换锚：先建基线
+    s = e2._reach_car_sources(0.0)[0]
+    assert s.x_m == pytest.approx(3.0 * 3.5, abs=0.3)
+    assert s.x_unknown is False
 
 
 def test_metric_x_agreement_keeps_metric():
@@ -796,10 +871,9 @@ def test_metric_x_agreement_keeps_metric():
         assert src[0].x_m == pytest.approx(1.4 * 3.5, abs=0.4)
 
 
-def test_metric_x_ruler_wins_even_when_metric_urgent():
-    """持续分歧按尺子入账，不按"更急者"（20261103_125755 车51 二次帧证：
-    米制把 1.0 道的邻道车压成 0.14 道幻影——更急的恰是错的那个，邻道车
-    变同车道幻影＝过早躲避的发生器）。"""
+def test_metric_x_urgent_ruler_does_not_win():
+    """持续分歧不再按尺子入账（2026-11-15）：0.86 道分歧低于未知阈，
+    保留米制且不标未知；“更急的米制幻影不接管”这条旧结论仍成立。"""
     from maaracing_master.plugins.speedrush.tracking import (
         DistanceSource, MetricCarState)
     e = _eng()
@@ -810,8 +884,8 @@ def test_metric_x_ruler_wins_even_when_metric_urgent():
             v_close_mps=20.0, t_meet_s=0.75, anchor_age_ms=50.0),)
         src = e._reach_car_sources(0.0)
         assert len(src) == 1
-    assert src[0].x_m == pytest.approx(-1.0 * 3.5, abs=0.4), \
-        "更急的米制幻影不接管，尺子赢"
+    assert src[0].x_m == pytest.approx(-0.14 * 3.5, abs=0.4), "尺子不接管"
+    assert src[0].x_unknown is False
 
 
 def test_depth_grid_blocked_cluster_enters_as_pseudo_car():

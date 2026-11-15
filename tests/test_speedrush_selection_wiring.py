@@ -17,7 +17,8 @@ from maaracing_master.plugins.speedrush.corridor import (
     BandBoundary, Corridor, CorridorBand)
 from maaracing_master.plugins.speedrush.decision import DecisionEngine
 from maaracing_master.plugins.speedrush.tracking import (
-    CoinGroup, PerceptionHealth, TrackedTarget, WorldObservation)
+    CoinGroup, DistanceSource, MetricCarState, PerceptionHealth,
+    TrackedTarget, WorldObservation)
 
 LW = 3.5
 _CFG_BASE = _read_decision(DECISION_FILE)
@@ -322,6 +323,32 @@ def test_selection_debug_carries_identity_and_cone_slack():
     assert slack_sm == slack or slack_sm is not None
     coin = [o for o in eng.scene.objs if o.kind == "coin"][0]
     assert coin.id == 1 and coin.seen is True
+
+
+def test_car_src_trace_closes_lateral_chain():
+    """观测面接线：carsrc 同拍给出 m.x_m → off → xr → origin/cd → 选择层 x。
+
+    跨源横位缺口（1.255 m 类）必须能逐项对账；本列只读，不参与选择。
+    """
+    eng = DecisionEngine(CFG)
+    car = TrackedTarget(
+        id=7, kind="car", x_lane=0.6, x_sigma=0.1, cy=620,
+        w=100, h=80, conf=0.9, rel_approach=5.0,
+        first_seen_fid=1, last_seen_fid=1, validity_until_fid=9)
+    metric = MetricCarState(
+        target_id=7, source=DistanceSource.ANCHOR, z_m=10.0, x_m=2.0,
+        v_close_mps=0.0, t_meet_s=None, anchor_age_ms=100.0)
+    obs = replace(_obs(1, targets=(car,)), metric_cars=(metric,))
+    eng.update(obs, 0.05, executed_lane=0.0, corridor=_corridor())
+    rows = eng.car_src_trace
+    assert rows and rows[0]["id"] == 7
+    row = rows[0]
+    assert row["mx"] == pytest.approx(2.0)
+    assert row["off"] == pytest.approx(0.0)
+    assert row["xr"] == pytest.approx(2.0)
+    assert row["origin"] == pytest.approx(0.0)
+    assert row["cd"] == pytest.approx(0.0)
+    assert row["x"] == pytest.approx(row["xr"] - row["origin"] - row["cd"])
 
 
 def test_engine_exposes_openness_and_anchor():

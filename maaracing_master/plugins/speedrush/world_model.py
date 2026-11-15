@@ -93,12 +93,22 @@ KIND_BONUS = "bonus"
 # 观测几何；下缘是相机无关的边界（该行地面约在相机前 3m，像素粗仪器的固有
 # 偏置，只作无深度锚目标的粗回退）。
 IMAGE_H = 720
+IMAGE_W = 1280
 
 
 def x_lane_of(cx: float, cy: float, cal: Calib) -> float:
     """A1 归一尺子（保险杠机位，无自车项；公式见本模块 docstring）。公开供
     tracking 层复用——同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
     return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x
+
+
+def metric_x_of(cx: float, z_m: float, focal_px: float, vpx: float) -> float:
+    """米制横位（右正）：侧别只看框心相对消失点，纵深只取量级。
+
+    车头系 z 过零（并排/刚超过）时 z 会变负；带符号相乘会把同一辆车翻到
+    另一侧（20261115_131153 实测：z>0 的 318 帧横位与像素同侧 318/318，
+    z<0 的 7 帧 7/7 反向）。纵深取绝对值保住侧别，量级仍是该框对应的距离。"""
+    return (cx - vpx) * abs(z_m) / focal_px
 
 
 def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
