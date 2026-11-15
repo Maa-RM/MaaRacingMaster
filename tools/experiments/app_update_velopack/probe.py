@@ -776,11 +776,36 @@ def _formal_update_chain() -> dict:
     return ev
 
 
+def _webview_for_udf(udf_root: Path) -> list[dict]:
+    """抓命令行携带本隔离用户数据目录的浏览器进程（归属判定）——全机按进程名命中
+    会混入其它应用的浏览器实例，不能证明本次页面已渲染（评审回归）。"""
+    p = run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             "$p = $env:MAARM_UDF_PATTERN; "
+             "Get-CimInstance Win32_Process | "
+             "Where-Object { $_.Name -eq 'msedgewebview2.exe' -and "
+             "$_.CommandLine -like ('*' + $p + '*') } | "
+             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+            timeout=60, expected=None,
+            env_extra={"MAARM_UDF_PATTERN": str(udf_root)})
+    text = p.stdout.strip()
+    if not text:
+        return []
+    data = json.loads(text)
+    return [data] if isinstance(data, dict) else data
+
+
 def _dev_smoke_chain(args) -> dict:
-    """dev 启动回归烟囘（P1 非受管口径）：工作树 Debug 壳 + MaaRM_APP_ROOT 指向主线检出
+    """dev 启动回归烟测（P1 非受管口径）：工作树 Debug 壳 + MaaRM_APP_ROOT 指向主线检出
     （工作树无 .venv，借主线运行时与前端），用户数据隔离到临时目录。
-    取证：非受管解析决策行（环境变量覆盖值被采纳并记录）、侧车启动、WebView2 数据目录
-    落隔离用户数据根、exe 旁不再有数据目录、窗口人工目视确认。"""
+    验收断言（评审回归：记录式取证不构成通过判据）：
+    ①本次启动的侧车（启动前基线差分归属 PID，排除探针自身——探针与侧车共用主线解释器）
+      就绪并全程存活；
+    ②本壳的浏览器进程存在且命令行携带本隔离用户数据目录（归属判定，非全机名命中）；
+    ③非受管解析决策行落壳日志、界面隐私模式无回落、exe 旁无浏览器数据目录；
+    ④用户关窗（壳进程消失即视为关闭，此字段是推断不是人工确认记录）后，本次后端在
+      宽限窗内退出（OnClosed 优雅关停 / 输入管道 EOF 自退）。
+    页面桥业务请求强断言不做：RPC 通道由壳持有，黑盒无法注入；就绪代理 = 归属浏览器
+    进程 + 决策行 + 无错误日志，验证边界如实记录于此。"""
     shell = Path(args.shell)
     app_root = Path(args.dev_root)
     assert shell.is_file(), f"壳不存在: {shell}"
@@ -791,37 +816,63 @@ def _dev_smoke_chain(args) -> dict:
     userdata.mkdir()
     env = {"APPDATA": str(userdata), "MaaRM_APP_ROOT": str(app_root)}
     ev: dict = {"case": str(case), "shell": str(shell), "dev_root": str(app_root)}
-    # dev 模式侧车解释器来自主线检出 .venv（不在用例目录下），进程快照按该前缀过滤
     py_prefix = str(app_root / ".venv")
+    baseline_pids = {p["ProcessId"] for p in _process_snapshot(py_prefix)}
+    baseline_pids.add(os.getpid())  # 探针自身共用主线解释器前缀，必须排除
     subprocess.Popen([str(shell)], cwd=str(shell.parent),
                      env={**os.environ, **env}, creationflags=0x00000008)
+
+    def _new_python_pids() -> list[int]:
+        return [p["ProcessId"] for p in _process_snapshot(py_prefix)
+                if p["ProcessId"] not in baseline_pids]
+
+    def _sidecar_alive() -> bool:
+        return sidecar_pid in {p["ProcessId"] for p in _process_snapshot(py_prefix)}
+
     deadline = time.monotonic() + 120
+    sidecar_pid = None
     while time.monotonic() < deadline:
-        procs = _process_snapshot(py_prefix)
-        if any(p["Name"] == "python.exe" for p in procs):
+        new_pids = _new_python_pids()
+        if new_pids:
+            sidecar_pid = new_pids[0]
             break
         time.sleep(1)
     else:
-        raise AssertionError("侧车 120 秒内未启动")
-    ev["sidecar_pid"] = procs[0]["ProcessId"] if procs else None
+        raise AssertionError("侧车 120 秒内未启动（本次启动无新增解释器前缀进程）")
+    ev["sidecar_pid"] = sidecar_pid
     ev["sidecar_started"] = True
-    udf = userdata / "MaaRacingMaster" / "webview2" / "EBWebView"
+
+    ev["sidecar_alive_before_wait"] = _sidecar_alive()
+    assert ev["sidecar_alive_before_wait"], "本次侧车启动后即消失"
+
+    udf_root = userdata / "MaaRacingMaster" / "webview2"
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if udf.is_dir():
+        if _webview_for_udf(udf_root):
             break
         time.sleep(1)
-    ev["webview2_udf_in_userdata"] = udf.is_dir()
+    # InPrivate 不持久站点数据，EBWebView 是否出现只记录不作为渲染证据
+    ev["webview2_ebwebview_dir"] = (udf_root / "EBWebView").is_dir()
+    ev["webview_for_udf"] = bool(_webview_for_udf(udf_root))
+    assert ev["webview_for_udf"], "60 秒内未见携带本隔离用户数据目录的浏览器进程"
     ev["udf_exe_adjacent"] = (shell.parent / (SHELL_EXE + ".WebView2")).is_dir()
-    ev["shell_log_tail"] = _tail(userdata / "MaaRacingMaster" / "logs" / "shell.log", 2500)
-    ev["sidecar_alive_before_wait"] = any(
-        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
+    assert not ev["udf_exe_adjacent"], "壳 exe 旁不得出现浏览器数据目录"
+
+    shell_log = _tail(userdata / "MaaRacingMaster" / "logs" / "shell.log", 2500)
+    ev["shell_log_tail"] = shell_log
+    assert "[approot]" in shell_log, "壳日志缺非受管解析决策行"
+    assert "隐私模式初始化失败" not in shell_log, "界面隐私模式初始化回落（不应发生）"
+
     ev.update(_collect_live_evidence(shell.parent, userdata))
-    ev["sidecar_alive_after_evidence"] = any(
-        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
+    assert _sidecar_alive(), "取证阶段本次侧车消失"
+
     _wait_user_close_window(ev, case)
-    ev["sidecar_alive_after_close"] = any(
-        p["Name"] == "python.exe" for p in _process_snapshot(py_prefix))
+    # 关窗终局（评审回归：后端退出必须纳入验收判据，不因仍存活而静默通过）
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and _sidecar_alive():
+        time.sleep(1)
+    ev["sidecar_exit_after_close"] = not _sidecar_alive()
+    assert ev["sidecar_exit_after_close"], "窗口关闭后 30 秒内本次后端未退出"
     return ev
 
 
