@@ -418,12 +418,31 @@ internal static class Program
 
     /// <summary>造一个命令行含侧车模块标记的 python 子进程模拟遗留侧车，实测
     /// 清理路径的命中与耗时（命令行经 ntdll PEB 直读）。</summary>
+    /// <summary>递归复制目录（自包含解释器迁移用）；目标不存在时创建。</summary>
+    private static void CopyDirectory(string src, string dst)
+    {
+        Directory.CreateDirectory(dst);
+        foreach (var f in Directory.GetFiles(src))
+            File.Copy(f, Path.Combine(dst, Path.GetFileName(f)), overwrite: true);
+        foreach (var d in Directory.GetDirectories(src))
+            CopyDirectory(d, Path.Combine(dst, Path.GetFileName(d)));
+    }
+
     private static void CheckCleanup(string[] args)
     {
-        var python = GetOption(args, "--python") ?? "python";
-        // 应用根取解释器上两层目录（venv 场景：.venv/Scripts/python.exe → venv 父目录）
-        var fullPython = Path.GetFullPath(python);
-        var appRoot = Path.GetDirectoryName(Path.GetDirectoryName(fullPython))!;
+        // 隔离根（评审回归：扫描根由调用者解释器推导会对整棵目录真实清场——共享虚拟
+        // 环境下会波及另一会话的收尾后端）。探针自建唯一临时根并复制自包含解释器，
+        // 清场影响范围被构造性限制在本次新建的根内，与调用环境完全解耦。
+        var runtimeDir = GetOption(args, "--runtime-dir")
+            ?? throw new InvalidOperationException(
+                "cleanup 用例必须传 --runtime-dir <自包含 python 目录>（如主线 build/runtime-cache）");
+        if (!File.Exists(Path.Combine(runtimeDir, "python.exe")))
+            throw new InvalidOperationException($"--runtime-dir 缺 python.exe: {runtimeDir}");
+        var isolatedRoot = MakeTempDir("cleanup-root");
+        var pyDir = Path.Combine(isolatedRoot, "runtime", "python");
+        CopyDirectory(runtimeDir, pyDir);
+        var python = Path.Combine(pyDir, "python.exe");
+        var appRoot = Path.GetDirectoryName(Path.GetDirectoryName(python))!;
 
         // ① 孤儿命中例：中间进程 spawn 侧车标记子进程后退出——子进程成为孤儿（父已死），
         // 正是启动清场的清理对象。孙进程 stdout 落文件，父把孙 pid 落文件供探针追踪。

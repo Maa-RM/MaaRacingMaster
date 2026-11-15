@@ -54,7 +54,9 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- appr
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- hook
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- sidecar --python .venv/Scripts/python.exe
 # cleanup 的 --python-foreign 指一个检出根之外的解释器（锁跨检出不误杀；--python 的应用根 = 其解释器上两层）
-dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- cleanup --python .venv/Scripts/python.exe --python-foreign <另一检出>\.venv\Scripts\python.exe
+# cleanup 自建隔离根并复制 --runtime-dir 指定的自包含解释器（清场影响范围限定在
+# 本次新建的临时目录内，不波及调用环境；--python-foreign 为可选的跨检出反例）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- cleanup --runtime-dir build/runtime-cache --python-foreign <另一检出>\.venv\Scripts\python.exe --python-foreign <另一检出>\.venv\Scripts\python.exe
 # P2 宿主更新协调器（真实库 + 本地源 + 显式定位器，树外驱动；夹具显式传入，
 # 由 pack-formal 产出——live/feed 路径见 _out/formal-case.json）
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- update --root <formal-case 的 live> --feed <formal-feed 目录>
