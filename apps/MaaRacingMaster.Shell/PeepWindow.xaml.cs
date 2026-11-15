@@ -68,14 +68,36 @@ public sealed partial class PeepWindow : Window
     private async Task InitializeWebViewAsync(string peepHtmlPath)
     {
         var env = await WebView2Runtime.GetOrCreateAsync();
+        // 隐私模式与主窗统一（评审回归：控制选项是控制器级设置，共享环境不会自动
+        // 传播到另一窗口的控制器）——浏览数据不落盘对全部界面生效。
         try
         {
-            await web.EnsureCoreWebView2Async(env);
+            if (env is null)
+                throw new InvalidOperationException("自定义环境不可用");
+            var options = env.CreateCoreWebView2ControllerOptions();
+            options.IsInPrivateModeEnabled = true;
+            await web.EnsureCoreWebView2Async(env, options);
         }
         catch (Exception ex)
         {
-            ShellLog.Append($"[peep] 显式环境初始化失败，回落默认: {ex.Message}");
-            await web.EnsureCoreWebView2Async(null);
+            ShellLog.Append($"[peep] 隐私模式初始化失败，回落共享环境: {ex.Message}");
+            try
+            {
+                await web.EnsureCoreWebView2Async(env);
+            }
+            catch (Exception ex2)
+            {
+                ShellLog.Append($"[peep] 显式环境初始化失败，回落默认: {ex2.Message}");
+                try
+                {
+                    await web.EnsureCoreWebView2Async(null);
+                }
+                catch (Exception ex3)
+                {
+                    ShellLog.Append($"[peep] 默认初始化也失败，页面不可用: {ex3.Message}");
+                    return;
+                }
+            }
         }
         web.Source = new Uri(peepHtmlPath);
     }
