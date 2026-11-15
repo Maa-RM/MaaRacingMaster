@@ -183,7 +183,11 @@ def _discover_plugins() -> None:
             pkg_name = _ensure_user_plugin_pkg(entry)
         except Exception as exc:  # noqa: BLE001 —— 缺依赖等按插件隔离
             logger.log(f"[registry] 用户插件 {entry.name} 包初始化失败，跳过: {exc!r}", "WARNING")
-            sys.modules.pop(f"{_USER_PLUGIN_PACKAGE}.{entry.name}", None)  # 半成品模块不得残留
+            # 本次导入留下的所有模块（父包 + 已执行的子模块）都不得残留：
+            # 只清父包的话，同进程修复重扫会从缓存读到旧子模块内容
+            stale_prefix = f"{_USER_PLUGIN_PACKAGE}.{entry.name}"
+            for stale in [k for k in sys.modules if k == stale_prefix or k.startswith(stale_prefix + ".")]:
+                sys.modules.pop(stale, None)
             continue
         _register_entry(entry, pkg_name, "用户根")
 

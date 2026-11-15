@@ -166,6 +166,31 @@ def test_user_plugin_broken_init_isolated_and_cache_cleaned(rescan):
     assert "userplug_badinit" in reg.MODULE_REGISTRY
 
 
+def test_user_plugin_failed_init_clears_submodule_cache(rescan):
+    """包初始化先导入辅助模块再失败：失败插件本次导入的全部子模块都不得残留导入缓存
+    （只清父包不够——同进程修复重扫会读到旧辅助模块），修复后重扫装载新内容。"""
+    reg, user_root = rescan
+    d = _make_plugin(user_root, "userplug_submod")
+    (d / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (d / "__init__.py").write_text(
+        "from . import helper\nraise RuntimeError('导入辅助模块后炸')\n", encoding="utf-8")
+
+    reg._discover_plugins()  # 不抛异常冒泡
+    assert "userplug_submod" not in reg.MODULE_REGISTRY
+
+    pkg_prefix = f"{reg._USER_PLUGIN_PACKAGE}.userplug_submod"
+    leaked = [k for k in sys.modules if k == pkg_prefix or k.startswith(pkg_prefix + ".")]
+    assert leaked == [], f"失败插件的模块残留导入缓存: {leaked}"
+
+    # 用户修复插件（辅助模块内容变更）：同一进程重扫装载新内容，不读到旧缓存
+    (d / "__init__.py").write_text("from . import helper\n", encoding="utf-8")
+    (d / "helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+    reg._discover_plugins()
+    assert "userplug_submod" in reg.MODULE_REGISTRY
+    helper = sys.modules[f"{reg._USER_PLUGIN_PACKAGE}.userplug_submod.helper"]
+    assert helper.VALUE == 2, "重扫不得复用失败轮残留的旧辅助模块"
+
+
 def test_user_root_missing_is_fine(rescan):
     """用户数据目录还没有插件根（首次启动常态）：扫描不报错，内置照常。"""
     reg, user_root = rescan
