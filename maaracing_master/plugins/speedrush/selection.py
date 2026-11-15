@@ -1364,6 +1364,13 @@ class LayeredSelector:
                     and c.kind == "car"), None)
         if car is None or car.t is None:
             return raw
+        if car.x_unknown and p.pass_x_unknown_enabled:
+            # 本拍发布横位不可信（2026-11-15）：近场按「车心 + 相对偏移」重算，
+            # 等于把坏读数直接搬进目标——上一拍已由 _hold_target 保住的有效目标
+            # 会在这里被覆盖。14:59 局 p2 实录：同一辆车横位从 −3.2m 跳到
+            # −16.4m，目标随即从路内跳到 −4.2 道，而当拍路缘只有 ±1.9 道。
+            # 坏读数拍既不重算也不刷新 _near_rel，沿用上游保护留下的目标。
+            return raw
         if car.t >= _NEAR_HOLD_S:
             self._near_rel = {raw.hit_oid: raw.target_x_m - car.x}
             return raw

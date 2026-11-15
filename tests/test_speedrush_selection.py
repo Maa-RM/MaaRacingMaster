@@ -1227,6 +1227,46 @@ def test_unknown_car_does_not_veto_held_target():
         assert r2.target_x_m == pytest.approx(x0, abs=0.1)
 
 
+def test_near_hold_ignores_unknown_reading_when_meet_time_valid():
+    """坏读数 + 相遇时间有效 + 已进近场：近场重算不得覆盖保持目标。
+
+    20261115_145900 p2：命中车横位从 −3.2m 跳到 −16.4m，x_unknown 已置位，
+    _hold_target 已保住上一有效目标；但近场保持按「当前车心 + 相对偏移」
+    重算，把目标从路内搬到 −4.2 道，而当拍路缘只有 ±1.9 道。旧用例把 t 也
+    设成 None，近场分支提前退出，测不到这条路径。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True,
+                             pass_x_unknown_enabled=True))
+    rep = sel.update(_road(), [], [Obj("car", 0.3 * LW, 2.0, oid=7)], [],
+                     0.0, 0.05)
+    assert rep.why == "pass"
+    x0 = rep.target_x_m
+    bad = sel.update(_road(), [],
+                     [Obj("car", -16.4, 0.3, oid=7, near=True,
+                          x_unknown=True)], [], 0.0, 0.05)
+    assert bad.why == "pass"
+    assert bad.target_x_m == pytest.approx(x0, abs=0.05)
+    road = _road()
+    assert road.left_m <= bad.target_x_m <= road.right_m
+    # 恢复可信后近场保持照常：目标随当前车心重算，相对偏移沿用坏读数之前的
+    good = sel.update(_road(), [],
+                      [Obj("car", 2.0, 0.3, oid=7, near=True)], [], 0.0, 0.05)
+    assert good.target_x_m == pytest.approx(2.0 + (x0 - 0.3 * LW), abs=0.1)
+
+
+def test_near_hold_unknown_gate_off_follows_reading():
+    """闸关时逐位回今天：坏读数照旧进近场重算（确认修复不越过开关）。"""
+    sel = LayeredSelector(_p(pass_latch_enabled=True,
+                             pass_x_unknown_enabled=False))
+    rep = sel.update(_road(), [], [Obj("car", 0.3 * LW, 2.0, oid=7)], [],
+                     0.0, 0.05)
+    x0 = rep.target_x_m
+    bad = sel.update(_road(), [],
+                     [Obj("car", -16.4, 0.3, oid=7, near=True,
+                          x_unknown=True)], [], 0.0, 0.05)
+    assert bad.target_x_m != pytest.approx(x0, abs=0.05)
+    assert abs(bad.target_x_m - (-16.4)) < 4.0   # 目标被坏读数拖到车心附近
+
+
 def test_graze_latch_freezes_target_on_unknown_reading():
     """命中车读数未知时保持闩不刷新目标：坏 x 不能把保持线拖到车体上。
 
