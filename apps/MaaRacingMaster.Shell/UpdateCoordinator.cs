@@ -30,16 +30,16 @@ public sealed record UpdateSnapshot(
 }
 
 /// <summary>
-/// 宿主更新协调器（升级适配 P2）：应用级 SDK 适配的唯一宿主。
+/// 宿主更新协调器：应用级 SDK 适配的唯一宿主。
 /// 限制为固定来源、完整目标版本、下载任务与安装意图——不建通用插件更新服务，
-/// 前端不传任何来源/路径/目标版本组合（P3 界面只发固定意图）。
+/// 前端只发固定意图，不传任何来源/路径/目标版本组合。
 ///
 /// 状态机：unavailable（非受管/降级）→ idle →(check)→ available|up_to_date
 /// →(download)→ ready →(apply)→ preparing → applying。
-/// 提交闸门（P2 契约）：apply 必须先经 prepareGate（后端冻结 + 有界退出确认），
+/// 提交闸门：apply 必须先经 prepareGate（后端冻结 + 有界退出确认），
 /// 闸门拒绝或异常时状态回 ready 并带原因，解冻由闸门实现负责；全部确认后才
 /// 交给更新器（WaitExitThenApplyUpdates：等本进程退出后整树替换并重启）。
-/// 来源未配置（P4 接发布索引前）诚实返回不可用，不伪造检查结果。
+/// 来源未配置时诚实返回不可用，不伪造检查结果。
 /// </summary>
 public sealed class UpdateCoordinator
 {
@@ -99,7 +99,7 @@ public sealed class UpdateCoordinator
     /// <summary>检查更新：仅在 idle/available/up_to_date/ready 允许（刷新目标）。
     /// 多源按序尝试：第一个「可达且给出结论」的源胜出并锁定（下载/提交绑定同一已验证
     /// 来源）；全部不可达/失败时诚实报错并可重试——不换目标，不把空/坏镜像误报为
-    /// 「已是最新」（P4 契约：来源故障不得换目标或误报已可安装）。</summary>
+    /// 「已是最新」（来源故障不得换目标，也不得误报已可安装）。</summary>
     public async Task<UpdateSnapshot> CheckAsync()
     {
         lock (_gate)

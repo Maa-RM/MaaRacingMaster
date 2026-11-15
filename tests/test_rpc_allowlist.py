@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RPC 信任边界一致性回归锁（P2 起宿主与业务分流）。
+"""RPC 信任边界一致性回归锁（宿主动作与业务方法分流）。
 
 sidecar.py HANDLERS（Python 业务白名单）、RpcBridge.cs AllowedMethods（C# 前置闸）、
 SidecarService 公开 handler、前端 maarm.call 字面量多处必须同集合演进：

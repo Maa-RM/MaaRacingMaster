@@ -27,7 +27,7 @@ public static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // 更新器钩子必须最早处理（P0 定案的「最小注入」形态）：钩子进程（--veloapp-* 参数）
+        // 更新器钩子必须最早处理（最小注入形态，壳只在入口调用库的钩子路由）：钩子进程（--veloapp-* 参数）
         // 在库内自退出，绝不进入单实例/窗口/侧车逻辑；普通启动无钩子参数时立即返回直通。
         // 只此一处接更新器运行时，下载/提交等更新动作不进壳（由树外助手驱动，P2 起接线）。
         VelopackApp.Build().SetAutoApplyOnStartup(false).Run();

@@ -71,7 +71,7 @@ public sealed partial class MainWindow : Window
         ShellLog.Append("[update] 提交已进入替换相位，壳计划内关闭");
     }
 
-    /// <summary>提交闸门（升级适配 P2 契约）：后端原子冻结 → 有界退出确认。
+    /// <summary>提交闸门：后端原子冻结 → 有界退出确认。
     /// 任一步失败负责解冻并返回原因（协调器据此放弃提交、状态回 ready）；
     /// 全部通过返回 null（可交更新器）。解冻失败只留日志：后端已断开时冻结随进程消亡。</summary>
     private async Task<string?> PrepareForUpdateAsync()
@@ -220,7 +220,7 @@ public sealed partial class MainWindow : Window
             (int)(MinWindowWidth * startupScale),
             (int)(MinWindowHeight * startupScale)));
 
-        // 宿主更新协调器（升级适配 P2）：与后端生命周期解耦（后端不可用不影响更新状态查询）。
+        // 宿主更新协调器：与后端生命周期解耦（后端不可用不影响更新状态查询）。
         // 来源固定 = 安装树内随包配置（发行时写入，用户不可改、前端不可传；缺失 = 未配置，
         // 检查诚实返回不可用）；提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并
         // 放弃提交（见 PrepareForUpdateAsync）；提交进入替换相位后由壳做计划内关窗。
@@ -294,7 +294,7 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// WebView2 显式环境初始化：用户数据目录指定到用户数据根（升级适配 P1，升级不触碰前端存储），
+    /// WebView2 显式环境初始化：用户数据目录指定到用户数据根（升级不触碰前端存储），
     /// 环境就绪后才加载前端页面。自定义环境不可用时回落默认初始化（源码/ZIP 兜底，见 WebView2Runtime）。
     /// 必须先 Ensure 再设 Source：先设 Source 会触发控件用默认环境自动初始化，显式环境就接不上了。
     /// </summary>

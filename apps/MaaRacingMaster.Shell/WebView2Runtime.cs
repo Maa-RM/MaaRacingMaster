@@ -7,7 +7,7 @@ using Microsoft.Web.WebView2.Core;
 namespace MaaRacingMaster.Shell;
 
 /// <summary>
-/// WebView2 共享运行时：用户数据目录显式指定到用户数据根（升级适配 P1 门禁）。
+/// WebView2 共享运行时：用户数据目录显式指定到用户数据根（升级不触碰前端存储）。
 /// 不指定时 WebView2 默认落在 exe 旁（{exe}.exe.WebView2）——受管升级整体替换内容树，
 /// 前端存储随升级丢失；显式指定到安装树之外后升级不再触碰。
 /// 主窗与悬浮窗共用同一环境实例（同享浏览器进程与存储分区）。

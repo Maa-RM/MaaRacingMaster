@@ -11,9 +11,10 @@ using Velopack.Locators;
 namespace MaaRacingMaster.Shell.ContractProbe;
 
 /// <summary>
-/// 壳合同探针（P1 门禁「先建可失败的验证」）：对正式源码的路径解析/更新钩子/侧车退出
-/// 行为做可机检断言。全过 → 退出码 0；任何失败逐条打印并退出码 1。
+/// 壳合同探针：对正式源码的路径解析/更新钩子/侧车退出/更新协调器行为做可机检断言。
+/// 全过 → 退出码 0；任何失败逐条打印并退出码 1。
 /// 用法：dotnet run --project tools/ShellContractProbe -- approot|hook|sidecar
+///   update 用例需显式夹具：-- --root <受管安装树> --feed <更新源目录>
 /// </summary>
 internal static class Program
 {
@@ -93,9 +94,10 @@ internal static class Program
     // ---------- 宿主更新协调器合同 ----------
 
     /// <summary>协调器合同（真实库 + 本地源 + 显式定位器，树外驱动）：
-    /// ①非受管降级 ②来源未配置诚实不可用 ③受管检查→下载→就绪→重复下载幂等
-    /// →非下载态取消被拒→提交闸门拒绝回 ready 且带原因→revision 单调。
-    /// 用法可带 --root &lt;live 树&gt; --feed &lt;更新源目录&gt;（缺省用最新 formal-case）。</summary>
+    /// ①非受管降级 ②来源未配置诚实不可用 ③受管检查→下载启动即回包→状态查询观察到
+    /// 就绪→重复下载幂等→非下载态取消被拒→提交闸门拒绝回 ready 且带原因→revision 单调
+    /// ④镜像回退检查 ⑤下载失败镜像同目标回退 ⑥交接失败回 ready 且不排关窗。
+    /// 夹具显式传入：--root &lt;受管安装树&gt; --feed &lt;更新源目录&gt;。</summary>
     private static async Task CheckUpdateCoordinator(string[] args)
     {
         var (live, feed) = ResolveUpdateFixture(args);
@@ -251,26 +253,14 @@ internal static class Program
 
     private static (string Live, string Feed) ResolveUpdateFixture(string[] args)
     {
+        // 夹具显式传入（正式工具不依赖任何实验输出目录）：--root 受管安装树，
+        // --feed 更新源目录。隔离夹具的准备属于验证环境，不进正式工程。
         var root = GetOption(args, "--root");
         var feed = GetOption(args, "--feed");
-        if (root is not null && feed is not null)
-            return (root, feed);
-        // 缺省取最新 formal-case（prepare.py pack-formal 的产物）：从探针目录向上找仓库根
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        string? caseJson = null;
-        while (dir is not null && caseJson is null)
-        {
-            var outDir = Path.Combine(dir.FullName,
-                "tools", "experiments", "app_update_velopack", "_out");
-            if (Directory.Exists(outDir))
-                caseJson = Directory.GetFiles(outDir, "formal-case.json")
-                    .OrderByDescending(File.GetLastWriteTime).FirstOrDefault();
-            dir = dir.Parent;
-        }
-        if (caseJson is null)
-            throw new InvalidOperationException("找不到 formal-case.json：先运行 prepare.py pack-formal");
-        var info = System.Text.Json.JsonDocument.Parse(File.ReadAllText(caseJson)).RootElement;
-        return (info.GetProperty("live").GetString()!, info.GetProperty("feed").GetString()!);
+        if (root is null || feed is null)
+            throw new InvalidOperationException(
+                "update 用例必须显式给夹具：--root <受管安装树> --feed <更新源目录>");
+        return (root, feed);
     }
 
     // ---------- 启动清场（遗留侧车扫描与终止） ----------

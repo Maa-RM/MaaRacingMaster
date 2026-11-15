@@ -710,7 +710,7 @@ class SidecarService:
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
         self._remote_urls: dict[str, str] = {}
         self._closed = False
-        # 升级准备冻结（P2）：prepare_update 原子置位，start 据此拒绝新任务。
+        # 升级准备冻结：prepare_update 原子置位，start 据此拒绝新任务。
         # 进程内状态，不持久化——宿主提交失败时由宿主解冻；宿主中途崩溃则随
         # 进程消亡，下个会话自然是未冻结状态（已关闭后的恢复行为）。
         self._update_freeze = False
@@ -2377,7 +2377,7 @@ class SidecarService:
         logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
         return (True, {"scope": scope, "cleared": cleared}, None)
 
-    # ---------- 升级准备冻结（升级适配 P2） ----------
+    # ---------- 升级准备冻结 ----------
 
     def prepare_update(self, params):
         """升级准备第一步：原子「空闲检查＋冻结新任务」。

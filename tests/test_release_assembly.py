@@ -265,7 +265,7 @@ def test_pruned_cached_runtime_passes_real_behavior_smoke(tmp_path):
     print("\n".join(line for line in result.stdout.splitlines() if line.startswith("[smoke]")))
 
 
-# ---------- 受管模式（升级适配 P4）----------
+# ---------- 受管模式 ----------
 
 def _publish_fixture(publish: Path) -> None:
     """预置 GUI 发布产物与缓存指纹（指纹段对空源码树算出的固定值），使 -SkipPublish 跳过真实编译。"""

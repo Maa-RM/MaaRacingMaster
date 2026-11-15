@@ -27,7 +27,7 @@ public sealed class RpcErrorException : Exception
 }
 
 /// <summary>侧车关停结果：ExitCode=退出码（未知为 null）；ConfirmedExit=关停流程结束时
-/// 已确认进程真正退出。更新协调（P2 起）以 ConfirmedExit 判断能否进入提交，不允许把
+/// 已确认进程真正退出。更新协调以 ConfirmedExit 判断能否进入提交，不允许把
 /// 「流程走完」误当「进程已退」。</summary>
 public sealed record SidecarShutdownResult(int? ExitCode, bool ConfirmedExit);
 
