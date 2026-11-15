@@ -17,10 +17,10 @@ REPO = HERE.parents[2]
 OUT = HERE / "_out"
 VERSION = "1.2.161"
 SDK_SHA256 = "d57275692b299751a12ee3e18283b5f7fe3e55339f96b1623345da095dc484ed"
-# 本机主线检出内 assemble.ps1 已组装的运行时（embed python + packages + 生产 _pth），
-# 实验复用免下载 pip；可用环境变量覆盖。仅实验使用，不入正式流程。
+# 已组装运行时缓存（embed python + packages + 生产 _pth），默认取当前检出的
+# build/runtime-cache，跨检出复用时用环境变量覆盖。仅实验使用，不入正式流程。
 RUNTIME_SOURCE = Path(os.environ.get(
-    "MAARM_RUNTIME_SOURCE", "D:/maaracing_assistant/build/runtime-cache"))
+    "MAARM_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache")))
 
 # 生产同款发布口径：assemble.ps1 §2 用 -r win-x64 --self-contained true（.NET 运行时随包）。
 MANAGED_PUBLISH_ARGS = ["-r", "win-x64", "--self-contained", "true", "-p:Version=0.1.0"]

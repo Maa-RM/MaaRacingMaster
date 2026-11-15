@@ -17,13 +17,15 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
 OUT = HERE / "_out"
 EXE = OUT / "publish" / "MaaRM.UpdateProbe.exe"
 
 SHELL_EXE = "MaaRacingMaster.Shell.exe"
 # 提权子进程用的随包真实 Python：商店版解释器（WindowsApps）无法提权启动。
+# 运行时缓存默认取当前检出的 build/runtime-cache，跨检出复用时用环境变量覆盖。
 RUNTIME_PYTHON = Path(os.environ.get(
-    "MAARM_RUNTIME_SOURCE", "D:/maaracing_assistant/build/runtime-cache")) / "python.exe"
+    "MAARM_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache"))) / "python.exe"
 
 
 def run(args: list[str], *, timeout: int = 45, expected: int | None = 0,
@@ -636,7 +638,8 @@ def _managed_launch_chain(poison: bool, via_stub: bool) -> dict:
     # exp1（dbg_bin）已由上一轮人工确认：探针父进程无害，日常 Debug 构建渲染正常。
     # 本轮只测自包含发布构建（已插仪器）：短路径 → 深路径。
     real_ud = Path(os.environ["APPDATA"]) / "MaaRacingMaster"
-    short_root = Path("D:/mrt_short_test")
+    # 短路径对照夹具：落在检出所在盘符根（短路径语义与检出位置无关，不写死盘符）
+    short_root = Path(REPO.anchor) / "mrt_short_test"
     if short_root.exists():
         shutil.rmtree(short_root)
     shutil.copytree(OUT / "managed-stage", short_root)
