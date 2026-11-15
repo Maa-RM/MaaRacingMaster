@@ -1370,6 +1370,10 @@ class DecisionEngine:
         for m in self._metric_cars:
             v = by_id.get(m.target_id)
             bridged = getattr(m, "bridged", False)
+            # 本车横位未知标记：只由米制/像素互证置位；像素回退分支也要有值
+            # （20261115 实机：无纵深米制车走像素分支时未初始化，控制链整段
+            # 停控）。
+            x_unknown_hint = False
             if m.source is DistanceSource.BOX_SIZE:
                 # 无锚框高粗距离（2026-10-23）：只用于近/远与选道，横向仍走
                 # 像素尺子、到站时间弃权（~40% 尾部误差不能进 TTC）；z_m 不喂
@@ -1401,7 +1405,6 @@ class DecisionEngine:
                 continue
             elif m.z_m is not None:
                 x = m.x_m
-                x_unknown_hint = False
                 if x is None and v is not None:
                     # 无同帧焦距：横向回退像素尺子；坏证人（贴边/路外）不得
                     # 入账。近车仍按占本道处理，远车诚实弃权。

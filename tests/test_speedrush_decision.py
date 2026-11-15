@@ -718,6 +718,21 @@ def test_pass_x_unknown_gate_is_wired_into_selection_params():
         e.cfg.selection.pass_x_unknown_enabled
 
 
+def test_metric_car_without_depth_uses_pixel_branch_without_raise():
+    """无纵深的米制车走像素回退分支：横位未知标记必须有初值，否则控制链
+    整段停控（20261115_135050 实机 UnboundLocalError：只会滑向墙边）。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-0.8, cy=500, rel=6.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.UNKNOWN, z_m=None, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    src = e._reach_car_sources(0.0)
+    assert len(src) == 1
+    assert src[0].x_m == pytest.approx(-0.8 * e.cal.lane_w_m, abs=0.1)
+
+
 def test_lane_ttc_map_keeps_earliest_per_lane():
     """车道到站时间表：同一道多车取最早；无到站时间/视界外的车不进表；
     道号按 ±0.5 道就近归属（路线层的时间面真源）。"""
