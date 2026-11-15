@@ -202,8 +202,11 @@ def build_scene(*, fid: int, ego_m: float, road: RoadFrame,
         if age > value_age_ms:
             continue
         x = c.x_m - origin
-        if c.z_m is not None:
-            center = road.center_at(c.z_m - cam_z_datum_m)
+        cd_z = getattr(c, "cd_z_m", None)
+        if cd_z is None:
+            cd_z = getattr(c, "z_m", None)
+        if cd_z is not None:
+            center = road.center_at(cd_z - cam_z_datum_m)
             if center is not None:
                 x -= center - (0.0 if center0 is None else center0)
         z_scene = None if c.z_m is None else c.z_m - cam_z_datum_m

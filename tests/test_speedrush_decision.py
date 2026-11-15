@@ -733,6 +733,84 @@ def test_metric_car_without_depth_uses_pixel_branch_without_raise():
     assert src[0].x_m == pytest.approx(-0.8 * e.cal.lane_w_m, abs=0.1)
 
 
+def test_road_center_rate_limits_cd_jump():
+    """路心补偿逐拍限速：分带中心整拍跳 8m 时，cd 只能走一步；
+    全局平移（两带同移）不产生 cd 变化；超时无更新则直接追平。"""
+    from maaracing_master.plugins.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    e = _eng()
+
+    def corr(far_x: float = 0.0, shift: float = 0.0) -> Corridor:
+        bands = (
+            CorridorBand(3.0, 6.0,
+                         BandBoundary(-6.0 + shift, "measured", 1.0),
+                         BandBoundary(6.0 + shift, "measured", 1.0)),
+            CorridorBand(6.0, 9.0,
+                         BandBoundary(-6.0 + far_x + shift, "measured", 1.0),
+                         BandBoundary(6.0 + far_x + shift, "measured", 1.0)))
+        return Corridor(bands, 0.0, 12.0, "pair", "ok")
+
+    step = e.cfg.selection.center_stable_step_lane * e.cal.lane_w_m
+    e._corridor = corr()
+    road, _, _ = e._road_frame(0.0, 1)
+    assert road.center_at(7.5) - road.center_at(0.0) == pytest.approx(0.0)
+    # 远带中心整拍跳 8m：cd 只允许一步
+    e._corridor = corr(far_x=8.0)
+    road, _, _ = e._road_frame(0.0, 2)
+    assert road.center_at(7.5) - road.center_at(0.0) == pytest.approx(
+        step, abs=1e-6)
+    # 连续同读数：追到原始 8m
+    for fid in range(3, 13):
+        road, _, _ = e._road_frame(0.0, fid)
+    assert road.center_at(7.5) - road.center_at(0.0) == pytest.approx(
+        8.0, abs=1e-6)
+    # 全局平移不改变 cd（gauge 在 cd 里抵消）
+    e._corridor = corr(far_x=8.0, shift=4.0)
+    road, _, _ = e._road_frame(0.0, 14)
+    assert road.center_at(7.5) - road.center_at(0.0) == pytest.approx(
+        8.0, abs=1e-6)
+    # 超时无更新：直接追平原始读数（这里回到 0）
+    e._corridor = corr()
+    road, _, _ = e._road_frame(0.0, 40)
+    assert road.center_at(7.5) - road.center_at(0.0) == pytest.approx(0.0)
+
+
+def test_car_source_center_z_bridges_metric_to_pixel():
+    """同一辆车从米制锚切到像素回退时，cd 用的纵深不丢（不再从 4m 掉到 0）。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=0.5, cy=500, rel=6.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.ANCHOR, z_m=15.0, x_m=1.0,
+        v_close_mps=10.0, t_meet_s=1.5, anchor_age_ms=50.0),)
+    s = e._reach_car_sources(0.0)[0]
+    assert s.center_z_m == pytest.approx(15.0)
+    assert s.cd_z_m == pytest.approx(15.0)
+    # 同一 id 切到无纵深：走像素回退，但 cd 纵深沿用上一拍
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.UNKNOWN, z_m=None, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    s = e._reach_car_sources(0.0)[0]
+    assert s.z_m is None
+    assert s.center_z_m == pytest.approx(15.0)
+    assert s.cd_z_m == pytest.approx(15.0)
+
+
+def test_box_size_car_carries_center_z():
+    """BOX_SIZE 粗距离只供 cd 纵深，不进精确 z/安全时序。"""
+    from maaracing_master.plugins.speedrush.tracking import (
+        DistanceSource, MetricCarState)
+    e = _eng()
+    e._views = (_cv(tid=1, x=-0.4, cy=620, rel=8.0),)
+    e._metric_cars = (MetricCarState(
+        target_id=1, source=DistanceSource.BOX_SIZE, z_m=8.0, x_m=None,
+        v_close_mps=None, t_meet_s=None, anchor_age_ms=None),)
+    s = e._reach_car_sources(0.0)[0]
+    assert s.z_m is None
+    assert s.center_z_m == pytest.approx(8.0)
+
+
 def test_lane_ttc_map_keeps_earliest_per_lane():
     """车道到站时间表：同一道多车取最早；无到站时间/视界外的车不进表；
     道号按 ±0.5 道就近归属（路线层的时间面真源）。"""

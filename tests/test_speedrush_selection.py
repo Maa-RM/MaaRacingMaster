@@ -388,14 +388,8 @@ def test_pass_latch_keeps_original_side():
     assert rep.target_x_m < car.x          # 仍保持左侧，不横穿目标车
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "近场目标冻结按绝对横位保存：命中车横移到自车与冻结目标之间后，"
-    "目标仍在车的远侧，路径横穿车体（20261115_110153 p2 车 56："
-    "选择层目标 0.28、车心 0.015、自车 −0.722；碰撞记录 x_m=1.31 m 是"
-    "自车系，目标在自车系约 3.5 m——0.001 道 gap 与 −0.30 m 净空不是同一帧，"
-    "真正的判据是目标必须在车的自车侧）。修复后删标记"))
 def test_near_hold_keeps_target_on_near_side_when_target_moves():
-    """近场保持不能把目标留在命中车的远侧，否则横移路径必经车体。"""
+    """近场保持冻结相对侧别/间隙：车横移时目标必须留在自车同侧且 gap≥净空。"""
     p = _p(pass_hold_enabled=True,
            pass_graze_adjacent_enabled=True,
            pass_latch_enabled=True,
@@ -995,17 +989,20 @@ def _sel_car(oid, x, t, safe=True):
     return Obj("car", x, t, oid=oid, safe=safe)
 
 
-def test_near_field_target_hold_rejects_x_jump():
-    """近场目标保持：命中车进入最后 0.6s 后横位读数单拍跳 0.8 道，
-    贴边目标保持进入近场前的值，不跟着把方向盘甩到另一侧。"""
-    sel = LayeredSelector(_p(pass_no_surrender_enabled=True))
+def test_near_field_target_hold_keeps_near_side_on_x_jump():
+    """近场车横位跳 0.3 道并越过自车：目标换到自车侧且 gap≥净空，不留在远侧。"""
+    p = _p(pass_no_surrender_enabled=True)
+    clear = ((p.ego_half_lane + p.car_half_lane) * LW
+             + p.collision_margin_m)
+    sel = LayeredSelector(p)
     road = _road()
     rep = sel.update(road, [], [_sel_car(11, 0.0, 1.2)], [], 0.0, 0.05)
     assert rep.why == "pass"
-    base = rep.target_x_m
     rep = sel.update(road, [], [_sel_car(11, 0.3 * LW, 0.4)], [], 0.0, 0.05)
     assert rep.why == "pass"
-    assert rep.target_x_m == pytest.approx(base, abs=0.02)
+    assert abs(rep.target_x_m - 0.3 * LW) >= clear - 1e-6
+    # 目标必须在自车（0）所在的一侧：车已到 +0.3 道，目标应在其左侧。
+    assert (rep.target_x_m - 0.3 * LW) * (0.3 * LW - 0.0) <= 1e-9
 
 
 def test_graze_hold_survives_time_reading_dropout():

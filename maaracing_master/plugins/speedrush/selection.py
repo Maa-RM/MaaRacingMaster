@@ -59,8 +59,13 @@ class RoadFrame:
     # 约束（哪边更开），显式消费（coarse.far_direction 开关））
     far_hint_lane: float | None = None   # 远场方向（走廊层共享滤波结果，
     # 道，右正）：消费端只读，不再各自重算/去抖
+    # 稳定中点（2026-11-15）：(纵深中点, 稳定路心) 序列；None=直接用 bands
+    # 的中点。只用于 center_at（cd 与回中），不改变左右缘/宽度/夹取。
+    center_mids: tuple[tuple[float, float], ...] | None = None
 
     def _pairs(self) -> list[tuple[float, float]]:
+        if self.center_mids is not None:
+            return list(self.center_mids)
         return [(0.5 * (b.z0 + b.z1), 0.5 * (b.left + b.right))
                 for b in self.bands
                 if b.left is not None and b.right is not None]
@@ -190,6 +195,15 @@ class CarSource:
     t_overtake_s: float | None = None
     bridged: bool = False
     z_m: float | None = None
+    # 路心补偿用的纵深（2026-11-15）：粗距离/像素回退车也带一个纵深估计，
+    # 避免同一辆车跨源切换时 cd 从 4.37m 掉到 0。None=回退 z_m；安全/时序
+    # 仍只认 z_m，本字段只供 center_at。
+    center_z_m: float | None = None
+
+    @property
+    def cd_z_m(self) -> float | None:
+        """center_at 的纵深：优先路心补偿专用值，缺省回退精确 z。"""
+        return self.center_z_m if self.center_z_m is not None else self.z_m
     # 接近速度（米/秒，>0=在收拢）：并排段估时的原料（通过时窗判据）。
     # None=仪器缺位（像素回退/网格伪车/线成员）——时窗判据对它逐位回今天。
     v_close_mps: float | None = None
@@ -1209,7 +1223,7 @@ class LayeredSelector:
         self._hold_why = "graze"         # 保持闩续住的是 pass 还是 graze
         self._hold_side: float | None = None  # pass 保持原选侧（+1 右 / −1 左）
         self._side_oid: int | None = None  # 侧别锁定的对象身份（换车才重选侧）
-        self._near_target: dict[int, float] = {}  # 近场保持：车 id → 入近场前目标
+        self._near_rel: dict[int, float] = {}  # 近场保持：车 id → 相对车心偏移（米）
         self._tgt_hold: dict[int, float] = {}     # 贴边目标保持：车 id → 目标
         self._read_prev: dict[int, tuple] = {}    # 车 id → (x, z) 上一有效读数
         self._read_miss: dict[int, int] = {}      # 车 id → 连续缺席拍数
@@ -1337,12 +1351,13 @@ class LayeredSelector:
     def _near_hold(self, raw: SelectionReport, road: RoadFrame,
                    cars: Sequence[Obj], coins: Sequence[Obj],
                    ego: float, p: SelectionParams) -> SelectionReport:
-        """近场目标保持：命中车进入最后 ``_NEAR_HOLD_S`` 时冻结目标。
+        """近场目标保持：命中车进入最后 ``_NEAR_HOLD_S`` 时冻结**相对侧别与间隙**。
 
-        近场（车头 0.6s 内）框底被自车/画面截断，锚点横位读数单拍跳
-        0.3~0.7 道（真车上限 ~0.04 道/拍），贴边目标跟着跳会把杆从原侧
-        甩到另一侧。冻结进入近场前最后一次有效目标；更远时正常刷新。
-        只改目标，不改安全/占用判据。"""
+        旧口径冻结绝对横位：车在最后 0.6s 继续横移，目标会落进车体
+        （20261115_135757 id9：目标 0.007 道，左侧大车横移到车身上）。
+        新口径保存「目标相对车心的偏移」，每拍用车的当前横位重算；偏移
+        取 max(|offset|, 净空)。车横穿到自车另一侧时目标换到自车侧，
+        间隙仍不小于净空；近场不再把绝对横位冻在车的远侧。"""
         if raw.why not in ("pass", "graze") or raw.hit_oid is None:
             return raw
         car = next((c for c in cars if c.oid == raw.hit_oid
@@ -1350,15 +1365,25 @@ class LayeredSelector:
         if car is None or car.t is None:
             return raw
         if car.t >= _NEAR_HOLD_S:
-            self._near_target = {raw.hit_oid: raw.target_x_m}
+            self._near_rel = {raw.hit_oid: raw.target_x_m - car.x}
             return raw
-        held = self._near_target.get(raw.hit_oid)
-        if held is None or abs(held - raw.target_x_m) <= 1e-9:
+        off = self._near_rel.get(raw.hit_oid)
+        if off is None:
+            return raw
+        clear = _pass_clear_m(car, p)
+        side = 1.0 if off >= 0.0 else -1.0
+        if (ego - car.x) * side < 0.0:
+            # 车已横穿到自车另一侧：目标跟着换到自车侧，间隙仍不小于净空。
+            side = 1.0 if ego >= car.x else -1.0
+            off = side * max(abs(off), clear)
+            self._near_rel[raw.hit_oid] = off
+        x = car.x + side * max(abs(off), clear)
+        if abs(x - raw.target_x_m) <= 1e-9:
             return raw
         t_wp = raw.waypoints[-1].t if raw.waypoints else 0.0
         return SelectionReport(
-            raw.layer, _waypoints(2, held, t_wp, cars, coins, road, ego, p),
-            held, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,
+            raw.layer, _waypoints(2, x, t_wp, cars, coins, road, ego, p),
+            x, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,
             req_live=raw.req_live, req_oid=raw.req_oid,
             req_action=raw.req_action, hit_oid=raw.hit_oid)
 

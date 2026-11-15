@@ -244,6 +244,8 @@
     "reward_aligned_lane": 0.2,
     "wall_margin_lane": 0.35,
     "center_lookahead_m": 0.0,
+    "center_stable_step_lane": 0.3,
+    "center_stable_hold_s": 0.5,
     "preposition_enabled": true,
     "preposition_horizon_s": 10.0,
     "preposition_max_lane": 2.5,

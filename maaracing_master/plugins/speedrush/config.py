@@ -63,6 +63,12 @@ class Selection:
     reward_aligned_lane: float = 0.2
     wall_margin_lane: float = 0.35
     center_lookahead_m: float = 0.0
+    # 路心稳定（2026-11-15）：分带中心（center_at 的插值点）逐拍限速。
+    # 车源横位 = xr - origin - cd，cd 由分带中点差得出；3m 带中点相邻拍
+    # 实测可跳 0.5~1.25 道，等于把车整拍拽到另一侧。限速只作用于 cd 的
+    # 变化，不改左右缘/宽度/夹取；超过 hold_s 没有更新则直接追上原始读数。
+    center_stable_step_lane: float = 0.3
+    center_stable_hold_s: float = 0.5
     preposition_enabled: bool = True
     preposition_horizon_s: float = 6.0
     preposition_max_lane: float = 2.5
@@ -1113,6 +1119,10 @@ def _read_decision(path: Path) -> DecisionConfig:
             center_lookahead_m=_num_def(
                 d, "selection", "center_lookahead_m", 0.0, lo=0,
                 lo_open=False),
+            center_stable_step_lane=_num_def(
+                d, "selection", "center_stable_step_lane", 0.3, lo=0),
+            center_stable_hold_s=_num_def(
+                d, "selection", "center_stable_hold_s", 0.5, lo=0),
             preposition_enabled=_bool(
                 d, "selection", "preposition_enabled", default=True),
             preposition_horizon_s=_num_def(

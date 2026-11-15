@@ -658,6 +658,11 @@ class DecisionEngine:
         # （真值 ~0.6s），车「看得见却一直不当回事」，直到估算塌缩已经
         # 来不及。纵深 z 本身是逐拍可用的，用它的斜率做第二份到站时间。
         self._car_z_hist: dict[int, list[tuple[int, float]]] = {}
+        # 路心稳定（2026-11-15）：分带纵深中点 → 上一拍的 cd（相对 z=0
+        # 路心的位移，米）。cd 是选择层车横位的一项，3m 带中点相邻拍实测
+        # 跳 0.5~1.25 道；这里按拍限速，超过 hold_s 无更新则直接追平。
+        self._center_cd: dict[float, float] = {}
+        self._center_fid: int | None = None
         # 远场车道线去抖窗（2026-11-09）：id → 最近若干拍 x_lane_line。
         # 尺子远场被 min_denom 门控成 None，车道线（lane_pos_nearest）在场但
         # 最近线随框抖振荡（实测 1.1↔2.5 道交替），取中位作互证目标。实测
@@ -717,6 +722,8 @@ class DecisionEngine:
         self._car_zf.clear()
         self._car_za.clear()
         self._car_z_hist.clear()
+        self._center_cd.clear()
+        self._center_fid = None
         self._car_ll_hist.clear()
         self._car_x_hold.clear()
         self._coin_t_mem.clear()
@@ -1179,6 +1186,7 @@ class DecisionEngine:
                 out.append(CarSource(
                     x_m=x_m + off, t_meet_s=z_mid / v,
                     t_overtake_s=None, bridged=False, z_m=z_mid,
+                    center_z_m=z_mid,
                     age_ms=0.0, src="grid", near=z_mid <= 16.0,
                     half_w_m=min(0.5 * w_m, 1.2),
                     id=-3000 - k * 10 - ci, seen=True, safety_ok=True))
@@ -1272,7 +1280,8 @@ class DecisionEngine:
                   seen: bool | None = None,
                   v_close: float | None = None,
                   z_box_bridged: bool = False,
-                  x_unknown_hint: bool = False) -> None:
+                  x_unknown_hint: bool = False,
+                  center_z_m: float | None = None) -> None:
             if x is None or x != x:
                 return
             x_unknown = False
@@ -1360,6 +1369,8 @@ class DecisionEngine:
             out.append(CarSource(x_m=xr, t_meet_s=tm,
                                  t_overtake_s=t_ov, bridged=bridged,
                                  z_m=z_m, age_ms=age_ms, src=src,
+                                 center_z_m=(center_z_m if center_z_m is not None
+                                             else z_m),
                                  near=near, half_w_m=half_w_m,
                                  id=tid, seen=seen, safety_ok=safe,
                                  v_close_mps=v_close,
@@ -1395,12 +1406,14 @@ class DecisionEngine:
                     enter(0.0, None, None, z_m=None, age_ms=0.0,
                           src="metric_coarse", tid=m.target_id,
                           near=True, half_w_m=_half_w(v),
+                          center_z_m=m.z_m,
                           seen=(v.last_seen_fid == self._fid))
                     continue
                 seen.add(m.target_id)
                 enter(xl * lane_w, None, None, z_m=None, age_ms=0.0,
                       src="metric_coarse", tid=m.target_id,
                       near=near, half_w_m=_half_w(v),
+                      center_z_m=m.z_m,
                       seen=(v.last_seen_fid == self._fid))
                 continue
             elif m.z_m is not None:
@@ -1468,6 +1481,7 @@ class DecisionEngine:
                   half_w_m=_half_w(v), v_close=m.v_close_mps,
                   z_box_bridged=bool(getattr(m, "z_box_bridged", False)),
                   x_unknown_hint=x_unknown_hint,
+                  center_z_m=self._car_zf.get(m.target_id),
                   seen=(None if v is None else v.last_seen_fid == self._fid))
         for vid, v in by_id.items():
             if vid in seen:
@@ -1497,6 +1511,7 @@ class DecisionEngine:
             enter(None if x is None else x * lane_w, tm,
                   age_ms=age_ms, tid=vid, near=near,
                   half_w_m=_half_w(v),
+                  center_z_m=self._car_zf.get(vid),
                   seen=(v.last_seen_fid == self._fid))
         for k in [k for k in self._car_xf if k not in seen]:
             self._car_xf.pop(k, None)
@@ -1530,6 +1545,7 @@ class DecisionEngine:
                       self.scorer.car_t_meet_s(b.rel_approach, b.cy),
                       age_ms=self._age_ms(b.last_seen_fid), src="line",
                       tid=b.id, near=False, half_w_m=None,
+                      center_z_m=self._car_zf.get(b.id),
                       seen=(b.last_seen_fid == self._fid))
         # 栅格伪车补源放在所有语义车源之后：启用条件要看完整车表，放在前面
         # 只能看到框视图与远场源。视觉模型换近场复训权重后，有车流场景的全盲
@@ -1724,8 +1740,38 @@ class DecisionEngine:
         width = (right0 - left0) if right0 > left0 else (
             self._corridor.width_lane * lane_w
             if self._corridor.width_lane else None)
+        # 路心稳定：center_at 的插值点按拍限速。cd 是分带中点相对 z=0
+        # 路心的位移，gauge 平移（origin/executed）在 cd 里抵消，所以只对
+        # cd 的变化限速；超时无更新直接追平原始读数。
+        center0 = _at(0.0, lambda b, k: 0.5 * (b[2] + b[3])) - origin
+        step = self.cfg.selection.center_stable_step_lane * lane_w
+        fps = self._fps if self._fps and self._fps > 0 else 20.0
+        hold_ticks = max(1, int(round(
+            self.cfg.selection.center_stable_hold_s * fps)))
+        expired = self._center_fid is None or fid - self._center_fid > hold_ticks
+        mids: list[tuple[float, float]] = []
+        cd_next: dict[float, float] = {}
+        for b in bands:
+            if b.left is None or b.right is None:
+                continue
+            zmid = 0.5 * (b.z0 + b.z1)
+            cd_raw = 0.5 * (b.left + b.right) - center0
+            prev = self._center_cd.get(zmid)
+            if prev is None or expired:
+                cd = cd_raw
+            else:
+                d = cd_raw - prev
+                if step > 0.0 and abs(d) > step:
+                    d = step if d > 0.0 else -step
+                cd = prev + d
+            cd_next[zmid] = cd
+            mids.append((zmid, center0 + cd))
+        self._center_cd = cd_next
+        self._center_fid = fid
+        center_mids = tuple(mids) if mids else None
         road = RoadFrame(bands, width, left0, right0, True, coarse_bands,
-                         far_hint_lane=self._corridor.far_hint_lane)
+                         far_hint_lane=self._corridor.far_hint_lane,
+                         center_mids=center_mids)
         return road, shift - origin, origin
 
     def _smooth_score(self, objs: list, ego_m: float) -> list:
@@ -1824,8 +1870,8 @@ class DecisionEngine:
                        seen=bool(b.seen))
                    for b in reward_sel]
         cars = [Obj("car",
-                    c.x_m - origin - (_center_delta(road, c.z_m - CAM_Z_DATUM_M)
-                                      if c.z_m is not None else 0.0),
+                    c.x_m - origin - (_center_delta(road, c.cd_z_m - CAM_Z_DATUM_M)
+                                      if c.cd_z_m is not None else 0.0),
                     c.t_meet_s,
                     oid=-1 if c.id is None else c.id,
                     safe=c.safety_ok,
@@ -1843,8 +1889,8 @@ class DecisionEngine:
         car_src_rows = []
         for c, o in zip(car_src, cars):
             m = metric_by_id.get(c.id)
-            cd = (_center_delta(road, c.z_m - CAM_Z_DATUM_M)
-                  if c.z_m is not None else 0.0)
+            cd = (_center_delta(road, c.cd_z_m - CAM_Z_DATUM_M)
+                  if c.cd_z_m is not None else 0.0)
             car_src_rows.append({
                 "id": c.id,
                 "mx": None if m is None or m.x_m is None
@@ -1860,6 +1906,7 @@ class DecisionEngine:
                 "cd": round(cd, 3),
                 "x": round(o.x, 3),
                 "z": None if c.z_m is None else round(c.z_m, 3),
+                "cz": None if c.cd_z_m is None else round(c.cd_z_m, 3),
                 "t": None if c.t_meet_s is None else round(c.t_meet_s, 3),
                 "src": c.src,
                 "safe": bool(c.safety_ok),
