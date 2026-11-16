@@ -8,6 +8,18 @@ status: active
 > 不是参数真源（归 `resources/policy/decision.json`）。
 > **信源等级**：L4（过程与证据）——结论兑现到 home 后本目录退役，过程留 git。
 
+> **目标正确性基线入口**：口径见 [BASELINE_SPEC.md](BASELINE_SPEC.md)，可执行定义见
+> `metrics.py`，结果由 `recompute_report.py` 生成到 `RECOMPUTE_REPORT.md`，
+> `reconcile.py` 做同口径对账与方案锚点校验。旧口径探针（truth / calibrate /
+> verify_recomputed / route_intent）从未入库，已删除、不可恢复；其口径缺陷记在 BASELINE_SPEC 的腐化清单里。
+>
+> 对账命令：`reconcile.py --trace <原始记录> --pads-dir <手柄目录> --plan <基线方案> --plan-strict`；
+> 全量逐项零差异、锚点全部可解析、基线方案无裸小数才算通过；机制自检见 `test_governance.py`。
+
+基线报告中的描述性统计不构成驾驶行为通过线。反转按信号分别报告，人工局程序命令为反事实；几何主导项不作根因归属，唯一邻近候选不作身份正确。资格与可达性判据尚未完成，当前优先按用途核对引用缺席事件。
+
+复算命令与同口径对账方式见 [基线规格](BASELINE_SPEC.md) 的复算入口；原始记录需另行提供且指纹匹配。报告同源 JSON 保留引用缺席与几何事件明细，手算边界检查使用 `test_metrics.py`，不接入生产测试。
+
 ## 问题
 
 2026-11-07 人工局对照（`20261107_203433` 两段）暴露两个行为差：
