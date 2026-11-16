@@ -61,7 +61,8 @@ class TrackObj:
     safety_ok: bool
     safety_why: str
     v_close_mps: float | None = None   # 锚点链闭速（m/s，正=接近）
-    v_lat_lane_s: float | None = None  # 车流视图横速（道/s，右正）
+    v_lat_lane_tick: float | None = None  # 车流视图横速（**道/tick**，右正；帧间差分 EMA，
+                                          # 不做秒换算——与 traffic.CarView.v_lat 同单位）
     # 车道线插值成员（车道线定道，闸关恒 None；None=闸关/弃权）
     x_lane_line: float | None = None
 
@@ -169,7 +170,7 @@ class ObjectTable:
                 kind=t.kind, id=t.id, x_lane=x_lane, x_m=x_m,
                 cy=t.cy, z_m=z_m, rel_approach=t.rel_approach,
                 v_close_mps=None if metric is None else metric.v_close_mps,
-                v_lat_lane_s=None if view is None else view.v_lat,
+                v_lat_lane_tick=None if view is None else view.v_lat,
                 x_sigma=getattr(t, "x_sigma", 0.0),
                 x_lane_line=getattr(t, "x_lane_line", None),
                 half_w_m=half_w, conf=t.conf, src=src,
@@ -221,7 +222,7 @@ class ObjectTable:
                      if e.kind == KIND_CAR and e.safety_ok)
 
     def as_trace(self) -> dict:
-        """紧凑观测面：轨道逐条 13 元组，币组逐组 8 元组。"""
+        """紧凑观测面：轨道逐条 14 元组，币组逐组 8 元组。"""
         return {
             "n": len(self._tracks),
             "nsafe": sum(1 for e in self._tracks.values()
@@ -233,7 +234,7 @@ class ObjectTable:
                    round(e.age_ms, 1), e.seen, e.safety_ok, e.safety_why,
                    e.src, round(e.src_age_ms, 1),
                    None if e.v_close_mps is None else round(e.v_close_mps, 2),
-                   None if e.v_lat_lane_s is None else round(e.v_lat_lane_s, 3),
+                   None if e.v_lat_lane_tick is None else round(e.v_lat_lane_tick, 3),
                    None if e.x_lane_line is None else round(e.x_lane_line, 3)]
                   for e in self.tracks],
             "g": [[g.group_id, round(g.x_center, 3), g.cy_max,
