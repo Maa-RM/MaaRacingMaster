@@ -66,7 +66,14 @@ FOCAL_HI = 1400.0
 FOCAL_EMA = 0.25          # 逐帧焦距轻平滑（场景内容会让估计帧间抖 ±10%）
 # GPU 槽位（2026-11-13）：provider=dml 时不抢锁，等控制拍放锁后的槽位窗口开工；
 # 超窗就放弃本帧（latest-only），把锁让给深度。窗口从拍起点（感知放锁）算起。
+# 目标节拍制（2026-11-16）：提交时登记本帧归属的节拍（拍首提交=下一声放锁
+# 节拍，正常提交=当前节拍）；worker 按目标三分支——未响则有限等待（截止按
+# 提交时刻）、已响且窗内开跑、已被越过则弃帧并交接该过去节拍。超时且目标
+# 未到时只弃帧、**不交接未来节拍**（SLOTS 完成序号只增不减，提前标记会让
+# 该节拍真正到来时线/深交接被跳过）。
 LANE_SLOT_S = 0.030       # 线观测槽窗：拍后 30ms 内必须开跑
+LANE_WAIT_NOTE_S = 0.045  # 拍首提交等目标节拍的截止（按提交时刻计）：生产等
+                          # ~9ms（感知检测段），45ms 兜底感知停摆；超时按超窗弃帧
 SLOT_FRESH_S = 1.0        # 最近一拍在 1s 内 = 控制拍在跑，才按槽位排队
 # 线几何可用的相机高带（v5 2026-11-12）：输入已从「深度平面 c」换成车道线
 # 反解值，与视角守卫同源。带要覆盖两种合法机位（保险杠 ≈1.25、追尾 ≈1.9），
@@ -1472,6 +1479,9 @@ class LaneObsWorker:
         self.busy_skips = 0
         self.slot_skips = 0
         self.hold_ms = 0.0
+        self.slot_wait_ms = 0.0    # 本帧等目标节拍的耗时（快照单列，不进 ms）
+        self._slot_target: int | None = None   # 当前任务的目标节拍（push 登记）
+        self._slot_t_push: float = 0.0         # 当前任务的提交时刻（截止起点）
         self.cam_h_fb = 0
         # 节拍记账：真实检测频率=det_n/时长，不受推送节流口径误导
         self.det_n = 0
@@ -1563,13 +1573,21 @@ class LaneObsWorker:
              focal: float | None = None,
              anchor: float | None = None,
              anchor_strict: bool = False,
-             frame_ts_ns: int | None = None) -> None:
+             frame_ts_ns: int | None = None,
+             pre_note: bool = False) -> None:
         """入队一帧；``focal`` 是同帧深度读数的全幅焦距（线角用），``anchor``
         是同帧新鲜深度路心（None=复用/缺供），``anchor_strict`` 表示该锚
         同时看清两侧且中心稳定（线道号整道复核的唯一准入）。
 
         两者都随帧一起入队，保证线观测用的绝对参照/角度尺度与这条帧同拍——
-        不拿后一帧的深度去锚或定标前一帧的线。"""
+        不拿后一帧的深度去锚或定标前一帧的线。锚由调用方在提交前过完全部
+        门控（新证据闸+共识闸）；拍首提交形态下锚允许滞后一拍（提交时本拍
+        深度尚未产出，喂上一拍过门值），滞后健康度由消费端锚计数审计。
+
+        ``pre_note``：拍首提交形态（提交发生在本拍感知放锁之前）——目标节拍
+        登记为**下一声**放锁节拍；缺省 False=正常提交（提交发生在放锁之后），
+        目标=当前节拍，槽窗语义与历史一致。目标节拍在此处（发布给 worker
+        之前）登记，不由 worker 出队时推算，避免线程调度先后改变归属。"""
         if self._sess is None:
             return
         now = time.perf_counter()
@@ -1577,6 +1595,8 @@ class LaneObsWorker:
             return
         self._last_t = now
         self.push_n += 1
+        seq_now, _ = dml_lock.TICK_BEAT.snapshot()
+        target = seq_now + 1 if pre_note else seq_now
         used_h, fb = _lane_cam_h(cam_h)
         if fb:
             self.cam_h_fb += 1
@@ -1589,7 +1609,7 @@ class LaneObsWorker:
             self._q.put_nowait((rgb, int(fid), used_h,
                                 float(v_lat), float(dt), bool(fid_jump),
                                 None if focal is None else float(focal),
-                                frame_ts_ns, now,
+                                frame_ts_ns, now, int(target),
                                 None if anchor is None else float(anchor),
                                 bool(anchor_strict)))
         except queue.Full:
@@ -1650,11 +1670,17 @@ class LaneObsWorker:
         while not self._stop.is_set():
             try:
                 (rgb, fid, cam_h, v_lat, dt, jump, focal, frame_ts_ns,
-                 t_push, anchor, a_strict) = \
+                 t_push, target, anchor, a_strict) = \
                     self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
             self._set_focal(focal)
+            # 目标节拍与提交截止随任务走（_run 读；单 worker 线程，无竞争）。
+            # 直调 _run 的测试路径不经 _loop：_slot_target 保持 None，_run
+            # 内回退「现拍快照」语义（与历史行为一致）。
+            self._slot_target = target
+            self._slot_t_push = t_push
+            self.slot_wait_ms = 0.0
             t0 = time.perf_counter()
             try:
                 self._n += 1
@@ -1727,6 +1753,9 @@ class LaneObsWorker:
                 round(max(0.0, (t_push - frame_ts_ns / 1e9) * 1000.0), 1),
                 "pred": is_pred,
                 # 本帧推理与后处理耗时；内容龄另从采集源戳计算。
+                # slot_wait_ms：本帧等目标节拍开窗的耗时（等窗在 t0 前完成，
+                # 不进 ms——两列相加才是提交→发布的完整墙钟）。
+                "slot_wait_ms": round(self.slot_wait_ms, 1),
                 "ms": round(max(0.0, (t_done - t0) * 1000.0), 1),
                 "n_lines": res["n_lines"],
                 "x": None if res["x"] is None else round(res["x"], 3),
@@ -1765,13 +1794,46 @@ class LaneObsWorker:
         return self._yv
 
     def _run(self, rgb: np.ndarray):
-        """DML 按槽位排队：等控制拍放锁后开工，超窗让给深度（latest-only）。"""
+        """DML 按目标节拍排队：目标未响有限等、已响且窗内开跑、过期弃帧交接。
+
+        目标节拍由 push 在提交时登记（拍首提交=下一声放锁节拍，正常提交=
+        当前节拍）。等待截止按**提交时刻**起算（排队耗时计入预算，不在出队
+        时重新计时）；等待循环响应停机信号。超时且目标未到时只弃帧、不交接
+        未来节拍（SLOTS 完成序号只增不减，提前标记会让该节拍真正到来时
+        交接被跳过）；目标已被后续节拍越过则弃帧并交接该**过去**节拍。
+        ``_slot_target is None``（直调 _run 的测试/兼容路径）回退历史语义：
+        按当前快照的拍号与槽窗判断，超窗弃帧交接。"""
         assert self._sess is not None   # 线程只在 session 建好后才起
-        seq, t_beat = dml_lock.TICK_BEAT.snapshot()
         inp = self._sess.get_inputs()[0].name
         feed = {inp: _letterbox(rgb)}
         if not self._use_dml:
             return _prob_from_out(self._sess.run(None, feed))
+        if self._slot_target is None:
+            seq, t_beat = dml_lock.TICK_BEAT.snapshot()
+            seq_now = seq
+        else:
+            seq = self._slot_target
+            seq_now, t_beat = dml_lock.TICK_BEAT.snapshot()
+            active0 = time.perf_counter() - t_beat <= SLOT_FRESH_S
+            if active0 and seq_now < seq:
+                # 目标节拍未响：有限等待（截止=提交时刻+LANE_WAIT_NOTE_S）
+                deadline = self._slot_t_push + LANE_WAIT_NOTE_S
+                t_wait0 = time.perf_counter()
+                while (seq_now < seq and not self._stop.is_set()
+                       and time.perf_counter() < deadline):
+                    dml_lock.TICK_BEAT.wait_newer(
+                        seq_now, min(deadline - time.perf_counter(), 0.005))
+                    seq_now, t_beat = dml_lock.TICK_BEAT.snapshot()
+                self.slot_wait_ms = round(
+                    max(0.0, (time.perf_counter() - t_wait0) * 1000.0), 1)
+                if seq_now < seq:
+                    self.slot_skips += 1        # 超时且目标未到：不交接未来节拍
+                    return None
+            if seq_now > seq:
+                # 目标已被越过：弃帧并交接该过去节拍（mark_done 单调，安全）
+                self.slot_skips += 1
+                dml_lock.SLOTS.mark_done(seq)
+                return None
         active = time.perf_counter() - t_beat <= SLOT_FRESH_S
 
         def slot_open():
@@ -1779,21 +1841,27 @@ class LaneObsWorker:
                     and time.perf_counter() - t_beat <= LANE_SLOT_S
                     and not dml_lock.SLOTS.wait_done(seq, 0.0))
 
+        # 交接守卫：只登记**已到达**节拍的完成（目标未到时绝不提前标记——
+        # SLOTS 完成序号只增不减，提前标记会让该节拍真正到来时交接被跳过）。
+        def handoff():
+            if seq_now >= seq:
+                dml_lock.SLOTS.mark_done(seq)
+
         if active and not slot_open():
             self.slot_skips += 1
-            dml_lock.SLOTS.mark_done(seq)
+            handoff()
             return None
         # 活跃控制期不等锁：避免等到下一控制拍才拿锁执行旧帧。
         acquired = (dml_lock.LOCK.acquire(blocking=False) if active else
                     dml_lock.LOCK.acquire(timeout=0.02))
         if not acquired:
             self.busy_skips += 1
-            dml_lock.SLOTS.mark_done(seq)
+            handoff()
             return None
         if active and not slot_open():
             self.slot_skips += 1
             dml_lock.LOCK.release()
-            dml_lock.SLOTS.mark_done(seq)
+            handoff()
             return None
         dml_lock.RUN_WATCH.enter("lane")
         try:
@@ -1803,7 +1871,7 @@ class LaneObsWorker:
         finally:
             dml_lock.RUN_WATCH.exit()
             dml_lock.LOCK.release()
-            dml_lock.SLOTS.mark_done(seq)
+            handoff()
         return _prob_from_out(out)
 
     def _infer(self, rgb: np.ndarray, cam_h: float,

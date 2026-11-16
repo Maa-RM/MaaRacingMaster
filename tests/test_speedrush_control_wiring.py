@@ -97,11 +97,10 @@ def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_de
                                                          with_depth):
     m = _module()
     chain = m._build_control_chain()
-    pushed = []
+    latest_calls = []
     tracker_update = chain["tracker"].update
 
     def track(*args, **kwargs):
-        assert pushed, "线推理必须先入队，物体跟踪与其后台并行"
         assert kwargs["frame_age_ms"] == pytest.approx(20)
         return tracker_update(*args, **kwargs)
 
@@ -110,7 +109,8 @@ def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_de
             "det_age_ms": 100, "state": "RELOCK", "usable": False,
             "lines": [], "n_locked": 0, "x": None}
     chain["lane_obs"] = SimpleNamespace(
-        latest=lambda: lane, push=lambda *a, **k: pushed.append(k))
+        latest=lambda: (latest_calls.append(1), lane)[1],
+        push=lambda *a, **k: pytest.fail("tick 内不得再提交线帧——拍首提交已前移"))
     chain["depth_geo"].last_frame_ts_ns = 850_000_000
     chain["depth_geo"].last_fid = 6
     if with_depth:
@@ -120,13 +120,106 @@ def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_de
     m._control_tick(chain, StubPad(), None, per, 10, 980_000_000, 10, 1,
                     cap_ts={"pick": 0.990, "det": 1.0})
     assert chain["disabled"] is False
+    # 两段式读取（2026-11-16）：早读供深度 y_v/视角守卫，晚读供控制链。
+    assert len(latest_calls) == 2
     ages = chain["trace"][-1]["obs_age"]
     assert ages["at_ns"] == 1_000_000_000
     assert ages["yolo"] == {"fid": 10, "ts_ns": 980_000_000, "age_ms": 20.0}
     assert ages["lane"] == {"fid": 8, "ts_ns": 900_000_000, "age_ms": 100.0}
     # 深度此拍没有供数，不能拿槽中上次的元数据冒充在消费。
     assert ages["depth"]["age_ms"] == (150 if with_depth else None)
-    assert pushed[-1]["frame_ts_ns"] == 980_000_000
+
+
+def test_lane_anchor_ctx_gated_and_overwritten():
+    """锚缓存只出「过全部门后真正会提交」的值：无新证据/闸冻结显式写空，
+    复用拍的原始候选不透传（否则旧证据冒充新锚）。"""
+    ego = SimpleNamespace(depth_anchor_ego=-1.5, anchor_strict=True)
+
+    # 新证据 + 共识放行 → 过门值连同严格资格一起缓存
+    assert smod._lane_anchor_ctx(ego, True, True) == (-1.5, True)
+    # 无新证据（复用拍）：depth_anchor_ego 即使非空也不透传
+    assert smod._lane_anchor_ctx(ego, False, True) == (None, False)
+    # 共识闸冻结：不给锚
+    assert smod._lane_anchor_ctx(ego, True, False) == (None, False)
+    # 候选本身为空：显式 (None, False)
+    ego2 = SimpleNamespace(depth_anchor_ego=None, anchor_strict=False)
+    assert smod._lane_anchor_ctx(ego2, True, True) == (None, False)
+    # 严格资格随锚走：候选非空但严格=False → (值, False)
+    ego3 = SimpleNamespace(depth_anchor_ego=-0.8, anchor_strict=False)
+    assert smod._lane_anchor_ctx(ego3, True, True) == (-0.8, False)
+
+
+def test_first_beat_push_kwargs_from_cache(monkeypatch, _stub_depth):
+    """拍首提交（_lane_first_push）：pre_note=True、锚取过门缓存、dt/fid_jump
+    按 chain 状态复算且不改状态。"""
+    m = _module()
+    chain = m._build_control_chain()
+    pushed = []
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: None,
+        push=lambda *a, **k: pushed.append((a, k)))
+    chain["lane_anchor_ctx"] = (-1.5, True)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+
+    # 首拍：prev_ts/last_fid 均无 → dt=拍长、fid_jump=False
+    # （位置参数序：rgb, fid, cam_h, v_lat, dt, fid_jump）
+    m._lane_first_push(chain, object(), 100, 5_000_000_000)
+    a, kw = pushed[-1]
+    assert kw["pre_note"] is True
+    assert kw["anchor"] == -1.5 and kw["anchor_strict"] is True
+    assert kw["frame_ts_ns"] == 5_000_000_000
+    assert a[4] == pytest.approx(smod.DRIVE_TICK_S)
+    assert a[5] is False
+
+    # 40ms 帧间隔 + 帧号跳 3：dt=0.04、fid_jump=True（与 tick 内口径一致）
+    chain["prev_ts"] = 4_960_000_000
+    chain["last_fid"] = 97
+    m._lane_first_push(chain, object(), 100, 5_000_000_000)
+    a, kw = pushed[-1]
+    assert a[4] == pytest.approx(0.04)
+    assert a[5] is True
+    # 复算不改状态：prev_ts/last_fid 原样（tick 前奏随后自行更新）
+    assert chain["prev_ts"] == 4_960_000_000 and chain["last_fid"] == 97
+
+    # 无缓存（首拍）→ anchor=None：线冷启与历史一致
+    chain["lane_anchor_ctx"] = (None, False)
+    m._lane_first_push(chain, object(), 101, 5_050_000_000)
+    assert pushed[-1][1]["anchor"] is None
+
+
+def test_lane_read_wait_compensates_object_age(monkeypatch, _stub_depth):
+    """线读取等待段必须计入物体帧龄：等待发生在控制入口之后，沿用入口
+    时刻会低估帧龄（线更新鲜、物体被当得比实际更新鲜）。"""
+    m = _module()
+    chain = m._build_control_chain()
+    clock = [0.970]
+
+    def fake_sleep(s):
+        clock[0] += s               # 睡眠推进假时钟（等待段可观测）
+
+    tracker_update = chain["tracker"].update
+    seen = []
+
+    def track(*args, **kwargs):
+        seen.append(kwargs["frame_age_ms"])
+        return tracker_update(*args, **kwargs)
+
+    monkeypatch.setattr(chain["tracker"], "update", track)
+    lane = {"fid": 8, "det_fid": 8, "det_ts_ns": 900_000_000,
+            "det_age_ms": 100, "state": "RELOCK", "usable": False,
+            "lines": [], "n_locked": 0, "x": None}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: lane, push=lambda *a, **k: None)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(smod.time, "sleep", fake_sleep)
+    monkeypatch.setattr(smod, "LANE_READ_AT_S", 0.05)
+    per = PerceptionResult(10, 950_000_000)
+    # 拍首 0.95、拾帧 0.955：读取截止 0.05 → 睡到 1.0（等待 30ms）
+    m._control_tick(chain, StubPad(), None, per, 10, 950_000_000, 10, 1,
+                    cap_ts={"t0": 0.95, "pick": 0.955, "det": 0.965})
+    # 物体帧龄 = 入参 10ms + 拾帧到**等待后**的 45ms（含等待段）
+    assert seen[-1] == pytest.approx(55.0)
+    assert chain["trace"][-1]["obs_age"]["at_ns"] == 1_000_000_000
 
 
 # ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
@@ -917,8 +1010,8 @@ def test_lane_anchor_uses_pre_override_depth_center(_stub_depth, monkeypatch):
         chain["planner"].state.executed_lane = 0.5
         m._control_tick(chain, StubPad(), None, _perc(1), 1,
                         50_000_000, 10.0, 1)
-        assert lane.anchors
-        return lane.anchors[-1]
+        # 锚不再随帧推送（拍首提交读缓存）：断言过门缓存的落值。
+        return chain["lane_anchor_ctx"][0]
 
     assert run(_dgeo_lanes(-2.0, 1.0)) == pytest.approx(0.5)
     assert run(_dgeo_lanes(-1.0, 2.0)) == pytest.approx(-0.5)
@@ -1335,7 +1428,7 @@ def test_anchor_gate_blocks_renumbering_until_definitions_agree(monkeypatch):
     t1 = tick()
     assert t1["ro_anchor_gap"] == pytest.approx(0.78, abs=0.03)
     assert t1["ro_anchor_ok"] is False
-    assert lane.anchors[-1] is None, "分歧期不得喂锚（不许改号）"
+    assert chain["lane_anchor_ctx"][0] is None, "分歧期不得喂锚（不许改号）"
     assert agree_in[-1] is None, "分歧期深度见证不可用，不得喂互证闸"
 
     cur["r"] = _dgeo_lanes(-1.57, 2.43)      # 两定义一致
@@ -1344,6 +1437,6 @@ def test_anchor_gate_blocks_renumbering_until_definitions_agree(monkeypatch):
         pytest.approx(0.0, abs=0.03)
     assert t3["ro_anchor_ok"] is False
     assert t4["ro_anchor_ok"] is True, "连续 3 拍一致才恢复喂锚"
-    assert lane.anchors[-1] == pytest.approx(-1.5 / chain["lane_w_m"],
-                                             abs=0.01)
+    assert chain["lane_anchor_ctx"][0] == pytest.approx(
+        -1.5 / chain["lane_w_m"], abs=0.01)
     assert agree_in[-1] is not None, "恢复后互证闸重新吃线−深度分歧"

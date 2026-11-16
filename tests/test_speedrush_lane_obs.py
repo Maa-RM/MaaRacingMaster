@@ -1039,6 +1039,191 @@ def test_dml_rechecks_slot_after_lock_acquisition(monkeypatch):
     assert w.slot_skips == 1
 
 
+# ---------- 目标节拍制（2026-11-16）：拍首提交等本拍放锁 ----------
+
+def _target_worker(monkeypatch, *, seq_now, t_beat, clock0=1.001,
+                   wait_newer=None, lock_acquire=None, stop=False):
+    """目标节拍测试的公共桩：可控时钟 + 假 Beat/Lock + 真 _SlotGate。
+
+    返回 (worker, calls, beat)；worker._slot_target=8、_slot_t_push=clock0
+    已登记（模拟 push(pre_note=True) 的登记产物）。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="dml"))
+    w._use_dml = True
+    calls = []
+    clock = [clock0]
+    beat = {"seq": seq_now, "t": t_beat}
+    wn_calls = []
+
+    class Session:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            calls.append(clock[0])
+            return [None, np.zeros((1, 2, 384, 640), np.float32)]
+
+    class Beat:
+        def snapshot(self):
+            return beat["seq"], beat["t"]
+
+        def wait_newer(self, seq, timeout):
+            wn_calls.append(seq)
+            if wait_newer is not None:
+                return wait_newer(seq, timeout, beat, clock)
+            clock[0] += timeout          # 真实语义：等到超时无节拍
+            return False
+
+    class Lock:
+        def acquire(self, *args, **kwargs):
+            if lock_acquire is not None:
+                return lock_acquire()
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(la.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", Beat())
+    monkeypatch.setattr(la.dml_lock, "SLOTS", la.dml_lock._SlotGate())
+    monkeypatch.setattr(la.dml_lock, "LOCK", Lock())
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: None)
+    w._sess = Session()
+    w._slot_target = 8
+    w._slot_t_push = clock0 - 0.001      # 提交在 1ms 前（拍首）
+    if stop:
+        w._stop.set()
+    return w, calls, wn_calls
+
+
+def test_first_beat_submit_waits_for_target_note_then_runs(monkeypatch):
+    """拍首提交：目标节拍未响→有限等待；放锁通知到达→窗内开跑并交接。"""
+    def note_during_wait(seq, timeout, beat, clock):
+        clock[0] = 1.009                 # 8ms 后感知放锁
+        beat["seq"], beat["t"] = 8, 1.009
+        return True
+
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0,
+                                 wait_newer=note_during_wait)
+    result = w._run(np.zeros((4, 4, 3), np.uint8))
+    assert result is not None and len(calls) == 1
+    assert w.slot_wait_ms > 0            # 等窗耗时单列
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is True   # 目标节拍交接到位
+
+
+def test_first_beat_submit_timeout_keeps_future_slot_open(monkeypatch):
+    """超时且目标未到：弃帧但**不交接未来节拍**——提前标记会让该节拍真正
+    到来时线/深交接被跳过（SLOTS 完成序号只增不减）。"""
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0)
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls and w.slot_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is False
+
+
+def test_stale_target_hands_off_past_beat(monkeypatch):
+    """目标节拍已被后续节拍越过：弃帧并交接该**过去**节拍。"""
+    w, calls, _ = _target_worker(monkeypatch, seq_now=9, t_beat=1.0)
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls and w.slot_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is True
+
+
+def test_wait_deadline_counts_from_push_time(monkeypatch):
+    """等待截止按提交时刻起算：排队已耗尽预算时不得再等（否则排队时间
+    叠加，拍首帧被拖到下一拍）。"""
+    wn_calls = []
+
+    def never(seq, timeout, beat, clock):
+        wn_calls.append(seq)
+        clock[0] += timeout
+        return False
+
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0,
+                                 clock0=1.001, wait_newer=never)
+    w._slot_t_push = 0.955               # 提交于 46ms 前：截止 1.000 已过
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls and wn_calls == []  # 截止已过，一次等待都不发起
+    assert w.slot_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is False
+
+
+def test_normal_submit_explicit_target_matches_legacy(monkeypatch):
+    """正常提交（目标=当前节拍）：窗内开跑、超窗弃帧交接，语义与历史一致。"""
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0,
+                                 clock0=1.010)
+    w._slot_target = 7                   # pre_note=False 的登记产物
+    result = w._run(np.zeros((4, 4, 3), np.uint8))
+    assert result is not None and len(calls) == 1
+    assert la.dml_lock.SLOTS.wait_done(7, 0) is True
+
+    w2, calls2, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0,
+                                   clock0=1.035)
+    w2._slot_target = 7
+    assert w2._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls2 and w2.slot_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(7, 0) is True
+
+
+def test_cpu_provider_ignores_target_wait(monkeypatch):
+    """CPU provider 不走槽位：即使目标节拍未到也立即推理。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w._use_dml = False
+    calls = []
+
+    class Session:
+        def get_inputs(self):
+            return [type("I", (), {"name": "images"})()]
+
+        def run(self, *args):
+            calls.append(True)
+            return [None, np.zeros((1, 2, 384, 640), np.float32)]
+
+    class Beat:
+        def snapshot(self):
+            return 7, 1.0
+
+        def wait_newer(self, seq, timeout):
+            pytest.fail("CPU 路径不得等待目标节拍")
+
+    monkeypatch.setattr(la.dml_lock, "TICK_BEAT", Beat())
+    monkeypatch.setattr(la, "_letterbox", lambda rgb: None)
+    w._sess = Session()
+    w._slot_target = 8                   # 未来节拍：CPU 路径不等待
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is not None
+    assert calls
+
+
+def test_stop_signal_exits_target_wait(monkeypatch):
+    """停机信号：等待循环立即退出，弃帧不交接。"""
+    def fail_wait(seq, timeout, beat, clock):
+        pytest.fail("停机后不得继续等待")
+
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=1.0,
+                                 wait_newer=fail_wait, stop=True)
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls and w.slot_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is False
+
+
+def test_inactive_period_busy_skip_does_not_advance_future_beat(monkeypatch):
+    """非活跃期（无控制拍）拿不到锁：弃帧且不得推进未来节拍序号。"""
+    w, calls, _ = _target_worker(monkeypatch, seq_now=7, t_beat=-0.5,
+                                 clock0=1.001, lock_acquire=lambda: False)
+    assert w._run(np.zeros((4, 4, 3), np.uint8)) is None
+    assert not calls and w.busy_skips == 1
+    assert la.dml_lock.SLOTS.wait_done(8, 0) is False
+
+
+def test_snapshot_includes_slot_wait_ms():
+    """快照携带等窗耗时单列：ms 只圈推理本体，两列相加才是提交→发布墙钟。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True, provider="cpu"))
+    w.slot_wait_ms = 3.7
+    res = {"n_lines": 0, "lines": [], "x": None, "theta": None,
+           "state": "RELOCK", "n_locked": 0, "relock_src": None,
+           "grid_reject": 0, "side_reject": 0, "usable": False, "locked": 0}
+    snap = w._snapshot(res, 1, 1.28, 0.0, 0.001, False)
+    assert snap["slot_wait_ms"] == 3.7
+
+
 def test_worker_snapshot_carries_line_origin_flags():
     """线程快照必须搬运 usable/locked：漏搬时消费方永远读 None，线为主
     静默失效——2026-10-31 实机一局整局没生效的根因就是这里漏了两个键。"""

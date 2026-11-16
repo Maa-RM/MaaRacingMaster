@@ -193,6 +193,13 @@ STEP_CONFIRM: dict[str, str] = {
 DRIVE_TICK_HZ = 20.0
 DRIVE_TICK_S = 1.0 / DRIVE_TICK_HZ
 
+# 线读取拍内截止（L2 2026-11-16）：等待目标按**拍内时刻**计（零点=拍首），
+# 取「发布相对拍首」p90 + 余量——trace 逐帧配对实测 p50 24.1 / p90 27.7 /
+# p95 29.2ms（发布龄−提交拍拾帧龄，不得用含拾帧相位的发布龄直接当目标，
+# 否则会把已过去的拾帧时间再等一遍）。28ms 处本帧命中率 91.6%；命中拍的
+# 读取内容龄=拾帧相位+28ms（相位部分 L2 消不掉，进验收口径）。
+LANE_READ_AT_S = 0.028
+
 # —— 路心读数"参考系跳变"标注（2026-10-27，仅记录，不参与控制）——
 # 一次快横移与一次参考系换档在单帧上长得一样（都是路心读数一步跳大），
 # 但离线辨识车模、算观测真值时必须区分：横移期的换档会把相邻读数的差
@@ -1469,6 +1476,18 @@ class SpeedRushModule(ActivityModule):
                         t_rec: float | None = time.perf_counter()
                     else:
                         t_rec = None
+                    # 线观测拍首提交（2026-11-16）：本帧画面在感知之前交给线
+                    # 后台（pre_note=目标节拍是本拍放锁节拍），结果 ~24-30ms
+                    # 就绪，晚读取点（LANE_READ_AT_S）能在本拍消费——消除旧
+                    # 「提交 ~20ms→发布 ~34ms→下一拍才读」的一拍空窗。锚用
+                    # 上一拍过门缓存（lane_anchor_ctx，滞后一拍：拍首时本拍
+                    # 深度尚未产出）；cam_h 用现有直方中位（少本拍一次
+                    # append，慢变量）；dt/fid_jump 按 chain 状态复算，与
+                    # tick 内口径逐位一致（此处不改状态）。本拍若无 tick
+                    # （感知失败），孤儿帧由 latest-only 语义自然作废。
+                    if chain is not None and frame is not None \
+                            and ((gpad is not None and not straight) or shadow):
+                        self._lane_first_push(chain, frame, fid, ts_ns)
                     result: PerceptionResult | None = None
                     t_det: float | None = None
                     if not straight and (self._perception_mode or control
@@ -1687,6 +1706,11 @@ class SpeedRushModule(ActivityModule):
             _tlog(self, f"[极速狂飙] 线观测：{lane_obs.note}", "WARNING")
         return {"cfg": cfg,
                 "lane_obs": lane_obs,
+                # 线锚的过门缓存（拍首提交用，2026-11-16）：只存上一拍经
+                # 「新证据+共识闸」全部门控后真正提交的 (anchor, strict)，
+                # 每拍覆盖写、无新证据显式写空（复用拍的原始候选不透传）。
+                # 语义=锚滞后一拍；阶段重建随 chain 新建天然清空。
+                "lane_anchor_ctx": (None, False),
                 # 速度像素桥（闸 metric_bridge.enabled，默认关=逐位回今天）：
                 # 闸与迟滞驻留由链构建传入，tracking 层不读配置
                 "tracker": Tracker(bridge_enabled=cfg.metric_bridge.enabled,
@@ -1862,6 +1886,30 @@ class SpeedRushModule(ActivityModule):
             gpad.release_button(btn)
             gpad.update()
 
+    def _lane_first_push(self, chain: dict, frame, fid: int,
+                         ts_ns: int) -> None:
+        """拍首把本帧交给线观测后台（pre_note=True，目标节拍=本拍放锁节拍）。
+
+        参数与旧提交点逐位同源：dt/fid_jump 按 chain 状态复算（**不改**
+        状态——tick 前奏随后按同一状态再算并更新，两处数值逐位一致）；
+        cam_h 用直方中位（拍首时少本拍一次 append，慢变量可接受）；
+        v_lat/focal 与旧提交点同一来源；锚取上一拍过门缓存
+        ``lane_anchor_ctx``（滞后一拍，写入口径见 _control_tick 缓存处）。
+        worker 未启动（权重缺失）时 push 自为 no-op。"""
+        lw = chain.get("lane_obs")
+        if lw is None:
+            return
+        prev = chain["prev_ts"]
+        dt = DRIVE_TICK_S if prev is None or ts_ns <= prev else (ts_ns - prev) / 1e9
+        last_fid = chain.get("last_fid")
+        fid_jump = last_fid is not None and fid - last_fid > 2
+        hist = chain["lane_cam_h_hist"]
+        cam_h = float(np.median(hist)) if hist else None
+        anchor, a_strict = chain.get("lane_anchor_ctx") or (None, False)
+        lw.push(frame, fid, cam_h, chain["planner"].state.v_lat, dt,
+                fid_jump, focal=chain.get("focal_px"), anchor=anchor,
+                anchor_strict=a_strict, frame_ts_ns=ts_ns, pre_note=True)
+
     def _control_tick(self, chain: dict, gpad, frame, result: PerceptionResult,
                       fid: int, ts_ns: int, age_ms: float, phase: int,
                       pace_ms: tuple | None = None,
@@ -1897,8 +1945,9 @@ class SpeedRushModule(ActivityModule):
             dgrid = None
             dgeo_new = False
             anchor_sheet = None
-            # 线观测快照先取（深度生产者要用它的灭点行做米制骨架）。线是慢
-            # 变量、灭点行更是，允许比本帧滞后一拍；缺值时深度层回退标定值。
+            # 线快照早读（2026-11-16 两段式）：只供深度 y_v 与视角守卫——
+            # 两者都是慢变量、允许滞后一拍；本拍控制链（走廊原点/跟踪/规划/
+            # obs_age）消费的是等待截止后的**晚读**（见 LANE_READ_AT_S 处）。
             lw = chain.get("lane_obs")
             lane = lw.latest() if lw is not None else None
             lane_usable = (lane is not None and bool(lane.get("usable"))
@@ -1936,8 +1985,21 @@ class SpeedRushModule(ActivityModule):
                 _tlog(self, f"[极速狂飙] 深度几何观测异常（{exc!r}）", "WARNING")
             if chain.get("view_guard") is not None and gpad is not None:
                 self._tick_view_guard(chain, gpad, lane)
-            # 线观测快照已在深度 push 前取过（同一对象、同一拍）：这里只判语义门
-            # ——线严格可用时它就是走廊中心原点，深度只填边界/宽度。
+            # 线读取截止（拍内时刻，零点=拍首）：等本拍线结果落地的窗口，
+            # 超时即读现有快照（=旧行为，退回上一拍结果）。等待**不**串进
+            # 深度提交——深度 push/take 已在上方完成（两段式：早读供深度
+            # y_v 与视角守卫，晚读供控制链）。拍体超预算的拍睡眠只吸收正
+            # 余量，不追帧。
+            if cap_ts is not None and cap_ts.get("t0") is not None:
+                rest = LANE_READ_AT_S - (time.perf_counter() - cap_ts["t0"])
+                if rest > 0:
+                    time.sleep(rest)
+            lane = lw.latest() if lw is not None else None
+            lane_usable = (lane is not None and bool(lane.get("usable"))
+                           and lane.get("det_age_ms") is not None
+                           and lane["det_age_ms"] <= LANE_POS_AGE_MS)
+            # 线观测晚读（同一对象、同一拍）：线严格可用时它就是走廊中心
+            # 原点，深度只填边界/宽度。
             planner: LateralPlanner = chain["planner"]
             # road_offset 供数源=分带走廊：供数主人选择合并进 _EgoRoadObserver
             # 内部的一条优先级链，此处不再两条供数路互相顶替；找边对心保留为
@@ -2027,27 +2089,25 @@ class SpeedRushModule(ActivityModule):
                 # 守卫吃的是未平滑的原始反解，两者独立、不互相污染。
                 if lane is not None and lane.get("cam_h_lane") is not None:
                     chain["lane_cam_h_hist"].append(float(lane["cam_h_lane"]))
-                hist = chain["lane_cam_h_hist"]
-                cam_h = float(np.median(hist)) if hist else None
-                # 线观测的绝对锚点=同帧新鲜**独立深度**读数换算的自车横位
-                # （复用/历史拍不给，让线退回上一拍横位做子道细化，不让旧深度
-                # 冒充新锚）。线作原点时 corridor 的中心是线，不能回喂；但覆盖
-                # 前的深度候选仍在 depth_anchor_ego 里，用它锚道号即可——既不
-                # 循环，也不剥夺线在短断/重锁时的独立参照。
+                # 线锚过门缓存（拍首提交的下拍口粮，2026-11-16）：只存本拍
+                # 经「新证据+共识闸」全部门控后**真正会提交**的锚及严格资格；
+                # 每拍覆盖写，无新证据/闸冻结拍显式写空——复用拍的原始候选
+                # 不透传（否则旧证据冒充新锚）。语义=锚滞后一拍（拍首提交
+                # 时本拍深度尚未产出）；健康度由锚严格计数与线锁覆盖审计。
+                # 线作原点时 corridor 的中心是线，不能回喂；但覆盖前的深度
+                # 候选仍在 depth_anchor_ego 里，用它锚道号即可——既不循环，
+                # 也不剥夺线在短断/重锁时的独立参照。
                 # 共识闸（2026-11-13）：绿区与找边对两个定义差超阈值时不给锚，
                 # 线保持现有网格；等两者一致再恢复。宁可不改，不许静默整道翻号。
-                anchor = (chain["ego_road"].depth_anchor_ego
-                          if (road_offset_new and anchor_ok) else None)
-                lw.push(frame, fid, cam_h, planner.state.v_lat, dt,
-                        fid_jump,
-                        focal=chain.get("focal_px"),
-                        anchor=anchor,
-                        anchor_strict=chain["ego_road"].anchor_strict,
-                        frame_ts_ns=ts_ns)
-            # 入参帧龄在取帧时测量；正式控制链还须计入此后的 YOLO 与前奏时间。
+                chain["lane_anchor_ctx"] = _lane_anchor_ctx(
+                    chain["ego_road"], road_offset_new, anchor_ok)
+            # 物体帧龄按实际消费位置计（2026-11-16）：补偿含线读取等待段——
+            # 等待发生在入口之后，沿用入口时刻会低估帧龄（线更新鲜、物体被
+            # 当得比实际更新鲜）。
             pick = None if cap_ts is None else cap_ts.get("pick")
             perception_age = age_ms + (0.0 if pick is None else
-                                      max(0.0, t_c - pick) * 1000.0)
+                                      max(0.0, (time.perf_counter() - pick)
+                                          * 1000.0))
             obs = chain["tracker"].update(result, frame_age_ms=perception_age, stage=phase,
                                           anchors=anchor_sheet,
                                           lane=lane if lane_usable else None)
@@ -3244,6 +3304,19 @@ class _AnchorConsensusGate:
 YOLO_MASK_MARGIN = 10             # 检测框外扩（px）：框缘深度过渡带不留在候选区
 BAD_FRAME_MIN_INTERVAL_S = 2.0
 BAD_FRAME_MAX_PER_PHASE = 40
+
+
+def _lane_anchor_ctx(ego_road, road_offset_new: bool,
+                     anchor_ok: bool) -> tuple:
+    """线锚过门缓存值（拍首提交用）：只出「本拍真正会提交」的 (锚, 严格)。
+
+    与旧提交点同口径：锚=depth_anchor_ego 且须 road_offset_new（本拍真吃
+    到新深度证据，复用/历史拍不给）与 anchor_ok（共识闸放行）同时成立；
+    严格资格随锚走，锚为空一律 (None, False)——复用拍的原始候选
+    depth_anchor_ego 不透传，否则旧证据会冒充新锚喂给线。"""
+    val = (ego_road.depth_anchor_ego
+           if (road_offset_new and anchor_ok) else None)
+    return (val, ego_road.anchor_strict if val is not None else False)
 
 
 def _yolo_object_mask(result: PerceptionResult) -> np.ndarray | None:
