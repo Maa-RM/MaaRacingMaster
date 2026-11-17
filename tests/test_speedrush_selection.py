@@ -1061,6 +1061,22 @@ def test_latch_updates_same_layer_dwell_incumbent():
     assert rep.target_x_m == pytest.approx(fresh, abs=0.06)
 
 
+def test_graze_latch_releases_when_locked_side_infeasible():
+    """车还在、安全，但锁定侧夹不出净空：立即释放，不再用旧横位续命。"""
+    p = _p(pass_graze_adjacent_enabled=True, pass_horizon_s=4.5,
+           pass_latch_enabled=True)
+    sel = LayeredSelector(p)
+    road = _road()
+    # 1) 同道贴边成立：车与自车同道，目标在车左 0.68 道
+    rep = sel.update(road, [], [_sel_car(51, 1.2 * LW, 2.2)],
+                     [], 1.2 * LW, 0.05)
+    assert rep.why in ("pass", "graze") and rep.hit_oid == 51
+    # 2) 车横移到左缘、锁定侧（左）夹不出净空：闩释放，不再续旧目标
+    rep = sel.update(road, [], [_sel_car(51, -1.2 * LW, 10.0)],
+                     [], 1.2 * LW, 0.05)
+    assert rep.hit_oid != 51
+
+
 def test_graze_hold_releases_when_car_gone():
     """车读数消失超过宽限（1s）闩释放，回中/收币接管。"""
     sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,

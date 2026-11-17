@@ -1476,6 +1476,7 @@ class LayeredSelector:
             return None                    # 新贴边/紧急动作/更高价值接管
         car = next((c for c in cars if c.oid == self._graze_oid
                     and c.kind == "car"), None)
+        refreshed = False
         if car is not None and car.safe \
                 and car.x_unknown and p.pass_x_unknown_enabled:
             # 本拍发布横位不可信：不拿坏读数刷新保持线，沿用上一有效目标。
@@ -1495,6 +1496,7 @@ class LayeredSelector:
             if x is not None and abs(x - car.x) >= _pass_clear_m(car, p):
                 self._graze_x = x
                 self._graze_miss_t = GRAZE_HOLD_MISS_S
+                refreshed = True
             else:
                 self._graze_miss_t -= dt_s
         else:
@@ -1512,6 +1514,13 @@ class LayeredSelector:
         assert self._graze_x is not None   # 闩臂武装（_graze_oid 非空）时同拍写入
         x = road.clamp(self._graze_x, self.p.wall_margin_lane
                        * self.p.lane_w_m)
+        # 锁定侧夹不出位（车还在、安全，但本拍没刷新）：不再用旧横位续命，
+        # 立即释放让下层接管。旧横位随车移动会落进车体或自车另一侧，继续
+        # 输出等于命令横穿目标车；读数丢失/不安全/横位未知仍走上面的宽限。
+        if not refreshed and car is not None and car.safe and not car.x_unknown:
+            self._graze_oid = None
+            self._side_oid = None
+            return None
         # 承诺期贴边跨度：只有并线期（committed）才把贴边目标夹在承诺道内。
         # 保持态（keep）的 commit_x 只服务"跨线唯一入口"，擦边/让位本就不进
         # 那道门（_pick_pass 文档：不受跨线闸门约束）——2026-11-08 实据：
