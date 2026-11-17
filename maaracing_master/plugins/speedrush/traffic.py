@@ -34,8 +34,7 @@ planner 不读本层。
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from maaracing_master.plugins.speedrush.config import Traffic
 from maaracing_master.plugins.speedrush.tracking import (
@@ -53,14 +52,9 @@ OUTCOME_GHOST = "ghost"
 class CarView:
     """在途车辆实时视图（step 2 的候选生成吃这个，字段先给最小集）。
 
-    ``x_memb``：车道成员资格位（整数道中心的 A1 读数，右正；生命期投票
-    2026-10-11）。近场单拍读数噪声/膨胀 ±0.5 道量级撑不起接近段的带门——
-    成员位是 track 生命期统计+车道先验（整道栅格）投票的产物，投票不成立
-    （证据不足）为 None，消费方退回单拍 x_lane 不装懂。安全几何（横向
-    veto、紧急回避的车体判距）一律仍吃 x_lane 原始物理位。
-    ``w_m``/``w_m_age``：框宽地面尺换算的米宽估计与龄（tick，None=从未有
-    效/已过期显式转 unknown）。只在真实读数拍按有效性门（年龄/置信/分母）
-    重算，遮挡延续拍保持最后有效值并带龄；过期不冒充有效。"""
+    ``w_m``：框宽地面尺换算的米宽估计（None=从未有效/已过期显式转
+    unknown）。只在真实读数拍按有效性门（年龄/置信/分母）重算，遮挡延续拍
+    保持最后有效值；过期不冒充有效。"""
 
     id: int
     x_lane: float
@@ -71,9 +65,7 @@ class CarView:
     age_ticks: int
     v_lat: float = 0.0       # 横向速率（车道/tick，右正；帧间差分 EMA——阶段一
                              # CV 外推/横向安全 veto 的数据源，缺省 0=静止假设）
-    x_memb: float | None = None
     w_m: float | None = None
-    w_m_age: int | None = None
     # 车道线定道读数（2026-11-09 车道归属）：远场尺子被 min_denom 门控成
     # None 时的互证目标，track 逐拍透传；闸关/无线恒 None。
     x_lane_line: float | None = None
@@ -93,8 +85,6 @@ class PassEvent:
     track_id: int
     outcome: str             # OUTCOME_PASS / OUTCOME_PRESUMED_PASS / OUTCOME_LOST /
                              # OUTCOME_GHOST
-    settled_fid: int         # 检出消失的拍号（≈ grace 过期帧，非真实越线帧——
-                             #  离线配对 d_min/速度时按 settle − grace 回推）
     d_min: float | None
     age_ticks: int
 
@@ -103,10 +93,7 @@ class PassEvent:
 class _Live:
     """内部活体账本（不出契约）：x_lane 读数在遮挡外推拍会重复，d_min 取 min 即可。
 
-    车道成员资格（2026-10-11）：``votes``=整道票仓（道号→衰减质量，只在真实
-    读数拍衰减+投票——遮挡期不衰减，宽限内成员位保持）；``memb``=当前成员
-    位（票仓最大质量达下限才成立，None=证据不足）。账本随 track id 生灭，
-    track 切换不继承错位（身份连续性边界）。
+    账本随 track id 生灭，track 切换不继承错位（身份连续性边界）。
     宽度有效性（2026-10-11）：``w_m``=最后有效读数的米宽（只按有效性门在
     真实读数拍重算，遮挡延续拍不重算——外推 cy 投影正是 3.6→0.3m 崩坏的
     机制）；``w_m_fid``=该读数的拍号，TTL 由消费侧按龄判。"""
@@ -120,8 +107,6 @@ class _Live:
     d_min: float
     last_x: float | None = None   # 上次真实读数的 x_lane（横向速率差分基）
     v_lat: float = 0.0            # 横向速率 EMA（车道/tick；只在真实读数拍更新）
-    votes: dict[int, float] = field(default_factory=dict)
-    memb: int | None = None
     w_m: float | None = None
     w_m_fid: int | None = None
 
@@ -178,23 +163,18 @@ class TrafficObserver:
                     inst = t.x_lane - rec.last_x
                     rec.v_lat += self.p.v_lat_ema_alpha * (inst - rec.v_lat)
                 rec.last_x = t.x_lane
-                self._vote_lane(rec, t)
                 self._refresh_width(rec, t, fid)
-            memb = rec.memb
-            w_m, w_m_age = rec.w_m, None
+            w_m = rec.w_m
             if w_m is not None:
                 assert rec.w_m_fid is not None   # w_m 与 w_m_fid 同拍写入
-                age = fid - rec.w_m_fid
                 # TTL 过期显式转 unknown（不得冒充有效）；账本保留，重捕后
                 # 新有效读数刷新即恢复
-                if age <= self.p.width_ttl_ticks:
-                    w_m_age = age
-                else:
+                if fid - rec.w_m_fid > self.p.width_ttl_ticks:
                     w_m = None
             views.append(CarView(id=t.id, x_lane=t.x_lane, cy=t.cy,
                                  rel_approach=t.rel_approach, d_min=rec.d_min,
                                  age_ticks=fid - rec.first_fid, v_lat=rec.v_lat,
-                                 x_memb=memb, w_m=w_m, w_m_age=w_m_age,
+                                 w_m=w_m,
                                  last_seen_fid=t.last_seen_fid,
                                  x_lane_line=getattr(t, "x_lane_line", None),
                                  box=getattr(t, "box", ())))
@@ -205,7 +185,7 @@ class TrafficObserver:
             outcome = self._classify(rec, fid)
             if outcome is not None:
                 events.append(PassEvent(
-                    track_id=tid, outcome=outcome, settled_fid=fid,
+                    track_id=tid, outcome=outcome,
                     d_min=rec.d_min if outcome in (OUTCOME_PASS,
                                                    OUTCOME_PRESUMED_PASS) else None,
                     age_ticks=fid - rec.first_fid))
@@ -213,26 +193,6 @@ class TrafficObserver:
         self._last_fid = fid
         self._last_result = (tuple(views), tuple(events))
         return self._last_result
-
-    def _vote_lane(self, rec: _Live, t) -> None:
-        """车道成员资格投票（2026-10-11，只在真实读数拍）。
-
-        单拍 x_lane 按车道先验（整道栅格：ego=0，邻道 ±1，A1 尺子单位=道宽）
-        取整投票；票仓按衰减系数遗忘——真横移的连续新票在数拍内压过衰减的
-        旧票（及时响应边界），偶发噪声票停留少数派（±0.5 道读数噪声不翻
-        成员位）。读数 σ 超门不投票：远场/弯道失真读数不进票仓（近场保守，
-        弯道退化的安全形态）。最大质量达下限成员位才成立，否则 None=消费
-        方退回单拍读数（证据不足不装懂）。"""
-        if t.x_sigma > self.p.lane_vote_sigma_max:
-            return
-        dec = self.p.lane_vote_decay
-        lane = math.floor(t.x_lane + 0.5)
-        votes = {lane0: w * dec for lane0, w in rec.votes.items()}
-        votes[lane] = votes.get(lane, 0.0) + 1.0
-        rec.votes = votes
-        best_lane, best_w = max(votes.items(), key=lambda kv: kv[1])
-        rec.memb = (best_lane if best_w >= self.p.lane_memb_min_weight
-                    else None)
 
     def _refresh_width(self, rec: _Live, t, fid: int) -> None:
         """宽度有效读数刷新（2026-10-11，只在真实读数拍）。

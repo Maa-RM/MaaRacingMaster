@@ -1941,8 +1941,6 @@ class SpeedRushModule(ActivityModule):
             prev = chain["prev_ts"]
             dt = DRIVE_TICK_S if prev is None or ts_ns <= prev else (ts_ns - prev) / 1e9
             chain["prev_ts"] = ts_ns
-            last_fid = chain.get("last_fid")
-            fid_jump = last_fid is not None and fid - last_fid > 2
             chain["last_fid"] = fid
             # 深度几何（几何主人，v5 2026-11-11：车道线灭点行 + DepthART 相对
             # 深度合成点云，3D 找边当 road_offset 供数源）。异步解耦协议同前：

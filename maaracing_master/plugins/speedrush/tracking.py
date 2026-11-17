@@ -168,7 +168,7 @@ class ObjectDistance:
 
     时间语义（2026-10-08 时间链台账钉死，全部 perf_counter_ns 同钟族）：
     ``anchor_age_ms`` 零点 = 深度帧**采集回调**时刻（sheet.ts=frame_ts_ns，
-    非推理完成时刻、非 push 时刻）；``obs_age_ms`` 零点 = 本拍 2D 帧采集时刻。
+    非推理完成时刻、非 push 时刻）。
     决策时刻米制年龄 ≈ anchor_age_ms + 本拍帧龄（trace 顶层 oage，拍级现算）
     ——两零点同族，相加无重复计账。注意与 dgeo_age_ms（零点=push 墙钟的
     服务年龄）不可相加。WGC 重复帧拍整个 obs 冻结（age 不再增长）——重复
@@ -179,7 +179,6 @@ class ObjectDistance:
     metric_distance_m: float | None
     method: DistanceMethod | None
     anchor_age_ms: float | None   # 锚点年龄（深度帧采集距今）；UNKNOWN 无锚时为 None
-    obs_age_ms: float             # 本拍 2D 观测年龄——与锚点年龄是两个参考帧（同时钟族）
     reason: DistanceReason | None  # UNKNOWN 时必填
     v_close_mps: float | None = None  # 门控区间速度估计（v̂>0=接近，z(t+Δ)≈m−v̂Δ）。
                                       # 与锚点同生命周期；未知为 None。**定位：已保存
@@ -685,7 +684,7 @@ class Tracker:
             stage_transition=stage_transition,
             raw_cars=len(per.cars), raw_coins=len(per.coins),
             raw_bonuses=len(per.bonuses))
-        distances = tuple(self._distance_of(t, per.ts_ns, frame_age_ms)
+        distances = tuple(self._distance_of(t, per.ts_ns)
                           for t in self._tracks if t.kind == KIND_CAR)
         # 逐车米制状态（C 线）：与 distances 同序同 id，z/x/v/t 全从锚点链路
         # 直读（公式见 MetricCarState）；无锚=source UNKNOWN，z/x/v/t 全 None，
@@ -918,7 +917,7 @@ class Tracker:
         w = self.p.box_bridge_weight
         return float(w * z_box + (1.0 - w) * z_cv)
 
-    def _distance_of(self, t: _Track, ts_ns: int, obs_age_ms: float) -> ObjectDistance:
+    def _distance_of(self, t: _Track, ts_ns: int) -> ObjectDistance:
         """三态合成（设计稿 §2 状态机）。RESCALED 是锚点生命周期状态：确认过
         接近的锚点，原始值永不重新暴露；退出唯一路径是新锚点重置基线。"""
         if t.anchor_z is None:
@@ -932,14 +931,14 @@ class Tracker:
                         target_id=t.id, source=DistanceSource.BOX_SIZE,
                         metric_distance_m=float(z_box),
                         method=DistanceMethod.BOX_SIZE, anchor_age_ms=None,
-                        obs_age_ms=obs_age_ms, v_close_mps=None,
+                        v_close_mps=None,
                         reason=t.last_dist_reason or (
                             DistanceReason.ASSOC_FAIL if self._sheet_orphan
                             else DistanceReason.NO_ANCHOR_YET))
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None, anchor_age_ms=None,
-                obs_age_ms=obs_age_ms, v_close_mps=None,
+                v_close_mps=None,
                 reason=t.last_dist_reason or (
                     DistanceReason.ASSOC_FAIL if self._sheet_orphan
                     else DistanceReason.NO_ANCHOR_YET))
@@ -955,19 +954,19 @@ class Tracker:
                         target_id=t.id, source=DistanceSource.HELD,
                         metric_distance_m=float(metric),
                         method=DistanceMethod.RANGE_PROP, anchor_age_ms=held_ms,
-                        obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                        v_close_mps=t.v_close_mps,
                         reason=DistanceReason.TRACK_LOST)
                 return ObjectDistance(
                     target_id=t.id, source=DistanceSource.HELD,
                     metric_distance_m=float(t.anchor_z),
                     method=DistanceMethod.HOLD, anchor_age_ms=held_ms,
-                    obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                    v_close_mps=t.v_close_mps,
                     reason=DistanceReason.TRACK_LOST)
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None,
                 anchor_age_ms=held_ms,
-                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps,
+                v_close_mps=t.v_close_mps,
                 reason=DistanceReason.TRACK_LOST)
         age_ms = (ts_ns - t.anchor_ts_ns) / 1e6
         if age_ms > self.p.anchor_max_age_ms:
@@ -977,7 +976,7 @@ class Tracker:
             return ObjectDistance(
                 target_id=t.id, source=DistanceSource.UNKNOWN,
                 metric_distance_m=None, method=None, anchor_age_ms=age_ms,
-                obs_age_ms=obs_age_ms, v_close_mps=None,
+                v_close_mps=None,
                 reason=DistanceReason.EXPIRED)
         if t.approach_confirmed_at is not None:
             # 当前米制距离 = 锚点值按区间速度外推（2026-10-13 换装，替代框高
@@ -993,7 +992,7 @@ class Tracker:
                 target_id=t.id, source=DistanceSource.RESCALED_ANCHOR,
                 metric_distance_m=float(metric),
                 method=method, anchor_age_ms=age_ms,
-                obs_age_ms=obs_age_ms, v_close_mps=t.v_close_mps, reason=None,
+                v_close_mps=t.v_close_mps, reason=None,
                 box_bridge_m=bz)
         bz = self._bridge_z(t, ts_ns)
         metric = float(t.anchor_z)
@@ -1003,7 +1002,7 @@ class Tracker:
         return ObjectDistance(
             target_id=t.id, source=DistanceSource.ANCHOR,
             metric_distance_m=metric, method=method,
-            anchor_age_ms=age_ms, obs_age_ms=obs_age_ms,
+            anchor_age_ms=age_ms,
             v_close_mps=t.v_close_mps, reason=None,
             box_bridge_m=bz)
 
