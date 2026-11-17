@@ -1618,6 +1618,12 @@ class LayeredSelector:
                                 commit_x_m=commit_x_m, committed=committed)
         if held is not None:
             held = self._near_hold(held, road, cars, coins, ego, p)
+            # 保持闩产出的目标就是本拍实际目标：同步「现任目标」，否则下一拍
+            # 同层驻留拿保持之前的旧值比较，会把目标压回旧值 0.2s（退一拍、
+            # 再跳回来）。驻留计时一并归零，按新目标重新起算。
+            self._target = held.target_x_m
+            self._dwell_x = None
+            self._dwell_t = 0.0
             self.last = held
             return held
         raw = self._near_hold(raw, road, cars, coins, ego, p)

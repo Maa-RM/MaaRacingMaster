@@ -1029,6 +1029,38 @@ def test_graze_hold_survives_time_reading_dropout():
     assert rep.why == "graze"
 
 
+def test_latch_updates_same_layer_dwell_incumbent():
+    """保持闩刷新过目标后，同层驻留不得再拿保持之前的旧值把目标压回去。
+
+    2026-11-17 实机：闩把目标刷新到车的新横位，但驻留的「现任目标」没同步；
+    下一条新鲜候选回来时驻留按旧值比较，目标先退回旧值一拍再跳回来。
+    """
+    p = _p(pass_graze_adjacent_enabled=True, pass_horizon_s=4.5,
+           pass_latch_enabled=True, pass_reach_lane=2.0)
+    sel = LayeredSelector(p)
+    road = _road()
+    # 1) 邻道贴边成立：目标在车右 0.68 道
+    rep = sel.update(road, [], [_sel_car(51, -0.9 * LW, 2.2)], [], 0.0, 0.05)
+    assert rep.why == "graze" and rep.hit_oid == 51
+    x0 = rep.target_x_m
+    # 2) 车横移到 -1.5 道、出候选视界：闩续住并把目标刷新到新横位
+    rep = sel.update(road, [], [_sel_car(51, -1.5 * LW, 10.0)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    x_latch = rep.target_x_m
+    assert x_latch == pytest.approx(-1.5 * LW + 0.68 * LW, abs=0.06)
+    assert abs(x_latch - x0) > 0.5 * LW
+    # 3) 新鲜邻道贴边走位靠近闩目标：应直接采纳，不退回保持之前的旧值
+    fresh = -1.45 * LW + 0.68 * LW
+    rep = sel.update(road, [], [_sel_car(52, -1.45 * LW, 4.0)], [], 0.0, 0.05)
+    assert rep.why == "graze"
+    assert rep.target_x_m == pytest.approx(fresh, abs=0.06)
+    assert abs(rep.target_x_m - x0) > 0.5 * LW
+    # 4) 后续拍保持在新目标
+    for _ in range(5):
+        rep = sel.update(road, [], [_sel_car(52, -1.45 * LW, 4.0)], [], 0.0, 0.05)
+    assert rep.target_x_m == pytest.approx(fresh, abs=0.06)
+
+
 def test_graze_hold_releases_when_car_gone():
     """车读数消失超过宽限（1s）闩释放，回中/收币接管。"""
     sel = LayeredSelector(_p(pass_graze_adjacent_enabled=True,
