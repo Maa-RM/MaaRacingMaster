@@ -123,7 +123,7 @@ def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_de
     # 两段式读取（2026-11-16）：早读供深度 y_v/视角守卫，晚读供控制链。
     assert len(latest_calls) == 2
     ages = chain["trace"][-1]["obs_age"]
-    assert ages["at_ns"] == 1_000_000_000
+    assert ages["t_observe_ns"] == 1_000_000_000
     assert ages["yolo"] == {"fid": 10, "ts_ns": 980_000_000, "age_ms": 20.0}
     assert ages["lane"] == {"fid": 8, "ts_ns": 900_000_000, "age_ms": 100.0}
     # 深度此拍没有供数，不能拿槽中上次的元数据冒充在消费。
@@ -219,7 +219,7 @@ def test_lane_read_wait_compensates_object_age(monkeypatch, _stub_depth):
                     cap_ts={"t0": 0.95, "pick": 0.955, "det": 0.965})
     # 物体帧龄 = 入参 10ms + 拾帧到**等待后**的 45ms（含等待段）
     assert seen[-1] == pytest.approx(55.0)
-    assert chain["trace"][-1]["obs_age"]["at_ns"] == 1_000_000_000
+    assert chain["trace"][-1]["obs_age"]["t_observe_ns"] == 1_000_000_000
 
 
 # ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
@@ -720,7 +720,8 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     assert len(chain["trace"]) == 5
     row = chain["trace"][-1]
     # C1/§七.1 标定要的关键列都在
-    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_raw", "steer_x",
+    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_pre_lpf",
+              "steer_x",
               "executed_lane", "v_lat", "heading", "road_offset", "scene",
               "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl",
               "attribution", "route_shadow", "sel_shadow"):
@@ -773,7 +774,7 @@ def test_trace_carries_lane_theta_provenance(monkeypatch):
     # 检测帧龄只在三路源龄里落盘一次（角度龄与它分叉=旧角度被当新证据）
     assert chain["trace"][-1]["obs_age"]["lane"]["age_ms"] == pytest.approx(10.0)
     assert row["upd"] is False and row["hold"] is True
-    assert row["nsrc"] == 2 and row["src"] == 7
+    assert row["nsrc"] == 2 and row["src_fid"] == 7
     # 角度龄 100ms 未越 250ms 门：本拍不算"陈旧角度被接收"
     assert row["stale_acc"] == 0
 

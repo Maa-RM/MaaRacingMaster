@@ -213,7 +213,7 @@ def main() -> None:
             plan_x = plan.get("x")
             plan_x12 = plan12.get("x")
             seg = window(trace, epoch - 1.2e9, epoch)
-            steers = [abs(r.get("steer_raw") or 0.0) for r in seg]
+            steers = [abs(r.get("steer_pre_lpf") or 0.0) for r in seg]
             vlats = [abs(r.get("v_lat") or 0.0) for r in seg]
             dbg = early.get("sel_dbg") or {}
             cars = dbg.get("car") or []

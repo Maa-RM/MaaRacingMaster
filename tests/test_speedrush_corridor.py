@@ -459,7 +459,7 @@ def test_master_width_learning_requires_two_tick_midpoint_agreement():
 
 def test_line_center_override_wins_over_depth_center():
     """线为主：center_override 是走廊中心原点，深度候选只供边界/侧效；
-    深度来源仍如实记账（ro_source=wall，ro_origin=line）。"""
+    深度来源仍如实记账（ro_source=wall，ro_center_src=line）。"""
     o = _master_wall_observer()                  # 深度中心 0
     c = o.update(_bnd(-2.0, 2.0, edge_pts=_walls(-2.0, 2.0)),
                  now=1001.8, fid=33, center_override=-1.2)

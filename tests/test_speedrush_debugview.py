@@ -245,7 +245,7 @@ def test_render_hud_lane_overlay_draws_line(frame):
 def test_hud_shows_capture_ages_for_all_three_sources(frame, monkeypatch):
     labels = []
     monkeypatch.setattr(dv, "_put_text", lambda img, text, *a, **k: labels.append(text))
-    snap = _snap(obs_age={"at_ns": 1_000_000_000,
+    snap = _snap(obs_age={"t_observe_ns": 1_000_000_000,
                          "yolo": {"age_ms": 20}, "depth": {"age_ms": 140},
                          "lane": {"age_ms": 65}})
     render_hud(frame, snap, None)

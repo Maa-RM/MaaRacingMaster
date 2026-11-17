@@ -549,9 +549,9 @@ h=22→39m（锚 42.9）。早期锚点与尺寸曲线大致一致，不是明�
 - 调试图从 3fps 改为**逐控制拍（≈20Hz）**：raw+hud 成对落盘，IO 队列满时
   丢旧保新；主循环只做 `put_nowait`，不阻塞。实测磁盘代价约 12.5MB/s
   （714 拍 466MB / 896 拍 594MB）。
-- trace 新增逐拍墙钟拆分：`cap_wait_ms`（取帧等待）/ `rec_ms` / `det_ms`（含
+- trace 新增逐拍墙钟拆分：`cap_wait_ms`（取帧等待）/ `rec_ms` / `det_cost_ms`（含
   YOLO）/ `mask_ms` / `ctrl_ms`，以及 `yolo_infer_ms` / `yolo_wait_ms`（等 DML 锁）/
-  `yolo_run_ms`；调试 IO 侧 `dbg_saved/dropped/q/ms`。
+  `yolo_run_ms`；调试 IO 侧 `dbg_saved/dropped/ms`。
 - `car_h` 增 `seen`（距最后一次 2D 命中的 fid 差，0=本拍命中，>0=冻结框）。
   离线分析不再靠“框高是否变化”猜新鲜度。
 - 用途：卡顿拆到具体段；近场“框冻结”直接由 `seen` 识别；调试图与 trace 同拍对齐。
@@ -566,7 +566,7 @@ h=22→39m（锚 42.9）。早期锚点与尺寸曲线大致一致，不是明�
 - 调试图 0046→0047 的落盘间隔 0.9 秒，说明主循环在这段时间没有产出快照；
   调试 IO 线程是症状，不是原因。
 - 停摆发生在深度推送之前：候选是取帧等待（WGC/游戏）或 YOLO/DML 段。
-  新 trace 的 `cap_wait_ms`/`det_ms`/`yolo_wait_ms` 会在下一次卡顿直接分账。
+  新 trace 的 `cap_wait_ms`/`det_cost_ms`/`yolo_wait_ms` 会在下一次卡顿直接分账。
 - 2026-10-22 两局没有复现：唯一 ≥0.4s 的拍都落在首拍冷启动与局末锚点失配
   （见实验 11）。注意 pace 三列记在上一拍，分段列记在本拍——归因要看上一行。
 
@@ -582,7 +582,7 @@ h=22→39m（锚 42.9）。早期锚点与尺寸曲线大致一致，不是明�
   16:25–16:35 的 Windows System 日志没有显示驱动/TDR 事件。判断是 GPU 侧
   整体停顿/争用：深度推理那次 `session.run` 持锁约 1.14s，感知按锁协议阻塞
   等锁，控制拍被拖住；游戏也在同一秒掉到约 4fps。不是 Python 死锁。
-- 当前 trace 只有主循环的 `dgeo_ms`（提交耗时），**没有深度 worker 的
+- 当前 trace 只有主循环的 `dgeo_cost_ms`（提交耗时），**没有深度 worker 的
   持锁/run 计时**；因此无法再分“深度推理本身慢”还是“GPU 停了”。要定位到
   这一步，需给深度 worker 加 acquire→release 与 run_ms 遥测。
 - 已加 `dgeo_slow` 锁存（2026-10-22，观测，不改行为）：worker 每次

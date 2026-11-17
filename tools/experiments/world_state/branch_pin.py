@@ -83,7 +83,7 @@ def seg_report(seg, name, dt):
               f"  elane {r0.get('executed_lane')}→{r1.get('executed_lane')}")
         for k in ("branch", "lgap", "lveto", "lpok", "anch", "rebase"):
             print(f"     {k}: {lc(r0, k)} → {lc(r1, k)}")
-        for k in ("exec_branch", "ro_off", "ro_source", "ro_origin",
+        for k in ("exec_branch", "ro_off", "ro_source", "ro_center_src",
                   "plan", "cor_veto"):
             print(f"     {k}: {r0.get(k)} → {r1.get(k)}")
     # 分数面

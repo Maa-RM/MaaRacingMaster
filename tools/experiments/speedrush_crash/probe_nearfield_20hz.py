@@ -78,9 +78,9 @@ def report(name: str) -> None:
         prev = rows[i - 1] if i else None
         stalls.append((
             r["fid"], r["dt"], r.get("pace_body"),
-            None if prev is None else prev.get("det_ms"),
+            None if prev is None else prev.get("det_cost_ms"),
             None if prev is None else prev.get("yolo_wait_ms"),
-            None if prev is None else prev.get("dgeo_ms"),
+            None if prev is None else prev.get("dgeo_cost_ms"),
             None if prev is None else prev.get("fid")))
     print(f"dt>{STALL_DT_S}s 的拍 {len(stalls)}：")
     for s in stalls:

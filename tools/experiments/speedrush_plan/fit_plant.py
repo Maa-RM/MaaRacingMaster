@@ -12,9 +12,9 @@
 - 参数 CI：最小二乘 Jacobian 近似协方差（数据相关，仅作退化检查）。
 - `sigma_ego(t)`：用拟合参数做多步开环预测，按 horizon 分组的残差 RMS 线性
   拟合（道→米用 lane_w）；这是保守口径（含路心观测噪声）。
-- 旧 trace 没有 `steer_raw` 列：`tau_steer` 不可辨识 → `calibrated=false`；
-  新 trace 带 `steer_raw` 后可四参数联合拟合。
-- 任一参数贴界、CI 相对宽度 >0.5、留出误差超限、事件 <8、或缺 steer_raw →
+- 缺 `steer_pre_lpf` 列（含改名前的旧 trace）：`tau_steer` 不可辨识 →
+  `calibrated=false`；带这一列时可四参数联合拟合。
+- 任一参数贴界、CI 相对宽度 >0.5、留出误差超限、事件 <8、或缺 steer_pre_lpf →
   `calibrated=false`；`motion.mode=live` 加载时按此 fail-loud。
 
 用法：
@@ -99,7 +99,7 @@ def transition_residuals(pairs, vec, use_raw, fixed_tau, cfg, with_ro=True):
     out = []
     for a, b in pairs:
         ro = b.get("road_offset")
-        u = b.get("steer_raw") if use_raw else b.get("steer_norm")
+        u = b.get("steer_pre_lpf") if use_raw else b.get("steer_norm")
         if u is None or not _finite(u):
             continue
         xp, vp = _next_state(float(a["executed_lane"]), float(a["v_lat_est"]),
@@ -180,7 +180,7 @@ def sigma_ego(series, p, use_raw):
                 t, ok = 0.0, True
                 for k in range(1, h + 1):
                     r = rows[i + k]
-                    u = r.get("steer_raw") if use_raw else r["steer_norm"]
+                    u = r.get("steer_pre_lpf") if use_raw else r["steer_norm"]
                     if u is None:
                         ok = False
                         break
@@ -245,11 +245,11 @@ def main() -> None:
         by_session[rows[0]["_session"]] = sp
         pairs.extend(sp)
     use_raw = bool(pairs) and all(
-        b.get("steer_raw") is not None for _, b in pairs)
+        b.get("steer_pre_lpf") is not None for _, b in pairs)
     events = sum(count_events(rows) for rows in series)
     report = {
         "schema": 1, "sessions": len(series), "pairs": len(pairs),
-        "events": events, "input": "steer_raw" if use_raw else "steer_norm(fallback)",
+        "events": events, "input": "steer_pre_lpf" if use_raw else "steer_norm(fallback)",
         "initial": init, "calibrated": False, "reasons": [],
     }
     if len(series) < 2 or len(pairs) < 200:
@@ -281,7 +281,7 @@ def main() -> None:
     report["sigma_ego"] = sg
 
     if not use_raw:
-        report["reasons"].append("trace 缺 steer_raw：tau_steer 不可辨识")
+        report["reasons"].append("trace 缺 steer_pre_lpf：tau_steer 不可辨识")
     if any(at_bound.values()):
         report["reasons"].append("参数贴界：" + ",".join(
             k for k, v in at_bound.items() if v))

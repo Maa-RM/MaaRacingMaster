@@ -148,6 +148,25 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
   字段，阶段由行内 stage 控制 行表达——ADR-0010）。局汇总一行/阶段落同目录
   `trace/speedrush_summary.jsonl`。历史布局（`debug/speedrush/<会话>_p<N>/trace_*.jsonl`）
   的读取经实验区统一读取器；HUD/raw/坏帧等帧证据仍在 `debug/speedrush/`（调试总开关）。
+- **trace 内层字典的单位约定**：同一列里道/米/像素/秒混排，读列前先对单位。
+  无后缀惯例：道=车道（1 道 = `lane_w_m`）、`_m`=米、`_ms`=毫秒、`_s`=秒。
+
+  | 列 | 键与单位 |
+  |---|---|
+  | `sel_dbg` | 道：`ego/target/req/c0/c8/left/right/band`；米：`origin/shift/fshift/look`；`wp=[t 秒, x 道, src]`；`rw/car/coin=[x 道, t 秒]`，`opp` 同序、值是光锥余量秒 |
+  | `plan` | 米：`x/fd/cv/cvs` 与 `cand`（场景帧横位序列）；m/s：`v`；rad：`pc`；秒：`dt`；分：`val/cc` |
+  | `coarse` | 道：`ego/lane`；米：`free`；`cand=[道, 米自由距, 米宽余, blocker, unknown, 道]` |
+  | `route` | 道：`ref/tgt`；米：`gain/evidence`；秒：`age_s/tc/cd/rage/rpa`（`cd` 是冷却秒）；分：`crc` |
+  | `dist` | 米：`m/bz`；m/s：`v`；毫秒：`age`（锚龄） |
+  | `car_h` | 像素：`h`；`seen` 是距上次命中的**帧差整数**（0=本拍命中），与 `otab` 的布尔 `seen` 不同名不同义 |
+  | `car_pos` | 道：`x/xl`；像素行：`cy`；`rel` 为接近率（正值靠近） |
+  | `lane_obs` | 线 worker 原始快照直通：`age_ms`=帧戳龄、`det_age_ms`=检测帧龄，均为毫秒 |
+  | `lat_ctrl` | rad：`h`；rad/s：`rr`；秒：`blind`；道：`anch/lgap`；其余为布尔或枚举 |
+  | `lane_theta` | 毫秒：`th_ms`（角度自己的龄）；`src_fid`=角度来源帧号；`frz_n` 冻结帧数、`frz_s` 秒 |
+  | `carsrc` | 米：`mx/mz/off/xr/cd`（`cd` 是路心补偿，不是冷却）；毫秒：`mage` |
+  | `occ` | 米：`m`（按轨道 id）；`modes` 与 `ids` 同键并行 |
+  | `scene` | 米：`ego_m`、`road.w/l/r`；毫秒：`frame_age_ms`、`corridor_age_ms`；`objs` 十六元位置元组（kind, x_m, t_arrive_s, count, sigma_m, age_ms, src, z_m, timed, depth, in_corridor, near, half_w_m, coarse, id, seen） |
+  | `otab` | `t` 十四条（kind, id, x_lane 道, x_m, z_m, age_ms, seen 布尔, safety_ok, safety_why, src, src_age_ms, v_close_mps, v_lat 道/s, x_lane_line 道）；`g` 八条（组号, 中心道, cy_max 像素, 观测成员数, age_ms, seen 布尔, 成员 id, lead id） |
 - **显卡流水汇**（`logs/<会话>/trace/gpu.jsonl`）：`gpu_probe.py::GpuProbe` 随驾驶阶段起停，
   定时采 nvidia-smi（利用率/显存/温度/SM 频率/功耗，外加 `call_ms` 本次外部调用时长——
   驱动停摆时外部采样会被一起卡住，它本身就是信号），与玩法流水同钟可离线对齐；无
@@ -158,8 +177,8 @@ P95 ≤100 ms）；故不启用"取帧入录解耦到独立定时线程"那一�
   线程：任一条被驱动卡住都不拖累其余取证。
 - **现场判读两条**：文件自带「栈抓拍时 / 外部取证结束时是否仍在飞」，据此区分案发中证据与
   恢复后状态（节流原因位里的 Idle 在无负载时本就 Active，跨过恢复点取到的不算案发证据）；
-  深度总耗时 `dgeo_ms` 含锁外前后处理，判前向停顿看 `dgeo_seg.stages.forward`，
-  不能拿 `dgeo_ms` 当判据。
+  深度总耗时 `dgeo_cost_ms` 含锁外前后处理，判前向停顿看 `dgeo_seg.stages.forward`，
+  不能拿 `dgeo_cost_ms` 当判据。
 - 门控判定日志带 `frame=`，与 `frames.jsonl` 的 `frame_id` 对齐（日志墙钟只到秒，帧号才是
   可靠的共同坐标）。导出判定时刻的画面用
   `maaracing_master/plugins/speedrush/tools/export_gating_marks.py`。
@@ -928,8 +947,9 @@ plan.py 与 plan_layer 闸随「选目标→承诺」架构退役删除——奖
   与横位保持解耦：横位步长门只限 x，只要 ≥2 条线真正参与融合，θ 照常重算
   （少线仍沿用旧值）；角度自己的跳变门按**变化率**判（0.8 rad/s，与朝向
   物理门同源），固定步长门会锁死真实快转（1.5s 转 0.3 rad 属正常快转）。
-  trace：`lane_theta`（角度龄/检测龄/来源帧/是否重算/来源线数/保持/连续
-  冻结帧数与秒数/是否陈旧接收）与 `lat_ctrl.tha/thu/hst`。
+  trace：`lane_theta`（角度龄/来源帧号/是否重算/来源线数/保持/连续
+  冻结帧数与秒数/是否陈旧接收）与 `lat_ctrl.tha/thu/hst`；检测帧龄只在
+  `obs_age.lane.age_ms` 落盘。
   `theta_n_sources` 是参与角度融合的线数，不是横位候选数 `n_locked`。
   残留冻结只来自“少于两条线参与融合”。
 - **交付意图（pass/graze）走目标位放大前馈（planner）**：决策目标位经
@@ -1500,7 +1520,7 @@ trace 增 `scene` 与 `plan` 列（含 `val/cc` 价值与碰撞成本）。
 口径封顶：超过 `COAST_MAX_TICKS` 不再按恒速外推，横位冻住并标 `RELOCK`。
 trace 观测面：`lane_obs.lost`（连续无证据拍数）、`lane_obs.usable/locked`、
 `lane_obs.focal`（线角用的逐帧全幅焦距）、`lat_ctrl.unver/blind`、
-`ro_origin`（走廊中心实际原点：line / 深度来源）。
+`ro_center_src`（走廊中心实际来源：line / 深度来源）。
 
 **线观测模型与降级**：线模型随可选模型包分发（`lane/plus_small_384x640.onnx`
 与 DML 专用 `lane/plus_small_fp16_384x640.onnx`），训练自 BDD100K，随可选模型包

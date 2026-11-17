@@ -356,7 +356,7 @@ class RouteVerdict:
             return None if x is None or not math.isfinite(x) else round(x, nd)
         return {"ph": self.phase, "ref": _r(self.lane_ref, 3),
                 "tgt": _r(self.lane_target, 3), "vd": self.verdict,
-                "why": self.why, "age": _r(self.since_s, 2),
+                "why": self.why, "age_s": _r(self.since_s, 2),
                 "gain": _r(self.gain_m, 2), "tc": _r(self.t_cur_s, 3),
                 "ev": _r(self.evidence_m, 2), "cd": _r(self.cooldown_left_s, 2),
                 "ep": self.epoch, "blk": self.blocker,

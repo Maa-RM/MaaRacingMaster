@@ -65,7 +65,7 @@ def load_games(logs_dir: str, token: str):
 def tick_inputs(row, i):
     dt = float(row.get("dt") or (1.0 / TICK_HZ))
     ts = (row.get("ts_mono_ns") or 0) / 1e9 or i / TICK_HZ
-    u = float(row.get("steer_raw") or 0.0)
+    u = float(row.get("steer_pre_lpf") or 0.0)
     ro = row.get("road_offset")
     src = row.get("ro_source") or "none"
     hold = src in HOLD_SRC
@@ -253,7 +253,7 @@ def predict_metrics(trace, g, p):
         for k in range(i0 + 1, i1 + 1):
             row = g[k]
             dt = float(row.get("dt") or 1 / TICK_HZ)
-            u = float(row.get("steer_raw") or 0.0)
+            u = float(row.get("steer_pre_lpf") or 0.0)
             a = p.a_lat_gain * u
             x += v * dt + 0.5 * a * dt * dt
             v += (a - v / p.tau_align_s) * dt

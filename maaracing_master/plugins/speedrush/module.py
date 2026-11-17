@@ -2220,7 +2220,7 @@ class SpeedRushModule(ActivityModule):
             dw = chain["depth_geo"]
             yolo_age = result.age_ms(t_observe)
             obs_age = {
-                "at_ns": round(t_observe * 1e9),
+                "t_observe_ns": round(t_observe * 1e9),
                 "yolo": {"fid": result.frame_id, "ts_ns": result.ts_ns or None,
                          "age_ms": None if yolo_age is None else round(yolo_age, 1)},
                 "depth": source_age(dw.last_fid, dw.last_frame_ts_ns)
@@ -2382,7 +2382,7 @@ class SpeedRushModule(ActivityModule):
 
         cap_wait_ms = _seg(_cap.get("t0"), _cap.get("pick"))
         rec_ms = _seg(_cap.get("pick"), _cap.get("rec"))
-        det_ms = _seg(_cap.get("pick"), _cap.get("det"))
+        det_cost_ms = _seg(_cap.get("pick"), _cap.get("det"))
         mask_ms = _seg(_cap.get("det"), _cap.get("mask"))
         ctrl_ms = _seg(_cap.get("det"), _now)
         _dbg = chain.get("debug")
@@ -2396,7 +2396,8 @@ class SpeedRushModule(ActivityModule):
             "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
             # 本拍内段（ms）：取帧等待/录制/检测（含录制）/掩码/控制剩余；
             # 卡顿拍看哪一段占满 pace_body。yolo 三段来自 PerceptionResult。
-            "cap_wait_ms": cap_wait_ms, "rec_ms": rec_ms, "det_ms": det_ms,
+            "cap_wait_ms": cap_wait_ms, "rec_ms": rec_ms,
+            "det_cost_ms": det_cost_ms,
             "mask_ms": mask_ms, "ctrl_ms": ctrl_ms,
             "yolo_infer_ms": None if result is None
             else round(result.infer_ms, 1),
@@ -2482,7 +2483,7 @@ class SpeedRushModule(ActivityModule):
                 chain["gate"].snapshot()),
             "maneuver": out.maneuver,
             "steer_norm": round(planner.state.steer_norm, 4),
-            "steer_raw": round(planner.last_steer_raw, 4),
+            "steer_pre_lpf": round(planner.last_steer_raw, 4),
             "steer_x": cmd.steer_x,
             "executed_lane": round(planner.state.executed_lane, 4),
             # 在线前向速度（m/s）：持久车道图的前进预测输入，离线复算同一
@@ -2578,7 +2579,7 @@ class SpeedRushModule(ActivityModule):
             # 检测新）要对照 obs_age.lane.age_ms——检测帧龄只在那一处落盘。
             "lane_theta": {
                 "th_ms": lane_theta_age,
-                "src": None if lane is None else lane.get("theta_src_fid"),
+                "src_fid": None if lane is None else lane.get("theta_src_fid"),
                 "upd": lane_thu,
                 "nsrc": lane_thn,
                 "hold": lane_hold,
@@ -2588,9 +2589,9 @@ class SpeedRushModule(ActivityModule):
                 "hdiv": head_div,
                 "hv_d": lane_hold_vline_d},
             "ro_source": chain["ego_road"].last.get("source"),
-            # 走廊中心实际原点：line=线为主（深度只供边界），其余=深度来源。
+            # 走廊中心实际来源：line=线为主（深度只供边界），其余=深度来源。
             # 与 ro_source 分开：线为主时 ro_source 仍显示深度候选的侧效来源。
-            "ro_origin": chain["ego_road"].last.get("origin"),
+            "ro_center_src": chain["ego_road"].last.get("origin"),
             # road_offset 的实际出处（测量分账的唯一判据）：line=线当拍测量、
             # line_hold=线短断外推、depth=深度实测、held=记忆/历史保持、
             # none=弃权。ro_source 不能替代它——那是深度候选来源。
@@ -2658,10 +2659,11 @@ class SpeedRushModule(ActivityModule):
             else round(dgeo.left_edge_lane, 3),
             "dgeo_right": None if dgeo is None or dgeo.right_edge_lane is None
             else round(dgeo.right_edge_lane, 3),
-            # dgeo_ms=worker 侧 observe 耗时（解耦后不再是控制拍成本）；
+            # dgeo_cost_ms=worker 侧 observe 耗时（解耦后不再是控制拍成本）；
             # dgeo_age_ms=消费时刻帧龄（age 闸的读数面，滞后与丢弃都在这列显形）；
             # dgeo_new=本拍是否新结果（False=驻留复用，驻留协议的离线审计列）
-            "dgeo_ms": None if dgeo is None else round(dgeo.latency_ms, 1),
+            "dgeo_cost_ms": None if dgeo is None
+            else round(dgeo.latency_ms, 1),
             "dgeo_age_ms": None if dgeo is None
             else round(chain["depth_geo"].last_age_ms, 1),
             "dgeo_new": dgeo is not None and dgeo_new,
@@ -2669,7 +2671,7 @@ class SpeedRushModule(ActivityModule):
             # （age 起点之外、此前不可见的段；内段 cap_pick/rec/det/mask/copy_ms
             # =拾取/录制/检测/掩码/入队拷贝，同钟伸缩 Σ内段≡cap，2026-10-08
             # 性能第二批插桩）、queue=入队→worker 开工、
-            # pub=发布→本拍消费，与 dgeo_ms 相加≈age；stages=生产者三段快照
+            # pub=发布→本拍消费，与 dgeo_cost_ms 相加≈age；stages=生产者三段快照
             # （pre/forward/points）+ 后处理三段（plane/edges/grid）。
             # 仅新证据拍记录（驻留复用拍重复无信息），见 _timing_segments
             "dgeo_seg": None if not (dgeo is not None and dgeo_new)

@@ -18,8 +18,8 @@ motion_plan 架构（场景快照 → 时空横向轨迹评估 → 预览跟踪�
 - 似然 = 一步转移 + 生产同款 α-β 观测模型；修正拍不剔除。
 - 留出验证按整段 trace 留一；参数 CI 用 Jacobian 近似（仅作退化检查）。
 - `sigma_ego(t)` 由多步开环残差按 horizon 拟合，保守含路心观测噪声。
-- 缺 `steer_raw` 列的旧 trace 只能拟合三个参数，`tau_steer` 不可辨识，
-  `calibrated=false`；需要新录一局带 `steer_raw` 的 trace 才能解锁。
+- 缺 `steer_pre_lpf` 列的 trace（含改名前的旧局）只能拟合三个参数，`tau_steer`
+  不可辨识，`calibrated=false`；需要新录一局带 `steer_pre_lpf` 的 trace 才能解锁。
 - `calibrated=false` 时 `motion.mode=live` 必须 fail-loud（影子/离线不受限）。
 
 ## replay_plan.py
