@@ -673,22 +673,26 @@ def test_infer_points_busy_raises_not_blocks():
 
 
 def test_box_anchor_uses_bottom_row_geometry():
-    """逐车距离 = 框底行几何；邻道/截断/框底在灭点行之上都弃权。"""
+    """逐车距离 = 框底行几何；框不完整（贴边/下缘截断/宽高比异常）弃权。"""
     y_v = 360.0
-    z = dg._box_anchor_z((560, 500, 720, 540), y_v)
+    z = dg._box_anchor_z((584, 480, 656, 540), y_v)
     assert z == pytest.approx(dg.FOCAL_PX * dg.CAM_H_M / (540.0 - y_v))
-    assert dg._box_anchor_z((1000, 500, 1200, 540), y_v) is None   # 邻道
-    assert dg._box_anchor_z((0, 500, 300, 540), y_v) is None       # 画面截断
-    assert dg._box_anchor_z((560, 300, 720, 355), y_v) is None     # 灭点行之上
-    assert dg._box_anchor_z((560, 300, 720, 355), 400.0) is None   # 同上（高灭点）
+    # 邻道后视完整框：横向不设限，框底仍落在该车接地点上
+    assert dg._box_anchor_z((996, 480, 1068, 540), y_v) == pytest.approx(z)
+    assert dg._box_anchor_z((0, 480, 72, 540), y_v) is None        # 左贴边
+    assert dg._box_anchor_z((1208, 480, 1280, 540), y_v) is None   # 右贴边
+    assert dg._box_anchor_z((584, 420, 656, 719), y_v) is None     # 下缘截断
+    assert dg._box_anchor_z((500, 480, 780, 540), y_v) is None     # 宽高比 4.7（侧视/并框）
+    assert dg._box_anchor_z((584, 300, 656, 355), y_v) is None     # 灭点行之上
+    assert dg._box_anchor_z((584, 300, 656, 355), 400.0) is None   # 同上（高灭点）
 
 
-def test_anchor_sheet_from_detections_drops_adjacent():
+def test_anchor_sheet_keeps_complete_boxes_in_any_lane():
     sheet = dg.anchor_sheet_from_detections(
-        [(0, 560, 500, 720, 540), (1, 1000, 500, 1200, 540)], 3, 1,
-        360.0)
-    assert sheet is not None and len(sheet.entries) == 1
-    assert sheet.entries[0].det_idx == 0
+        [(0, 584, 480, 656, 540), (1, 996, 480, 1068, 540),
+         (2, 500, 480, 780, 540)], 3, 1, 360.0)
+    assert sheet is not None
+    assert [e.det_idx for e in sheet.entries] == [0, 1]
     assert sheet.fx == pytest.approx(dg.FOCAL_PX)
 
 

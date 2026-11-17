@@ -1539,9 +1539,12 @@ def _dig_band(dig: np.ndarray | None, pts: np.ndarray) -> np.ndarray:
 # 40m 外只有 4~10px 分辨率，框底条带不可用（实验区实证）。
 
 ANCHOR_Z_LO, ANCHOR_Z_HI = 2.0, 90.0   # 测量有效域（米；anchor-age 实验真值域口径）
-# 邻道门（2026-11-11 实验结论）：邻道框的框底行给的是「最近侧面点」，不是纵向
-# 车距（并行车 3~5m 会被当成前车），横向米制位超此值或框被画面截断一律不给锚。
-ANCHOR_ADJACENT_X_M = 1.2
+# 框完整性判据（替代旧横向一刀切 1.2m）：横向位置不设限，只要求这一框确实是
+# 车的「后视完整框」——框底行就是接地点。四条弃权理由：左右贴画面边、下缘贴
+# 画面底（并排/近车被画面切掉，框底不是纵向接地线）、宽高比超上限（侧视、两车
+# 并框合并的框底也不是接地线）。后视完整框在任意车道，框底都落在该车接地点上。
+ANCHOR_BOTTOM_CLIP_PX = 6      # 框底距画面下缘不足此像素数即视为被下缘截断
+ANCHOR_BOX_AR_MAX = 2.0        # 框宽/高上限；后视约 1.1~1.5，侧视与并框合并 >2
 
 
 @dataclass(frozen=True)
@@ -1573,12 +1576,14 @@ class DepthAnchorSheet:
 
 def _box_anchor_z(box: tuple[int, int, int, int], y_v: float,
                   focal: float = FOCAL_PX, cam_h: float = CAM_H_M,
-                  frame_w: int = FRAME_W) -> float | None:
+                  frame_w: int = FRAME_W,
+                  frame_h: int = FRAME_H) -> float | None:
     """框底行 → 车距（米）。框底=接地点，``z = focal·cam_h/(y_bot − y_h)``。
 
     弃权（None，不造假锚）：框过小、框底在灭点行之上（几何无效）、距离出
-    ``ANCHOR_Z_LO/HI``、横向米制位超 ``ANCHOR_ADJACENT_X_M``（邻道车框底给的是
-    最近侧面点）、框被画面横向截断（框心不可信）。"""
+    ``ANCHOR_Z_LO/HI``、框不完整（左右贴画面边、下缘贴画面底、宽高比超
+    ``ANCHOR_BOX_AR_MAX``——侧视与并框合并的框底不是接地线）。横向位置不设限：
+    后视完整框在任意车道，框底都落在该车接地点上。"""
     x0, y0, x1, y1 = (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
     if x1 - x0 < 3 or y1 - y0 < 3:
         return None
@@ -1588,9 +1593,10 @@ def _box_anchor_z(box: tuple[int, int, int, int], y_v: float,
     z = focal * cam_h / dz
     if not ANCHOR_Z_LO <= z <= ANCHOR_Z_HI:
         return None
-    cx = 0.5 * (x0 + x1)
-    x_m = (cx - PT_CX) * z / focal
-    if abs(x_m) > ANCHOR_ADJACENT_X_M or x0 <= 0 or x1 >= frame_w:
+    if (x0 <= 0 or x1 >= frame_w
+            or y1 >= frame_h - ANCHOR_BOTTOM_CLIP_PX):
+        return None
+    if float(x1 - x0) / float(y1 - y0) > ANCHOR_BOX_AR_MAX:
         return None
     return float(z)
 
@@ -1600,8 +1606,9 @@ def anchor_sheet_from_detections(detections, fid: int, ts_ns: int, y_v: float,
                                  cam_h: float = CAM_H_M
                                  ) -> DepthAnchorSheet | None:
     """逐车框算锚点 → 清单。detections = (det_idx, x0, y0, x1, y1) 全分辨率
-    原始框序列。出域/邻道/截断的框**静默弃权**（清单少一条=消费端「无锚」
-    语义，不造假锚）；detections 为空 → None（零成本路径）。"""
+    原始框序列。出域/框不完整（贴边、下缘截断、宽高比异常）的框**静默弃权**
+    （清单少一条=消费端「无锚」语义，不造假锚）；detections 为空 → None
+    （零成本路径）。"""
     if not detections:
         return None
     entries: list[AnchorEntry] = []
