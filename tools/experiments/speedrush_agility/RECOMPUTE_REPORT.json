@@ -77,7 +77,7 @@
   "r1": "program",
   "r2": "human-shadow"
  },
- "implementation_sha256_16": "d504cef554778155",
+ "implementation_sha256_16": "de39d3f3a50a8fe6",
  "reversals": [
   {
    "label": "r1s1",
@@ -8369,6 +8369,9 @@
    "notes": {},
    "jumps": 0,
    "jump_notes": {},
+   "side_ticks": 0,
+   "side_break": 0,
+   "jump_side_break": 0,
    "yield": 0,
    "yield_notes": {},
    "jump_yield": 0
@@ -8380,6 +8383,9 @@
    "notes": {},
    "jumps": 0,
    "jump_notes": {},
+   "side_ticks": 0,
+   "side_break": 0,
+   "jump_side_break": 0,
    "yield": 0,
    "yield_notes": {},
    "jump_yield": 0
@@ -8391,6 +8397,9 @@
    "notes": {},
    "jumps": 0,
    "jump_notes": {},
+   "side_ticks": 0,
+   "side_break": 0,
+   "jump_side_break": 0,
    "yield": 0,
    "yield_notes": {},
    "jump_yield": 0
@@ -8402,6 +8411,9 @@
    "notes": {},
    "jumps": 0,
    "jump_notes": {},
+   "side_ticks": 0,
+   "side_break": 0,
+   "jump_side_break": 0,
    "yield": 0,
    "yield_notes": {},
    "jump_yield": 0

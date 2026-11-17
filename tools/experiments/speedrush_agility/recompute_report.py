@@ -297,8 +297,8 @@ def main() -> None:
     md.append("贴边拍=why 为 pass/graze；同车大跳=命中 id 与保持 id 都相同、"
               "且目标位移超过 `target_jump_lane`。旧 trace 没有该列时"
               "「有 pin 列」为 0、分布为空——如实报缺列，不猜。只报分布，不判对错。\n")
-    md.append("| 段 | 贴边拍 | 有 pin 列 | held | same | 让位 | 让位明细 | 同车大跳 | 跳时让位 |")
-    md.append("|---|---:|---:|---:|---:|---:|---|---:|---:|")
+    md.append("| 段 | 贴边拍 | 有 pin 列 | held | same | 让位 | 让位明细 | 同车大跳 | 跳时让位 | 侧别违背 | 跳时违背 |")
+    md.append("|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|")
     pin_rows = []
     for seg in segs:
         row = {"label": M.seg_label(seg), **M.pin_stat(seg)}
@@ -312,7 +312,8 @@ def main() -> None:
         detail = ",".join(f"{k}:{v}" for k, v in sorted(y.items())) or "-"
         md.append(f"| {row['label']} | {row['ticks']} | {row['with_pin']} | "
                   f"{notes.get('held', 0)} | {notes.get('same', 0)} | "
-                  f"{row['yield']} | {detail} | {row['jumps']} | {row['jump_yield']} |")
+                  f"{row['yield']} | {detail} | {row['jumps']} | {row['jump_yield']} | "
+                  f"{row['side_break']}/{row['side_ticks']} | {row['jump_side_break']} |")
     rep["pin"] = pin_rows
     md.append("")
 

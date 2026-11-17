@@ -66,11 +66,21 @@ def split_segments(rows: list[dict], gap_s: float | None = None) -> list[list[di
                 or (r.get("ts_ns") or 0) - (segs[-1][-1].get("ts_ns") or 0) > gap_ns):
             segs.append([])
         segs[-1].append(r)
+    # 同一会话可跑多场：round/stage 会重复，标签加出现序号（#2/#3），
+    # 否则报告里三段同名、无法指认。
+    seen: Counter = Counter()
+    for seg in segs:
+        base = f"r{seg[0].get('round')}s{seg[0].get('stage_id')}"
+        seen[base] += 1
+        label = base if seen[base] == 1 else f"{base}#{seen[base]}"
+        for r in seg:
+            r["_seg_label"] = label
     return segs
 
 
 def seg_label(seg: list[dict]) -> str:
-    return f"r{seg[0].get('round')}s{seg[0].get('stage_id')}"
+    return seg[0].get("_seg_label") or \
+        f"r{seg[0].get('round')}s{seg[0].get('stage_id')}"
 
 
 def num(x) -> float | None:
@@ -411,7 +421,7 @@ def pin_stat(seg: list[dict]) -> dict:
     """
     notes: Counter = Counter()
     jumps: Counter = Counter()
-    ticks = with_pin = 0
+    ticks = with_pin = side_ticks = side_break = jump_side_break = 0
     prev = None
     for r in seg:
         d = sel(r)
@@ -421,6 +431,12 @@ def pin_stat(seg: list[dict]) -> dict:
             if isinstance(note, str):
                 with_pin += 1
                 notes[note] += 1
+        side, lock = d.get("side"), d.get("lock")
+        has_side = isinstance(side, int) and isinstance(lock, int)
+        if has_side:
+            side_ticks += 1
+            if side != lock:
+                side_break += 1
         if prev is not None and isinstance(note, str):
             pd = sel(prev)
             a, b = pd.get("target"), d.get("target")
@@ -431,7 +447,10 @@ def pin_stat(seg: list[dict]) -> dict:
                     and abs(b - a) > PARAMS["target_jump_lane"] \
                     and ha == hb and hla == hlb:
                 jumps[note] += 1
+                if has_side and side != lock:
+                    jump_side_break += 1
         prev = r
-    return {"ticks": ticks, "with_pin": with_pin,
-            "notes": dict(notes), "jumps": sum(jumps.values()),
-            "jump_notes": dict(jumps)}
+    return {"ticks": ticks, "with_pin": with_pin, "notes": dict(notes),
+            "jumps": sum(jumps.values()), "jump_notes": dict(jumps),
+            "side_ticks": side_ticks, "side_break": side_break,
+            "jump_side_break": jump_side_break}

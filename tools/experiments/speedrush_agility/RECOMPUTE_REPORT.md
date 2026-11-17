@@ -4,7 +4,7 @@
 - 输入：`speedrush.jsonl` sha256[:16]=`b9ce83027137be8d`
 - 参数：`{"lane_w_m": 3.5, "seg_gap_s": 0.2, "rev_theta_sweep": [0.02, 0.05, 0.1, 0.2], "near_lane": 0.8, "toa_min_s": 1.0, "toa_max_s": 3.0, "stick_deadzone_raw": 2000, "geom_require_adjacent": true, "geom_require_seen_both": true, "geom_require_same_src": true, "geometry_event_m": 1.0, "closure_tolerance_m": 0.02, "identity_candidate_lane": 0.8, "run_summary_theta": 0.1, "target_jump_lane": 0.5}`
 - 模式约定：本组实录 r1 为程序驾驶，r2 为人工驾驶；人工局程序命令仅作反事实记录。
-- 计算实现指纹：`d504cef554778155`
+- 计算实现指纹：`de39d3f3a50a8fe6`
 - 本报告所有数字由 `recompute_report.py` 从原始 trace 直接计算；未读取任何旧脚本摘要或方案表格。
 
 ## A. 分段与时间基
@@ -123,12 +123,12 @@
 
 贴边拍=why 为 pass/graze；同车大跳=命中 id 与保持 id 都相同、且目标位移超过 `target_jump_lane`。旧 trace 没有该列时「有 pin 列」为 0、分布为空——如实报缺列，不猜。只报分布，不判对错。
 
-| 段 | 贴边拍 | 有 pin 列 | held | same | 让位 | 让位明细 | 同车大跳 | 跳时让位 |
-|---|---:|---:|---:|---:|---:|---|---:|---:|
-| r1s1 | 247 | 0 | 0 | 0 | 0 | - | 0 | 0 |
-| r1s2 | 338 | 0 | 0 | 0 | 0 | - | 0 | 0 |
-| r2s1 | 195 | 0 | 0 | 0 | 0 | - | 0 | 0 |
-| r2s2 | 551 | 0 | 0 | 0 | 0 | - | 0 | 0 |
+| 段 | 贴边拍 | 有 pin 列 | held | same | 让位 | 让位明细 | 同车大跳 | 跳时让位 | 侧别违背 | 跳时违背 |
+|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|
+| r1s1 | 247 | 0 | 0 | 0 | 0 | - | 0 | 0 | 0/0 | 0 |
+| r1s2 | 338 | 0 | 0 | 0 | 0 | - | 0 | 0 | 0/0 | 0 |
+| r2s1 | 195 | 0 | 0 | 0 | 0 | - | 0 | 0 | 0/0 | 0 |
+| r2s2 | 551 | 0 | 0 | 0 | 0 | - | 0 | 0 | 0/0 | 0 |
 
 ## I. 未定项（不出数）
 

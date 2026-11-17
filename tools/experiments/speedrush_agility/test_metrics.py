@@ -98,5 +98,30 @@ class MetricsChecks(unittest.TestCase):
         self.assertEqual(result["jump_notes"], {"same": 1})
 
 
+    def test_pin_stat_counts_side_break_at_jump(self):
+        """输出侧与锁定侧不一致时记违背；同车大跳处单独计数。"""
+        rows = [
+            {"ts_ns": 0, "sel_why": "pass",
+             "sel_dbg": {"target": 0.0, "hit_oid": 7, "graze_hold": [7, 1.0],
+                         "pin": "new", "side": 1, "lock": 1}},
+            {"ts_ns": 50_000_000, "sel_why": "pass",
+             "sel_dbg": {"target": 0.9, "hit_oid": 7, "graze_hold": [7, 1.0],
+                         "pin": "na", "side": -1, "lock": 1}},
+        ]
+        result = M.pin_stat(rows)
+        self.assertEqual(result["side_ticks"], 2)
+        self.assertEqual(result["side_break"], 1)
+        self.assertEqual(result["jumps"], 1)
+        self.assertEqual(result["jump_side_break"], 1)
+
+    def test_repeated_round_stage_labels_get_suffix(self):
+        """同一会话跑多场：round/stage 重复时标签加出现序号，不产生同名段。"""
+        def row(ts):
+            return {"round": 1, "stage_id": 1, "ts_ns": ts}
+        segs = M.split_segments([row(0), row(50_000_000),
+                                 row(2_000_000_000), row(2_050_000_000)])
+        self.assertEqual([M.seg_label(s) for s in segs], ["r1s1", "r1s1#2"])
+
+
 if __name__ == "__main__":
     unittest.main()
