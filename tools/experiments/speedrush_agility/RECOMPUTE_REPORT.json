@@ -1,5 +1,5 @@
 {
- "caliber_version": "sr-base-v2",
+ "caliber_version": "sr-base-v3",
  "input": {
   "trace": "speedrush.jsonl",
   "sha256_16": "b9ce83027137be8d",
@@ -24,7 +24,8 @@
   "geometry_event_m": 1.0,
   "closure_tolerance_m": 0.02,
   "identity_candidate_lane": 0.8,
-  "run_summary_theta": 0.1
+  "run_summary_theta": 0.1,
+  "target_jump_lane": 0.5
  },
  "segments": [
   {
@@ -76,7 +77,7 @@
   "r1": "program",
   "r2": "human-shadow"
  },
- "implementation_sha256_16": "ecbe3ee1d3c50943",
+ "implementation_sha256_16": "d504cef554778155",
  "reversals": [
   {
    "label": "r1s1",
@@ -8358,6 +8359,52 @@
    "holds": 107,
    "censored_boundaries": 1,
    "breaks": 1
+  }
+ ],
+ "pin": [
+  {
+   "label": "r1s1",
+   "ticks": 247,
+   "with_pin": 0,
+   "notes": {},
+   "jumps": 0,
+   "jump_notes": {},
+   "yield": 0,
+   "yield_notes": {},
+   "jump_yield": 0
+  },
+  {
+   "label": "r1s2",
+   "ticks": 338,
+   "with_pin": 0,
+   "notes": {},
+   "jumps": 0,
+   "jump_notes": {},
+   "yield": 0,
+   "yield_notes": {},
+   "jump_yield": 0
+  },
+  {
+   "label": "r2s1",
+   "ticks": 195,
+   "with_pin": 0,
+   "notes": {},
+   "jumps": 0,
+   "jump_notes": {},
+   "yield": 0,
+   "yield_notes": {},
+   "jump_yield": 0
+  },
+  {
+   "label": "r2s2",
+   "ticks": 551,
+   "with_pin": 0,
+   "notes": {},
+   "jumps": 0,
+   "jump_notes": {},
+   "yield": 0,
+   "yield_notes": {},
+   "jump_yield": 0
   }
  ]
 }

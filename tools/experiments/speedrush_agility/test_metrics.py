@@ -73,5 +73,30 @@ class MetricsChecks(unittest.TestCase):
         self.assertEqual(result["err_max"], 0)
 
 
+    def test_pin_stat_reports_missing_column(self):
+        """旧 trace 没有 pin 列：贴边拍照数，有列数为 0，不猜分布。"""
+        rows = [{"ts_ns": i * 50_000_000, "sel_why": "pass",
+                 "sel_dbg": {"target": 0.1 * i}} for i in range(3)]
+        result = M.pin_stat(rows)
+        self.assertEqual(result["ticks"], 3)
+        self.assertEqual(result["with_pin"], 0)
+        self.assertEqual(result["notes"], {})
+
+    def test_pin_stat_counts_same_object_jumps_only(self):
+        """同车（命中/保持 id 相同）大跳按当拍锁定结果归类；换车不算。"""
+        def row(i, target, hit, pin):
+            return {"ts_ns": i * 50_000_000, "sel_why": "pass",
+                    "sel_dbg": {"target": target, "hit_oid": hit,
+                                "graze_hold": [hit, 1.0], "pin": pin}}
+        rows = [row(0, 0.0, 7, "new"), row(1, 0.1, 7, "held"),
+                row(2, 0.9, 7, "same"), row(3, 0.0, 8, "held")]
+        result = M.pin_stat(rows)
+        self.assertEqual(result["ticks"], 4)
+        self.assertEqual(result["with_pin"], 4)
+        self.assertEqual(result["notes"], {"new": 1, "held": 2, "same": 1})
+        self.assertEqual(result["jumps"], 1)
+        self.assertEqual(result["jump_notes"], {"same": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

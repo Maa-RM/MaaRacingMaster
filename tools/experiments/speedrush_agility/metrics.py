@@ -15,7 +15,7 @@ import statistics
 from dataclasses import dataclass, field
 from collections import Counter
 
-CALIBER_VERSION = "sr-base-v2"
+CALIBER_VERSION = "sr-base-v3"
 
 #: 全部阈值/口径参数。改这里就是改口径，必须同时升版本号。
 PARAMS: dict[str, object] = {
@@ -33,6 +33,7 @@ PARAMS: dict[str, object] = {
     "closure_tolerance_m": 0.02,
     "identity_candidate_lane": 0.8,  # 候选邻近筛选，不证明身份
     "run_summary_theta": 0.10,
+    "target_jump_lane": 0.5,       # 相邻拍目标位移超过此值记一次大跳（只统计）
 }
 
 
@@ -394,3 +395,43 @@ def geometry_stat(seg: list[dict]) -> dict:
            "closed": clos, "err_max": round(err_max, 3),
            "dominant": dict(dom), "groups": dict(grp), "event_details": events}
     return row
+
+
+#: 侧别锁定的让位结果（除 held/same 外的执行分支）。
+PIN_YIELD = ("new", "unsafe", "tight", "clamp", "escape", "blocked",
+             "path", "commit")
+
+
+def pin_stat(seg: list[dict]) -> dict:
+    """侧别锁定结果分布 + 同车大跳时的结果（只报分布，不判对错）。
+
+    贴边拍 = ``sel_why`` 为 pass/graze 的拍。同车大跳 = 与上一拍命中 id、
+    保持 id 都相同，且目标位移超过 ``target_jump_lane``。旧 trace 没有
+    ``sel_dbg.pin`` 列时 ``with_pin`` 为 0，分布为空——如实报缺列，不猜。
+    """
+    notes: Counter = Counter()
+    jumps: Counter = Counter()
+    ticks = with_pin = 0
+    prev = None
+    for r in seg:
+        d = sel(r)
+        note = d.get("pin")
+        if r.get("sel_why") in ("pass", "graze"):
+            ticks += 1
+            if isinstance(note, str):
+                with_pin += 1
+                notes[note] += 1
+        if prev is not None and isinstance(note, str):
+            pd = sel(prev)
+            a, b = pd.get("target"), d.get("target")
+            ha, hb = pd.get("hit_oid"), d.get("hit_oid")
+            hla = (pd.get("graze_hold") or [None])[0]
+            hlb = (d.get("graze_hold") or [None])[0]
+            if a is not None and b is not None \
+                    and abs(b - a) > PARAMS["target_jump_lane"] \
+                    and ha == hb and hla == hlb:
+                jumps[note] += 1
+        prev = r
+    return {"ticks": ticks, "with_pin": with_pin,
+            "notes": dict(notes), "jumps": sum(jumps.values()),
+            "jump_notes": dict(jumps)}

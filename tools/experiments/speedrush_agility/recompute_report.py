@@ -292,8 +292,32 @@ def main() -> None:
     rep["sticks"] = stick_rows
     md.append("")
 
-    # ---- H. 未定项 ----
-    md.append("## H. 未定项（不出数）\n")
+    # ---- H. 侧别锁定归因 ----
+    md.append("## H. 侧别锁定归因（`sel_dbg.pin`）\n")
+    md.append("贴边拍=why 为 pass/graze；同车大跳=命中 id 与保持 id 都相同、"
+              "且目标位移超过 `target_jump_lane`。旧 trace 没有该列时"
+              "「有 pin 列」为 0、分布为空——如实报缺列，不猜。只报分布，不判对错。\n")
+    md.append("| 段 | 贴边拍 | 有 pin 列 | held | same | 让位 | 让位明细 | 同车大跳 | 跳时让位 |")
+    md.append("|---|---:|---:|---:|---:|---:|---|---:|---:|")
+    pin_rows = []
+    for seg in segs:
+        row = {"label": M.seg_label(seg), **M.pin_stat(seg)}
+        notes = row["notes"]
+        y = {k: v for k, v in notes.items() if k in M.PIN_YIELD}
+        jy = {k: v for k, v in row["jump_notes"].items() if k in M.PIN_YIELD}
+        row["yield"] = sum(y.values())
+        row["yield_notes"] = y
+        row["jump_yield"] = sum(jy.values())
+        pin_rows.append(row)
+        detail = ",".join(f"{k}:{v}" for k, v in sorted(y.items())) or "-"
+        md.append(f"| {row['label']} | {row['ticks']} | {row['with_pin']} | "
+                  f"{notes.get('held', 0)} | {notes.get('same', 0)} | "
+                  f"{row['yield']} | {detail} | {row['jumps']} | {row['jump_yield']} |")
+    rep["pin"] = pin_rows
+    md.append("")
+
+    # ---- I. 未定项 ----
+    md.append("## I. 未定项（不出数）\n")
     for line in [
         "**证据有效**：旧无身份分支用 `not scene.stale` 测走廊状态，车类分支复用资格标记；混合通过率作废；"
         "新口径需绑定对象种类 × 证据来源 × 用途，并允许「无法判定」。",
