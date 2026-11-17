@@ -2103,6 +2103,9 @@ class DecisionEngine:
             "graze_hold": [None if self.selector.hold_state[0] is None
                            else self.selector.hold_state[0],
                            round(self.selector.hold_state[1], 2)],
+            # 侧别锁定结果（held/same/off/na/new/unsafe/tight/clamp/escape/
+            # blocked/path/commit）：同车翻面的归因列。
+            "pin": self.selector.pin_note,
         }
         self._reach_goal = rep.target_x_m
         if rep.layer == 0:

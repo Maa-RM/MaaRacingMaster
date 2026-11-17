@@ -1223,6 +1223,7 @@ class LayeredSelector:
         self._hold_why = "graze"         # 保持闩续住的是 pass 还是 graze
         self._hold_side: float | None = None  # pass 保持原选侧（+1 右 / −1 左）
         self._side_oid: int | None = None  # 侧别锁定的对象身份（换车才重选侧）
+        self._pin_note = "off"            # 上一拍侧别锁定的结果（trace 观测面）
         self._near_rel: dict[int, float] = {}  # 近场保持：车 id → 相对车心偏移（米）
         self._tgt_hold: dict[int, float] = {}     # 贴边目标保持：车 id → 目标
         self._read_prev: dict[int, tuple] = {}    # 车 id → (x, z) 上一有效读数
@@ -1236,6 +1237,18 @@ class LayeredSelector:
         trace 面世」实际未落，贴车段为什么断离线不可回答（新局 120417
         0 段并行 >0.35s vs 旧局 13 段，闩是否啮合/何时释放无从判断）。"""
         return self._graze_oid, self._graze_miss_t
+
+    @property
+    def pin_note(self) -> str:
+        """上一拍侧别锁定结果（trace 观测面，不参与决策）。
+
+        ``held``=按锁定侧改写；``same``=原生目标已在锁定侧；``off``=闸关；
+        ``na``=本拍不是贴边；``new``=换车/首次贴边、尚无锁定侧；
+        ``unsafe``=命中车不在或对象表判不安全；``tight``=锁定侧夹不出间距；
+        ``clamp``=锁定侧被路缘夹回另一侧；``escape``=车 1s 内到站走短侧；
+        ``blocked``/``path``=锁定侧通过窗或横移路径被别车占；``commit``=承诺
+        道跨度闸。离线按此列归因同车翻面，不必再靠猜。"""
+        return self._pin_note
 
     def _pin_pass_side(self, raw: SelectionReport, road: RoadFrame,
                        cars: Sequence[Obj], coins: Sequence[Obj],
@@ -1252,38 +1265,52 @@ class LayeredSelector:
         只在五种情况让位：锁定侧横向量反而比原生目标更远（贴身逃生走短的
         那一侧）、锁定侧夹不出最小间距、锁定侧通过窗被别车占住、锁定侧横移
         路径有别车；承诺期再叠一道跨度闸（与原生贴边同规则）。"""
-        if not p.pass_side_pin_enabled or raw.why not in ("pass", "graze") \
-                or raw.hit_oid is None or self._side_oid != raw.hit_oid \
-                or self._hold_side is None:
+        self._pin_note = "off"
+        if not p.pass_side_pin_enabled:
+            return raw
+        if raw.why not in ("pass", "graze") or raw.hit_oid is None:
+            self._pin_note = "na"
+            return raw
+        if self._side_oid != raw.hit_oid or self._hold_side is None:
+            self._pin_note = "new"
             return raw
         car = next((c for c in cars if c.oid == raw.hit_oid
                     and c.kind == "car"), None)
         if car is None or not car.safe:
+            self._pin_note = "unsafe"
             return raw
         half = (p.car_half_lane + p.ego_half_lane) * p.lane_w_m
         if (1.0 if raw.target_x_m >= car.x else -1.0) == self._hold_side:
+            self._pin_note = "same"
             return raw
         x = _pass_x_side(car, road, p, self._hold_side)
         if x is None or abs(x - car.x) < half:
+            self._pin_note = "tight"
             return raw
         if (1.0 if x >= car.x else -1.0) != self._hold_side:
+            self._pin_note = "clamp"
             return raw                 # 夹取回退到了另一侧：锁定侧其实不可用
         if abs(x - ego) > abs(raw.target_x_m - ego) + 1e-6 \
                 and (car.t is None or car.t < _SIDE_PIN_ESCAPE_S):
+            self._pin_note = "escape"
             return raw                 # 车到眼前才走短侧逃生；远车不许借这个理由换边
         others = [o for o in cars if o is not car]
         t = 0.0 if car.t is None else car.t
         if _pass_window_blocked(others, x, t,
                                 _pass_alongside_s(car.v_close, p), p):
+            self._pin_note = "blocked"
             return raw
         if abs(x - ego) > p.aligned_lane * p.lane_w_m \
                 and _pass_path_blocked(others, ego, x,
                                        _t_move(x - ego, p) + p.reaction_s, p):
+            self._pin_note = "path"
             return raw
         if committed and commit_x_m is not None \
                 and not _in_interval(x, _lane_span(commit_x_m, p, road)):
+            self._pin_note = "commit"
             return raw
         t_wp = raw.waypoints[-1].t if raw.waypoints else max(t, 0.0)
+        self._pin_note = "held"
         return SelectionReport(
             raw.layer, _waypoints(2, x, t_wp, cars, coins, road, ego, p),
             x, raw.why, raw.road_ok, raw.maneuver, raw.lane_request,

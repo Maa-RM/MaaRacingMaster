@@ -432,6 +432,7 @@ def test_side_pin_default_off():
         rep = sel.update(_road(), [], [Obj("car", -0.2, 2.0, oid=7)],
                          [], 0.0, 0.05)
     assert rep.target_x_m > -0.2           # 翻到右侧（旧行为）
+    assert sel.pin_note == "off"
 
 
 def test_side_pin_keeps_side_across_jitter():
@@ -446,6 +447,7 @@ def test_side_pin_keeps_side_across_jitter():
                          [], 0.0, 0.05)
     assert rep.why == "pass"
     assert rep.target_x_m < -0.2           # 仍锁左侧，不横穿目标车
+    assert sel.pin_note == "held"
 
 
 def test_side_pin_yields_when_locked_side_blocked():
@@ -460,6 +462,7 @@ def test_side_pin_yields_when_locked_side_blocked():
         rep = sel.update(_road(), [], [Obj("car", -0.2, 2.0, oid=7),
                                        blocker], [], 0.0, 0.05)
     assert rep.target_x_m > -0.2           # 锁定侧不可用：允许换到另一侧
+    assert sel.pin_note in ("blocked", "path")
 
 
 def test_side_pin_escape_when_car_imminent():
@@ -474,9 +477,11 @@ def test_side_pin_escape_when_car_imminent():
     near = [Obj("car", -0.5, 0.4, oid=7)]  # 锁定侧目标 −2.80，比原生远
     out = sel._pin_pass_side(raw, _road(), near, [], ego, sel.p)
     assert out.target_x_m == pytest.approx(1.2)     # 逃生走短侧
+    assert sel.pin_note == "escape"
     far = [Obj("car", -0.5, 2.0, oid=7)]   # 远车：仍锁左侧
     out = sel._pin_pass_side(raw, _road(), far, [], ego, sel.p)
     assert out.target_x_m < -0.5
+    assert sel.pin_note == "held"
 
 
 def test_target_hold_keeps_line_on_lateral_jump():
