@@ -2363,13 +2363,6 @@ class SpeedRushModule(ActivityModule):
         # 内存全量行供局汇总聚合（_write_game_summary），流水汇行异步落会话目录。
         # boundary 黄线列已随 2D 链路退役（v4 换装），路缘观测量看
         # dgeo_left/dgeo_right 两列。
-        # 候选诊断三列：金币组数 + 最高分 + 该组横向偏移——直接回答"有没有币/差多少分/
-        # 在几车道外"。评分器是纯函数、每拍已算，这里只多读一次结果，不改决策。
-        best: tuple[float, float] | None = None
-        for g in obs.coin_groups:
-            s = chain["engine"].scorer.score(g, obs)
-            if s is not None and (best is None or s.score > best[0]):
-                best = (s.score, g.x_center)
         # 红块内缘读数（"整块"边界候选，方向 3 任务 2 前置数据面）：绿区逐帧
         # 边界在护栏根部逐帧摆动（对宽门拒绝的根因），红块是大结构跨帧稳；
         # 栅格已含挖除（YOLO 框挖除在栅格构建前）。trace-only 数据面，
@@ -2398,11 +2391,9 @@ class SpeedRushModule(ActivityModule):
         _row = {
             "fid": fid, "ts_ns": ts_ns, "dt": round(dt, 4),
             "obs_age": obs_age,
-            # pace 三列（环体/睡眠/睡醒空隙，环迭代墙钟 ms）——dt（帧时戳间隔）
-            # 三模态 33/50/66 的逐拍归因面；首拍无上区间为 None
+            # pace_body（环迭代墙钟 ms）——dt（帧时戳间隔）三模态 33/50/66 的
+            # 逐拍归因面；首拍无上区间为 None。睡眠/睡醒空隙只在诊断日志汇总。
             "pace_body": None if pace_ms is None else round(pace_ms[0], 1),
-            "pace_sleep": None if pace_ms is None else round(pace_ms[1], 1),
-            "pace_wake": None if pace_ms is None else round(pace_ms[2], 1),
             # 本拍内段（ms）：取帧等待/录制/检测（含录制）/掩码/控制剩余；
             # 卡顿拍看哪一段占满 pace_body。yolo 三段来自 PerceptionResult。
             "cap_wait_ms": cap_wait_ms, "rec_ms": rec_ms, "det_ms": det_ms,
@@ -2413,9 +2404,9 @@ class SpeedRushModule(ActivityModule):
             else round(result.wait_ms, 1),
             "yolo_run_ms": None if result is None
             else round(result.run_ms, 1),
-            # 调试 IO 侧观测（上一拍统计）：写盘/丢旧/队列深度/单对耗时
+            # 调试 IO 侧观测（上一拍统计）：写盘/丢旧/单对耗时
             "dbg_saved": _dst.get("saved"), "dbg_dropped": _dst.get("dropped"),
-            "dbg_q": _dst.get("q"), "dbg_ms": _dst.get("ms"),
+            "dbg_ms": _dst.get("ms"),
             "state": out.state.value, "reason": out.reason,
             "x_target": out.x_target,
             # 行为契约观测面（阶段 0，只记录不控制）：意图所有者/权限/目标/
@@ -2521,8 +2512,6 @@ class SpeedRushModule(ActivityModule):
                  # 编号空间，跨帧对账/拆分合并审计要靠轨道 id 集合。
                  "mids": list(g.member_ids), "lead": g.lead_id}
                 for g in obs.coin_groups] or None,
-            "best_score": None if best is None else round(best[0], 1),
-            "best_x": None if best is None else round(best[1], 2),
             # step 2.5 闭环列：实际喂入 planner 的路中心观测（None=本拍弃权/垃圾对）
             # + 修正后 executed/v。ro_hold=该值来自历史保持（memory/wall_occl/
             # pair_slot），planner 不把它当本拍测量——离线看"供数在跳"与
@@ -2791,12 +2780,7 @@ class SpeedRushModule(ActivityModule):
             # “空街”与“有币但没跟踪”（2026-10-20 阶段 1 误冻结归因）。
             "raw_cars": obs.health.raw_cars,
             "raw_coins": obs.health.raw_coins,
-            "raw_bonuses": obs.health.raw_bonuses,
-            # oage：本拍 2D 帧龄（frame_with_age 抓取时现算，拍级新鲜）——
-            # 决策时刻米制真实年龄 ≈ dist[].age（锚龄，零点=深度帧采集）+
-            # oage（零点=2D 帧采集）；两零点同钟族（perf_counter_ns），相加
-            # 无重复计账。WGC 重复帧拍 obs 整体冻结，本列不受影响（拍级）。
-            "oage": round(age_ms, 1)}
+            "raw_bonuses": obs.health.raw_bonuses}
         chain["trace"].append(_row)
         _ts = chain.get("trace_sink")
         if _ts is not None:

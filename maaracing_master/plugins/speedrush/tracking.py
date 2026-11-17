@@ -169,7 +169,7 @@ class ObjectDistance:
     时间语义（2026-10-08 时间链台账钉死，全部 perf_counter_ns 同钟族）：
     ``anchor_age_ms`` 零点 = 深度帧**采集回调**时刻（sheet.ts=frame_ts_ns，
     非推理完成时刻、非 push 时刻）。
-    决策时刻米制年龄 ≈ anchor_age_ms + 本拍帧龄（trace 顶层 oage，拍级现算）
+    决策时刻米制年龄 ≈ anchor_age_ms + 本拍帧龄（拍级现算）
     ——两零点同族，相加无重复计账。注意与 dgeo_age_ms（零点=push 墙钟的
     服务年龄）不可相加。WGC 重复帧拍整个 obs 冻结（age 不再增长）——重复
     拍的年龄语义以 fid 判重后另行外推，契约不谎报新鲜。"""
