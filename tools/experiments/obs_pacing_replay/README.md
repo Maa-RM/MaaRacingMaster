@@ -113,9 +113,9 @@ V1 的教训即设计约束：**拍首提交必须配 worker「等本拍节拍�
 ```
 # trace 分解（三局）：
 .venv/Scripts/python.exe -I tools/experiments/obs_pacing_replay/probe_trace_decomp.py \
-    "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_145900" \
-    "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_183348" \
-    "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_193212"
+    "%APPDATA%/MaaRacingMaster/logs/<会话编号>" \
+    "%APPDATA%/MaaRacingMaster/logs/<会话编号>" \
+    "%APPDATA%/MaaRacingMaster/logs/<会话编号>"
 # 回放（先跑 V0 对标尺，首行必须显示「退出节流 成功」）：
 .venv/Scripts/python.exe -I tools/experiments/obs_pacing_replay/probe_full_chain_replay.py --variant v0 --duration 12
 .venv/Scripts/python.exe -I tools/experiments/obs_pacing_replay/probe_full_chain_replay.py --variant v2 --duration 12

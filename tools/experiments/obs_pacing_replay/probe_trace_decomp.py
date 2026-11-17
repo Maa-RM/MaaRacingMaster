@@ -29,9 +29,9 @@
 用法::
 
     .venv/Scripts/python.exe tools/experiments/obs_pacing_replay/probe_trace_decomp.py \
-        "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_145900" \
-        "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_183348" \
-        "C:/Users/yomen/AppData/Roaming/MaaRacingMaster/logs/20261115_193212"
+        "%APPDATA%/MaaRacingMaster/logs/<会话编号>" \
+        "%APPDATA%/MaaRacingMaster/logs/<会话编号>" \
+        "%APPDATA%/MaaRacingMaster/logs/<会话编号>"
 """
 from __future__ import annotations
 
