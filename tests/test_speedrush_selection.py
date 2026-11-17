@@ -1289,3 +1289,31 @@ def test_graze_latch_freezes_target_on_unknown_reading():
                               x_unknown=True)], [], 0.0, 0.05)
         assert rep.why == "pass" and rep.layer == 2
         assert rep.target_x_m == pytest.approx(x0, abs=0.05)
+
+
+def test_arrival_guard_side_pin_keeps_side_across_car_jitter():
+    """来车守卫侧别记忆：同一来车横位在自车附近抖动时不重推通过侧。"""
+    p = _p(arrival_guard_enabled=True, arrival_guard_side_pin=True)
+    guard: dict[int, float] = {}
+    ego = 0.1
+    rep = select(_road(), [], [Obj("car", 0.0, 1.0, oid=7)], [], ego, p,
+                 committed=True, commit_x_m=0.0, guard_side=guard)
+    assert rep.target_x_m > 0.0            # 首拍定右
+    rep = select(_road(), [], [Obj("car", 0.2, 1.0, oid=7)], [], ego, p,
+                 committed=True, commit_x_m=0.0, guard_side=guard)
+    assert rep.target_x_m > 0.2            # 车心越过自车仍走右侧
+    select(_road(), [], [Obj("car", 0.2, None, oid=7)], [], ego, p,
+           committed=True, commit_x_m=0.0, guard_side=guard)
+    assert guard == {}                     # 车离开来车窗：记忆清掉
+
+
+def test_arrival_guard_without_side_pin_flips_with_jitter():
+    """闸关：侧别逐拍按自车与车心的相对位置重推，抖动即翻侧。"""
+    p = _p(arrival_guard_enabled=True)
+    ego = 0.1
+    rep = select(_road(), [], [Obj("car", 0.0, 1.0, oid=7)], [], ego, p,
+                 committed=True, commit_x_m=0.0)
+    assert rep.target_x_m > 0.0
+    rep = select(_road(), [], [Obj("car", 0.2, 1.0, oid=7)], [], ego, p,
+                 committed=True, commit_x_m=0.0)
+    assert rep.target_x_m < 0.2            # 旧行为：翻到左侧

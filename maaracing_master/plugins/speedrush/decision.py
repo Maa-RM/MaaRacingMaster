@@ -409,6 +409,21 @@ def _sel_objects_trace(rewards, cars, coins, ego_m: float,
             "car": rows(cars), "coin": rows(coins)}
 
 
+def _side_of(rep, cars, hold_oid: int | None) -> int | None:
+    """最终目标的通过侧（相对命中/保持车心，+1 右 / −1 左）；无车=None。
+
+    与 ``sel_dbg.pin`` 互补：pin 只描述「新鲜候选」那一步，保持支路产出的
+    目标没有分支名；本函数按最终输出算，供离线判断同车翻面是否违背锁定侧。
+    """
+    oid = rep.hit_oid if rep.hit_oid is not None else hold_oid
+    if oid is None:
+        return None
+    car = next((c for c in cars if c.oid == oid), None)
+    if car is None:
+        return None
+    return 1 if rep.target_x_m >= car.x else -1
+
+
 class SelectionShadowWatch:
     """选择层影子的比对与取证（只记录，不参与控制）。
 
@@ -535,6 +550,7 @@ class DecisionEngine:
             pass_graze_adjacent_enabled=s.pass_graze_adjacent_enabled,
             pass_no_surrender_enabled=s.pass_no_surrender_enabled,
             arrival_guard_enabled=s.arrival_guard_enabled,
+            arrival_guard_side_pin=s.arrival_guard_side_pin,
             pass_reach_lane=s.pass_reach_lane,
             pass_lean_min_s=s.pass_lean_min_s,
             pass_clear_len_m=s.pass_clear_len_m,
@@ -2106,6 +2122,12 @@ class DecisionEngine:
             # 侧别锁定结果（held/same/off/na/new/unsafe/tight/clamp/escape/
             # blocked/path/commit）：同车翻面的归因列。
             "pin": self.selector.pin_note,
+            # 输出侧与锁定侧（+1 右 / −1 左）。pin 只覆盖「新鲜候选」那一步；
+            # 保持支路产出的目标不会有 pin 分支名，这两列按最终输出算，
+            # 用来回答「同车翻面到底有没有违背锁定侧」。
+            "side": _side_of(rep, cars, self.selector.hold_state[0]),
+            "lock": (None if self.selector.hold_side is None
+                     else int(self.selector.hold_side)),
         }
         self._reach_goal = rep.target_x_m
         if rep.layer == 0:

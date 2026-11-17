@@ -345,6 +345,11 @@ class SelectionParams:
     # （两批 12 阶段超车腰斩），加闸隔离归因，开=启用该刀。
     pass_no_surrender_enabled: bool = False
     arrival_guard_enabled: bool = False
+    # 来车守卫的侧别记忆（2026-11-17）：同一辆来车在自车附近横位抖动时，
+    # 侧别逐拍按「自车在车的哪一侧」重推会让目标在车的两侧来回跳约 1.25 道
+    # （单局实机 25/65 次非贴边大跳落在这条路径上）。开=该车第一次成为最近
+    # 来车时定侧、仍在来车窗内不再重推；该侧被占仍退另一侧并改记新侧。
+    arrival_guard_side_pin: bool = False
     # 通过时窗占用（2026-11-04，帧证 20261104_085659 局2 f3605：全速追尾
     # 刹车慢车后被夹停滞）：贴边通过不是「到站瞬间」的事——从到站到脱离
     # 目标车尾的整段里，通过线被别的车占住=这个通过不可行。并排段时长=
@@ -672,7 +677,8 @@ def _t_of(o: Obj) -> float:
 
 
 def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
-                       road: RoadFrame, p: SelectionParams) -> float:
+                       road: RoadFrame, p: SelectionParams,
+                       guard_side: dict[int, float] | None = None) -> float:
     """目标点不得落在「马上要到站的车」车体带上（两半宽和）。
 
     回中/预置/金币/并线这些层只按当拍价值挑目标，没有「这个横向位置在车
@@ -683,7 +689,11 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
     修正只做最小位移：先试这辆车的擦边位（``graze_gap``，顺带就是得分位），
     再退走廊缘；改完仍有别的来车占位就保持原目标（交给计划层的安全代价）。
     闸 ``arrival_guard_enabled`` 关=直通（隔离 A/B，2026-11-09）。
-    """
+
+    ``guard_side``：同一辆来车的侧别记忆（车 id → ±1）。给了它，侧别只在
+    该车第一次成为最近来车时取一次；车心横向读数在自车附近抖动时不再逐拍
+    重推——两侧目标相差约 1.25 道，重推就是方向盘左右来回打。该侧被占时
+    仍退另一侧并记住新侧；车离开来车窗后记忆清掉。"""
     if not p.arrival_guard_enabled:
         return x
     worst = None
@@ -699,9 +709,17 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
             continue
         if worst_t is None or c.t < worst_t:
             worst, worst_t = c, c.t
+    if guard_side is not None:
+        live = {c.oid for c in cars if c.safe and c.t is not None
+                and 0.0 < c.t <= _ARRIVAL_GUARD_S}
+        for oid in list(guard_side):
+            if oid not in live:
+                guard_side.pop(oid, None)
     if worst is None or worst_t is None:
         return x
     side = 1.0 if ego >= worst.x else -1.0
+    if guard_side is not None:
+        side = guard_side.setdefault(worst.oid, side)
     for s in (side, -side):
         cand = _pass_x_side(worst, road, p, s)
         if cand is None:
@@ -713,6 +731,8 @@ def _clear_of_arrivals(x: float, ego: float, cars: Sequence[Obj],
                or not (0.0 < c.t <= _ARRIVAL_GUARD_S)
                or not _x_known(c, p)
                or abs(cand - c.x) >= _pass_clear_m(c, p) for c in cars):
+            if guard_side is not None:
+                guard_side[worst.oid] = s
             return cand
     return x
 
@@ -1078,7 +1098,8 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
            ego: float, p: SelectionParams,
            *, coarse_lane: float | None = None,
            committed: bool = False,
-           commit_x_m: float | None = None) -> SelectionReport:
+           commit_x_m: float | None = None,
+           guard_side: dict[int, float] | None = None) -> SelectionReport:
     """纯选择：四层字典序 + 路点（无状态；驻留由 LayeredSelector 做）。
 
     ``coarse_lane``：粗层选定的车道（相对 z=0 中心线，道，右正）；只影响
@@ -1126,7 +1147,7 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
             else:
                 x, t, why, hit_oid = hit
             layer = 1 if why == "reward" else 2 if why in ("pass", "graze") else 3
-            x = _clear_of_arrivals(x, ego, cars, road, p)
+            x = _clear_of_arrivals(x, ego, cars, road, p, guard_side)
             # 命中按类型裁决请求：擦边/让位/贴边是贴身动作，挂起请求本拍
             # 丢弃（路线 pass_hold 也不抢方向）——贴着一辆车的同时再起并线
             # 正是意图打架的来源；得分命中把邻道请求带出，继续累计确认——
@@ -1160,7 +1181,7 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
                     hit = cand
         if hit is not None:
             x, t, gwhy, goid = hit
-            x = _clear_of_arrivals(x, ego, cars, road, p)
+            x = _clear_of_arrivals(x, ego, cars, road, p, guard_side)
             return SelectionReport(
                 2, _waypoints(2, x, t, cars, coins, road, ego, p),
                 x, gwhy, True, True, hit_oid=goid)
@@ -1185,7 +1206,7 @@ def select(road: RoadFrame, rewards: Sequence[Obj],
         x = iv[1] if req.lane > 0 else iv[0]
     if iv is not None:
         x = _edge_of(x, iv)
-    x = _clear_of_arrivals(x, ego, cars, road, p)
+    x = _clear_of_arrivals(x, ego, cars, road, p, guard_side)
     if committed:
         return SelectionReport(4, (Waypoint(p.horizon_s, x, "commit"),),
                                x, "commit", True, maneuver)
@@ -1224,6 +1245,7 @@ class LayeredSelector:
         self._hold_side: float | None = None  # pass 保持原选侧（+1 右 / −1 左）
         self._side_oid: int | None = None  # 侧别锁定的对象身份（换车才重选侧）
         self._pin_note = "off"            # 上一拍侧别锁定的结果（trace 观测面）
+        self._guard_side: dict[int, float] = {}  # 来车守卫侧别记忆（车 id → ±1）
         self._near_rel: dict[int, float] = {}  # 近场保持：车 id → 相对车心偏移（米）
         self._tgt_hold: dict[int, float] = {}     # 贴边目标保持：车 id → 目标
         self._read_prev: dict[int, tuple] = {}    # 车 id → (x, z) 上一有效读数
@@ -1249,6 +1271,11 @@ class LayeredSelector:
         ``blocked``/``path``=锁定侧通过窗或横移路径被别车占；``commit``=承诺
         道跨度闸。离线按此列归因同车翻面，不必再靠猜。"""
         return self._pin_note
+
+    @property
+    def hold_side(self) -> float | None:
+        """锁定侧（+1 右 / −1 左）；None=尚未锁定。trace 观测面。"""
+        return self._hold_side
 
     def _pin_pass_side(self, raw: SelectionReport, road: RoadFrame,
                        cars: Sequence[Obj], coins: Sequence[Obj],
@@ -1554,7 +1581,9 @@ class LayeredSelector:
             self.p, horizon_s=float(horizon_s))
         raw = select(road, rewards, cars, coins, ego, p,
                      coarse_lane=coarse_lane, committed=committed,
-                     commit_x_m=commit_x_m)
+                     commit_x_m=commit_x_m,
+                     guard_side=(self._guard_side
+                                 if p.arrival_guard_side_pin else None))
         prev = self.last
         # 贴边侧别锁定（2026-11-10）：先于武装——武装只在新车/新一次贴边时
         # 换侧，同车贴边期内这里把原生翻过去的目标按回锁定侧。

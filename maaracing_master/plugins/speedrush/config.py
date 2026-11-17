@@ -128,6 +128,8 @@ class Selection:
     # 隔离 A/B 闸（2026-11-09，默认关=回基线）：躲避 bundle 净负，加闸归因。
     pass_no_surrender_enabled: bool = False
     arrival_guard_enabled: bool = False
+    # 来车守卫侧别记忆（2026-11-17）：默认关，A/B 后再决定是否开。
+    arrival_guard_side_pin: bool = False
     # 通过时窗占用（2026-11-04 帧证与判据见 selection.SelectionParams 同名
     # 注释）：贴边通过全程（到站→脱离车尾）通过线被占=不可行。
     pass_clear_len_m: float = 10.0
@@ -1149,6 +1151,8 @@ def _read_decision(path: Path) -> DecisionConfig:
                 d, "selection", "pass_no_surrender_enabled", default=False),
             arrival_guard_enabled=_bool(
                 d, "selection", "arrival_guard_enabled", default=False),
+            arrival_guard_side_pin=_bool(
+                d, "selection", "arrival_guard_side_pin", default=False),
             pass_reach_lane=_num_def(
                 d, "selection", "pass_reach_lane", 1.3, lo=0),
             pass_lean_min_s=_num_def(
