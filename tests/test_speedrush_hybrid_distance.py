@@ -370,12 +370,12 @@ def test_zero_regression_on_existing_2d_outputs():
 def test_anchor_sheet_box_bottom_geometry():
     """逐车距离 = 框底行几何：z = fy·cam_h/(y_bot−y_h)，与点云无关。"""
     sheet = anchor_sheet_from_detections(
-        [(0, 584, 480, 656, 540)], fid=7, ts_ns=700, y_v=360.0)
+        [(0, 560, 500, 720, 540)], fid=7, ts_ns=700, y_v=360.0)
     assert sheet is not None and sheet.fid == 7
     assert len(sheet.entries) == 1
     e = sheet.entries[0]
     assert e.z_m == pytest.approx(630.0 * 1.25 / (540.0 - 360.0))
-    assert e.y1 - e.y0 == 60
+    assert e.y1 - e.y0 == 40
 
 
 def test_anchor_sheet_drops_out_of_domain_and_degenerate_boxes():
@@ -494,11 +494,11 @@ def test_cluster_switch_clears_fx_with_anchor():
 
 def test_sheet_carries_frame_focal():
     """锚点清单携带横向反投影焦距（契约）：缺省=固定投影焦距，可显式覆盖。"""
-    s = anchor_sheet_from_detections([(0, 584, 480, 656, 540)], fid=7,
+    s = anchor_sheet_from_detections([(0, 560, 500, 720, 540)], fid=7,
                                      ts_ns=700, y_v=360.0, focal=697.3)
     assert s.fx == pytest.approx(697.3)
     assert anchor_sheet_from_detections(
-        [(0, 584, 480, 656, 540)], fid=7, ts_ns=700,
+        [(0, 560, 500, 720, 540)], fid=7, ts_ns=700,
         y_v=360.0).fx == pytest.approx(630.0)
 
 
@@ -525,16 +525,13 @@ def test_jump_gate_drops_flip_and_keeps_old_anchor():
     assert d2.v_close_mps == pytest.approx((44.0 - 44.5) / (10 * NS / 1e9))
 
 
-def test_box_anchor_z_keeps_adjacent_rear_view_drops_side_view():
-    """横向不设限：完整后视框在邻道也给锚；侧视/并框合并（宽高比超上限）
-    仍弃权——那种框的框底不是该车接地点。"""
+def test_box_anchor_z_drops_adjacent_lane_box():
+    """邻道车的框底给的是「最近侧面点」，不是纵向车距：横向米制位超 1.2m
+    一律不给锚（否则并行车 3~5m 会被当成前车）。"""
     y_v = 360.0
     front = anchor_sheet_from_detections(
-        [(0, 584, 480, 656, 540)], fid=1, ts_ns=1, y_v=y_v)
+        [(0, 560, 500, 720, 540)], fid=1, ts_ns=1, y_v=y_v)
     assert front.entries[0].z_m == pytest.approx(630.0 * 1.25 / 180.0)
-    adj = anchor_sheet_from_detections(
-        [(0, 996, 480, 1068, 540)], fid=1, ts_ns=1, y_v=y_v)
-    assert adj.entries[0].z_m == pytest.approx(630.0 * 1.25 / 180.0)
     side = anchor_sheet_from_detections(
         [(0, 1000, 500, 1200, 540)], fid=1, ts_ns=1, y_v=y_v)
     assert side.entries == ()
