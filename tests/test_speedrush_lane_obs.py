@@ -555,6 +555,45 @@ def test_single_line_new_identity_rate_limits():
     assert r2["hold"] is False
 
 
+def test_hold_still_updates_theta_with_two_lines():
+    """P0-C：横位被限速保持时，≥2 条线的角度照常更新（两者解耦）。
+
+    角度来自各线自身的斜率拟合，与横位步长门无关；旧实现把整拍绑在
+    ``not hold`` 上，实机 20261117 四段有 31~62% 的检测帧角度被冻结。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    new = [_line(-0.2, "w", theta=0.05), _line(0.8, "w", theta=0.05)]
+    r = tr.update(new, 8, 0.05, anchor=None)
+    assert r["hold"] is True
+    assert r["theta_updated"] is True
+    assert r["theta"] == pytest.approx(0.05, abs=1e-6)
+
+
+def test_hold_theta_jump_is_gated():
+    """P0-C：换线/换段带来的角度阶跃不能灌进观测器（角度自己的跳变门）。"""
+    tr = LineTracker()
+    _warm_lock(tr, [_line(-1.1, "w"), _line(0.9, "w")])
+    new = [_line(-0.2, "w", theta=0.3), _line(0.8, "w", theta=0.3)]
+    r = tr.update(new, 8, 0.05, anchor=None)
+    assert r["hold"] is True
+    assert r["theta_updated"] is False
+    assert r["theta"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_slow_theta_change_accepted_despite_large_absolute_jump():
+    """P0-C：判据是变化率，不是绝对步长。
+
+    真实快转在 1 秒内可以转 0.3 rad（约 0.3 rad/s）；固定 0.12 rad 的步长门
+    会把它误杀，并在后续帧持续拒绝（基线不动、差值越拉越大，实机 20261117
+    段 2 出现 31 帧/1.5s 的锁死）。"""
+    tr = LineTracker()
+    tr.update([_line(-1.1, "w"), _line(0.9, "w")], 1, 0.05, anchor=0.0)
+    r = tr.update([_line(-1.1, "w", theta=0.3),
+                   _line(0.9, "w", theta=0.3)], 20, 0.05, anchor=0.0)
+    assert r["theta_updated"] is True
+    assert r["theta"] == pytest.approx(0.3, abs=1e-6)
+
+
 def test_yellow_wrong_fit_sign_is_rejected():
     """左黄线拟合出正 L（实拍 p2 fid 4123）不作绝对参照。"""
     tr = LineTracker()
@@ -1236,6 +1275,56 @@ def test_worker_snapshot_carries_line_origin_flags():
     snap = w._snapshot(res, 10, 1.28, 0.0, 0.02, False)
     assert snap["usable"] is True and snap["locked"] == 7
     assert snap["focal"] == pytest.approx(671.3)     # 线角尺度可审计
+
+
+def test_theta_source_marks_hold_and_fresh_updates():
+    """P0-A 诊断契约：θ 的来源帧/是否重算/来源线数。
+
+    保持拍与单线拍都沿用上一有效角度——此时 theta_updated=False、来源帧
+    停在上一次真正融合的那一检测拍；只有 ≥2 条线的新检测拍才更新来源。"""
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    r = tr.update(both, 1, 0.05, anchor=0.0, frame_ts_ns=1_000_000_000)
+    assert r["theta_updated"] is True
+    assert r["theta_n_sources"] == 2
+    assert r["theta_src_fid"] == 1
+    assert r["theta_src_ts_ns"] == 1_000_000_000
+    assert r["hold"] is False
+    # 单线拍：角度不可信，沿用旧值，来源仍指向上一有效拍
+    r2 = tr.update([_line(-1.1, "w")], 2, 0.05, anchor=None,
+                   frame_ts_ns=1_050_000_000)
+    assert r2["theta_updated"] is False
+    assert r2["theta_src_fid"] == 1
+    assert r2["theta_n_sources"] == 2
+
+
+def test_predict_is_not_hold_and_keeps_theta_source():
+    """预测拍不是"横位被限速保持"：hold=False、pred=True，角度来源原样保留。"""
+    tr = LineTracker()
+    both = [_line(-1.1, "w"), _line(0.9, "w")]
+    tr.update(both, 1, 0.05, anchor=0.0, frame_ts_ns=1_000_000_000)
+    p = tr.predict(0.05, 0.0)
+    assert p["pred"] is True and p["hold"] is False
+    assert p["theta_updated"] is False
+    assert p["theta_src_fid"] == 1
+
+
+def test_worker_snapshot_carries_theta_provenance():
+    """快照必须搬运 hold 与角度来源/龄：此前 hold 在快照处丢失，上游只能
+    拿检测帧龄当角度新鲜度——旧角度因此看起来永远新鲜。"""
+    w = LaneObsWorker(LaneObsConfig(enabled=True))
+    res = {"state": "TRACK", "x": 0.4, "theta": 0.01, "n_locked": 2,
+           "relock_src": "line", "n_lines": 2, "grid_reject": 0,
+           "side_reject": 0, "anchor_src": "lines", "usable": True,
+           "locked": 7, "lines": [], "pred": False, "hold": True,
+           "theta_src_fid": 8, "theta_src_ts_ns": 1_000_000_000,
+           "theta_updated": False, "theta_n_sources": 3}
+    snap = w._snapshot(res, 10, 1.28, 0.0, 1.02, False)
+    assert snap["hold"] is True
+    assert snap["theta_updated"] is False
+    assert snap["theta_n_sources"] == 3
+    assert snap["theta_src_fid"] == 8
+    assert snap["theta_age_ms"] == pytest.approx(20.0)
 
 
 def test_predict_marks_usable_false():

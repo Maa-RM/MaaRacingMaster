@@ -77,7 +77,8 @@ from maaracing_master.plugins.speedrush.macro import (
 from maaracing_master.plugins.speedrush.lane_obs import (
     LaneObsConfig, LaneObsWorker, OFF_MAX as LANE_OFF_MAX)
 from maaracing_master.plugins.speedrush.perception import PerceptionResult, StreetPerception
-from maaracing_master.plugins.speedrush.planner import LateralPlanner
+from maaracing_master.plugins.speedrush.planner import (
+    HEAD_AGE_MAX_MS, LateralPlanner)
 from maaracing_master.plugins.speedrush.route import PositionLineage
 from maaracing_master.plugins.speedrush.motion_plan import (
     EgoState, PlanGate, plan_motion)
@@ -1809,6 +1810,15 @@ class SpeedRushModule(ActivityModule):
                         recede_m=cfg.collision.recede_m)
                     if cfg.collision.enabled else None),
                 "collisions": [],
+                # P0-A 线角诊断计数（只读，不改控制）：陈旧角度被规划器接收
+                # 拍数、角度冻结的连续检测帧数与最长时长、保持拍期间标线横速
+                # 变化、模型朝向与线角测量的最大分歧。阶段收尾打一行日志，
+                # 逐拍数值另在 trace 的 lane_theta 列（含 hdiv）。
+                "p0_diag": {"stale_accept": 0, "frozen_frames": 0,
+                            "frozen_max_s": 0.0, "frozen_t0": None,
+                            "last_det_fid": None, "hold_n": 0,
+                            "hold_vline_changed": 0, "hold_vline0": None,
+                            "div_n": 0, "div_max": 0.0},
                 # 产物目录的唯一真源：坏帧/证据包都按它落，不各自再算一遍时刻目录
                 # （否则人工驾驶阶段会另建一个非 manual_ 目录，等于又落一份）
                 "run_dir": run_dir,
@@ -2221,6 +2231,27 @@ class SpeedRushModule(ActivityModule):
                                    None if lane is None else lane.get("det_ts_ns"))}
             if lane is not None and obs_age["lane"]["age_ms"] is not None:
                 lane = dict(lane, det_age_ms=obs_age["lane"]["age_ms"])
+            # ---- P0-A 线角诊断（只读）：角度的龄取它自己的来源戳，不取检测
+            # 帧龄。保持拍沿用旧角度时检测龄很新、角度却很旧，这一格就是要
+            # 看见的分叉；下面喂给规划器的 lane_age_ms 仍是检测龄，行为不变。
+            lane_hold = None if lane is None else bool(lane.get("hold"))
+            lane_thu = None if lane is None else bool(lane.get("theta_updated"))
+            lane_thn = (None if lane is None
+                        else int(lane.get("theta_n_sources") or 0))
+            lane_theta_age = None
+            if lane is not None and lane.get("theta_src_ts_ns") is not None:
+                lane_theta_age = source_age(
+                    lane.get("theta_src_fid"),
+                    lane.get("theta_src_ts_ns"))["age_ms"]
+                lane = dict(lane, theta_age_ms=lane_theta_age)
+            p0 = chain.get("p0_diag")
+            if p0 is None:
+                chain["p0_diag"] = p0 = {
+                    "stale_accept": 0, "frozen_frames": 0,
+                    "frozen_max_s": 0.0, "frozen_t0": None,
+                    "last_det_fid": None, "hold_n": 0,
+                    "hold_vline_changed": 0, "hold_vline0": None,
+                    "div_n": 0, "div_max": 0.0}
             cmd = planner.update(out, dt, current_fid=fid, road_offset=road_offset,
                                  road_offset_new=road_offset_new,
                                  road_offset_hold=road_offset_hold,
@@ -2239,7 +2270,61 @@ class SpeedRushModule(ActivityModule):
                                  # 20°+ 假值）；只影响朝向影子列，不改控制。
                                  lane_n_locked=None if lane is None
                                  else int(lane.get("n_locked") or 0),
+                                 # 角度自己的龄（P0-A 诊断入参）：只落 trace，
+                                 # 接收判据仍是上面的检测龄，行为零变化。
+                                 lane_theta_age_ms=lane_theta_age,
                                  plan=(plan if cfg.motion.mode == "live" else None))
+            # ---- P0-A 计数（只读）：角度冻结按"新检测帧"数，同一帧被 20Hz
+            # 控制拍重复读到不算；其余三项逐拍累计。
+            stale_accept = int(
+                bool(planner.head.last_theta_used)
+                and lane_theta_age is not None
+                and lane_theta_age > HEAD_AGE_MAX_MS)
+            if stale_accept:
+                p0["stale_accept"] += 1
+            lane_frozen_n = p0["frozen_frames"]
+            lane_frozen_s = (0.0 if p0["frozen_t0"] is None
+                             else round(t_observe - p0["frozen_t0"], 2))
+            # 冻结按"新检测帧"数：det_fid 每来一帧就前进（保持拍也一样），
+            # 这一帧角度没重算就累加；同一帧被 20Hz 控制拍重复读到不算。
+            det_fid_now = None if lane is None else lane.get("det_fid")
+            if lane is not None and lane.get("theta") is not None \
+                    and det_fid_now is not None \
+                    and det_fid_now != p0["last_det_fid"]:
+                p0["last_det_fid"] = det_fid_now
+                if lane_thu:
+                    p0["frozen_frames"] = 0
+                    p0["frozen_t0"] = None
+                else:
+                    p0["frozen_frames"] += 1
+                    if p0["frozen_t0"] is None:
+                        p0["frozen_t0"] = t_observe
+                    p0["frozen_max_s"] = max(
+                        p0["frozen_max_s"], t_observe - p0["frozen_t0"])
+                lane_frozen_n = p0["frozen_frames"]
+                lane_frozen_s = (0.0 if p0["frozen_t0"] is None
+                                 else round(t_observe - p0["frozen_t0"], 2))
+            # 保持拍期间的标线横移：横位被限速跟随时，v_line 的斜率窗吃的
+            # 是限速后的点（是否被污染由这列和 yv/几何分辨率回答）。
+            vline = planner.head.v_line
+            lane_hold_vline_d = None
+            if lane_hold and vline is not None:
+                p0["hold_n"] += 1
+                if p0["hold_vline0"] is None:
+                    p0["hold_vline0"] = float(vline)
+                lane_hold_vline_d = round(float(vline) - p0["hold_vline0"], 4)
+                if abs(lane_hold_vline_d) > 1e-6:
+                    p0["hold_vline_changed"] += 1
+            elif not lane_hold:
+                p0["hold_vline0"] = None
+            # 模型朝向与线角测量的分歧（两者都在才有值）：P0-D 的前置观测量，
+            # 只是记录，不进任何判据。
+            head = planner.head
+            head_div = (None if head.mpsi is None or head.psi is None
+                        else round(head.mpsi - head.psi, 4))
+            if head_div is not None:
+                p0["div_n"] += 1
+                p0["div_max"] = max(p0["div_max"], abs(head_div))
         except Exception as exc:  # noqa: BLE001 —— 控制故障降级为观测，不崩主循环
             chain["disabled"] = True
             _tlog(self,
@@ -2503,6 +2588,24 @@ class SpeedRushModule(ActivityModule):
             # v_line=标线横移（直接测量）、v_head/speed=航向与在线前向速度估计
             # （speed=None 表示没估出来：v_head 不兜底，也不进控制律）。
             "lat_ctrl": planner.ctrl_debug(),
+            # P0-A 线角时间契约诊断面（只读）：th_ms=角度**自己的**龄、
+            # det_ms=检测帧龄（两者分叉即"旧角度被当新证据"）、upd=本拍角度
+            # 是否重算、nsrc=参与角度融合的线数（不是 n_locked）、hold=横位
+            # 被步长门限速、frz_n/frz_s=连续角度冻结的检测帧与秒数、
+            # stale_acc=本拍是否把超龄角度喂进了融合、hdiv=模型朝向−线角测量、
+            # hv_d=保持拍内 v_line 相对保持起点的变化。
+            "lane_theta": {
+                "th_ms": lane_theta_age,
+                "det_ms": None if lane is None else lane.get("det_age_ms"),
+                "src": None if lane is None else lane.get("theta_src_fid"),
+                "upd": lane_thu,
+                "nsrc": lane_thn,
+                "hold": lane_hold,
+                "frz_n": lane_frozen_n,
+                "frz_s": lane_frozen_s,
+                "stale_acc": stale_accept,
+                "hdiv": head_div,
+                "hv_d": lane_hold_vline_d},
             "ro_source": chain["ego_road"].last.get("source"),
             # 走廊中心实际原点：line=线为主（深度只供边界），其余=深度来源。
             # 与 ro_source 分开：线为主时 ro_source 仍显示深度候选的侧效来源。
@@ -2787,6 +2890,18 @@ class SpeedRushModule(ActivityModule):
                   f"[极速狂飙] 驾驶阶段 {phase}：控制 trace {len(rows)} 拍"
                   f"（流水汇{'会话内' if self._trace.stats()['token'] else '未开写盘'}）",
                   "INFO")
+            p0 = chain.get("p0_diag")
+            if p0:
+                # P0-A 验收面：陈旧角度被接收、角度冻结长度、保持拍 v_line
+                # 变化、模型与测量分歧——一阶段一行，便于实机先看这四项。
+                _tlog(self,
+                      f"[极速狂飙] 驾驶阶段 {phase}：线角诊断——陈旧角度被接收 "
+                      f"{p0['stale_accept']} 拍 / 冻结最长 "
+                      f"{p0['frozen_max_s']:.2f}s / 保持拍 {p0['hold_n']} 拍"
+                      f"（v_line 变化 {p0['hold_vline_changed']} 拍）/ "
+                      f"模型-测量分歧最大 {p0['div_max']:.3f} rad"
+                      f"（可测 {p0['div_n']} 拍）",
+                      "INFO")
             bf = chain.get("bad_frames") or {}
             if bf.get("saved"):
                 _tlog(self,

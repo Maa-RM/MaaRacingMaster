@@ -156,6 +156,14 @@ LINE_SET_STEP_MAX = 0.03
 # 黄边界侧别硬约束：用最靠车头的几个点判画面左右侧，压中线留死区。
 SIDE_NEAR_PTS = 5
 SIDE_DEADBAND_PX = 20.0
+# 线角跳变门（P0-C）：角度来自各线自身的斜率拟合，与横位步长门无关。
+# 换线/换段时融合角会阶跃（同帧两条线差 p90 约 0.06 rad，线组一换可达
+# 0.2~0.4），这类跳变不能灌进朝向观测器。判据用**变化率**而不是固定步长：
+# 真车满杆偏航率约 0.46 rad/s，物理门取 0.8 给噪声留余量；固定 0.12 rad
+# 的步长门会把"1.5 秒内转了 0.3 rad"的真实快转误杀并锁死（20261117 实机
+# 段 2 观测到 31 帧冻结即此形态）。与规划器朝向物理门同源，两处各自持有
+# 是因为传感器层不反向依赖控制层。
+THETA_RATE_MAX = 0.8       # rad/s
 
 
 @dataclass(frozen=True)
@@ -941,6 +949,13 @@ class LineTracker:
         self.gross_hist: list[bool] = []
         self.gross_reanchor = 0    # 整道级复核触发次数（trace 审计列）
         self.last_theta: float | None = None
+        # 角度自己的来源（P0-A 诊断）：θ 是哪一检测拍、用几条线算出来的。
+        # θ 在保持拍/单线拍沿用旧值，检测帧龄不能代表它的新鲜度——这三项
+        # 与 theta_updated 一起回答「本拍的角度是不是新证据」。
+        self.theta_src_fid: int | None = None
+        self.theta_src_ts_ns: int | None = None
+        self.theta_n_src = 0        # 产生 last_theta 的线数（非 n_locked）
+        self.theta_updated = False  # 本拍角度是否真正重算
         self.last_lines: list[dict] = []
         self.anchor_src = "none"
         # 横位步长门：上一拍 accepted 的整数道号集合。
@@ -1077,7 +1092,11 @@ class LineTracker:
     def update(self, lines: list[dict], fid: int, dt: float,
                v_lat: float = 0.0, fid_jump: bool = False,
                anchor: float | None = None,
-               anchor_strict: bool = False) -> dict:
+               anchor_strict: bool = False,
+               frame_ts_ns: int | None = None) -> dict:
+        # 角度是否重算按拍标记：保持拍/单线拍沿用上一有效角度，此时
+        # theta_updated=False——上游据此区分「新角度」与「旧角度再发一次」。
+        self.theta_updated = False
         # 线锁：上一拍起线已连续稳定 LINE_LOCK_TICKS 拍 → 本拍道号为权威，
         # 深度锚只能用于「线丢失后的重建」，不能改判/否决。冻结覆盖短 COAST
         # （locked 保留、未 RELOCK）：断一拍不代表身份可改，只有跳变/RELOCK
@@ -1309,14 +1328,31 @@ class LineTracker:
             self.x_prev, self.x_last = self.x_last, x_out
             self.lost = 0
             self.state = "TRACK"
-            # 少于两条线或本拍保持时线角不可信：沿用上一有效角度（观测器
-            # 另有 ≥2 条线的门；这里避免单线/换段把角度也刷成假值）。
-            if support >= 2 and not hold:
+            # 角度与横位保持解耦（P0-C）：横位被步长门限速，不等于角度不可信
+            # ——角度来自各线自身的斜率拟合，与 x 的限速无关。≥2 条线真正参与
+            # 融合就照常更新；另加角度自己的跳变门，挡住换线/换段把假角度灌进
+            # 观测器。少线（<2）仍沿用上一有效角度。
+            if support >= 2:
                 ths = [(float(c["theta"]), max(1, int(c.get("n") or 1)))
                        for c in keep if c.get("theta") is not None]
                 if ths:
                     w = sum(w for _, w in ths)
-                    self.last_theta = sum(t * w for t, w in ths) / w
+                    th_new = sum(t * w for t, w in ths) / w
+                    # 跳变门按变化率：距上一个被接受角度的帧数 × 拍长 ≈ 经过
+                    # 的时间（每拍都有一帧，检测跳帧时 fid 会拉开）。
+                    gap_s = (dt * max(1, int(fid) - int(self.theta_src_fid))
+                             if self.theta_src_fid is not None else None)
+                    jump = (self.last_theta is not None and gap_s is not None
+                            and gap_s > 1e-3
+                            and abs(th_new - self.last_theta) / gap_s
+                            > THETA_RATE_MAX)
+                    if not jump:
+                        self.last_theta = th_new
+                        # 角度来源记账（只进诊断）：来源帧/采集戳/融合线数。
+                        self.theta_updated = True
+                        self.theta_src_fid = int(fid)
+                    self.theta_src_ts_ns = frame_ts_ns
+                    self.theta_n_src = len(ths)
             relock_src = "line"
             pred = hold
         elif x_anchor is not None:
@@ -1420,10 +1456,17 @@ class LineTracker:
                 "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": anchor_src, "lines": lines, "pred": pred,
                 "hold": bool(hold),
+                # 角度来源/龄/是否重算（P0-A）：θ 自己的新鲜度与来源线数。
+                # theta_age_ms 由 Worker 按来源戳在发布时刻算（消费端会重算）。
+                "theta_src_fid": self.theta_src_fid,
+                "theta_src_ts_ns": self.theta_src_ts_ns,
+                "theta_updated": bool(self.theta_updated),
+                "theta_n_sources": int(self.theta_n_src),
                 "usable": bool(usable), "locked": int(self.locked)}
 
     def predict(self, dt: float, v_lat: float = 0.0) -> dict:
         """非检测帧：只推进横位；上一帧线保留但标 pred，不再参与绝对位。"""
+        self.theta_updated = False
         if self.x_last is not None:
             self.lost += 1
             # 与 update 的盲窗同一口径：超过 COAST_MAX_TICKS 的外推不再积分
@@ -1439,14 +1482,24 @@ class LineTracker:
                     "lost": int(self.lost),
                     "anchor_src": self.anchor_src,
                     "usable": False, "locked": int(self.locked),
-                    "hold": True,
+                    # hold 只表示「检测拍横位被步长门限速」；预测拍不是 hold，
+                    # 它是 pred（没有横位测量）。两者从此不混用一个字段。
+                    "hold": False,
+                    "theta_src_fid": self.theta_src_fid,
+                    "theta_src_ts_ns": self.theta_src_ts_ns,
+                    "theta_updated": False,
+                    "theta_n_sources": int(self.theta_n_src),
                     "lines": [dict(c) for c in self.last_lines], "pred": True}
         return {"state": "RELOCK", "x": None, "theta": self.last_theta,
                 "n_locked": 0, "relock_src": None, "n_lines": 0,
                 "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": "none", "usable": False,
-                "locked": int(self.locked), "hold": True,
+                "locked": int(self.locked), "hold": False,
+                "theta_src_fid": self.theta_src_fid,
+                "theta_src_ts_ns": self.theta_src_ts_ns,
+                "theta_updated": False,
+                "theta_n_sources": int(self.theta_n_src),
                 "lines": [], "pred": True}
 
 
@@ -1710,7 +1763,8 @@ class LaneObsWorker:
                         if not self._yv_refill:
                             self._yv_evidence_t = self._yv_t
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
-                                               jump, anchor, a_strict)
+                                               jump, anchor, a_strict,
+                                               frame_ts_ns=frame_ts_ns)
                 t_done = time.perf_counter()
                 if not pred:
                     self._last_det_t = t_done
@@ -1761,6 +1815,19 @@ class LaneObsWorker:
                 "x": None if res["x"] is None else round(res["x"], 3),
                 "theta": None if res["theta"] is None
                 else round(res["theta"], 4),
+                # 角度自己的来源（P0-A 诊断）：θ 是哪个检测拍、用几条线算的、
+                # 本拍是否重算。检测帧龄只说明"这一拍跑过检测"，不能证明 θ
+                # 是新的——保持拍沿用旧角度时 theta_updated=False。
+                "theta_src_fid": res.get("theta_src_fid"),
+                "theta_src_ts_ns": res.get("theta_src_ts_ns"),
+                "theta_age_ms": None if res.get("theta_src_ts_ns") is None
+                else round(max(0.0, (t_done - res["theta_src_ts_ns"] / 1e9)
+                               * 1000.0), 1),
+                "theta_updated": bool(res.get("theta_updated", False)),
+                "theta_n_sources": int(res.get("theta_n_sources", 0)),
+                # hold=检测拍上横位被步长门限速（θ 沿用旧值）。以前这里没搬，
+                # 上游拿不到"本拍不是新测量"的唯一标记。
+                "hold": bool(res.get("hold", False)),
                 "state": res["state"],
                 "n_locked": res["n_locked"],
                 "relock_src": res["relock_src"],

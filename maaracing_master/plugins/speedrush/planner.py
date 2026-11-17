@@ -99,7 +99,7 @@ _OSC_EXIT_S = 0.5       # 退出需计划连续无翻转的时长
 # 既不可辨识（R² 0.01~0.17、阻尼符号逐局翻转），预测也与实际位移不相关。
 _HEAD_SLOPE_WINDOW_S = 0.6   # 标线横移斜率窗（比例估计的输入）
 _HEAD_REL_MAX = 0.6          # ψ 物理上限（rad，对应 34°）
-_HEAD_AGE_MAX_MS = 250.0     # 线角读数年龄门（超过即不是本拍证据）
+HEAD_AGE_MAX_MS = 250.0      # 线角读数年龄门（超过即不是本拍证据）
 _LINE_STALE_S = 0.3          # 标线横移 TTL（线锁定拍才会更新）
 _LINE_JUMP_RESET = 0.8       # 线横位单拍跳超此值 = k 重锚/换线，不是横移
 
@@ -180,6 +180,10 @@ class HeadingObserver:
         跨秒统计（20261030_181838 实测：共用一个 reset 时比例被线跳反复清零，
         置信度 0→1→0.3 来回跳，`p1h` 只有 9% 的拍有值）。所以两处线帧重置
         传 ``keep_heading=True``。"""
+        # P0-A 诊断字段：本拍线角是否真的进入融合、它的真实龄（θ 自己的龄）。
+        # 与朝向影子是否保留无关，两分支都要定义。
+        self.last_theta_used = False
+        self.last_theta_age_ms: float | None = None
         if not keep_heading:
             self._t = 0.0
             # 朝向：ψ=线角速率的积分（rad，右正），r=低通角速度，
@@ -263,9 +267,14 @@ class HeadingObserver:
 
     def update(self, dt: float, lane_x: float | None, lane_ok: bool,
                theta: float | None, theta_ok: bool, fid: int | None,
-               age_ms: float | None, n_locked: int | None = None) -> None:
+               age_ms: float | None, n_locked: int | None = None,
+               theta_age_ms: float | None = None) -> None:
         if not (isinstance(dt, (int, float)) and math.isfinite(dt) and dt > 0):
             return
+        # P0-A 诊断：每拍先清「本拍线角是否进入融合」；θ 自己的龄是入参
+        # （不是检测帧龄），由调用方按角度来源戳算好后传进来。只读留证。
+        self.last_theta_used = False
+        self.last_theta_age_ms = theta_age_ms
         self._t += dt
         if self.v_line is not None and self._t - self._last_line > _LINE_STALE_S:
             self.v_line = None
@@ -304,9 +313,14 @@ class HeadingObserver:
             self._samples.clear()
             self.v_line = None
         th: float | None = None
+        # 角度自己的龄优先（P0-B）：保持拍/少线拍沿用旧角度时，检测帧龄很新、
+        # 角度却可能是几秒前的值——拿检测龄放行等于每拍把旧角度当新证据，
+        # ψ 的新鲜度、差分基准与车模校正都会被它刷新。没有角度龄（离线回放/
+        # 旧调用方）才退回检测龄，保持旧行为。
+        th_age = age_ms if theta_age_ms is None else theta_age_ms
         if (theta is not None and theta_ok and math.isfinite(float(theta))
-                and age_ms is not None
-                and float(age_ms) <= _HEAD_AGE_MAX_MS):
+                and th_age is not None
+                and float(th_age) <= HEAD_AGE_MAX_MS):
             th = float(theta)
         s = {"t": self._t, "x": x, "v": None}
         self._samples.append(s)
@@ -330,7 +344,8 @@ class HeadingObserver:
             psi = self._head_state(th, n_locked)
             if psi is not None:
                 self._scale_accum(psi)
-                self._model_correct(th, age_ms)
+                # 延迟对齐用角度自己的龄（新鲜角度时与检测龄相等）
+                self._model_correct(th, th_age)
 
     def _head_state(self, th: float, n_locked: int | None) -> float | None:
         """ψ 与 r：互补滤波——角速率积分管快变、横速反解管稳态。
@@ -347,6 +362,9 @@ class HeadingObserver:
         0.39 rad（22°）。``n_locked`` 缺省（离线/单测未供）时不加这条门。"""
         if n_locked is not None and n_locked < _PSI_MIN_LINES:
             return None
+        # 过了线数门才算「本拍线角真的进入融合」；龄超门/非有限值由调用方
+        # 提前挡掉，这里不用重复判。（P0-A 诊断标记，不参与判据。）
+        self.last_theta_used = True
         if self.psi is None:
             # 初始化取本拍线角，不是 0：ψ=0 等于假设「这一刻与车道平行」，
             # 而阶段切换/重锁后的第一拍车常常是斜的（20261031_181046 阶段 2
@@ -432,6 +450,14 @@ class HeadingObserver:
             "scf": round(self.v_scale_conf, 2),
             "spa": (None if self._spd_t < 0
                     else round((self._t - self._spd_t) * 1000.0, 0)),
+            # P0-A 诊断：vla=标线横移自身的龄（v_line 是不是本拍/近期更新），
+            # thu=本拍线角是否真的进入融合（到了龄门和线数门才算），
+            # tha=线角自己的龄（不是检测帧龄——保持拍沿用旧角时两者会分叉）。
+            "vla": (None if self.v_line is None
+                    else round((self._t - self._last_line) * 1000.0, 0)),
+            "thu": bool(self.last_theta_used),
+            "tha": (None if self.last_theta_age_ms is None
+                    else round(float(self.last_theta_age_ms), 1)),
         }
 
 
@@ -627,6 +653,9 @@ class LateralPlanner:
         self._line_gap: float | None = None
         self._line_veto: bool | None = None
         self._diag_lane_pos_ok: bool | None = None
+        # P0-A 盲窗分账：位置证据/运动证据本拍是否新鲜（只落 trace）
+        self._diag_pos_fresh: bool | None = None
+        self._diag_motion_fresh: bool | None = None
         # 上一拍计划前馈命令：换候选时限速用；计划中断后置空，重入首拍不限。
         self._last_plan_u: float | None = None
         # 计划短断供保持（_PLAN_HOLD 段）：最后一条有效航向指令 + 剩余拍数。
@@ -788,14 +817,21 @@ class LateralPlanner:
              # blind=距上一次新鲜位置证据的秒数（0=本拍有测量）。
              "unver": bool(self.state_unverified),
              "blind": round(self._blind_t, 2),
+             # 盲窗分账（P0-A）：pf=位置证据本拍新鲜（深度实测或已对账锁线），
+             # mf=运动证据新鲜（新鲜 ψ 或 v_line）。两条都为 False 才累计盲窗，
+             # 分开记录才能判断"为什么没进盲窗"。
+             "pf": self._diag_pos_fresh,
+             "mf": self._diag_motion_fresh,
              # 计划命令振荡判据面（2026-11-02，影子期观测）：a=接管中、
              # f=窗口翻转数、h=驻留剩余秒。判据不进控制，闸关时只落 trace。
              "osc_a": self._osc_active,
              "osc_f": self._osc_flips,
              "osc_h": round(self._osc_hold_left, 2),
              # 控制朝向来源：model=车模影子、obs=观测器、none=无朝向；
-             # pv=本拍短预瞄是否接管下发杆值
+             # pv=本拍短预瞄是否接管下发杆值；hst=本拍无可用朝向（P0-B 后
+             # 角度超龄即在此显形——冻结段不再靠旧角度冒充新鲜）。
              "csrc": self._heading_src,
+             "hst": bool(self._heading_stale),
              "pv": bool(self._preview_active),
              # 4d 驻留面：pcn=计划维护态连续秒数，pcg=驻留后的准入
              "pcn": round(self._plan_center_t, 2),
@@ -908,6 +944,7 @@ class LateralPlanner:
                lane_fid: int | None = None,
                lane_age_ms: float | None = None,
                lane_n_locked: int | None = None,
+               lane_theta_age_ms: float | None = None,
                lane_pos_ok: bool = False) -> GamepadCommand:
         """一个控制 tick。dt_s 非法即 fail-loud（帧号倒退同一纪律：
         静默吞掉病态输入比中断危险——时间基低通会被 0/NaN 污染成永久状态）。
@@ -934,7 +971,11 @@ class LateralPlanner:
         偏置"收敛，增益 `_LANE_FUSE_GAIN`）；新鲜深度拍会校准帧偏置，两者
         差超 `_LANE_BIAS_AGREE` 时保留旧偏置（不把单侧墙反推的错值带进线帧）。
         ``lane_relock``：本拍线观测处于重锁（换线可能换帧）；下一条 TRACK
-        线重置平滑值并停用融合，等新鲜深度与线一致后再启用。"""
+        线重置平滑值并停用融合，等新鲜深度与线一致后再启用。
+
+        ``lane_theta_age_ms``：线角**自己的**龄（P0-A 诊断入参）。当前只落
+        trace（`lat_ctrl.tha`），接收判据仍是 ``lane_age_ms``（检测帧龄）——
+        等 P0-B 才把接收门换成角度龄。"""
         if not (isinstance(dt_s, (int, float)) and math.isfinite(dt_s)) or dt_s <= 0:
             raise ValueError(f"dt_s 非法（需有限正数）：{dt_s!r}")
         if not math.isfinite(decision.x_target if decision.x_target is not None else 0.0) \
@@ -989,7 +1030,8 @@ class LateralPlanner:
                                 if getattr(decision, "phase", "keep") == "merging"
                                 else 1.0)
         self.head.update(dt_s, lane_x, lane_ok, lane_theta, lane_theta_ok,
-                         lane_fid, lane_age_ms, lane_n_locked)
+                         lane_fid, lane_age_ms, lane_n_locked,
+                         theta_age_ms=lane_theta_age_ms)
         self._sync_heading_state()
 
         # 横向位置证据（2026-10-31）：位置证据=真实深度读数（非历史保持值；
@@ -1006,6 +1048,10 @@ class LateralPlanner:
                             and self.head.psi_age_s()
                             <= self.p.heading_vel_max_age_s))
         was_unverified = self.state_unverified
+        # P0-A 盲窗分账：位置证据与运动证据各自是否新鲜，分开落 trace——
+        # 「没触发盲窗」不能只归因于角度，两条链要能分别看。
+        self._diag_pos_fresh = bool(pos_fresh)
+        self._diag_motion_fresh = bool(motion_fresh)
         self._blind_t = 0.0 if (pos_fresh or motion_fresh) \
             else self._blind_t + dt_s
         self.state_unverified = self._blind_t > self.p.state_blind_s

@@ -342,6 +342,9 @@ def _draw_input_band(img: np.ndarray, snap: dict) -> None:
         return
     state = lane.get("state", "-")
     age = lane.get("det_age_ms")
+    # 角度自己的龄（P0-A）：保持拍沿用旧角度时检测龄很新、角度却很旧，
+    # 只在屏幕上读 age 会被骗——两格并列看。
+    th_age = lane.get("theta_age_ms")
     lines = lane.get("lines") or []
     parts = [f"lane {state}"]
     anchor_src = lane.get("anchor_src")
@@ -355,6 +358,16 @@ def _draw_input_band(img: np.ndarray, snap: dict) -> None:
         parts.append(f"th={th:+.2f}")
     if isinstance(age, (int, float)):
         parts.append(f"age={age:.0f}ms")
+    if isinstance(th_age, (int, float)):
+        parts.append(f"thA={th_age:.0f}ms")
+    # 本拍角度是否真正重算 + 角度来源线数（不是 kept 的横位候选数）
+    if lane.get("theta_updated") is False:
+        parts.append("thOld")
+    thn = lane.get("theta_n_sources")
+    if isinstance(thn, int):
+        parts.append(f"thn={thn}")
+    if lane.get("hold"):
+        parts.append("HOLD")
     kept = lane.get("n_locked")
     parts.append(f"lines={len(lines)} kept={0 if kept is None else kept}")
     resids = [ln.get("resid") for ln in lines
@@ -365,7 +378,8 @@ def _draw_input_band(img: np.ndarray, snap: dict) -> None:
     if lane.get("pred"):
         parts.append("pred")
     stale = (state != "TRACK"
-             or (isinstance(age, (int, float)) and age > 250))
+             or (isinstance(age, (int, float)) and age > 250)
+             or (isinstance(th_age, (int, float)) and th_age > 250))
     if stale:
         parts.append("STALE")
     _put_text(img, " ".join(parts), (6, ly), scale=0.38,

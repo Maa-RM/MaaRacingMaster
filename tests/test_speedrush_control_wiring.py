@@ -751,6 +751,32 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     assert validate_trace_file(p) == []
 
 
+def test_trace_carries_lane_theta_provenance(monkeypatch):
+    """P0-A：trace 的 lane_theta 列给出角度自己的龄/是否重算/保持标记。
+
+    检测帧龄很新、角度却很旧（保持拍沿用旧值）是 P0 的根因形态——两格必须
+    分开看，才能逐段标出角度冻结区间。"""
+    m = _module()
+    chain = m._build_control_chain()
+    lane = {"fid": 9, "det_fid": 9, "det_ts_ns": 990_000_000,
+            "det_age_ms": 10, "state": "TRACK", "usable": True,
+            "lines": [], "n_locked": 2, "x": 0.1, "theta": 0.02,
+            "hold": True, "theta_updated": False,
+            "theta_src_fid": 7, "theta_src_ts_ns": 900_000_000,
+            "theta_n_sources": 2}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: lane, push=lambda *a, **k: None)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+    m._control_tick(chain, StubPad(), None, _perc(10), 10, 1_000_000_000, 10.0, 1)
+    row = chain["trace"][-1]["lane_theta"]
+    assert row["th_ms"] == pytest.approx(100.0)     # 角度自己的龄
+    assert row["det_ms"] == pytest.approx(10.0)     # 检测帧龄（不是同一件事）
+    assert row["upd"] is False and row["hold"] is True
+    assert row["nsrc"] == 2 and row["src"] == 7
+    # 角度龄 100ms 未越 250ms 门：本拍不算"陈旧角度被接收"
+    assert row["stale_acc"] == 0
+
+
 def _stub_logger(session_dir):
     return SimpleNamespace(session_dir=session_dir,
                            log=lambda *a, **k: None)

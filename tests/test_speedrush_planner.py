@@ -36,6 +36,44 @@ def test_heading_alignment_uses_capture_age_without_extra_delay():
     assert h._m_innov == pytest.approx(0.0)
 
 
+def test_stale_theta_rejected_by_its_own_age():
+    """P0-B：角度龄超门就拒收——检测帧龄再新也不能给旧角度背书。"""
+    h = HeadingObserver(P)
+    # 检测帧很新（5ms），但角度是 1.2s 前算的：拒收，ψ 不建立
+    h.update(DT, 0.1, True, 0.075, True, 1, 5.0, 3, theta_age_ms=1200.0)
+    assert h.last_theta_used is False
+    assert h.psi is None
+    # 角度新鲜（50ms）才接收
+    h.update(DT, 0.1, True, 0.075, True, 2, 5.0, 3, theta_age_ms=50.0)
+    assert h.last_theta_used is True
+    assert h.psi == pytest.approx(0.075, abs=1e-9)
+
+
+def test_stale_theta_does_not_extend_psi_freshness():
+    """P0-B：旧角度重复到达不刷新 ψ 的龄——保持窗耗尽后按无朝向处理。
+
+    这正是实机 20261117_143752 的形态：角度 1~3s 不重算，但每拍都带着
+    新的检测帧龄到达；旧实现每拍刷新 _psi_t，psi_age 始终接近 0。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.1, True, 0.05, True, 1, 5.0, 3, theta_age_ms=5.0)
+    assert h.psi_age_s() == pytest.approx(0.0)
+    fid = 2
+    for _ in range(20):          # 1.0s 持续收到同一旧角度
+        h.update(DT, 0.1, True, 0.05, True, fid, 5.0, 3,
+                 theta_age_ms=1500.0)
+        fid += 1
+    assert h.psi is None          # 保持窗（0.6s）耗尽后不再冒充有朝向
+
+
+def test_theta_age_falls_back_to_detection_age():
+    """没有角度龄（离线回放/旧调用方）时退回检测龄，行为与旧版一致。"""
+    h = HeadingObserver(P)
+    h.update(DT, 0.1, True, 0.05, True, 1, 5.0, 3)
+    assert h.last_theta_used is True
+    h.update(DT, 0.1, True, 0.05, True, 2, 400.0, 3)
+    assert h.last_theta_used is False
+
+
 def _out(state=DecisionState.CRUISE, x_target=0.0, fid=1, valid=3,
          maneuver=False, phase="keep",
          intent_precise=False) -> DecisionOutput:
