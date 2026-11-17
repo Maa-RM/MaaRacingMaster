@@ -115,7 +115,7 @@ def _fmt_state(r):
     if r is None:
         return "—"
     rt = r.get("route") or {}
-    ex = (r.get("lat_ctrl") or {}).get("exec")
+    ex = r.get("executed_lane")
     ex = "—" if ex is None else f"{ex:+.2f}"
     return f"{rt.get('vd')}/{rt.get('why')} sel={r.get('sel_why')} ex={ex}"
 
@@ -185,8 +185,8 @@ def analyze(sess: str) -> None:
               f"start@{prev_start['fid']}"
               f" tgt {(prev_start.get('route') or {}).get('tgt')}"
               f" {(prev_start.get('route') or {}).get('why')}")
-        ex15 = (ticks[j15].get("lat_ctrl") or {}).get("exec")
-        ex0 = (r0.get("lat_ctrl") or {}).get("exec")
+        ex15 = ticks[j15].get("executed_lane")
+        ex0 = r0.get("executed_lane")
         drift = ("—" if ex15 is None or ex0 is None else f"{ex0 - ex15:+.2f}")
         print(f"   [{r0.get('run_id')} fid {r0['fid']}] why {rt.get('why')}"
               f" tgt {rt.get('tgt')} tc {tc} ev {rt.get('ev')}"

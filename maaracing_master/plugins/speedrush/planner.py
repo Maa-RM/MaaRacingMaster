@@ -805,13 +805,11 @@ class LateralPlanner:
     def ctrl_debug(self) -> dict:
         """横向状态的可见面（trace）。
 
-        ``h``=车头角（rad）、``rr``=角速度、``vmp``=在线比例（≈车速）、
-        ``vl``=由「ψ×比例」导出的横速（道/s）、``pa``=ψ 的龄。
-        这就是决策与执行共用的全部横向状态——不再有第二套速度估计。"""
+        ``h``=车头角（rad）、``rr``=角速度。车速与横速不在这里重复落盘：
+        顶层 ``v_ego``/``v_lat`` 是同拍同源值。这就是决策与执行共用的全部
+        横向状态——不再有第二套速度估计。"""
         d = {"h": None if self.head.psi is None else round(self.head.psi, 4),
              "rr": None if self.head.r is None else round(self.head.r, 3),
-             "vmp": self.state.v_mps,
-             "vl": round(self.state.v_lat, 3),
              "rebase": self.last_rebase,
              # 位置证据面（2026-10-31）：unver=本拍位置是不可信外推值，
              # blind=距上一次新鲜位置证据的秒数（0=本拍有测量）。
@@ -842,12 +840,11 @@ class LateralPlanner:
              "pvg": bool(self._plan_coverage_gated),
              # 并线杆值上调量（平顶峰适配，trace-only）：缺口积分当前值
              "mboost": round(self._sustain_boost, 3),
-             # 分支归因面（2026-11-02，8750 型跳变）：exec=规划器信念横位
-             # （与链侧 elane 同拍对账）、anch=路观测参考帧、lpok=module 侧
-             # 线可用门、lgap=深度修正的线分歧（道）、lveto=线作证拦下本拍
-             # 深度修正、branch=本拍实际内部分支（lane_follow/depth_follow/
-             # depth_reject/hold/blind）。跳变钉分支靠这组，不再靠纸面推演。
-             "exec": round(self.state.executed_lane, 4),
+             # 分支归因面（2026-11-02，8750 型跳变）：anch=路观测参考帧、
+             # lpok=module 侧线可用门、lgap=深度修正的线分歧（道）、lveto=
+             # 线作证拦下本拍深度修正、branch=本拍实际内部分支（lane_follow/
+             # depth_follow/depth_reject/hold/blind）。跳变钉分支靠这组，不再
+             # 靠纸面推演；规划器信念横位见顶层 executed_lane（同拍同值）。
              "anch": None if self._road_anchor is None
              else round(self._road_anchor, 3),
              "lpok": self._diag_lane_pos_ok,

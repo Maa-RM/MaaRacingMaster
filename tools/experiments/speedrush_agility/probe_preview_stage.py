@@ -198,7 +198,7 @@ def analyze(stage: dict, variant: str = "base") -> dict:
             and not lc.get("unver")
             and plan.get("reason") not in (
                 "plan:stale", "plan:frame_shift", "plan:infeasible_corridor")
-            and abs(lc.get("exec") or 0.0) <= WALL_ESCAPE_LANE
+            and abs(r.get("executed_lane") or 0.0) <= WALL_ESCAPE_LANE
             and target is not None)
         if variant == "base":
             base_ok = safety_ok and not merging
@@ -231,7 +231,7 @@ def analyze(stage: dict, variant: str = "base") -> dict:
         elif plan.get("reason") in ("plan:stale", "plan:frame_shift",
                                     "plan:infeasible_corridor"):
             label = "plan_reason:" + str(plan.get("reason"))
-        elif abs(lc.get("exec") or 0.0) > WALL_ESCAPE_LANE:
+        elif abs(r.get("executed_lane") or 0.0) > WALL_ESCAPE_LANE:
             label = "wall_escape"
         elif target is None:
             label = "no_target"
@@ -263,11 +263,11 @@ def analyze(stage: dict, variant: str = "base") -> dict:
         if label != "on":
             why_off[label] += 1
         if gated and target is not None:
-            pl.state.executed_lane = float(lc.get("exec") or 0.0)
+            pl.state.executed_lane = float(r.get("executed_lane") or 0.0)
             pl.state.v_lat = float(r.get("v_lat") or 0.0)
             pl.state.heading = float(r.get("heading") or 0.0)
             pl.state.yaw_rate = float(lc.get("r") or lc.get("rr") or 0.0)
-            pl.state.v_mps = float(r.get("v_ego") or lc.get("vmp") or 41.0)
+            pl.state.v_mps = float(r.get("v_ego") or 41.0)
             # 覆盖口径下计划判「要跨道」（layer=2、无碰撞代价）的拍同样用
             # 机动态惩罚缩放（生产 preview_ok 同口径）。
             m = p_g or (variant.startswith("all") and plan_valid

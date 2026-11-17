@@ -111,11 +111,10 @@ def main() -> None:
         if last_gate is not None:
             gate.restore(*last_gate)
         if r.get("plan_ego") is not None:
-            # plan_ego=[executed, psi, r]；在线比例在 lat_ctrl.vmp
+            # plan_ego=[executed, psi, r]；在线比例是顶层 v_ego
             # （旧 trace 没有 steer_norm 列，执行层不需要它做预测）
-            _lc = r.get("lat_ctrl") or {}
             ego = EgoState(float(r["plan_ego"][0]), float(r["plan_ego"][1]),
-                           _lc.get("vmp"), 0.0)
+                           r.get("v_ego"), 0.0)
         else:
             src = prev if prev is not None else r
             ego = EgoState(float(src["executed_lane"]),

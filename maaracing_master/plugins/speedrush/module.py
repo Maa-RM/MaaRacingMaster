@@ -2473,7 +2473,6 @@ class SpeedRushModule(ActivityModule):
             # 本拍两层名义视界（秒，观测面）：今天都是常量，分级时域落地后
             # 用同一列看它是否真的在动。
             "plan_h": round(cfg.motion.horizon_s, 3),
-            "sel_h": round(cfg.selection.horizon_s, 3),
             # 计划输入状态（本拍 planner.update 前）与 gate 状态（离线逐位重放）
             "plan_ego": None if plan is None or _plan_ego is None else [
                 round(_plan_ego.x_lane, 6),
@@ -2492,15 +2491,13 @@ class SpeedRushModule(ActivityModule):
             else round(planner.state.v_mps, 3),
             "v_lat": round(planner.state.v_lat, 4),
             "heading": round(planner.state.heading, 4),
-            "n_groups": len(obs.coin_groups),
             # 红块内缘读数三列（"整块"边界候选）：护栏块逐行内缘的加权中位
-            # （车道单位，左负右正）+ 双侧红块行数（覆盖面，低=可信度低）——
-            # 与绿区读数（ro_*）同拍对照，红块跨帧稳即边界来源候选成立
+            # （车道单位，左负右正）——与绿区读数（ro_*）同拍对照，红块跨帧
+            # 稳即边界来源候选成立
             "blk_l": None if blk is None or blk.left_lane is None
             else round(blk.left_lane, 3),
             "blk_r": None if blk is None or blk.right_lane is None
             else round(blk.right_lane, 3),
-            "blk_rows": None if blk is None else blk.rows,
             # 币组逐组审计面（2026-10-17）：逐组 conf_min/本帧观测成员数/末见
             # 帧/部分观测——存续组（本帧无成员观测，conf_min=0）评分断供拍
             # 占比离线可算（宽限窗内"组在、评分断"是币组证据闪独立路径）
@@ -2518,8 +2515,6 @@ class SpeedRushModule(ActivityModule):
             # "执行状态在跳"必须分账。
             "road_offset": None if road_offset is None else round(road_offset, 4),
             "ro_hold": road_offset_hold,
-            # YOLO×深度融合（2026-09-25）：本拍检测框数（物体掩码随帧入深度路径）
-            "yolo_cars": len(result.cars),
             # 混合测距刀一（trace-only，不进决策）：距离读数+出处——验收六项
             # （回弹/churn/污染漏网/UNKNOWN 恢复/gate lead-lag/零回归）的数据源
             "dist": [
@@ -2576,14 +2571,13 @@ class SpeedRushModule(ActivityModule):
             # （speed=None 表示没估出来：v_head 不兜底，也不进控制律）。
             "lat_ctrl": planner.ctrl_debug(),
             # P0-A 线角时间契约诊断面（只读）：th_ms=角度**自己的**龄、
-            # det_ms=检测帧龄（两者分叉即"旧角度被当新证据"）、upd=本拍角度
-            # 是否重算、nsrc=参与角度融合的线数（不是 n_locked）、hold=横位
-            # 被步长门限速、frz_n/frz_s=连续角度冻结的检测帧与秒数、
+            # upd=本拍角度是否重算、nsrc=参与角度融合的线数（不是 n_locked）、
+            # hold=横位被步长门限速、frz_n/frz_s=连续角度冻结的检测帧与秒数、
             # stale_acc=本拍是否把超龄角度喂进了融合、hdiv=模型朝向−线角测量、
-            # hv_d=保持拍内 v_line 相对保持起点的变化。
+            # hv_d=保持拍内 v_line 相对保持起点的变化。两者分叉（角度旧、
+            # 检测新）要对照 obs_age.lane.age_ms——检测帧龄只在那一处落盘。
             "lane_theta": {
                 "th_ms": lane_theta_age,
-                "det_ms": None if lane is None else lane.get("det_age_ms"),
                 "src": None if lane is None else lane.get("theta_src_fid"),
                 "upd": lane_thu,
                 "nsrc": lane_thn,
@@ -2616,13 +2610,11 @@ class SpeedRushModule(ActivityModule):
             # 线↔深度路心家族横位分歧（道，线−深度；None=本拍无可比证据）。
             # 与 lat_ctrl.lpok 同源：lpok=False 且 ldis 持续超阈=互证闸在拦。
             "ldis": None if ldis is None else round(ldis, 3),
-            # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）
-            # + 新鲜对互证判定（agree/veto/bypass；复用/闸关/栅格弃权=None）。
+            # 路心互证审计列（2026-10-06）：同拍栅格 wmid 路心（off 系，右正）。
             # ro_edge=找边对心（off 系）——master 下找边对只做审计，ro_off
             # 来自绝对链（wall/wall_occl/region/memory），两列的分离即分歧面。
             "ro_grid": None if chain["ego_road"].last.get("grid_off") is None
             else round(chain["ego_road"].last["grid_off"], 4),
-            "ro_agree": chain["ego_road"].last.get("xcheck"),
             "ro_edge": None if edge_off is None else round(edge_off, 4),
             # 主候选供数门分账列（2026-10-17 归因：走廊缺席拍 9 成以上=主候选
             # 被供数门拒绝，垃圾对/对宽门/路心超限三道门未分账）：本拍原始对
@@ -2732,9 +2724,8 @@ class SpeedRushModule(ActivityModule):
             # 闸消费在路线请求口（route.far_veto_enabled）；本列只供离线回放
             "cor_veto": None if corridor is None or not corridor.far_veto
             else sorted(corridor.far_veto),
-            # 车流观测两列（阶段 C 的 C4/C5 回放数据源）：在途车数 + 本拍 pass 的 d_min
-            # + 街车最大横向速率读数（噪声主导，仅供观测——见 decision.json _sources）
-            # + 最近车的横向距/行号（本车道前车追尾类碰撞的回放诊断面）
+            # 车流观测（阶段 C 的 C4/C5 回放数据源）：在途车数；逐车横向位/
+            # 行号/接近率在 car_pos，最大横向速率可由其横向序列算出，不重复落盘。
             "car_views": len(tviews),
             # 奖励车源计数（漏斗观测）：0=源为空（近场+远场粗源都没进来）——
             # 区分"奖励车看不见"与"看见但没被选中"
@@ -2752,11 +2743,6 @@ class SpeedRushModule(ActivityModule):
             # 本机）：局结局程序化取数面（得分/得分速度），缺失拍诚实 None
             # （对手卡读数是背景假读，按槽位猜会静默读错）；血量格未读另案
             "hud_score": h_score, "hud_rate": h_rate,
-            "car_vlat": None if not tviews else round(
-                max(abs(v.v_lat) for v in tviews), 3),
-            "near_dx": None if not tviews else round(
-                min(abs(v.x_lane - planner.state.executed_lane) for v in tviews), 2),
-            "near_cy": None if not tviews else min(v.cy for v in tviews),
             # passes 带 track_id：决策拍 target_id 与 pass track_id 同 id 空间，
             # 跨拍 join 即可把结局归因到具体那辆车（米制决策价值验证的归因键；
             # 2026-10-07 前的旧 trace 此列为纯浮点列表，离线分析按类型兼容）
@@ -2775,11 +2761,9 @@ class SpeedRushModule(ActivityModule):
                  "age": round(e.age_ms, 1)}
                 for e in cevents] or None,
             "fresh": obs.health.frame_fresh,
-            "presence": obs.health.target_presence,
-            # 原始检出分类计数：目标流枯竭判据只认车；这两列用来区分
+            # 原始检出分类计数：目标流枯竭判据只认车；这列用来区分
             # “空街”与“有币但没跟踪”（2026-10-20 阶段 1 误冻结归因）。
             "raw_cars": obs.health.raw_cars,
-            "raw_coins": obs.health.raw_coins,
             "raw_bonuses": obs.health.raw_bonuses}
         chain["trace"].append(_row)
         _ts = chain.get("trace_sink")

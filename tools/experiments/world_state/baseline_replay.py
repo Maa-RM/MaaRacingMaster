@@ -782,7 +782,7 @@ def main(argv=None):
     dur = sum(_dt(r) for r in rows)
     missing = []
     if "plan_h" not in rows[-1]:
-        missing.append("plan_h/sel_h")
+        missing.append("plan_h")
     if not any((r.get("sel_dbg") or {}).get("opp") for r in rows):
         missing.append("sel_dbg.opp (identity+cone slack)")
     if not any(_obj_rows(r) for r in rows):

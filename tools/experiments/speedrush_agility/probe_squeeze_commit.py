@@ -76,7 +76,7 @@ def _min_delivery(ticks, idx, run, oid, x0):
         x = _car_x_lane(r, oid)
         if x is None or abs(x - x0) > X_NOISE:
             continue
-        ex = (r.get("lat_ctrl") or {}).get("exec")
+        ex = r.get("executed_lane")
         if ex is None:
             continue
         d = abs(ex - x)

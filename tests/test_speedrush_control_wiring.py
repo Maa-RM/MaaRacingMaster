@@ -728,11 +728,11 @@ def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
     # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
     assert row["sel_shadow"] is None
     # 横向状态可见面：线观测线程未启动时 ψ/线斜率诚实报 None；
-    # vmp 按固定参考车速（2026-11-01 裁决，不再兜底在线估计）
+    # 车速按固定参考车速（2026-11-01 裁决，不再兜底在线估计），与顶层同源
     assert row["lat_ctrl"]["v_line"] is None
     assert row["lat_ctrl"]["psi"] is None
-    assert row["lat_ctrl"]["vmp"] == 41.0
-    assert row["lat_ctrl"]["vl"] == 0.0
+    assert row["v_ego"] == 41.0
+    assert row["v_lat"] == 0.0
     assert row["lat_ctrl"]["rebase"] is None
     # 朝向截面（只读）：列必须齐；无线观测时全部诚实为 None
     for k in ("psi", "r", "psi_age", "vsp", "scf", "spa"):
@@ -770,7 +770,8 @@ def test_trace_carries_lane_theta_provenance(monkeypatch):
     m._control_tick(chain, StubPad(), None, _perc(10), 10, 1_000_000_000, 10.0, 1)
     row = chain["trace"][-1]["lane_theta"]
     assert row["th_ms"] == pytest.approx(100.0)     # 角度自己的龄
-    assert row["det_ms"] == pytest.approx(10.0)     # 检测帧龄（不是同一件事）
+    # 检测帧龄只在三路源龄里落盘一次（角度龄与它分叉=旧角度被当新证据）
+    assert chain["trace"][-1]["obs_age"]["lane"]["age_ms"] == pytest.approx(10.0)
     assert row["upd"] is False and row["hold"] is True
     assert row["nsrc"] == 2 and row["src"] == 7
     # 角度龄 100ms 未越 250ms 门：本拍不算"陈旧角度被接收"
