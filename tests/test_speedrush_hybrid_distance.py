@@ -13,6 +13,7 @@ import pytest
 
 from dataclasses import replace
 
+from maaracing_master.plugins.speedrush import depth_geo as dg
 from maaracing_master.plugins.speedrush.depth_geo import (
     DepthAnchorSheet, AnchorEntry, anchor_sheet_from_detections)
 from maaracing_master.plugins.speedrush.perception import Detection, PerceptionResult
@@ -374,7 +375,7 @@ def test_anchor_sheet_box_bottom_geometry():
     assert sheet is not None and sheet.fid == 7
     assert len(sheet.entries) == 1
     e = sheet.entries[0]
-    assert e.z_m == pytest.approx(630.0 * 1.25 / (540.0 - 360.0))
+    assert e.z_m == pytest.approx(dg.FOCAL_PX * dg.CAM_H_M / (540.0 - 360.0))
     assert e.y1 - e.y0 == 40
 
 
@@ -499,7 +500,7 @@ def test_sheet_carries_frame_focal():
     assert s.fx == pytest.approx(697.3)
     assert anchor_sheet_from_detections(
         [(0, 560, 500, 720, 540)], fid=7, ts_ns=700,
-        y_v=360.0).fx == pytest.approx(630.0)
+        y_v=360.0).fx == pytest.approx(dg.FOCAL_PX)
 
 
 def test_jump_gate_drops_flip_and_keeps_old_anchor():
@@ -531,7 +532,7 @@ def test_box_anchor_z_drops_adjacent_lane_box():
     y_v = 360.0
     front = anchor_sheet_from_detections(
         [(0, 560, 500, 720, 540)], fid=1, ts_ns=1, y_v=y_v)
-    assert front.entries[0].z_m == pytest.approx(630.0 * 1.25 / 180.0)
+    assert front.entries[0].z_m == pytest.approx(dg.FOCAL_PX * dg.CAM_H_M / 180.0)
     side = anchor_sheet_from_detections(
         [(0, 1000, 500, 1200, 540)], fid=1, ts_ns=1, y_v=y_v)
     assert side.entries == ()
