@@ -771,9 +771,9 @@
     if (d.round_result !== undefined) state.roundResult = d.round_result;
     $('btn-start').disabled = d.is_running || d.worker_active;
     $('btn-stop').disabled = !(d.is_running || d.worker_active);
-    // 内置步骤没有 current_stage：用调试流归属（步骤名/阶段）兜底，
-    // 否则整个启动链会显示成「停止中...」。
-    const activeLabel = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    // 「当前」只认阶段名与运行项名（内置步骤没有阶段，显示步骤名而不是导航图在试的
+    // 节点名）；规则与 PEEP 标题栏同源，见 js/status-label.js。
+    const activeLabel = window.MaaRMStatusLabel.activeLabel(d);
     if (activeLabel) {
       setStatus('运行中 · 当前: ' + activeLabel, 'running');
     } else if (d.queue_run || d.is_running || d.worker_active) {

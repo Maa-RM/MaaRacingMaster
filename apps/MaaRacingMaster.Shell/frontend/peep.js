@@ -73,7 +73,7 @@
     const dot = $('peep-status-dot');
     const txt = $('peep-status-text');
     if (!dot || !txt) return;
-    const label = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    const label = MaaRMStatusLabel.activeLabel(d);
     if (label) {
       txt.textContent = '运行中 · 当前: ' + label;
       dot.className = 'maarm-status-dot maarm-status-dot--running maarm-status-dot--pulse';

@@ -689,7 +689,7 @@ class SidecarService:
             self._queue_enabled[first] = True
         # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
         self._start_from: dict[str, str] = {}
-        # 运行实况 {index, total, current_module}（worker 持有期间非 None）与
+        # 运行实况 {index, total, current_module, current_name}（worker 持有期间非 None）与
         # 上一轮各模块结局 {mid: ok|fail|stopped|skip}（None = 本次启动后还没跑完整轮）。
         self._queue_run: dict | None = None
         self._round_result: dict[str, str] | None = None
@@ -1105,7 +1105,8 @@ class SidecarService:
             "run_id": logger.current_run_id,
             # 上一轮各模块结局（ok|fail|stopped|skip；None = 启动后尚未跑完整轮）
             "round_result": round_result,
-            # 调试流归属：内置步骤没有 current_module/current_stage，状态行用它兜底
+            # 调试流归属（执行器与导航图当前节点）：供排障读取，不进状态行——
+            # 状态行的「当前」只取阶段名或运行项名，节点名是内部细节（见 js/status-label.js）
             "debug_owner": dbg.get("owner"),
             "debug_label": dbg.get("label"),
             "debug_stage": dbg.get("stage"),
@@ -1357,7 +1358,9 @@ class SidecarService:
                 if item["start_from"] is not None:
                     self._start_from.pop(item["id"], None)
             self._round_result = None
-            self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
+            self._queue_run = {"index": 0, "total": len(plan),
+                               "current_module": plan[0]["id"],
+                               "current_name": _step_display_name(plan[0]["id"])}
             self._round_seq = getattr(self, "_round_seq", 0) + 1
             base = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
             run_id = f"{base}_r{self._round_seq}"
@@ -1471,7 +1474,9 @@ class SidecarService:
                     all_natural = False
                     break
                 with self._lock:
-                    self._queue_run = {"index": i, "total": total, "current_module": step_id}
+                    self._queue_run = {"index": i, "total": total,
+                                       "current_module": step_id,
+                                       "current_name": _step_display_name(step_id)}
                 try:
                     if item["kind"] == "builtin":
                         self._controller.run_builtin_step(step_id, item.get("config"))

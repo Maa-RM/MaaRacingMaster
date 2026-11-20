@@ -104,6 +104,18 @@ RPC 层不信任调用方给的地址。
   不再二次解释模块内容。
 - 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
 
+## 底栏状态行与 PEEP 标题栏（`js/status-label.js`）
+
+两个窗口显示同一句话（`运行中 · 当前: X`），取词规则只此一份：`activeLabel(d)` 吃 `get_status`
+载荷，返回模块自报的阶段名；没有阶段就返回运行项名（模块或内置步骤的 `NAME`，由
+`queue_run.current_name` 下发）。返回空串才落到「停止中...」——那是「有活干却取不到标签」的分支。
+
+- **不显示调试流归属**：`debug_stage` 是导航图此刻在试的节点名（如
+  `startup.popup.close_marketing`），读作「在匹配哪个控件」，界面上没有含义；它仍在 PEEP
+  画面底带与调试索引 `index.jsonl` 里。
+- 内置步骤本来就没有阶段，卡片里已写明「这一步没有细分阶段」，状态行给步骤名即可。
+- 回归锁：`tests/js/status_label.test.mjs`（node --test）。
+
 ## 文字扫描光效（`.maarm-text-scan`）
 
 给任意文字元素加 `.maarm-text-scan` 即生效，无需额外 DOM。两层背景裁进文字：底层铺基色、

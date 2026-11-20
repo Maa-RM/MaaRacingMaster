@@ -8,7 +8,7 @@
 4. wireSwitchAria 保留显式标题/说明 id（文案更新函数要靠它找人）。
 
 为什么是静态锁：前端没有 DOM 测试链；这些契约可从源码文本稳定判定。时序纯逻辑另由
-tests/test_frontend_config_panel_logic.py 跑 node --test 覆盖。
+tests/test_frontend_js_logic.py 跑 node --test 覆盖。
 """
 from __future__ import annotations
 
