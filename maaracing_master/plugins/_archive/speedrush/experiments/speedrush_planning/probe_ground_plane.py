@@ -35,7 +35,7 @@ from maaracing_master.plugins._archive.speedrush.perception import (  # noqa: E4
     StreetPerception)
 from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 
 

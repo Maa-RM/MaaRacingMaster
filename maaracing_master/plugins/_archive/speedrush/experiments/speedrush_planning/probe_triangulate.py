@@ -29,7 +29,7 @@ from maaracing_master.plugins._archive.speedrush import DEPTH_MODEL_FILE  # noqa
 from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     infer_points, load_session)
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 OUT = DATA / "3d_fusion"
 CX, CY = 640.0, 360.0

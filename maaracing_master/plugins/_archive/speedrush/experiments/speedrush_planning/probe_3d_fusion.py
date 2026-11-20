@@ -41,7 +41,7 @@ from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E40
 from maaracing_master.plugins._archive.speedrush.perception import (  # noqa: E402
     StreetPerception)
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 OUT_ROOT = DATA / "3d_fusion"
 

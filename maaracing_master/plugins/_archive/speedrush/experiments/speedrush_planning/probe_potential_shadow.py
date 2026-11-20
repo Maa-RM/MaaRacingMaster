@@ -48,7 +48,7 @@ from maaracing_master.plugins._archive.speedrush.traffic import TrafficObserver 
 from maaracing_master.plugins._archive.speedrush.wall_track import WallTrack  # noqa: E402
 from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 
 X_GRID = np.arange(-5.0, 5.0001, 0.05)

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 
 GRID = np.arange(-4.0, 4.0001, 0.1)

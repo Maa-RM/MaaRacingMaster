@@ -29,7 +29,7 @@ from maaracing_master.plugins._archive.speedrush import (  # noqa: E402
 from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
 from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
 
-DATA = Path(__file__).resolve().parents[4] / "_probe_data"
+DATA = Path(__file__).resolve().parents[6] / "tools" / "experiments" / "_probe_data"
 DEMOS = DATA / "demos"
 OUT = DATA / "crash_size"
 CAM_W, CAM_H = 1280, 720
