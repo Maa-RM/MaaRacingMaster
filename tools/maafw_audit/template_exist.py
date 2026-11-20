@@ -8,11 +8,11 @@ REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "maaracing_master"
 IMG_DIRS = [PACK / "core" / "resources" / "image",
             PACK / "core" / "resources" / "startup" / "image",
-            PACK / "plugins" / "speedrush" / "resources" / "image"]
+            PACK / "plugins" / "_archive" / "speedrush" / "resources" / "image"]
 FILES = [PACK / "core" / "resources" / "startup" / "pipeline.json",
-         PACK / "plugins" / "speedrush" / "resources" / "pipeline" / "speedrush.json",
-         PACK / "plugins" / "speedrush" / "resources" / "policy" / "decision.json",
-         PACK / "plugins" / "speedrush" / "resources" / "policy" / "hud_regions.json"]
+         PACK / "plugins" / "_archive" / "speedrush" / "resources" / "pipeline" / "speedrush.json",
+         PACK / "plugins" / "_archive" / "speedrush" / "resources" / "policy" / "decision.json",
+         PACK / "plugins" / "_archive" / "speedrush" / "resources" / "policy" / "hud_regions.json"]
 
 used: set[str] = set()
 for f in FILES:

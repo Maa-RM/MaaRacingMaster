@@ -72,7 +72,7 @@
 
 - ONNX Runtime 会话初始化（DirectML 优先 → CPU 回退，不再尝试 CUDA；两种失败原因分开留痕）
 
-- 会话选项按 DirectML 官方要求显式配置：顺序执行、关闭内存模式。**不设 `optimized_model_filepath`**——要求序列化优化图会禁用 DML 的运行期图融合，整图从 1 个融合节点退化为数百个独立节点（本机实测前向 3.5 ms → 6.0 ms）。融合是否生效用 `plugins/speedrush/tools/probe_infer.py` 查
+- 会话选项按 DirectML 官方要求显式配置：顺序执行、关闭内存模式。**不设 `optimized_model_filepath`**——要求序列化优化图会禁用 DML 的运行期图融合，整图从 1 个融合节点退化为数百个独立节点（本机实测前向 3.5 ms → 6.0 ms）。融合是否生效用 `plugins/infinite_drive/tools/probe_infer.py` 查
 
 - DirectML 内核缓存
 
@@ -90,14 +90,14 @@
 **类别集由所服务的活动定义**、core 不内置任何游戏的类别名与阈值。类别表默认读模型 ONNX 元数据（Ultralytics 导出的 `names`），
 构造参数 `classes` 可显式覆盖（显式给定时校验前置于模型加载，fail-fast）；逐类阈值走
 `class_conf`（按类别名键，未覆盖类回退 `conf`）。返回 `(by_class, detections, all_raw_dets)`，
-`by_class` 对每个已声明类别有键。**当前使用者**：speedrush 感知层
-（[`plugins/speedrush/CODE_WIKI.md`](../plugins/speedrush/CODE_WIKI.md) §7）。
+`by_class` 对每个已声明类别有键。**当前使用者**：infinite_drive 感知层
+（[`plugins/infinite_drive/CODE_WIKI.md`](../plugins/infinite_drive/CODE_WIKI.md)）。
 
 **坑（测试侧）**：onnxruntime-directml 1.24.4 原生缺陷——任一 session 析构后再对另一
 存活 session `run()` 即段错误（CPU provider 无此问题）；多 detector 测试须全部保活至
 进程结束（见 `tests/test_yolo_detector.py` 的 `_KEEP_ALIVE`）。生产单实例常驻不触发。
 
-**模型训练 / 导出**：`maaracing_master/plugins/speedrush/tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX 候选产物，**默认不覆盖生产权重**，`--promote` 才复制并打印新的尺寸与 SHA256；`model_assets.py` 的清单必须同步改），数据划分与评测见该目录的 `build_dataset_index.py` / `eval_detector.py` / `audit_labels.py`。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
+**模型训练 / 导出**：`maaracing_master/plugins/infinite_drive/tools/training/train.py`（Ultralytics yolo11n 微调 → ONNX 候选产物，**默认不覆盖生产权重**，`--promote` 才复制并打印新的尺寸与 SHA256；`model_assets.py` 的清单必须同步改），数据划分与评测见该目录的 `build_dataset_index.py` / `eval_detector.py` / `audit_labels.py`。**模型权重不随发行包分发**：含检测的插件启用时自带并声明 `REQUIRED_ASSETS`。
 
 ***
 
@@ -292,7 +292,7 @@
 
 **职责**：单 ROI 抠图 → 预处理（自适应放大 + 轻度对比度增强）→ RapidOCR 推理 → 交出文本（`OcrText`：逐块 `lines` 与合并 `text` 两种取法）。另有整帧通路 `recognize_blocks`（开文本检测，交出 `OcrBlock` 的**文本 + 归一化外框**），服务「位置未知但必须找到下一个按钮」的场合（当前唯一使用者：启动链的未知页面兜底，见 §1.12）。**抠图边界、引擎调参（关检测/关方向分类/ORT 线程数/绑核）、预处理口径的唯一真源 = 本模块的常量与 docstring**——具体数值不在本文抄录（可机检数值只写指针，见 [docs/README.md](../../docs/README.md)），要改／要核对请直接读 [ocr.py](./ocr.py)。
 
-**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：speedrush 的 HUD 读数与插件自带离线探针（单 ROI 通路）、启动链的未知页面兜底（整帧通路）。
+**为什么住 core**：插件自包含契约（见 `plugins/<id>/__init__.py`）禁止插件互相 import，跨插件复用的引擎只能在公共层落地。**今天的使用者**：infinite_drive 的 HUD 读数与插件自带离线探针（单 ROI 通路）、启动链的未知页面兜底（整帧通路）。
 
 **分工**：「文本怎么解释」（金额解析、数蛋计数、记分口径）属领域知识，留在各业务层，不上提 core。
 
@@ -355,7 +355,7 @@
 
 **职责**：模块声明的异步 JSONL 写手，落点随日志会话目录（`trace/<模块>.jsonl`）。
 
-- 模块面：`get_trace_sink("<模块>")` 注册一次；`set_run_id` / `begin_stage` / `append(row)` / `end_stage` / `flush`。append 不做文件 I/O（序列化 + 尺寸判定 + 有界入队）；接线形态见 speedrush `_build_control_chain`
+- 模块面：`get_trace_sink("<模块>")` 注册一次；`set_run_id` / `begin_stage` / `append(row)` / `end_stage` / `flush`。append 不做文件 I/O（序列化 + 尺寸判定 + 有界入队）；接线形态见归档 speedrush `_build_control_chain`（`plugins/_archive/speedrush/module.py`）
 - 序号在会话生命周期内单调（`run_id` 变更不重置、换会话归零）；丢弃以带内 `gap` 行表达（非连续拆多区间、按逻辑序定位）；阶段边界为受保护控制行（满员合并「结束→开始」或显式拒收）；`flush`/`close` 是纯同步屏障不占序号
 - 关闭由会话生命周期屏障驱动（不走队列、不可被拒收）；超时/IO 失败终态化，文件尾三态 `end`/`close_incomplete`/无标记；硬杀损失=最后写入位置+未落队列
 - `validate_trace_file(path)`：离线校验器（序号连续性/gap 语义/头尾规则），验收与探针共用
@@ -508,7 +508,7 @@
 
 **域无关（红线）**：不出现阶段名 / 节点名 / 玩法语义，节点名由调用方传入（`truth` 的 namespace 校验守引用方向）。纯标准库，可进 CI 轻量依赖集。
 
-**消费者**：speedrush `_run_flow` 的每个 UI 点击步（落地页确认走 `__confirm` 只识别探针，剂量在 `decision.json` 的 `step_retry` 段，接入细节见 [plugins/speedrush/CODE_WIKI.md](../plugins/speedrush/CODE_WIKI.md)）。
+**消费者**：归档 speedrush `_run_flow` 的每个 UI 点击步（落地页确认走 `__confirm` 只识别探针，剂量在 `decision.json` 的 `step_retry` 段，接入细节见 [plugins/_archive/speedrush/CODE_WIKI.md](../plugins/_archive/speedrush/CODE_WIKI.md)）。
 
 **测试**：`tests/test_step_machine.py`（三 verdict × 五 command 转移表逐链复刻 + 在途 hold 时序锁）。
 
@@ -820,7 +820,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
-- `data/`：运行时数据与用户资产（各活动的业务库、`data/speedrush/macros/` 用户录制的宏、模型权重等）
+- `data/`：运行时数据与用户资产（各活动的业务库、`data/infinite_drive/macros/` 用户录制的宏、模型权重等）
 - `logs/`：会话记录 `logs/<会话>/`——运行日志 `MaaRM_<会话>.log`（含 DEBUG 级全量）、`perf.jsonl` 与 `trace/<模块>.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：会话优先的取证布局 `debug/<会话>/<模块>/<行为>/`（行为目录内 `manifest.json` + `frames.jsonl`；会话根 `index.jsonl` 只记段/阶段/开关）。会话编号进程启动即存在，日志与调试两个开关只决定有没有文件

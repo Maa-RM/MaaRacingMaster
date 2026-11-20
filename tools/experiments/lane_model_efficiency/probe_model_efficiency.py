@@ -35,7 +35,7 @@ import onnxruntime as ort
 from onnx import shape_inference
 
 REPO = Path(__file__).resolve().parents[3]
-LANE_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/lane"
+LANE_ONNX = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
              / "plus_small_384x640.onnx")
 FRAMES_DIR = (REPO / "tools/experiments/speedrush_depthart_prod/frames"
               / "20261111_104222_p2_stable41")

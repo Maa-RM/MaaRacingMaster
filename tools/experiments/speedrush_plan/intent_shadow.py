@@ -29,8 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from replay_plan import load_rows, scene_of  # noqa: E402
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.motion_plan import shift_scene  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.motion_plan import shift_scene  # noqa: E402
 
 # ---- 慢层参数（影子期常量；定档后如需上线再进 decision.json）----
 NEAR_S = 1.8           # 视界下沿：再近归快层，慢层不抢

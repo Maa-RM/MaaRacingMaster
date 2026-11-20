@@ -698,7 +698,7 @@ Get-ChildItem $StageRoot -Recurse -Directory -Force -Filter '.mimosa' -EA Silent
 
 # 可选权重默认不进包：这些 ONNX 只服务深度/线观测，由独立模型包分发
 # （用户数据目录优先，见 model_assets.py）。-WithModels 产出离线全量包。
-$modelDir = Join-Path $StageRoot 'maaracing_master\plugins\speedrush\resources\models'
+$modelDir = Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\resources\models'
 # 默认包不带可选权重；-WithModels 的全量离线包保留权重
 if (-not $WithModels) {
     foreach ($sub in @('lane', 'perception', 'depth')) {
@@ -772,10 +772,10 @@ if ($keptDirs.Count -eq 0) {
 if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\_archive')) {
     $errors.Add('SHIP-ARCHIVE-FAIL: 归档区 plugins\_archive 出现在 stage，拒绝发布')
 }
-# 标注数据守卫：speedrush 的 data/（标注图 + 训练索引）是本机数据，robocopy 的 /XD data
+# 标注数据守卫：infinite_drive 的 data/（标注图 + 训练索引）是本机数据，robocopy 的 /XD data
 # 一旦失效会把几百 MB 图片带进发布包——stage 里出现即报错。
-if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\speedrush\data')) {
-    $errors.Add('SHIP-DATA-FAIL: 标注数据 plugins\speedrush\data 出现在 stage，拒绝发布')
+if (Test-Path (Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\data')) {
+    $errors.Add('SHIP-DATA-FAIL: 标注数据 plugins\infinite_drive\data 出现在 stage，拒绝发布')
 }
 
 # ---------- 4. _version.py ----------
@@ -923,7 +923,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         }
     # 默认包不得含深度权重（由可选模型包分发）；排除逻辑失效时当场失败
     if (-not $WithModels) {
-        Get-ChildItem (Join-Path $StageRoot 'maaracing_master\plugins\speedrush\resources\models') `
+        Get-ChildItem (Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\resources\models') `
             -Recurse -File -Filter '*.onnx' -EA SilentlyContinue |
             ForEach-Object {
                 $errors.Add('MODEL-LEAK: 默认包不得包含模型权重 -> ' +
@@ -1054,7 +1054,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     $g_model = 0L
     $g_modelZip = 0L
     if ($WithModels) {
-        $modelPrefix = 'maaracing_master/plugins/speedrush/resources/models/'
+        $modelPrefix = 'maaracing_master/plugins/infinite_drive/resources/models/'
         $models = Join-Path $StageRoot $modelPrefix
         if (Test-Path -LiteralPath $models) {
             $g_model = (Get-ChildItem -LiteralPath $models -Recurse -File -Filter '*.onnx' |

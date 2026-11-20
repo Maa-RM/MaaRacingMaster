@@ -36,7 +36,7 @@ def test_perf_card_template_has_no_module_branch():
     # 模块 id 比较 / 模块名出现在模板里，都是「前端认识模块」的证据
     assert "mid ===" not in body and "mid ==" not in body, (
         "性能卡模板出现模块 id 分支：新增模块会落到错误的卡片上")
-    for module_id in ("speedrush", "treasure"):
+    for module_id in ("infinite_drive", "speedrush", "treasure"):
         assert f"'{module_id}'" not in body and f'"{module_id}"' not in body, (
             f"性能卡模板里硬编码了模块名 {module_id}")
 

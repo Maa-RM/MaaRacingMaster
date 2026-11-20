@@ -29,7 +29,7 @@ from maa.tasker import Tasker
 
 REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
-SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
+SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/pipeline"
 
 RESULTS: dict[str, dict] = {}
 TRACE: list[str] = []

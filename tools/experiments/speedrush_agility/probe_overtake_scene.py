@@ -32,7 +32,7 @@ import probe_adjacent_seq as P  # noqa: E402
 import probe_near_deform as ND  # noqa: E402
 import probe_depthart_prod_sim as sim  # noqa: E402
 import probe_lane_geometry as lg  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import (  # noqa: E402
     load_calib, x_lane_of)
 
 ROOT = Path(__file__).parent

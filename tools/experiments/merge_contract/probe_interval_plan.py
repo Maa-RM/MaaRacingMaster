@@ -17,11 +17,11 @@ import json
 import math
 import os
 
-from maaracing_master.plugins.speedrush import DECISION_FILE
-from maaracing_master.plugins.speedrush.config import _read_decision
-from maaracing_master.plugins.speedrush.motion_plan import (
+from maaracing_master.plugins._archive.speedrush import DECISION_FILE
+from maaracing_master.plugins._archive.speedrush.config import _read_decision
+from maaracing_master.plugins._archive.speedrush.motion_plan import (
     EgoState, PlanGate, Scene, SceneObj, plan_motion)
-from maaracing_master.plugins.speedrush.selection import RoadBand, RoadFrame
+from maaracing_master.plugins._archive.speedrush.selection import RoadBand, RoadFrame
 
 DEFAULT_DEBUG = os.path.join(
     os.environ.get("APPDATA", ""), "MaaRacingMaster", "logs")

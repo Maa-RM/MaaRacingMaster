@@ -21,7 +21,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from maaracing_master.plugins.speedrush import lane_obs as la  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import lane_obs as la  # noqa: E402
 
 APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
 LOGS = APPDATA / "MaaRacingMaster" / "logs"

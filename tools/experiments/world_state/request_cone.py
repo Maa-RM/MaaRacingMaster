@@ -20,11 +20,11 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2] / "maaracing_master" / "plugins" / "speedrush" / "tools"))
+sys.path.insert(0, str(HERE.parents[2] / "maaracing_master" / "plugins" / "_archive" / "speedrush" / "tools"))
 from speedrush_trace_reader import iter_rows  # noqa: E402
 
 REPO = HERE.parents[2]
-POLICY = REPO / "maaracing_master" / "plugins" / "speedrush" / \
+POLICY = REPO / "maaracing_master" / "plugins" / "_archive" / "speedrush" / \
     "resources" / "policy" / "decision.json"
 OLD_COIN_TOL = 1.2       # 2026-11-01 删除前的固定门（历史口径，只用于反事实）
 OLD_REWARD_TOL = 1.5

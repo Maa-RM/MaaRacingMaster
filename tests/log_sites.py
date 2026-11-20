@@ -389,31 +389,20 @@ SITES: list[LogSite] = [
     _s('core/yolo_detector.py', 'YOLODetector.__init__', 'DirectML 会话创建失败，回退 CPU：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；回退原因必须与设备不可用区分，发生在加载期、无业务组。'),
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
-    # ---- plugins/speedrush/gpu_probe.py ----
-    _s('plugins/speedrush/gpu_probe.py', 'GpuProbe._dump_scene', '[GpuProbe] 停顿抓拍失败: {}', 'WARNING', 'cross', 'cross', '常驻 daemon 取证线程的跨切面事件：无稳定业务组可挂；抓拍失败不阻断采样主路。'),
+    # ---- plugins/infinite_drive/gpu_probe.py ----
+    _s('plugins/infinite_drive/gpu_probe.py', 'GpuProbe._dump_scene', '[GpuProbe] 停顿抓拍失败: {}', 'WARNING', 'cross', 'cross', '常驻 daemon 取证线程的跨切面事件：无稳定业务组可挂；抓拍失败不阻断采样主路。'),
 
-    # ---- plugins/speedrush/hud.py ----
-    _s('plugins/speedrush/hud.py', 'HudObserver._write_meta', '[极速狂飙] HUD meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/speedrush/hud.py', 'HudObserver._write_worker', '[极速狂飙] HUD 落盘失败（累计 {}）: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
+    # ---- plugins/infinite_drive/hud.py ----
+    _s('plugins/infinite_drive/hud.py', 'HudObserver._write_meta', '[极速狂飙] HUD meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
+    _s('plugins/infinite_drive/hud.py', 'HudObserver._write_worker', '[极速狂飙] HUD 落盘失败（累计 {}）: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
 
-    # ---- plugins/speedrush/module.py ----
-    _s('plugins/speedrush/module.py', '_open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/speedrush/module.py', '_fresh_session_dir', '[极速狂飙] 会话目录 {} 已存在，改写到 {}', 'WARNING', 'cross', 'cross', '建目录先于业务组开启：撞名换名是异常但可恢复的降级，WARNING 不静默；工具函数无组上下文。'),
-    _s('plugins/speedrush/module.py', '_register_drive_segment', '[极速狂飙] 驾驶取证清单登记失败: {}', 'WARNING', 'cross', 'cross', '取证清单是离线回放入口；写失败属可恢复降级，发生在驾驶阶段组内但由工具函数统一上报。'),
-    _s('plugins/speedrush/module.py', '_finish_drive_segment', '[极速狂飙] 驾驶取证清单收尾失败: {}', 'WARNING', 'cross', 'cross', '阶段收尾的清单/索引重建；失败不阻断驾驶，WARNING 不静默。'),
-    _s('plugins/speedrush/module.py', '_tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '游戏窗口不是 16:9 比例（模板与识别区域均按 720p(16:9) 设计，其他比例会识别错位）。请调整为 16:9 后重新开始，模块已终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.start', '[极速狂飙] 录制模式提示：当前点击方式为「后台手柄」，导航步骤会创建虚拟手柄，可能与你的物理手柄冲突（驾驶时手柄可能不响应）。建议在设置页改为「前台鼠标」再录。', 'WARNING', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 宏组名必须是字符串，已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 非法宏组名 {}（只允许单段目录名），已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
-    _s('plugins/speedrush/module.py', 'SpeedRushModule.set_module_config', '[极速狂飙] 非法驾驶模式 {}，已忽略', 'WARNING', 'cross', 'cross', 'GUI 配置写入的非法值回显（RPC 请求线程），无业务组。'),
+    # ---- plugins/infinite_drive/module.py ----
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 操作流程未接线：感知/几何基建已就位，v2 流程施工中', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
 
-    # ---- plugins/speedrush/recorder.py ----
-    _s('plugins/speedrush/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
-    _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧返回失败（累计 {}） seq={}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
-    _s('plugins/speedrush/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧失败（累计 {}） seq={}: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
+    # ---- plugins/infinite_drive/recorder.py ----
+    _s('plugins/infinite_drive/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
+    _s('plugins/infinite_drive/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧返回失败（累计 {}） seq={}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
+    _s('plugins/infinite_drive/recorder.py', 'DriveRecorder._frame_worker', '[极速狂飙] 录制写帧失败（累计 {}） seq={}: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
 
     # ---- 成就机制（core/achievement.py · core/registry.py · core/sidecar.py） ----
     # 成就整体是旁路功能：不挂业务组、失败只降级（契约 I1），工作线程是 sidecar 启动期

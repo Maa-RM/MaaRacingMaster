@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 
-from maaracing_master.plugins.speedrush.tools.training.splits import (
+from maaracing_master.plugins.infinite_drive.tools.training.splits import (
     write_data_yaml,
     write_split_lists,
 )

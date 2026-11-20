@@ -18,7 +18,6 @@ import pytest
 
 try:
     from maaracing_master.core import controller as ctl
-    from maaracing_master.core import sidecar as sc
     from maaracing_master.core.sidecar import SidecarService
     _OK, _ERR = True, ""
 except Exception as exc:  # noqa: BLE001

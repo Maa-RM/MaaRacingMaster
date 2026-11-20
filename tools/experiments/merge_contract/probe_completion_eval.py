@@ -796,7 +796,7 @@ def main(argv=None) -> int:
 
     root = _repo_root()
     decision = args.decision or (
-        os.path.join(root, "maaracing_master", "plugins", "speedrush",
+        os.path.join(root, "maaracing_master", "plugins", "_archive", "speedrush",
                      "resources", "policy", "decision.json") if root else "")
     try:
         tol_p, tol_v = load_tolerances(decision)

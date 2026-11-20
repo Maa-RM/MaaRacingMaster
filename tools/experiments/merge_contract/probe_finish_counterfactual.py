@@ -51,10 +51,10 @@ _ROOT = _repo_root()
 if _ROOT and _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from maaracing_master.plugins.speedrush import route as R          # noqa: E402
-from maaracing_master.plugins.speedrush.coarse import (           # noqa: E402
+from maaracing_master.plugins._archive.speedrush import route as R          # noqa: E402
+from maaracing_master.plugins._archive.speedrush.coarse import (           # noqa: E402
     CoarseLane, CoarseReport)
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
 
 
 # ---------------------------------------------------------------- 证据类

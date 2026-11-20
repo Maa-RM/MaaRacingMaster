@@ -25,8 +25,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
-from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import DEPTH_MODEL_FILE  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     infer_points, load_session)
 
 DATA = Path(__file__).resolve().parents[1] / "_probe_data"

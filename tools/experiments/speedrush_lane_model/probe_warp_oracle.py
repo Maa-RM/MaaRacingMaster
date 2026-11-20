@@ -26,7 +26,7 @@ RAW = HOME / "AppData/Roaming/MaaRacingMaster/debug/speedrush/20261109_104823_ma
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "first_look_out" / "warp"
 
-PLUS = HERE.parent.parent.parent / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx"
+PLUS = HERE.parent.parent.parent / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx"
 ORIG = HERE / "weights/twinlitenet_orig_360x640.onnx"
 
 VPX, Y_H = 640.7, 354.2      # 全幅（1280x720）标定值

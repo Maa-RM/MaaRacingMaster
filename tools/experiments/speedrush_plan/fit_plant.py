@@ -35,8 +35,8 @@ from scipy.optimize import least_squares
 _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 HORIZONS = (5, 10, 20, 40)      # σ_ego 多步评估的步数（≈0.25/0.5/1/2s @20Hz）
 PARAM_NAMES = ("a_lat_gain", "tau_align_s", "v_lat_max", "tau_steer_s")

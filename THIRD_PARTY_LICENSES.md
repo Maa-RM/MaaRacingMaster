@@ -47,9 +47,9 @@ README 安装**（lane 的完整 BDD100K 条款随模型包分发）。每个权
 
 | 权重文件（插件内相对路径） | 许可证 | 声明真源 |
 |---|---|---|
-| speedrush `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/models/README.md](maaracing_master/plugins/speedrush/resources/models/README.md) |
-| speedrush `resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx` | Apache-2.0 | 同上 |
-| speedrush `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/speedrush/resources/models/LICENSE-BDD100K.txt) |
+| infinite_drive `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/infinite_drive/resources/models/README.md](maaracing_master/plugins/infinite_drive/resources/models/README.md) |
+| infinite_drive `resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx` | Apache-2.0 | 同上 |
+| infinite_drive `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/infinite_drive/resources/models/LICENSE-BDD100K.txt) |
 
 AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
 发布包保留本文件与插件内声明文件，义务即满足。

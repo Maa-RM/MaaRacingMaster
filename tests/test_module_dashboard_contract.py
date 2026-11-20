@@ -75,11 +75,19 @@ def test_zero_contract_is_reserved_not_candidate(monkeypatch):
     assert reg.get_module_info("reserved")["has_dashboard"] is False
 
 
-def test_speedrush_declares_dashboard():
-    """极速狂飙接入回合战绩看板：契约版本 1，元信息下发看板资格。"""
-    cls = MODULE_REGISTRY["speedrush"]
-    assert cls.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
-    assert get_module_info("speedrush")["has_dashboard"] is True
+def test_archived_speedrush_declares_dashboard():
+    """归档极速狂飙自述回合战绩看板：契约版本 1，资格位成立。
+
+    模块已归档（_archive/speedrush/），不再进 MODULE_REGISTRY；声明面的回归锁
+    改用归档模块类直导。注册侧的下发由下方模块列表用例锁定（后继 infinite_drive
+    流程未接线、无看板）。
+    """
+    try:
+        from maaracing_master.plugins._archive.speedrush.module import SpeedRushModule
+    except Exception as exc:  # noqa: BLE001 —— 缺重运行时依赖时跳过
+        pytest.skip(f"归档模块需要完整运行时依赖：{exc}")
+    assert SpeedRushModule.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
+    assert declares_dashboard(SpeedRushModule) is True
 
 
 def test_builtin_steps_never_declare_dashboards():
@@ -107,7 +115,7 @@ def test_module_list_payload_carries_dashboard_flag():
             f"{item['id']} 缺少布尔型 has_dashboard"
         )
 
-    assert by_id["speedrush"]["has_dashboard"] is True
+    assert by_id["infinite_drive"]["has_dashboard"] is False
     assert by_id["launch_game"]["has_dashboard"] is False
     assert by_id["close_game"]["has_dashboard"] is False
 

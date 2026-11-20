@@ -33,12 +33,12 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "maaracing_master" / "plugins" / "speedrush" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "maaracing_master" / "plugins" / "_archive" / "speedrush" / "tools"))
 from speedrush_trace_reader import iter_rows  # noqa: E402
 
-from maaracing_master.plugins.speedrush.config import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import (  # noqa: E402
     _read_decision)
-from maaracing_master.plugins.speedrush import DECISION_FILE  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import DECISION_FILE  # noqa: E402
 
 CFG = _read_decision(DECISION_FILE)
 TAU = CFG.selection.score_smooth_tau_s

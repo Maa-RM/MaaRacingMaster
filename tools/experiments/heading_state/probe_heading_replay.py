@@ -65,7 +65,7 @@ def replay(rows: list[dict], planner):
 
     真实值取 planner 帧 executed_lane 的 1s 差——它是这一层自己的状态，和预测
     同在道单位、同号。"""
-    from maaracing_master.plugins.speedrush.planner import HeadingObserver
+    from maaracing_master.plugins._archive.speedrush.planner import HeadingObserver
 
     obs = HeadingObserver(planner)
     t = [0.0]
@@ -147,8 +147,8 @@ def replay_control(rows: list[dict], cfg) -> dict:
     这不是闭环仿真（车不会按新杆值动），只回答两个问题：新律在真实观测上
     的**命令连续性**（抖不抖、有没有打满）与**状态跟随性**（executed 是否
     与录制值同量级）。"""
-    from maaracing_master.plugins.speedrush.planner import LateralPlanner
-    from maaracing_master.plugins.speedrush.tracking import (
+    from maaracing_master.plugins._archive.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins._archive.speedrush.tracking import (
         DecisionOutput, DecisionState)
 
     pl = LateralPlanner(cfg.planner)
@@ -210,9 +210,9 @@ def main() -> None:
     ap.add_argument("--runs", type=int, default=3)
     args = ap.parse_args()
     root = Path(args.root)
-    from maaracing_master.plugins.speedrush.config import (
+    from maaracing_master.plugins._archive.speedrush.config import (
         _read_decision)
-    from maaracing_master.plugins.speedrush import DECISION_FILE
+    from maaracing_master.plugins._archive.speedrush import DECISION_FILE
     cfg = _read_decision(DECISION_FILE)
 
     runs = sorted((root / "logs").glob("*/trace/speedrush.jsonl"),

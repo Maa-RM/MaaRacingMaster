@@ -30,9 +30,9 @@ from maaracing_master.core.nav_graph import TemplateRecognizer  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
-SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
+SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/pipeline"
 IMAGE_DIRS = [
-    REPO / "maaracing_master/plugins/speedrush/resources/image",
+    REPO / "maaracing_master/plugins/_archive/speedrush/resources/image",
     REPO / "maaracing_master/core/resources/image",
 ]
 NAV = Path(os.environ.get("MAAR_A0_NAV")

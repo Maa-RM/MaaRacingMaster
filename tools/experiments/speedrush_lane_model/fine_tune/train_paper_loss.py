@@ -40,7 +40,7 @@ SAM_LABELS = ROOT / "fine_tune_out" / LABELS_DIR
 BDD = ROOT / "bdd100k" / "images" / "train"
 OUT = ROOT / "fine_tune_out"
 INIT = ROOT / "weights" / "plus_small_ft_init.pth"
-NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
           / "plus_small_384x640.onnx")
 # 上一版权重：用来挑「它确实误检」的负例帧（把错误喂回去）
 NEW_W = ROOT / "weights" / "plus_small_verified74_384x640.onnx"

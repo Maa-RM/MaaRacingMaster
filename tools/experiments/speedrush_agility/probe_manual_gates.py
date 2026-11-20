@@ -46,9 +46,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import probe_manual_events as me  # noqa: E402
 
-from maaracing_master.plugins.speedrush import DECISION_FILE  # noqa: E402
-from maaracing_master.plugins.speedrush.config import _read_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.selection import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import DECISION_FILE  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import _read_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.selection import (  # noqa: E402
     Obj, RoadBand, RoadFrame, SelectionParams, _in_interval, _lane_span,
     _pass_alongside_s, _pass_path_blocked, _pass_window_blocked, _pass_x,
     _pass_x_candidates, _pass_x_side, _reachable, _t_move)

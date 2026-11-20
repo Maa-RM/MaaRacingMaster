@@ -25,11 +25,11 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.motion_plan import (
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.motion_plan import (
     EgoState, PlanGate, Scene, SceneObj, plan_motion,
     shift_scene)  # noqa: E402
-from maaracing_master.plugins.speedrush.selection import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.selection import (  # noqa: E402
     RoadBand, RoadFrame)  # noqa: E402
 
 

@@ -51,7 +51,7 @@ import numpy as np
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
-from maaracing_master.plugins.speedrush.lane_obs import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.lane_obs import (  # noqa: E402
     DEFAULT_CAM_H, LANE_W, NEAR_Y, VPX, Y_H,
     _build_tracks, _fit, _letterbox, _prob_from_out, _row_segments,
     _side_from_x, _near_x)
@@ -61,6 +61,7 @@ DEFAULT_DEBUG = os.path.join(os.environ.get(
     "speedrush")
 DEFAULT_WEIGHTS = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "maaracing_master", "plugins",
+    "_archive",
     "speedrush", "resources", "models", "lane", "plus_small_384x640.onnx"))
 
 VPX_HALF = VPX / 2.0

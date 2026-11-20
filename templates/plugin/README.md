@@ -65,7 +65,7 @@ templates/plugin/
 
 配置面板的契约与字段白名单见 `core/config_ui_contract.py`，决策背景见
 [ADR-0016](../../docs/adr/0016-contract-core-模块配置面板由插件声明宿主渲染.md)，完整示例见
-`plugins/speedrush/module.py` 的 `CONFIG_UI`。插件**不提供**自带 HTML/JS——不够用就扩
+`plugins/_archive/speedrush/module.py` 的 `CONFIG_UI`。插件**不提供**自带 HTML/JS——不够用就扩
 控件类型并升契约版本。
 
 **主循环铁律**：每帧检查 `ctx.lifecycle.running`；睡眠一律 `ctx.lifecycle.sleep()`，

@@ -31,11 +31,11 @@ import onnxruntime as ort
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO))
-from maaracing_master.plugins.speedrush.lane_obs import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.lane_obs import (  # noqa: E402
     PROB_THRESH, _build_tracks, _fit, _letterbox, _prob_from_out)
 
 ROOT = Path.home() / "AppData/Roaming/MaaRacingMaster"
-MODEL = (REPO / "maaracing_master/plugins/speedrush/resources/models/lane/"
+MODEL = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/"
          "plus_small_384x640.onnx")
 OUT = HERE / "first_look_out" / "far_scan"
 

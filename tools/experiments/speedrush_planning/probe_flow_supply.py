@@ -26,15 +26,15 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import (  # noqa: E402
     DEPTH_MODEL_FILE, PERCEPTION_MODEL_FILE)
-from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     DepthRoadObserver, load_session)
-from maaracing_master.plugins.speedrush.module import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.module import (  # noqa: E402
     _yolo_object_mask)
-from maaracing_master.plugins.speedrush.perception import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import (  # noqa: E402
     StreetPerception)
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"

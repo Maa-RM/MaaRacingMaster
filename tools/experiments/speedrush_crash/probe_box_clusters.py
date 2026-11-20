@@ -25,13 +25,13 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import (  # noqa: E402
     DEPTH_MODEL_FILE, PERCEPTION_MODEL_FILE)
-from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     DepthRoadObserver, _box_anchor_z, load_session)
-from maaracing_master.plugins.speedrush.module import _yolo_object_mask  # noqa: E402
-from maaracing_master.plugins.speedrush.perception import StreetPerception  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.module import _yolo_object_mask  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 K_PLANE = 1101.0     # 地面平面常数（probe_ground_plane 标定中位）
 H_NOM = 1.5

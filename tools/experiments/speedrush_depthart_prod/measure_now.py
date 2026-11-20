@@ -20,15 +20,15 @@ sys.path.insert(0, str(ROOT))
 
 from maaracing_master.core import dml_lock                      # noqa: E402
 from maaracing_master.core.yolo_detector import YOLODetector    # noqa: E402
-from maaracing_master.plugins.speedrush import depth_geo, lane_obs  # noqa: E402
-from maaracing_master.plugins.speedrush.perception import (     # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo, lane_obs  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import (     # noqa: E402
     StreetPerception)
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 HERE = Path(__file__).parent
 OUT = HERE / "measure_out"
 FRAMES = HERE / "frames" / "20261109_201359_p1_stable41"
-MODELS = ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources" / "models"
+MODELS = ROOT / "maaracing_master" / "plugins" / "_archive" / "speedrush" / "resources" / "models"
 N_WARM = 5
 N_RUN = 30
 

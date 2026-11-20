@@ -37,9 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import probe_distance_lead as P  # noqa: E402
 
-from maaracing_master.plugins.speedrush import DECISION_FILE  # noqa: E402
-from maaracing_master.plugins.speedrush.config import _read_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.route import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import DECISION_FILE  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import _read_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.route import (  # noqa: E402
     RouteParams, lane_move_time, overtake_need_s, urgent_need_s)
 
 

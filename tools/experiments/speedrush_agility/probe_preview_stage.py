@@ -41,9 +41,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from maaracing_master.plugins.speedrush import DECISION_FILE
-from maaracing_master.plugins.speedrush.config import Planner, _read_decision
-from maaracing_master.plugins.speedrush.planner import LateralPlanner
+from maaracing_master.plugins._archive.speedrush import DECISION_FILE
+from maaracing_master.plugins._archive.speedrush.config import Planner, _read_decision
+from maaracing_master.plugins._archive.speedrush.planner import LateralPlanner
 
 FULL = 32767
 FULL_STICK = 0.9

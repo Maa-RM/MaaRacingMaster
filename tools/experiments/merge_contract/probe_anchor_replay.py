@@ -34,11 +34,11 @@ import types
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-import maaracing_master.plugins.speedrush.planner as _planner_mod  # noqa: E402
-from maaracing_master.plugins.speedrush.planner import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+import maaracing_master.plugins._archive.speedrush.planner as _planner_mod  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.planner import (  # noqa: E402
     LateralPlanner, step as _step_sym)
-from maaracing_master.plugins.speedrush.tracking import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.tracking import (  # noqa: E402
     DecisionOutput, DecisionState)
 
 import math  # noqa: E402

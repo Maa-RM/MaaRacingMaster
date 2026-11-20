@@ -23,11 +23,11 @@ _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from maaracing_master.plugins.speedrush.coarse import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.coarse import (  # noqa: E402
     CoarseLane, CoarseReport)
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.decision import _lane_ttc_map  # noqa: E402
-from maaracing_master.plugins.speedrush.route import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.decision import _lane_ttc_map  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.route import (  # noqa: E402
     RouteParams, tick_route)
 from replay_plan import scene_of  # noqa: E402
 

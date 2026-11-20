@@ -17,7 +17,7 @@
   // 前端不认识任何配置键。图标仍是纯展示信息（插件不声明 emoji），未登记模块回落
   // 名称首字——新增模块不必改前端。
   const MODULE_META = {
-    speedrush: { icon: '🏎️' },
+    infinite_drive: { icon: '🏎️' },
   };
   // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
   MODULE_META.launch_game = { icon: '🚀' };

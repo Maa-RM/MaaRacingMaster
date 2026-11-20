@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from probe_anchor_replay import (  # noqa: E402
     DEFAULT_LOGS, HOLD_SRC, TICK_HZ, _decision, _plan, load_games)
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.planner import LateralPlanner  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.planner import LateralPlanner  # noqa: E402
 
 HZ = TICK_HZ
 OVER_WIN = int(0.6 * HZ)       # 过冲观察窗

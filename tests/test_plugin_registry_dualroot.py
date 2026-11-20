@@ -74,7 +74,7 @@ def test_user_plugin_registered(rescan):
     assert "userplug_a" in reg.MODULE_REGISTRY
     assert reg.get_plugin_dir("userplug_a") == user_root / "userplug_a"
     # 内置插件不受影响
-    assert "speedrush" in reg.MODULE_REGISTRY
+    assert "infinite_drive" in reg.MODULE_REGISTRY
 
 
 def test_user_plugin_without_init_py(rescan):
@@ -124,13 +124,13 @@ def test_user_plugin_relative_import(rescan):
 def test_builtin_wins_same_id(rescan):
     """用户根出现与内置同 ID 的插件：内置版本为准，用户副本不注册。"""
     reg, user_root = rescan
-    _make_plugin(user_root, "speedrush")  # 与内置插件同 ID
+    _make_plugin(user_root, "infinite_drive")  # 与内置插件同 ID
     reg._discover_plugins()
 
-    assert "speedrush" in reg.MODULE_REGISTRY
+    assert "infinite_drive" in reg.MODULE_REGISTRY
     # 注册的物理目录必须仍是内置根
     builtin_root = reg._PLUGINS_ROOT
-    assert reg.get_plugin_dir("speedrush").is_relative_to(builtin_root)
+    assert reg.get_plugin_dir("infinite_drive").is_relative_to(builtin_root)
 
 
 def test_user_plugin_load_failure_isolated(rescan):
@@ -197,7 +197,7 @@ def test_user_root_missing_is_fine(rescan):
     assert not user_root.exists()
 
     reg._discover_plugins()
-    assert "speedrush" in reg.MODULE_REGISTRY
+    assert "infinite_drive" in reg.MODULE_REGISTRY
 
 
 def test_user_plugin_assets_checked_at_user_root(rescan):

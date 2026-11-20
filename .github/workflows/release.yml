@@ -147,7 +147,7 @@ jobs:
             ${{ steps.changelog.outputs.log }}
 
             ---
-            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip`（同页资产）；直行与宏录制不需要下载。
+            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-infinite_drive-models-${{ steps.version.outputs.version }}.zip`（同页资产）；其余功能不需要下载。
             > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
           files: |
             dist/*.tar.gz
@@ -269,7 +269,7 @@ jobs:
           python scripts/release/make_model_pack.py `
             --version "$env:VER" `
             --out "${{ github.workspace }}\build\release"
-          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-speedrush-models-$env:VER.zip"
+          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-infinite_drive-models-$env:VER.zip"
           if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
           Get-Item $mp, "$mp.sha256" | Select-Object Name, Length
 
@@ -282,8 +282,8 @@ jobs:
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
-            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip.sha256
+            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip
+            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip.sha256
 
   # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
   # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
@@ -313,7 +313,7 @@ jobs:
           VER="${TAG#v}"
           ZIP="MaaRacingMaster-${VER}-win-x64.zip"
           SZ7="MaaRacingMaster-${VER}-win-x64.7z"
-          MODELS="MaaRacingMaster-speedrush-models-${VER}.zip"
+          MODELS="MaaRacingMaster-infinite_drive-models-${VER}.zip"
 
           # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推 + 深度模型包，各带 sha256
           for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"; do

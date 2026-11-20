@@ -39,7 +39,7 @@ ADR 记录的是**决策**，不是实现改动。一次跨层改动、接口变
 
 - 命名：`NNNN-性质-影响模块-主题.md`（四位序号从 `0001` 起，**只增不改**；序号之后的三段与提交信息 `type(scope): 主题` 同构，正文标题行同样带 `（性质-影响模块）`）
   - **性质闭集**：`arch`（结构与拓扑约束）/ `ownership`（能力与真源归哪一层）/ `contract`（跨层接口契约）/ `choice`（技术选型与形态）/ `criteria`（判定标准与门槛）/ `meta`（本目录治理规则）
-  - **影响模块**：与提交 scope 同一套词汇（`core` / `shell` / `log` / `perf` / `speedrush` / `adr`）；约束跨全部层的用 `global`
+  - **影响模块**：与提交 scope 同一套词汇（`core` / `shell` / `log` / `perf` / `infinite_drive` / `adr`）；约束跨全部层的用 `global`
 - 结构：状态 / 背景 / 决策 / 后果（含被否方案与代价）/ 证据
 - 模板：`template.md`
 

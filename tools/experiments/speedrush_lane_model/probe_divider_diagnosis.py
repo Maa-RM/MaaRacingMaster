@@ -45,7 +45,7 @@ EDGE_MARGIN = 0.05          # 内部线判定：距两缘 5% 跨度以内不算�
 EDGE_MIN_SPAN_PX = 480.0    # 黄缘对在参考行的最小跨度（四车道应显著大于三车道）
 
 MODELS = [
-    ("plus_small(现役)", HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx", True),
+    ("plus_small(现役)", HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx", True),
     ("twinlitenet(原版)", HERE / "weights/twinlitenet_orig_360x640.onnx", False),
 ]
 

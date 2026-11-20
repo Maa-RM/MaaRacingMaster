@@ -24,10 +24,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import (  # noqa: E402
     DEPTH_MODEL_FILE, PERCEPTION_MODEL_FILE)
-from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
-from maaracing_master.plugins.speedrush.perception import StreetPerception  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
 
 DATA = Path(__file__).resolve().parents[1] / "_probe_data"
 DEMOS = DATA / "demos"

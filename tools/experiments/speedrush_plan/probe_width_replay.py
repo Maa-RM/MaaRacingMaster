@@ -37,8 +37,8 @@ _ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.motion_plan import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.motion_plan import (  # noqa: E402
     EgoState, PlanGate, plan_motion, shift_scene)  # noqa: E402
 from replay_plan import scene_of  # noqa: E402
 

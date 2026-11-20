@@ -30,8 +30,8 @@ import sys
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.module import classify_ro_hop  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.module import classify_ro_hop  # noqa: E402
 
 DEFAULT_LOGS = os.path.join(
     os.path.dirname(os.path.dirname(os.environ.get(

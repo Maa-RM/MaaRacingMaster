@@ -44,10 +44,10 @@ def _url_to_path(url: str) -> Path:
 
 def test_plugin_cover_resolves_inside_its_own_resources():
     """有专属封面的插件：URL 指向 plugins/<id>/resources/ 下，且文件真实存在。"""
-    url = covers.module_cover_url("speedrush")
-    assert url, "speedrush 声明了 COVER，应解析出 URL"
+    url = covers.module_cover_url("infinite_drive")
+    assert url, "infinite_drive 声明了 COVER，应解析出 URL"
     path = _url_to_path(url)
-    plugin_dir = (REPO / "maaracing_master" / "plugins" / "speedrush").resolve()
+    plugin_dir = (REPO / "maaracing_master" / "plugins" / "infinite_drive").resolve()
     assert path.is_file()
     assert plugin_dir in path.parents, f"封面必须落在插件自己的目录内: {path}"
 

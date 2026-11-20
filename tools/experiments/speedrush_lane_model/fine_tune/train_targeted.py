@@ -32,7 +32,7 @@ UP = ROOT / "upstream"
 DATA = ROOT / "fine_tune_out" / "target_labels"
 OUT = ROOT / "fine_tune_out"
 INIT = ROOT / "weights" / "plus_small_ft_init.pth"
-NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
           / "plus_small_384x640.onnx")
 HOLD = (Path.home() / "AppData/Roaming/MaaRacingMaster/debug/speedrush"
         / "20261109_104823_manual_p2/raw/0204_raw.jpg")

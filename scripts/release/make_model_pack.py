@@ -4,7 +4,7 @@
 
 内容：模型权重组（含线观测 FP16 加速件）+ 许可/安装说明 README + SHA256SUMS，打成一个 zip。
 发布包默认不含权重；用户下载本包后解压到
-``%APPDATA%\\MaaRacingMaster\\data\\speedrush\\models\\`` 即可使用深度几何与线观测。
+``%APPDATA%\\MaaRacingMaster\\data\\infinite_drive\\models\\`` 即可使用深度几何与线观测。
 线观测受 BDD100K 非商业/科研许可约束，构建时会一并打入
 ``LICENSE-BDD100K.txt``；源文件或许可缺失时本脚本直接失败。
 
@@ -24,11 +24,11 @@ import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODELS_DIR = REPO_ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources" / "models"
+MODELS_DIR = REPO_ROOT / "maaracing_master" / "plugins" / "infinite_drive" / "resources" / "models"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from maaracing_master.plugins.speedrush import model_assets  # noqa: E402
+from maaracing_master.plugins.infinite_drive import model_assets  # noqa: E402
 
 
 def _sha256(path: Path) -> str:
@@ -54,7 +54,7 @@ def build(version: str, out_dir: Path) -> tuple[Path, Path]:
         sums.append(f"{_sha256(src)}  {packed}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = out_dir / f"MaaRacingMaster-speedrush-models-{version}.zip"
+    zip_path = out_dir / f"MaaRacingMaster-infinite_drive-models-{version}.zip"
     readme = MODELS_DIR / "README.md"
     license_file = MODELS_DIR / "LICENSE-BDD100K.txt"
     if not license_file.is_file():

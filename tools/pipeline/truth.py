@@ -49,7 +49,7 @@ def _module_dirs() -> list[Path]:
 MODULE_NS = frozenset(p.name for p in _module_dirs())
 # 退役插件命名空间冻结名单：归档区不参与默认扫描，但其命名空间仍属「业务层」——
 # core 真源占用或点名这些前缀同样是分层红线违规。随插件退役/复活维护。
-RETIRED_MODULE_NS = frozenset({"treasure"})
+RETIRED_MODULE_NS = frozenset({"treasure", "speedrush"})
 KNOWN_MODULE_NS = MODULE_NS | RETIRED_MODULE_NS
 PLUGIN_PIPELINE_DIRS = [d / "resources" / "pipeline" for d in _module_dirs()
                         if (d / "resources" / "pipeline").is_dir()]

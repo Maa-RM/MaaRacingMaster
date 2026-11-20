@@ -15,7 +15,7 @@
       if (previewMode === 'floating') return false; // 消费权已交给悬浮窗
       const page = $('page-data');
       if (!state.peepEnabled || !page || page.classList.contains('hidden')) return false;
-      // 当前模块得有预览卡才拉帧：没有卡（如 speedrush）时拉了也没处显示，
+      // 当前模块得有预览卡才拉帧：没有卡（如 infinite_drive）时拉了也没处显示，
       // 白白让后端每帧编码一次 base64
       return !!(MaaRM.panelModuleId && $(MaaRM.panelModuleId + '-preview-img'));
     },

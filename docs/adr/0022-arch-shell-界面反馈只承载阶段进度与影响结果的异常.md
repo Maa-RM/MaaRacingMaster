@@ -46,6 +46,6 @@
 
 ## 证据
 
-- 一手核查（改动前的现状盘点，逐处可复核）：成功回执与状态行占用见 [`js/config-panel.js`](../../apps/MaaRacingMaster.Shell/frontend/js/config-panel.js) 的 `runSave` / `showSaving` / `syncSelect`；通道协议见 [`js/rpc.js`](../../apps/MaaRacingMaster.Shell/frontend/js/rpc.js) 文件头注释；散行容器展开默认值见 [`js/log.js`](../../apps/MaaRacingMaster.Shell/frontend/js/log.js) 的 `_bareSection`；成功播报见 [`js/settings.js`](../../apps/MaaRacingMaster.Shell/frontend/js/settings.js) 权限优化与忽略分支；`warn` 报正常状态见 [`plugins/speedrush/module.py`](../../maaracing_master/plugins/speedrush/module.py) 的 `config_status()`；落盘失败仅记警告见 [`core/sidecar.py`](../../maaracing_master/core/sidecar.py) 的 `_save_profile`。
-- 机检：[`tests/test_speedrush_macro.py`](../../tests/test_speedrush_macro.py)（运行中未开录制不占状态行、下拉候选的「最新 / 无 / 失效」口径、摘要与下拉同一套标签）。
-- 实施：本次改动随宏组命名统一一并落地（见 `core/session_layout.py` 的会话编号工具与 `plugins/speedrush/macro.py` 的枚举口径）。
+- 一手核查（改动前的现状盘点，逐处可复核）：成功回执与状态行占用见 [`js/config-panel.js`](../../apps/MaaRacingMaster.Shell/frontend/js/config-panel.js) 的 `runSave` / `showSaving` / `syncSelect`；通道协议见 [`js/rpc.js`](../../apps/MaaRacingMaster.Shell/frontend/js/rpc.js) 文件头注释；散行容器展开默认值见 [`js/log.js`](../../apps/MaaRacingMaster.Shell/frontend/js/log.js) 的 `_bareSection`；成功播报见 [`js/settings.js`](../../apps/MaaRacingMaster.Shell/frontend/js/settings.js) 权限优化与忽略分支；`warn` 报正常状态见 [`plugins/_archive/speedrush/module.py`](../../maaracing_master/plugins/_archive/speedrush/module.py) 的 `config_status()`；落盘失败仅记警告见 [`core/sidecar.py`](../../maaracing_master/core/sidecar.py) 的 `_save_profile`。
+- 机检：[`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_macro.py`](../../maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_macro.py)（运行中未开录制不占状态行、下拉候选的「最新 / 无 / 失效」口径、摘要与下拉同一套标签）。
+- 实施：本次改动随宏组命名统一一并落地（见 `core/session_layout.py` 的会话编号工具与 `plugins/_archive/speedrush/macro.py` 的枚举口径）。

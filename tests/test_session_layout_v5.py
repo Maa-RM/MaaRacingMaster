@@ -18,7 +18,7 @@ from maaracing_master.core import session_layout as sl
 from maaracing_master.core.debug import NavigationDebugger
 from maaracing_master.core.logger import Logger
 from maaracing_master.core.trace_sink import TraceSink
-from maaracing_master.plugins.speedrush import session_layout as sr_layout
+from maaracing_master.plugins.infinite_drive import session_layout as id_layout
 
 
 def _frame(value: int = 1) -> np.ndarray:
@@ -83,7 +83,7 @@ def test_debug_layout_writes_behavior_manifest_and_index(session_root):
     d.enabled = True
     d.begin_run("20260101_000000_r1")
     try:
-        scope = d.open_scope("speedrush", "极速狂飙")
+        scope = d.open_scope("infinite_drive", "无限驾驶")
         nav = d.open_segment("nav", "点比赛", peep_fps=1000, save_fps=1000)
         nav.offer(_frame(7), fid=42, ts_ns=123456789)
         _wait(d)
@@ -94,11 +94,11 @@ def test_debug_layout_writes_behavior_manifest_and_index(session_root):
         d.end_run()
 
     behaviors = sl.list_behavior_manifests(session_root)
-    assert [(m, b) for m, b, _, _ in behaviors] == [("speedrush", "nav")]
+    assert [(m, b) for m, b, _, _ in behaviors] == [("infinite_drive", "nav")]
     _, _, bdir, manifest = behaviors[0]
     assert manifest["schema"] == sl.SESSION_SCHEMA_VERSION
     assert manifest["session"] == session_root.name
-    assert manifest["module"] == "speedrush"
+    assert manifest["module"] == "infinite_drive"
     assert manifest["behavior"] == "nav"
     assert manifest["frames_index"] == "frames.jsonl"
 
@@ -113,7 +113,7 @@ def test_debug_layout_writes_behavior_manifest_and_index(session_root):
     index = _read_jsonl(session_root / "index.jsonl")
     starts = [r for r in index if r["type"] == "segment_start"]
     nav_start = next(r for r in starts if r["owner"] == "nav")
-    assert nav_start["behavior"] == "speedrush/nav"
+    assert nav_start["behavior"] == "infinite_drive/nav"
     assert nav_start["run_id"] == "20260101_000000_r1"
     assert all("_r1" not in str(p.relative_to(session_root))
                for p in session_root.rglob("*.jpg"))
@@ -145,14 +145,14 @@ def test_list_sessions_reads_only_v5_layout(tmp_path):
     root = tmp_path / "debug"
     sess = root / "20260101_000000"
     sess.mkdir(parents=True)
-    sl.write_manifest(sess, "speedrush", "drive", frames_index="frames.jsonl")
-    (root / "speedrush").mkdir()      # 旧顶层取证根不是会话
+    sl.write_manifest(sess, "infinite_drive", "drive", frames_index="frames.jsonl")
+    (root / "infinite_drive").mkdir()      # 旧顶层取证根不是会话
     (root / "not_a_session").mkdir()
     assert sl.list_sessions(root) == ["20260101_000000"]
 
 
 def test_resolve_behavior_file_blocks_traversal(session_root):
-    bdir = sl.behavior_dir(session_root, "speedrush", "drive")
+    bdir = sl.behavior_dir(session_root, "infinite_drive", "drive")
     bdir.mkdir(parents=True)
     (session_root / "outside.jpg").write_bytes(b"x")
     assert sl.resolve_behavior_file(bdir, "../outside.jpg") is None
@@ -160,7 +160,7 @@ def test_resolve_behavior_file_blocks_traversal(session_root):
 
 
 def test_bad_manifest_is_ignored(session_root):
-    bdir = sl.behavior_dir(session_root, "speedrush", "drive")
+    bdir = sl.behavior_dir(session_root, "infinite_drive", "drive")
     bdir.mkdir(parents=True)
     (bdir / "manifest.json").write_text('{"schema": 4}', encoding="utf-8")
     assert sl.read_manifest(bdir) is None
@@ -183,11 +183,11 @@ def test_trace_rows_carry_session_and_round(tmp_path):
     assert data["run_id"] == "20260101_000000_r3"
 
 
-# ---------- 极速狂飙控制取证 ----------
+# ---------- 无限驾驶控制取证 ----------
 
 
 def test_drive_manifest_lists_segments_and_builds_index(session_root):
-    behavior = sr_layout.drive_behavior_dir(session_root)
+    behavior = id_layout.drive_behavior_dir(session_root)
     seg1 = behavior / "20260101_101010_p1"
     seg2 = behavior / "20260101_101010_p2"
     seg1.mkdir(parents=True)
@@ -199,14 +199,14 @@ def test_drive_manifest_lists_segments_and_builds_index(session_root):
         json.dumps({"seq": 1, "ts_ns": 20, "file": "raw/0001_raw.jpg"}) + "\n",
         encoding="utf-8")
 
-    sr_layout.upsert_drive_segment(behavior, round_no=1, phase=1,
+    id_layout.upsert_drive_segment(behavior, round_no=1, phase=1,
                                    stamp="20260101_101010")
-    sr_layout.upsert_drive_segment(behavior, round_no=1, phase=2,
+    id_layout.upsert_drive_segment(behavior, round_no=1, phase=2,
                                    stamp="20260101_101010")
-    sr_layout.rebuild_drive_index(behavior)
+    id_layout.rebuild_drive_index(behavior)
 
     doc = sl.read_manifest(behavior)
-    assert doc["module"] == "speedrush" and doc["behavior"] == "drive"
+    assert doc["module"] == "infinite_drive" and doc["behavior"] == "drive"
     assert [s["phase"] for s in doc["segments"]] == [1, 2]
     rows = sl.read_frame_index(behavior, doc)
     assert [r["seq"] for r in rows] == [1, 2]

@@ -35,9 +35,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
-from maaracing_master.plugins.speedrush import selection as S  # noqa: E402
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import selection as S  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 LANE_W = 3.5
 JUMP_LANE = 0.5

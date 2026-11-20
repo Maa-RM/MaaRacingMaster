@@ -18,11 +18,11 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import depth_geo  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo  # noqa: E402
 
 HERE = Path(__file__).parent
 OUT = HERE / "micro_bench_out"
-MODELS = ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources" / "models"
+MODELS = ROOT / "maaracing_master" / "plugins" / "_archive" / "speedrush" / "resources" / "models"
 N = 30
 
 
@@ -87,7 +87,7 @@ def synth32(v, y_v, gm):
 
 
 def main():
-    from maaracing_master.plugins.speedrush import depth_geo as dg
+    from maaracing_master.plugins._archive.speedrush import depth_geo as dg
     sess = dg.load_session(
         MODELS / "depth" / "relative_mnv4m_slim_spf_448_default.onnx")
     frame = cv2.imread(str(sorted((HERE / "frames" /

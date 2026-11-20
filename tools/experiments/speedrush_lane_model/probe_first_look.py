@@ -57,7 +57,7 @@ LETTERBOX_PAD = 12                         # plus 系输入上下各 12px 灰边
 
 MODELS = [
     # (显示名, 权重路径, 说明)
-    ("plus_small(现役)", REPO / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx",
+    ("plus_small(现役)", REPO / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx",
      "TwinLiteNet+ Small 官方 BDD100K 权重，项目内转换"),
     ("twinlitenet(原版)", WEIGHTS / "twinlitenet_orig_360x640.onnx",
      "原版 TwinLiteNet，harrylal/TwinLiteNet-onnxruntime 仓自带转换件（MIT）"),

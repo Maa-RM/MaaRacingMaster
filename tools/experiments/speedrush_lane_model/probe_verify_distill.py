@@ -17,7 +17,7 @@ import numpy as np
 import onnxruntime as ort
 
 HERE = Path(__file__).resolve().parent
-OLD = (HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+OLD = (HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
        / "plus_small_384x640.onnx")
 NEW = HERE / "weights" / (sys.argv[1] if len(sys.argv) > 1
                           else "plus_small_distill_384x640.onnx")

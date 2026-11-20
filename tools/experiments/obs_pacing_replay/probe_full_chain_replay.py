@@ -66,15 +66,15 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from maaracing_master.plugins.speedrush import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import (  # noqa: E402
     DEPTH_MODEL_REL, PERCEPTION_MODEL_REL)
-from maaracing_master.plugins.speedrush import model_assets  # noqa: E402
-from maaracing_master.plugins.speedrush.config import load_decision  # noqa: E402
-from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import model_assets  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     AsyncDepthRoadObserver, DepthRoadObserver, load_session)
-from maaracing_master.plugins.speedrush.lane_obs import LaneObsWorker  # noqa: E402
-from maaracing_master.plugins.speedrush.perception import StreetPerception  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.lane_obs import LaneObsWorker  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 FRAMES_DIR = (REPO / "tools/experiments/speedrush_depthart_prod/frames"
               / "20261111_104222_p2_stable41")

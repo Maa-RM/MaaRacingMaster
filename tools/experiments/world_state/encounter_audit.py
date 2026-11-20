@@ -26,7 +26,7 @@ SKIP_FID = 30      # 轨迹段切分间隔（帧）
 
 # 车道宽（米）从真源 gate0.json 读，不写字面量（数值禁令）
 _GATE0 = os.path.join(os.path.dirname(__file__), '..', '..', '..',
-                      'maaracing_master', 'plugins', 'speedrush',
+                      'maaracing_master', 'plugins', '_archive', 'speedrush',
                       'resources', 'calibration', 'gate0.json')
 LANE_W_M = json.load(open(_GATE0, encoding='utf-8'))['lane_w_m']
 

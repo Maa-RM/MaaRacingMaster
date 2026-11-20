@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -44,9 +45,19 @@ def _run(setup: str, section: str) -> subprocess.CompletedProcess:
         + setup + "\n" + section
         + "\nexit 0"
     )
+    # 从 Git Bash 启动时 PATH 前置 /usr/bin（GNU tar），PowerShell 里的 `tar` 会解析到
+    # 它——GNU tar 把盘符路径当远程主机直接失败。生产装配在 Windows shell 跑
+    # （System32 的 bsdtar），子进程固定同一解析口径，测试结果不随启动 shell 漂移。
+    env = dict(os.environ)
+    # os.environ 大小写不敏感，dict 化后键被大写——取值必须走 os.environ 本体
+    system_root = os.environ.get("SystemRoot")
+    if system_root:
+        env["PATH"] = (str(Path(system_root) / "System32") + os.pathsep
+                       + env.get("PATH", ""))
     return subprocess.run(
         [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        env=env,
     )
 
 
@@ -182,7 +193,7 @@ def test_size_gate_blocks_growth_and_accepts_smaller_packages(tmp_path, total_mi
 def test_offline_models_do_not_hide_or_create_size_regression(tmp_path, runtime_mib, should_fail):
     stage = tmp_path / "fixture"
     payload = _put(stage, "runtime/payload")
-    model = _put(stage, "maaracing_master/plugins/speedrush/resources/models/depth/model.onnx")
+    model = _put(stage, "maaracing_master/plugins/infinite_drive/resources/models/depth/model.onnx")
     for path, size in ((payload, runtime_mib), (model, 20)):
         with path.open("r+b") as stream:
             stream.truncate(size * 1024 * 1024)

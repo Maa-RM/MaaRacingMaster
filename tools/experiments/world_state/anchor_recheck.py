@@ -25,8 +25,8 @@ sys.path.insert(0, str(REPO))
 import numpy as np  # noqa: E402
 import cv2  # noqa: E402
 
-from maaracing_master.plugins.speedrush import DEPTH_MODEL_FILE  # noqa: E402
-from maaracing_master.plugins.speedrush.depth_geo import (  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import DEPTH_MODEL_FILE  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import (  # noqa: E402
     load_session, infer_points, _box_anchor_z)
 
 

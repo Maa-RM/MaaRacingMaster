@@ -32,7 +32,7 @@ SAM_LABELS = ROOT / "fine_tune_out" / "sam_labels"
 BDD = ROOT / "bdd100k" / "images" / "train"
 OUT = ROOT / "fine_tune_out"
 INIT = ROOT / "weights" / "plus_small_ft_init.pth"
-NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+NATIVE = (ROOT.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
           / "plus_small_384x640.onnx")
 
 RAW = Path.home() / "AppData/Roaming/MaaRacingMaster/debug"

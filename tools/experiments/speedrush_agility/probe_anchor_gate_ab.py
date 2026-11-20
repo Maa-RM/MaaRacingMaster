@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
 
 CACHE = (ROOT / "tools" / "experiments" / "speedrush_depthart_prod"
          / "adjacent_seq_out" / "scan_cache.json")
