@@ -71,7 +71,7 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- upda
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py fd-launch
 ```
 
-所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。受管整链需要提权上下文：探针经一次 UAC 自提权，子进程无控制台窗口、进度写 `_out/managed-result.launch.log`；**运行期间不要关闭任何弹出的终端窗口**（关闭控制台会连带杀掉整棵实验进程树）。运行时复用主线检出的 `build/runtime-cache`（可用 `MAARM_RUNTIME_SOURCE` 覆盖）；worktree 检出无 `.venv` 时，实验脚本用主线虚拟环境的 Python 驱动。
+所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。受管整链需要提权上下文：探针经一次 UAC 自提权，子进程无控制台窗口、进度写 `_out/managed-result.launch.log`；**运行期间不要关闭任何弹出的终端窗口**（关闭控制台会连带杀掉整棵实验进程树）。运行时复用主线检出的 `build/runtime-cache`（可用 `MAARM_UPDATE_RUNTIME_SOURCE` 覆盖）；worktree 检出无 `.venv` 时，实验脚本用主线虚拟环境的 Python 驱动。
 
 ## 已验证结果
 

@@ -244,12 +244,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.path.join(
         os.environ.get("APPDATA", ""), "MaaRacingMaster"))
-    ap.add_argument("--log", default=os.environ.get("MAAR_G112_LOG"))
+    ap.add_argument("--log", default=os.environ.get("MAARM_PROBE_G112_LOG"))
     ap.add_argument("--session", action="append")
     ap.add_argument("--out", default="manual_gates.csv")
     args = ap.parse_args()
     if not args.log:
-        raise SystemExit("缺少游戏日志：设 MAAR_G112_LOG 或传 --log")
+        raise SystemExit("缺少游戏日志：设 MAARM_PROBE_G112_LOG 或传 --log")
     root = Path(args.root)
     sessions = set(args.session) if args.session else None
     stages = me.manual_stages(root, sessions)

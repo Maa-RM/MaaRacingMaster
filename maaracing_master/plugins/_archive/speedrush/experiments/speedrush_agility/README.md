@@ -419,7 +419,7 @@ pass 保持原选侧、承诺期不续 pass、奖励/紧急/无路/目标被占�
     <trace.jsonl ...>
 .venv/Scripts/python.exe -X utf8 maaracing_master/plugins/_archive/speedrush/experiments/speedrush_agility/probe_action_events.py \
     <session_token>
-# 手动局 120 分事件对齐（需 MAAR_G112_LOG 指向对局日志）
+# 手动局 120 分事件对齐（需 MAARM_PROBE_G112_LOG 指向对局日志）
 .venv/Scripts/python.exe -X utf8 maaracing_master/plugins/_archive/speedrush/experiments/speedrush_agility/probe_manual_events.py \
     --session 094822 --session 103934 --out manual_events.csv
 # 起意拍门位归因（多前导拍扫描 + 可行贴边重算）

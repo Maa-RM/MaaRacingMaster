@@ -25,7 +25,7 @@ SHELL_EXE = "MaaRacingMaster.Shell.exe"
 # 提权子进程用的随包真实 Python：商店版解释器（WindowsApps）无法提权启动。
 # 运行时缓存默认取当前检出的 build/runtime-cache，跨检出复用时用环境变量覆盖。
 RUNTIME_PYTHON = Path(os.environ.get(
-    "MAARM_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache"))) / "python.exe"
+    "MAARM_UPDATE_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache"))) / "python.exe"
 
 
 def run(args: list[str], *, timeout: int = 45, expected: int | None = 0,
@@ -94,7 +94,7 @@ def update(*, nested: bool = False) -> None:
     user_file.write_text('{"keep":"用户配置"}', encoding="utf-8")
     user_before = user_file.read_bytes()
     launch_report = case / "launch-report.json"
-    env_extra = {"MAARM_PROBE_REPORT": str(launch_report)}
+    env_extra = {"MAARM_UPDATE_PROBE_REPORT": str(launch_report)}
     run([str(live / "MaaRMUpdateProbe.exe"), "--stub-probe"], env_extra=env_extra)
     deadline = time.monotonic() + 10
     while not launch_report.is_file() and time.monotonic() < deadline:
@@ -219,7 +219,7 @@ def _is_elevated() -> bool:
 
 
 def _elevated_interpreter() -> str:
-    override = os.environ.get("MAARM_ELEVATED_PYTHON")
+    override = os.environ.get("MAARM_UPDATE_ELEVATED_PYTHON")
     if override and Path(override).is_file():
         return override
     exe = sys.executable
@@ -261,13 +261,13 @@ def _run_elevated_child(result_path: Path, action_args: list[str]) -> None:
 def _process_snapshot(path_prefix: str) -> list[dict]:
     """按可执行文件路径前缀抓进程拓扑（elevated 下可见提权进程）。"""
     p = run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-             "$p = $env:MAARM_SNAPSHOT_PATTERN; "
+             "$p = $env:MAARM_UPDATE_SNAPSHOT_PATTERN; "
              "Get-CimInstance Win32_Process | "
              "Where-Object { $_.ExecutablePath -like ($p + '*') } | "
              "Select-Object ProcessId,ParentProcessId,Name,ExecutablePath | "
              "ConvertTo-Json -Compress"],
             timeout=60, expected=None,
-            env_extra={"MAARM_SNAPSHOT_PATTERN": path_prefix})
+            env_extra={"MAARM_UPDATE_SNAPSHOT_PATTERN": path_prefix})
     text = p.stdout.strip()
     if not text:
         return []
@@ -293,7 +293,7 @@ def _case_env(case: Path, tag: str) -> tuple[dict, Path, Path]:
     userdata = case / ("userdata-" + tag)
     userdata.mkdir(parents=True, exist_ok=True)
     report = case / ("report-" + tag + ".json")
-    return ({"APPDATA": str(userdata), "MAARM_PROBE_REPORT": str(report)},
+    return ({"APPDATA": str(userdata), "MAARM_UPDATE_PROBE_REPORT": str(report)},
             userdata, report)
 
 
@@ -505,11 +505,6 @@ def _managed_update_chain() -> dict:
     profile = userdata / "profile.json"
     profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
     user_before = profile.read_bytes()
-    # 模型子目录哨兵：确认整树替换不触碰用户数据区内的插件资产
-    model_sentinel = userdata / "data" / "infinite_drive" / "models" / "depth" / "sentinel.onnx"
-    model_sentinel.parent.mkdir(parents=True, exist_ok=True)
-    model_sentinel.write_bytes(b"model-asset-sentinel")
-    model_before = model_sentinel.read_bytes()
     ev: dict = {"case": info["case"], "live": info["live"]}
 
     # 1 生成入口两跳探针启动（最小壳早退；证据为退出码）
@@ -655,7 +650,7 @@ def _managed_launch_chain(poison: bool, via_stub: bool) -> dict:
         ]
         for label, target, root in plans:
             report = case / f"report-{label}.json"
-            env = {"MAARM_PROBE_REPORT": str(report)}
+            env = {"MAARM_UPDATE_PROBE_REPORT": str(report)}
             ev[f"exp_{label}"] = _launch_and_collect(
                 target, root, real_ud, report, env, label)
     finally:
@@ -682,6 +677,12 @@ def _formal_update_chain() -> dict:
     profile = userdata / "profile.json"
     profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
     user_before = profile.read_bytes()
+    # 模型子目录哨兵：确认整树替换不触碰用户数据区内的插件资产
+    model_sentinel = (userdata / "MaaRacingMaster" / "data" / "infinite_drive"
+                      / "models" / "depth" / "sentinel.onnx")
+    model_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    model_sentinel.write_bytes(b"model-asset-sentinel")
+    model_before = model_sentinel.read_bytes()
     shell_log = userdata / "MaaRacingMaster" / "logs" / "shell.log"
     udf_root = userdata / "MaaRacingMaster" / "webview2"
 
@@ -787,13 +788,13 @@ def _webview_for_udf(udf_root: Path) -> list[dict]:
     """抓命令行携带本隔离用户数据目录的浏览器进程（归属判定）——全机按进程名命中
     会混入其它应用的浏览器实例，不能证明本次页面已渲染（评审回归）。"""
     p = run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-             "$p = $env:MAARM_UDF_PATTERN; "
+             "$p = $env:MAARM_UPDATE_UDF_PATTERN; "
              "Get-CimInstance Win32_Process | "
              "Where-Object { $_.Name -eq 'msedgewebview2.exe' -and "
              "$_.CommandLine -like ('*' + $p + '*') } | "
              "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
             timeout=60, expected=None,
-            env_extra={"MAARM_UDF_PATTERN": str(udf_root)})
+            env_extra={"MAARM_UPDATE_UDF_PATTERN": str(udf_root)})
     text = p.stdout.strip()
     if not text:
         return []
@@ -1062,7 +1063,7 @@ def main() -> int:
             target = OUT / "managed-publish-fd" / SHELL_EXE
             assert target.is_file(), "先运行 prepare.py publish-fd"
             report = OUT / "report-fd.json"
-            env = {"MAARM_PROBE_REPORT": str(report)}
+            env = {"MAARM_UPDATE_PROBE_REPORT": str(report)}
             return _launch_and_collect(target, target.parent,
                                        Path(os.environ["APPDATA"]) / "MaaRacingMaster",
                                        report, env, "fd")

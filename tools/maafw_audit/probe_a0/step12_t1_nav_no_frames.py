@@ -26,7 +26,7 @@ from maaracing_master.core.nav_graph import NavGraph, WgcapController  # noqa: E
 REPO = Path(__file__).resolve().parents[3]
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/pipeline"
 SPEEDRUSH_IMAGE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/image"
-NAV = Path(os.environ.get("MAAR_A0_NAV")
+NAV = Path(os.environ.get("MAARM_PROBE_A0_NAV")
          or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
          / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
 

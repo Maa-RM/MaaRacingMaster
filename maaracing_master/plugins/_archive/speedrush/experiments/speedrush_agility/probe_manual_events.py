@@ -19,7 +19,7 @@
     .venv/Scripts/python.exe -X utf8 probe_manual_events.py \
         --session 094822 --session 103934 --out manual_events.csv
 
-游戏日志路径取 ``MAAR_G112_LOG``（本机私有路径不入库），缺省即报错。
+游戏日志路径取 ``MAARM_PROBE_G112_LOG``（本机私有路径不入库），缺省即报错。
 """
 
 from __future__ import annotations
@@ -174,13 +174,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.path.join(
         os.environ.get("APPDATA", ""), "MaaRacingMaster"))
-    ap.add_argument("--log", default=os.environ.get("MAAR_G112_LOG"))
+    ap.add_argument("--log", default=os.environ.get("MAARM_PROBE_G112_LOG"))
     ap.add_argument("--session", action="append",
                     help="只跑指定会话；可重复")
     ap.add_argument("--out", help="CSV 输出路径")
     args = ap.parse_args()
     if not args.log:
-        raise SystemExit("缺少游戏日志：设 MAAR_G112_LOG 或传 --log")
+        raise SystemExit("缺少游戏日志：设 MAARM_PROBE_G112_LOG 或传 --log")
     root = Path(args.root)
     sessions = set(args.session) if args.session else None
     stages = manual_stages(root, sessions)

@@ -516,7 +516,7 @@ def make_figs(rows, ticks_by_session, cars_by_session, win_dir_by_session,
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--trace", action="append", required=True)
-    ap.add_argument("--log", default=os.environ.get("MAAR_G112_LOG"))
+    ap.add_argument("--log", default=os.environ.get("MAARM_PROBE_G112_LOG"))
     ap.add_argument("--debug-root",
                     default=os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug"))
     ap.add_argument("--json")
@@ -524,7 +524,7 @@ if __name__ == "__main__":
     ap.add_argument("--max-same", type=int, default=3)
     a = ap.parse_args()
     if not a.log:
-        raise SystemExit("缺少游戏日志：设 MAAR_G112_LOG 或传 --log")
+        raise SystemExit("缺少游戏日志：设 MAARM_PROBE_G112_LOG 或传 --log")
     rows = analyze(a.trace, a.log, a.debug_root)
     _print_report(rows)
     if a.json:

@@ -42,7 +42,7 @@ python tools/maafw_audit/probe_a0/step13_nav_save.py
 ```
 
 依赖会话 `20261106_185832` 的 nav 调试帧（`debug/<会话>/speedrush/nav`，缺省按
-`%APPDATA%/MaaRacingMaster` 解析；换会话或换数据根用环境变量 `MAAR_A0_NAV`
+`%APPDATA%/MaaRacingMaster` 解析；换会话或换数据根用环境变量 `MAARM_PROBE_A0_NAV`
 直接指向 nav 目录）。
 `step1_boot.py` / `step2_chain.py` 是最早的探测版本，已被 step3 取代，保留只为对照。
 

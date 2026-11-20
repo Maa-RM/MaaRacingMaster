@@ -374,7 +374,7 @@ def make_figs(evs, res_by_session, debug_root, out_dir):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--trace", action="append", required=True)
-    ap.add_argument("--log", default=os.environ.get("MAAR_G112_LOG"))
+    ap.add_argument("--log", default=os.environ.get("MAARM_PROBE_G112_LOG"))
     ap.add_argument("--debug-root",
                     default=os.path.expandvars(r"%APPDATA%\MaaRacingMaster\debug"))
     ap.add_argument("--json")

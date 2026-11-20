@@ -15,7 +15,7 @@ public static class Program
             binaryRoot = AppContext.BaseDirectory,
         });
         Console.WriteLine("APP_START " + report);
-        if (Environment.GetEnvironmentVariable("MAARM_PROBE_REPORT") is { Length: > 0 } path)
+        if (Environment.GetEnvironmentVariable("MAARM_UPDATE_PROBE_REPORT") is { Length: > 0 } path)
             File.WriteAllText(path, report);
         if (args is ["--locator-root", var rootOnly])
         {
@@ -46,7 +46,7 @@ public static class Program
             locator = "test-explicit",
         });
         Console.WriteLine("ROOT_REPORT " + report);
-        if (Environment.GetEnvironmentVariable("MAARM_PROBE_REPORT") is { Length: > 0 } path)
+        if (Environment.GetEnvironmentVariable("MAARM_UPDATE_PROBE_REPORT") is { Length: > 0 } path)
             File.WriteAllText(path, report);
     }
 

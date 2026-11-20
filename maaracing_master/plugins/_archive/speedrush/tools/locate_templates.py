@@ -11,7 +11,7 @@ x=1 / y=38（x=0 是左边框，0~37 行是标题栏）。模板必须先在内�
 自检：脚本启动时用 speedrush 既有模板（来自真正的 720p 运行帧）在内容区匹配，
 分数应达 ~1.0000，以此确认偏移量正确。
 
-输入：模板 PNG 目录 + 真机截帧目录——经环境变量提供（MAAR_TPL_SRC / MAAR_TPL_FRAMES，
+输入：模板 PNG 目录 + 真机截帧目录——经环境变量提供（MAARM_PROBE_TPL_SRC / MAARM_PROBE_TPL_FRAMES，
 本机取值见 AGENTS.local.md），不写死在本文件里（红线 4：入库文件不带本机路径）
 输出：控制台报告 + templates_roi.json，并把模板复制进插件资源目录
 
@@ -30,9 +30,9 @@ import os
 
 import cv2
 
-SRC_DIR = os.environ.get("MAAR_TPL_SRC", "Downloads")
+SRC_DIR = os.environ.get("MAARM_PROBE_TPL_SRC", "Downloads")
 DST_DIR = "maaracing_master/plugins/speedrush/resources/image"
-FRAME_GLOB = os.environ.get("MAAR_TPL_FRAMES", "frames/*.png")
+FRAME_GLOB = os.environ.get("MAARM_PROBE_TPL_FRAMES", "frames/*.png")
 OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates_roi.json")
 
 # 内容区偏移与尺寸（实测：窗口截图 → 720p 客户区）
@@ -93,7 +93,7 @@ def selfcheck(frames: list[str]) -> None:
 def main() -> None:
     frames = sorted(glob.glob(FRAME_GLOB))
     if not frames:
-        raise SystemExit("未找到真机截帧，检查环境变量 MAAR_TPL_FRAMES")
+        raise SystemExit("未找到真机截帧，检查环境变量 MAARM_PROBE_TPL_FRAMES")
     raw = cv2.imread(frames[0], cv2.IMREAD_COLOR)
     assert raw is not None, f"截帧读取失败：{frames[0]}"
     print(f"截帧数={len(frames)}  原始尺寸={raw.shape[1]}x{raw.shape[0]}  "

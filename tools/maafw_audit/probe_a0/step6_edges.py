@@ -30,7 +30,7 @@ CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
 SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/pipeline"
 IMAGE_DIRS = [REPO / "maaracing_master/plugins/_archive/speedrush/resources/image",
               REPO / "maaracing_master/core/resources/image"]
-NAV = Path(os.environ.get("MAAR_A0_NAV")
+NAV = Path(os.environ.get("MAARM_PROBE_A0_NAV")
          or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
          / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
 

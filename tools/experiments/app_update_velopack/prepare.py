@@ -20,7 +20,7 @@ SDK_SHA256 = "d57275692b299751a12ee3e18283b5f7fe3e55339f96b1623345da095dc484ed"
 # 已组装运行时缓存（embed python + packages + 生产 _pth），默认取当前检出的
 # build/runtime-cache，跨检出复用时用环境变量覆盖。仅实验使用，不入正式流程。
 RUNTIME_SOURCE = Path(os.environ.get(
-    "MAARM_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache")))
+    "MAARM_UPDATE_RUNTIME_SOURCE", str(REPO / "build" / "runtime-cache")))
 
 # 生产同款发布口径：assemble.ps1 §2 用 -r win-x64 --self-contained true（.NET 运行时随包）。
 MANAGED_PUBLISH_ARGS = ["-r", "win-x64", "--self-contained", "true", "-p:Version=0.1.0"]
@@ -29,7 +29,7 @@ MANAGED_PUBLISH_ARGS = ["-r", "win-x64", "--self-contained", "true", "-p:Version
 # 版本报告经环境变量落盘（stub→Update.exe→壳 两跳下 stdout 不可靠）；
 # 下载/提交走本地源探针参数，正式接入由 P2 壳宿主实现，不入正式工程。
 MAIN_INJECT = '''\n        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-        var __reportPath = Environment.GetEnvironmentVariable("MAARM_PROBE_REPORT");
+        var __reportPath = Environment.GetEnvironmentVariable("MAARM_UPDATE_PROBE_REPORT");
         if (!string.IsNullOrEmpty(__reportPath))
         {
             System.IO.File.WriteAllText(__reportPath, System.Text.Json.JsonSerializer.Serialize(new {
@@ -46,7 +46,7 @@ MAIN_INJECT = '''\n        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(fa
 
 # 拆分实验变体：与完整注入唯一差异是版本报告不访问 VelopackLocator（读磁盘标记）。
 MAIN_INJECT_NL = '''\n        Velopack.VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-        var __reportPath = Environment.GetEnvironmentVariable("MAARM_PROBE_REPORT");
+        var __reportPath = Environment.GetEnvironmentVariable("MAARM_UPDATE_PROBE_REPORT");
         if (!string.IsNullOrEmpty(__reportPath))
         {
             var __marker = System.IO.Path.Combine(AppContext.BaseDirectory, "payload-version.txt");
@@ -82,7 +82,7 @@ WEBVIEW_PROBE_METHOD = '''    // 实验专用：WebView2 初始化证据（白�
     private static async System.Threading.Tasks.Task ProbeWebViewInit(
         Microsoft.UI.Xaml.Controls.WebView2 web)
     {
-        var __p = Environment.GetEnvironmentVariable("MAARM_PROBE_REPORT");
+        var __p = Environment.GetEnvironmentVariable("MAARM_UPDATE_PROBE_REPORT");
         if (string.IsNullOrEmpty(__p)) return;
         try
         {
@@ -270,7 +270,7 @@ def _stage_content_tree(out_pub: Path, stage: Path) -> Path:
     shutil.copytree(REPO / "maaracing_master", stage / "maaracing_master",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     assert RUNTIME_SOURCE.is_dir(), (
-        f"缺少已组装运行时缓存 {RUNTIME_SOURCE}；可设 MAARM_RUNTIME_SOURCE 指向 assemble 产物")
+        f"缺少已组装运行时缓存 {RUNTIME_SOURCE}；可设 MAARM_UPDATE_RUNTIME_SOURCE 指向 assemble 产物")
     shutil.copytree(RUNTIME_SOURCE, stage / "runtime" / "python")
     # 独立更新助手进内容根：下载/提交由它驱动，壳保持最小注入形态
     helper_dir = OUT / "update-helper"

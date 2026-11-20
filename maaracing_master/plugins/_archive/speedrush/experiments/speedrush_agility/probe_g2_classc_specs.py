@@ -17,7 +17,7 @@
     .venv/Scripts/python.exe -X utf8 probe_g2_classc_specs.py
     .venv/Scripts/python.exe -X utf8 probe_g2_classc_specs.py --src <luasrc 根>
 
-`--src` 缺省读环境变量 `MAAR_LUASRC`；两者都没有时报错退出（不在仓库里写本机路径）。
+`--src` 缺省读环境变量 `MAARM_PROBE_LUASRC`；两者都没有时报错退出（不在仓库里写本机路径）。
 """
 
 from __future__ import annotations
@@ -105,10 +105,10 @@ def _stat(vals: list[float]) -> str:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", default=os.environ.get("MAAR_LUASRC"))
+    ap.add_argument("--src", default=os.environ.get("MAARM_PROBE_LUASRC"))
     args = ap.parse_args(argv)
     if not args.src:
-        print("缺少 --src，也没有 MAAR_LUASRC 环境变量", file=sys.stderr)
+        print("缺少 --src，也没有 MAARM_PROBE_LUASRC 环境变量", file=sys.stderr)
         return 2
 
     cars = parse_cars(_load(os.path.join(args.src, CAR_DAT)))
