@@ -1,0 +1,1085 @@
+{
+    "infinite_drive.点比赛": {
+        "attach": {
+            "_page": "hall",
+            "_label": "游戏大厅 → 点击比赛按钮（原子动作，零路由）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.893,
+                        0.8153,
+                        0.9625,
+                        0.9139
+                    ],
+                    "templates": [
+                        "inf_hall_race_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.893,
+                            0.8153,
+                            0.9625,
+                            0.9139
+                        ],
+                        "templates": [
+                            "inf_hall_race_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点娱乐玩法": {
+        "attach": {
+            "_page": "rank",
+            "_label": "比赛页 → 点击左侧 tab 娱乐玩法（原子动作，零路由）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.0084,
+                        0.3877,
+                        0.1604,
+                        0.8502
+                    ],
+                    "templates": [
+                        "inf_rank_fun_tab.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.0084,
+                            0.3877,
+                            0.1604,
+                            0.8502
+                        ],
+                        "templates": [
+                            "inf_rank_fun_tab.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点极速狂飙卡片": {
+        "attach": {
+            "_page": "fun",
+            "_label": "娱乐玩法页 → 点击极速狂飙卡片（原子动作，零路由）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.2211,
+                        0.3264,
+                        0.5742,
+                        0.4292
+                    ],
+                    "templates": [
+                        "inf_fun_card.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.2211,
+                            0.3264,
+                            0.5742,
+                            0.4292
+                        ],
+                        "templates": [
+                            "inf_fun_card.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点关卡挑战": {
+        "attach": {
+            "_page": "mode",
+            "_label": "模式主页 → 点击关卡挑战（PVE 入口；循环体起点）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.5977,
+                        0.8778,
+                        0.7727,
+                        0.9583
+                    ],
+                    "templates": [
+                        "inf_level_challenge_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.5977,
+                            0.8778,
+                            0.7727,
+                            0.9583
+                        ],
+                        "templates": [
+                            "inf_level_challenge_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点开始挑战": {
+        "attach": {
+            "_page": "prepare",
+            "_label": "准备页 → 点击开始挑战（进入首回合选卡）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7094,
+                        0.7542,
+                        0.8836,
+                        0.8292
+                    ],
+                    "templates": [
+                        "inf_start_challenge_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.7094,
+                            0.7542,
+                            0.8836,
+                            0.8292
+                        ],
+                        "templates": [
+                            "inf_start_challenge_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.选卡.r1": {
+        "attach": {
+            "_page": "card",
+            "_label": "卡牌选择 → 固定坐标点第1槽选择按钮（识别=选卡页锚点，链复制）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.24,
+                        0.62,
+                        0.76,
+                        0.7
+                    ],
+                    "templates": [
+                        "inf_card_select_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.3125,
+                        0.6611
+                    ],
+                    "wait_after_ms": 1200
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.选卡.r2": {
+        "attach": {
+            "_page": "card",
+            "_label": "卡牌选择 → 固定坐标点第2槽选择按钮（识别=选卡页锚点，链复制）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.24,
+                        0.62,
+                        0.76,
+                        0.7
+                    ],
+                    "templates": [
+                        "inf_card_select_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.5,
+                        0.6611
+                    ],
+                    "wait_after_ms": 1200
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.选卡.r3": {
+        "attach": {
+            "_page": "card",
+            "_label": "卡牌选择 → 固定坐标点第3槽选择按钮（识别=选卡页锚点，链复制）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.24,
+                        0.62,
+                        0.76,
+                        0.7
+                    ],
+                    "templates": [
+                        "inf_card_select_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.6875,
+                        0.6611
+                    ],
+                    "wait_after_ms": 1200
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点下一关": {
+        "attach": {
+            "_page": "result",
+            "_label": "结算页 → 点击右下下一关（离开结算进下一关准备页）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.8539,
+                        0.8861,
+                        0.8977,
+                        0.9583
+                    ],
+                    "templates": [
+                        "inf_result_next_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.8539,
+                            0.8861,
+                            0.8977,
+                            0.9583
+                        ],
+                        "templates": [
+                            "inf_result_next_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点放弃本轮": {
+        "attach": {
+            "_page": "prepare",
+            "_label": "下一关准备页 → 点击右上放弃本轮（回环：放弃后回模式页）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.8781,
+                        0.0375,
+                        0.9664,
+                        0.0917
+                    ],
+                    "templates": [
+                        "inf_giveup_round_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.8781,
+                            0.0375,
+                            0.9664,
+                            0.0917
+                        ],
+                        "templates": [
+                            "inf_giveup_round_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 1500
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.点继续放弃": {
+        "attach": {
+            "_page": "giveup",
+            "_label": "放弃确认框 → 点击继续放弃（确认后回模式页）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.5695,
+                        0.5917,
+                        0.8008,
+                        0.7167
+                    ],
+                    "templates": [
+                        "inf_giveup_continue_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.5695,
+                            0.5917,
+                            0.8008,
+                            0.7167
+                        ],
+                        "templates": [
+                            "inf_giveup_continue_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.__confirm.比赛页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：点比赛后落地比赛页（娱乐玩法 tab 在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.0084,
+                        0.3877,
+                        0.1604,
+                        0.8502
+                    ],
+                    "templates": [
+                        "inf_rank_fun_tab.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.娱乐玩法页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：点娱乐玩法后落地娱乐玩法页（极速狂飙卡片在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.2211,
+                        0.3264,
+                        0.5742,
+                        0.4292
+                    ],
+                    "templates": [
+                        "inf_fun_card.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.模式页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：进模式页 / 放弃回环后回模式页（生涯奖励入口在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7219,
+                        0.0431,
+                        0.9914,
+                        0.2264
+                    ],
+                    "templates": [
+                        "inf_career_award.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.准备页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：关卡挑战 / 下一关后落地准备页（开始挑战在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7094,
+                        0.7542,
+                        0.8836,
+                        0.8292
+                    ],
+                    "templates": [
+                        "inf_start_challenge_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.卡牌选择": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：选卡页在位（任一槽选择按钮在位，跨阶段1/2通用）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.24,
+                        0.62,
+                        0.76,
+                        0.7
+                    ],
+                    "templates": [
+                        "inf_card_select_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.商店横幅": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "驾驶1结束信号：进商店横幅（沿用 v1 横幅模板）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.36,
+                        0.42,
+                        0.64,
+                        0.55
+                    ],
+                    "templates": [
+                        "inf_store_banner.png"
+                    ],
+                    "threshold": 0.7
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 50
+    },
+    "infinite_drive.__confirm.结算页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认 / 驾驶2结束信号：结算页（本场得分标题在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.4375,
+                        0.4306,
+                        0.5625,
+                        0.4792
+                    ],
+                    "templates": [
+                        "inf_result_score_label.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.放弃确认框": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：点放弃本轮后弹确认框（继续放弃在位）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.5695,
+                        0.5917,
+                        0.8008,
+                        0.7167
+                    ],
+                    "templates": [
+                        "inf_giveup_continue_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.驾驶1结束": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "驾驶1结束信号：商店横幅 或 选卡页（v2 阶段1末直接进选卡/事件）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "infinite_drive.__confirm.商店横幅",
+                    "infinite_drive.__confirm.卡牌选择"
+                ]
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__confirm.驾驶2结束": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "驾驶2结束信号：结算页在位",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "infinite_drive.__confirm.结算页"
+                ]
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.__boot.dwell": {
+        "attach": {
+            "_boot": true,
+            "_entry": true,
+            "_label": "起跑汇聚（按当前页面存在的按钮择一）"
+        },
+        "recognition": {
+            "type": "DirectHit",
+            "param": {}
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "next": [
+            "infinite_drive.点比赛",
+            "infinite_drive.点娱乐玩法",
+            "infinite_drive.点极速狂飙卡片",
+            "infinite_drive.点关卡挑战",
+            "infinite_drive.点开始挑战",
+            "infinite_drive.选卡.r1",
+            "infinite_drive.点下一关",
+            "infinite_drive.点放弃本轮",
+            "infinite_drive.点继续放弃"
+        ],
+        "timeout": -1,
+        "rate_limit": 600
+    },
+    "infinite_drive.选车.r1": {
+        "attach": {
+            "_page": "carselect",
+            "_label": "选车页(条件) → 固定坐标点第一辆车卡",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7891,
+                        0.875,
+                        0.9352,
+                        0.9611
+                    ],
+                    "templates": [
+                        "inf_car_confirm_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.1758,
+                        0.2778
+                    ],
+                    "wait_after_ms": 800
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.选车.r2": {
+        "attach": {
+            "_page": "carselect",
+            "_label": "选车页(条件) → 点确定所有选车",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7891,
+                        0.875,
+                        0.9352,
+                        0.9611
+                    ],
+                    "templates": [
+                        "inf_car_confirm_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "settle": {
+                        "rect": [
+                            0.7891,
+                            0.875,
+                            0.9352,
+                            0.9611
+                        ],
+                        "templates": [
+                            "inf_car_confirm_btn.png"
+                        ],
+                        "threshold": 0.8,
+                        "colorspace": "rgb"
+                    },
+                    "wait_after_ms": 2000
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
+    },
+    "infinite_drive.__confirm.选车页": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "落地确认：选车页在位(确定所有选车按钮)",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.7891,
+                        0.875,
+                        0.9352,
+                        0.9611
+                    ],
+                    "templates": [
+                        "inf_car_confirm_btn.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    }
+}

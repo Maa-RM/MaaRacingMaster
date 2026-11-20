@@ -23,6 +23,9 @@ RES_DIR = PLUGIN_DIR / "resources"
 POLICY_DIR = RES_DIR / "policy"
 CALIB_DIR = RES_DIR / "calibration"
 MODELS_DIR = RES_DIR / "models"
+# 操作流程导航真源（状态机节点）与模板图目录
+PIPELINE_DIR = RES_DIR / "pipeline"
+IMAGE_DIR = RES_DIR / "image"
 # 驾驶页 HUD 区域真源（归一化、x2/y2 排他）
 HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
 # 几何标定真源（Gate-0 收杆产物；world_model.load_calib 唯一读法）

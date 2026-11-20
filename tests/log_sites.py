@@ -398,7 +398,13 @@ SITES: list[LogSite] = [
     _s('plugins/infinite_drive/hud.py', 'HudObserver._write_worker', '[极速狂飙] HUD 落盘失败（累计 {}）: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
 
     # ---- plugins/infinite_drive/module.py ----
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 操作流程未接线：感知/几何基建已就位，v2 流程施工中', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 游戏窗口不是 16:9（模板与 ROI 按 720p 设计），模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 导航图加载失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._run_flow', '[无限驾驶] 「{}」未正常结束，本轮中止', 'WARNING', 'state', 'cross', '轮次状态事件（非逐帧）：本局中止的里程碑，须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._run_step', '[无限驾驶] 步骤「{}」重发 {} 次仍未落地，本轮中止', 'WARNING', 'state', 'cross', '步级重试耗尽的状态事件（非逐帧）：失败信号须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._pick_cards', '[无限驾驶] 「{}」未出现选卡页', 'WARNING', 'state', 'cross', '选卡段入口状态事件：页面缺失即中止，须留在面板上。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._drive', '[无限驾驶] 驾驶{} 超时未见结束信号', 'WARNING', 'state', 'cross', '驾驶段超时状态事件（非逐帧）：失败信号须留在面板上。'),
 
     # ---- plugins/infinite_drive/recorder.py ----
     _s('plugins/infinite_drive/recorder.py', 'DriveRecorder._write_meta', '[极速狂飙] 录制 meta 写入失败: {}', 'WARNING', 'cross', 'cross', '常驻 worker/回调线程的跨切面事件：无稳定业务组可挂。'),
