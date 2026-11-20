@@ -47,7 +47,7 @@ class Calib:
     vpx: float        # 消失点 x
     y_h: float        # 地平线行（2D 尺子口径；合成点图的地平线逐帧取车道线灭点，
                       # 缺值时回退此值）
-    focal_px: float   # 线角几何的全幅相机焦距（≠ 合成点图的固定投影焦距 630）
+    focal_px: float   # 线角几何的全幅相机焦距（≠ 合成点图的固定投影焦距 FOCAL_PX）
     a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
     min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
     lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）

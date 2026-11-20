@@ -133,6 +133,14 @@ tools/experiments/**/*_out/
 tools/experiments/**/bin/
 tools/experiments/**/obj/
 
+# 随插件归档的实验目录（plugins/_archive/<插件>/experiments/）沿用实验区同款忽略口径
+maaracing_master/plugins/_archive/*/experiments/**/weights/
+maaracing_master/plugins/_archive/*/experiments/**/upstream/
+maaracing_master/plugins/_archive/*/experiments/**/teachers/
+maaracing_master/plugins/_archive/*/experiments/**/*_out/
+maaracing_master/plugins/_archive/*/experiments/**/bin/
+maaracing_master/plugins/_archive/*/experiments/**/obj/
+
 # 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
 # （教育/科研/非营利可分发，商业用途需另行授权）
 

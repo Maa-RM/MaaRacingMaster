@@ -276,9 +276,17 @@ class Checker:
         for g in FORMAL_GLOBS:
             for p in self.root.glob(g):
                 r = self.rel(p)
-                if p.is_file() and r not in FORMAL_EXCLUDE and "/plan/" not in r:
+                if p.is_file() and r not in FORMAL_EXCLUDE and "/plan/" not in r \
+                        and not self.archived_experiment(r):
                     out.append(p)
         return sorted(set(out))
+
+    @staticmethod
+    def archived_experiment(rel: str) -> bool:
+        """随插件归档的实验目录（plugins/_archive/<插件>/experiments/）是冻结史料：
+        不是现役知识也不是生产代码，R2/R3/R4/R8 的引用纪律不适用（同 R11 的
+        /_archive/ 豁免口径）。入口与生命周期见 tools/experiments/README.md。"""
+        return "/_archive/" in rel and "/experiments/" in rel
 
     def plan_docs(self) -> list[Path]:
         """工作台文件（gitignore 不入库，CI 上为空；本地跑才有意义）。"""
@@ -537,7 +545,7 @@ class Checker:
 
         for g in CODE_GLOBS:                                        # R4 / R3（代码面）
             for p in self.root.glob(g):
-                if self.rel(p) in CODE_EXCLUDE:
+                if self.rel(p) in CODE_EXCLUDE or self.archived_experiment(self.rel(p)):
                     continue
                 text = p.read_text(encoding="utf-8", errors="replace")
                 if self.code_refs_experiments(text):
