@@ -288,6 +288,7 @@ public sealed partial class MainWindow : Window
         // 检查诚实返回不可用）；提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并
         // 放弃提交（见 PrepareForUpdateAsync）；交接失败由壳重启后端（闸门通过 = 后端已
         // 确认退出，见 RestartSidecarAfterHandoffFailureAsync）；提交进入替换相位后由壳做计划内关窗。
+        var (prefChannel, prefSource, prefFromPreview) = UpdatePreferences.Load();
         var coordinator = new UpdateCoordinator(
             feedSource: ReadUpdateSourceFile(),
             managed: AppRootResolver.Resolve(
@@ -296,7 +297,11 @@ public sealed partial class MainWindow : Window
                 AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("APPDATA")).Managed,
             prepareGate: PrepareForUpdateAsync,
-            handoffRecovery: RestartSidecarAfterHandoffFailureAsync);
+            handoffRecovery: RestartSidecarAfterHandoffFailureAsync,
+            initialChannel: prefChannel,
+            initialSource: prefSource,
+            initialAwaitingStable: prefFromPreview,
+            savePreferences: UpdatePreferences.Save);
         coordinator.ApplyingStarted += ScheduleApplyShutdown;
         RpcBridge.AttachCoordinator(coordinator);
 

@@ -47,8 +47,9 @@ internal static class Program
             case "sidecar": CheckSidecarAsync(args).GetAwaiter().GetResult(); break;
             case "cleanup": CheckCleanup(args); break;
             case "update": CheckUpdateCoordinator(args).GetAwaiter().GetResult(); break;
+            case "settings": CheckUpdateSettingsAsync().GetAwaiter().GetResult(); break;
             default:
-                Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar");
+                Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings");
                 return 2;
         }
         Console.WriteLine(s_failures == 0 ? "ALL PASS" : $"FAILURES: {s_failures}");
@@ -102,9 +103,12 @@ internal static class Program
     /// 夹具显式传入：--root &lt;受管安装树&gt; --feed &lt;更新源目录&gt;。</summary>
     private static async Task CheckUpdateCoordinator(string[] args)
     {
-        var (live, feed) = ResolveUpdateFixture(args);
+        var (live, feedRaw) = ResolveUpdateFixture(args);
         var marker = Path.Combine(live, "current", "payload-version.txt");
         var liveVersion = File.ReadAllText(marker).Trim();
+        // 协调器总是显式传渠道（默认 stable）：夹具索引若是历史 win 命名，
+        // 先在临时目录改名 staging，夹具本身保持渠道无关。
+        var feed = EnsureStableIndex(feedRaw);
 
         // ① 非受管：所有动作诚实降级
         var degraded = new UpdateCoordinator(null, managed: false);
@@ -279,7 +283,7 @@ internal static class Program
         // 显示的下载按钮——迟到的检查结果不得覆盖 downloading（否则进度消失、取消失效、
         // 下载完成进不了 ready）。本地慢 HTTP 源：索引响应延迟制造检查窗口。
         using var slowHttp = new SlowHttpServer(
-            File.ReadAllText(Path.Combine(feed, "releases.win.json")),
+            File.ReadAllText(Path.Combine(feed, "releases.stable.json")),
             TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(6));
         var concurrent = new UpdateCoordinator($"http://127.0.0.1:{slowHttp.Port}", managed: true,
             locator: MakeExplicitLocator(live, liveVersion));
@@ -310,6 +314,128 @@ internal static class Program
               $"phase={s7e.Phase} error={s7e.Error}");
     }
 
+    /// <summary>渠道/下载源设置的真实行为验证：自建最小 feed 索引，让协调器真的跑 Velopack。
+    /// 静态文本锁抓不到「切了到底有没有换索引」——这里覆盖：渠道是用户设置（默认显式
+    /// stable）、切回稳定轨真的换索引、从测试轨切回且稳定版未追上时如实标记等待（不降级）、
+    /// 下载源只是同一货架的地址选择（切换保留就绪目标、下次检查换新首选）、首选不可达
+    /// 回退其余地址、渠道切换作废旧世代检查。不依赖任何实验输出目录，夹具自包含。</summary>
+    private static async Task CheckUpdateSettingsAsync()
+    {
+        var root = MakeTempDir("settings");
+        Directory.CreateDirectory(Path.Combine(root, "packages"));
+        Directory.CreateDirectory(Path.Combine(root, "current"));
+        var locator = new TestVelopackLocator(
+            "MaaRM.RealShellProbe", "1.0.0",
+            Path.Combine(root, "packages"), Path.Combine(root, "current"), root,
+            Path.Combine(root, "Update.exe"));
+
+        // 一个目录里按渠道各放一份索引，版本刻意错开，便于断言「切了真的换了读取目标」。
+        string MakeFeed(string label, params (string Channel, string Version)[] channels)
+        {
+            var dir = Path.Combine(root, label);
+            Directory.CreateDirectory(dir);
+            foreach (var (channel, version) in channels)
+                File.WriteAllText(Path.Combine(dir, $"releases.{channel}.json"), FeedIndex(version));
+            return dir;
+        }
+
+        // ① 渠道是用户设置：默认显式 stable，不依赖安装包烧录的渠道。
+        var defaultFeed = MakeFeed("default", ("stable", "9.0.0"), ("preview", "2.0.0"));
+        var def = new UpdateCoordinator(defaultFeed, managed: true, locator: locator);
+        var defSnap = await def.CheckAsync();
+        Check("默认构造 → 显式走稳定轨索引",
+              defSnap.Phase == UpdateSnapshot.Available && defSnap.TargetVersion == "9.0.0"
+              && defSnap.Channel == UpdateSnapshot.ChannelStable,
+              $"phase={defSnap.Phase} channel={defSnap.Channel} target={defSnap.TargetVersion} error={defSnap.Error}");
+
+        // ② 切渠道：preview → stable，真的换索引。
+        var channelFeed = MakeFeed("channel", ("stable", "9.0.0"), ("preview", "2.0.0"));
+        var ch = new UpdateCoordinator(channelFeed, managed: true, locator: locator,
+            initialChannel: UpdateSnapshot.ChannelPreview);
+        var chPreview = await ch.CheckAsync();
+        Check("显式测试渠道 → 读 preview 索引",
+              chPreview.Phase == UpdateSnapshot.Available && chPreview.TargetVersion == "2.0.0",
+              $"phase={chPreview.Phase} target={chPreview.TargetVersion} error={chPreview.Error}");
+        var chStable = await ch.SetChannelAsync(UpdateSnapshot.ChannelStable);
+        Check("切回稳定轨 → 真的读 stable 索引",
+              chStable.Phase == UpdateSnapshot.Available && chStable.TargetVersion == "9.0.0",
+              $"phase={chStable.Phase} target={chStable.TargetVersion} error={chStable.Error}");
+
+        // ③ 等待标记：stable 索引版本低于已装版本 → 不做降级安装、无目标，
+        //    如实标记「等待稳定轨追上」，不假装「已是最新」。
+        var downgradeFeed = MakeFeed("downgrade", ("stable", "0.5.0"), ("preview", "2.0.0"));
+        var dg = new UpdateCoordinator(downgradeFeed, managed: true, locator: locator,
+            initialChannel: UpdateSnapshot.ChannelPreview);
+        await dg.CheckAsync();
+        var dgSwitch = await dg.SetChannelAsync(UpdateSnapshot.ChannelStable);
+        Check("切回稳定轨且稳定版未追上 → 等待标记为真且无降级目标",
+              dgSwitch.Phase == UpdateSnapshot.UpToDate && dgSwitch.AwaitingStable
+              && dgSwitch.TargetVersion is null,
+              $"phase={dgSwitch.Phase} awaiting={dgSwitch.AwaitingStable} target={dgSwitch.TargetVersion} error={dgSwitch.Error}");
+
+        // ④ 下载源是同一货架的地址选择：切换只换首选——就绪目标保留，下次检查换新首选。
+        var cnbFeed = MakeFeed("cnb", ("stable", "3.0.0"));
+        var ghFeed = MakeFeed("github", ("stable", "4.0.0"));
+        var sc = new UpdateCoordinator($"cnb|{cnbFeed}\ngithub|{ghFeed}", managed: true, locator: locator);
+        var scCnb = await sc.CheckAsync();
+        Check("首选 cnb → available 且带目标",
+              scCnb.Phase == UpdateSnapshot.Available && scCnb.TargetVersion == "3.0.0",
+              $"phase={scCnb.Phase} target={scCnb.TargetVersion} error={scCnb.Error}");
+        var scGh = await sc.SetSourceAsync(UpdateSnapshot.SourceGithub);
+        Check("切下载源 → 就绪目标保留（不清空），仅换首选",
+              scGh.Phase == UpdateSnapshot.Available && scGh.TargetVersion == "3.0.0"
+              && scGh.Source == UpdateSnapshot.SourceGithub,
+              $"phase={scGh.Phase} target={scGh.TargetVersion} source={scGh.Source} error={scGh.Error}");
+        var scRecheck = await sc.CheckAsync();
+        Check("切源后重查 → 按新首选读到 github 索引",
+              scRecheck.Phase == UpdateSnapshot.Available && scRecheck.TargetVersion == "4.0.0",
+              $"phase={scRecheck.Phase} target={scRecheck.TargetVersion} error={scRecheck.Error}");
+
+        // ⑤ 首选不可达 → 回退其余等价地址（同一货架，不存在「跨组回退」）。
+        var deadDir = Path.Combine(root, "dead");
+        Directory.CreateDirectory(deadDir); // 空目录 = 镜像未就绪
+        var fallback = new UpdateCoordinator($"cnb|{deadDir}\ngithub|{ghFeed}", managed: true, locator: locator);
+        var fbSnap = await fallback.CheckAsync();
+        Check("首选不可达 → 回退其余地址完成检查",
+              fbSnap.Phase == UpdateSnapshot.Available && fbSnap.TargetVersion == "4.0.0",
+              $"phase={fbSnap.Phase} target={fbSnap.TargetVersion} error={fbSnap.Error}");
+
+        // ⑥ 世代守卫：慢检查在途时切渠道（开启新世代），旧世代的迟到结果
+        // 不得覆盖新渠道的结果。慢源不分渠道（固定返回旧版本内容），因此
+        // 切渠道后再换首选地址重查：快检查先落定，慢检查后返回必须被丢弃。
+        using var slow = new SlowHttpServer(FeedIndex("2.0.0"),
+            TimeSpan.FromMilliseconds(1000), TimeSpan.FromSeconds(6));
+        var epochFeed = $"cnb|http://127.0.0.1:{slow.Port}\ngithub|{ghFeed}";
+        var ep = new UpdateCoordinator(epochFeed, managed: true, locator: locator,
+            initialChannel: UpdateSnapshot.ChannelPreview);
+        var inFlight = ep.CheckAsync();
+        await Task.Delay(100);
+        var epSwitch = await ep.SetChannelAsync(UpdateSnapshot.ChannelStable);
+        Check("切渠道 → 开启新世代并当场重查",
+              epSwitch.Phase == UpdateSnapshot.Available
+              && epSwitch.Channel == UpdateSnapshot.ChannelStable,
+              $"phase={epSwitch.Phase} channel={epSwitch.Channel} target={epSwitch.TargetVersion} error={epSwitch.Error}");
+        await ep.SetSourceAsync(UpdateSnapshot.SourceGithub); // 换首选地址，不动世代
+        var recheck = await ep.CheckAsync();
+        Check("按新首选重查 → 拿到稳定轨目标",
+              recheck.Phase == UpdateSnapshot.Available && recheck.TargetVersion == "4.0.0",
+              $"phase={recheck.Phase} target={recheck.TargetVersion} error={recheck.Error}");
+        var late = await inFlight; // 同步点：确保旧事务彻底结束（丢弃分支的返回快照不保证携带新结果）
+        var final = ep.GetStatus();
+        Check("旧世代的迟到检查不覆盖新渠道结果",
+              final.TargetVersion == "4.0.0" && final.Channel == UpdateSnapshot.ChannelStable
+              && !final.AwaitingStable,
+              $"late={late.TargetVersion} final={final.TargetVersion}/{final.Channel}/{final.AwaitingStable}");
+    }
+
+    /// <summary>最小可用渠道索引：检查阶段只解析 JSON，不需要真实 nupkg（探针既有
+    /// 「索引可达包缺失」用例已证实）。SHA 用占位值，只用于版本比较。</summary>
+    private static string FeedIndex(string version) =>
+        "{\"Assets\":[{\"PackageId\":\"MaaRM.RealShellProbe\",\"Version\":\"" + version +
+        "\",\"Type\":\"Full\",\"FileName\":\"MaaRM.RealShellProbe-" + version +
+        "-full.nupkg\",\"SHA1\":\"" + new string('0', 40) +
+        "\",\"SHA256\":\"" + new string('0', 64) + "\",\"Size\":1}]}";
+
     /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>
     private static TestVelopackLocator MakeExplicitLocator(string live, string liveVersion)
     {
@@ -330,6 +456,21 @@ internal static class Program
             throw new InvalidOperationException(
                 "update 用例必须显式给夹具：--root <受管安装树> --feed <更新源目录>");
         return (root, feed);
+    }
+
+    /// <summary>协调器总是显式传渠道（默认 stable）：夹具索引若是历史 win 命名，
+    /// 复制到临时目录并改名，原夹具保持渠道无关、不被写入。</summary>
+    private static string EnsureStableIndex(string feed)
+    {
+        if (File.Exists(Path.Combine(feed, "releases.stable.json"))) return feed;
+        var staged = Path.Combine(MakeTempDir("feed-stable"), "feed");
+        Directory.CreateDirectory(staged);
+        foreach (var f in Directory.GetFiles(feed))
+            File.Copy(f, Path.Combine(staged, Path.GetFileName(f)));
+        var win = Path.Combine(staged, "releases.win.json");
+        if (File.Exists(win))
+            File.Move(win, Path.Combine(staged, "releases.stable.json"));
+        return staged;
     }
 
     /// <summary>本地最小 HTTP 源（TcpListener，无 URL ACL 依赖）：索引响应延迟制造

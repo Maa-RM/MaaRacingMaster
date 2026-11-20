@@ -18,6 +18,10 @@
 #   -KeepGoing              continue on error (local debug); default fail-fast
 #   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
 #   -WithModels             include optional ONNX weights in the package; default excludes them (separate model pack)
+#   -UpdateSourceCnb/-UpdateSourceGithub
+#                           managed-mode required; both addresses point to the same release shelf.
+#                           Script emits named lines cnb|<url> / github|<url> (update-source.txt);
+#                           missing either fails the build instead of shipping a half-wired package.
 #   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
 #   -ExcludeModules         人工兜底：在自动判定之外按 plugins/<目录名> 追加剔除（逗号分隔）
 #                           自动剔除：打包时刻已过 manifest VALID_UNTIL 的活动模块不随包分发，
@@ -45,8 +49,10 @@ param(
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$Managed,       # 受管模式：GUI 发布产物落内容根（更新器标准布局），
                             # 不编译根入口（入口 exe 由 SDK CLI 生成）；发布流程用 vpk 打包内容树
-    [string]$UpdateSource = '',  # 受管模式：随包更新源配置（update-source.txt，发行时写真实索引地址；
-                            # 客户端按此检查/下载，用户不可改、前端不可传）
+    [string]$UpdateSourceCnb = '',     # 受管模式必填：随包下载地址。两个地址指向同一发行货架，
+    [string]$UpdateSourceGithub = '',  # 本脚本统一产出「cnb|<url>」「github|<url>」命名行（update-source.txt）；
+                            # 客户端按偏好决定首选与回退顺序，用户不可改、前端不可传。缺任一地址即报错
+                            # 不写文件——不合规配置属发行事故，不得流出；客户端无单源兼容模式。
     [switch]$RemoveWinAppSdkML,  # EXP-1: remove WinAppSDK AI/ML dead chain (43.6MB, MaaRM zero usage)
     [switch]$RemoveWidgets,       # EXP-2: remove WinAppSDK Widgets dead chain (2.5MB, MaaRM zero usage)
     [switch]$RemovePythonOrtCapi, # EXP-3: remove Python ORT capi\onnxruntime.dll (20.1MB, pyd self-contained)
@@ -581,9 +587,19 @@ if ($Managed) {
     if (Test-Path (Join-Path $StageRoot 'MaaRacingMaster.exe')) {
         $errors.Add('受管内容树不应携带根入口 MaaRacingMaster.exe（由 SDK CLI 生成，避免两份入口）')
     }
-    if ($UpdateSource) {
-        Set-Content -Path (Join-Path $StageRoot 'update-source.txt') -Value $UpdateSource -Encoding ascii
-        Write-Host '[assemble] update-source.txt 已随包写入'
+    # 随包来源配置的唯一生产者：两个地址指向同一发行货架，本脚本统一产出
+    # 「cnb|<url>」「github|<url>」命名行，与客户端 SourceCatalog 的解析对称。
+    # 受管模式下两个地址都必填：缺任一就报错且不写文件，让客户端诚实报
+    # 「未配置」，而不是流出一份功能残缺的包。
+    if ([string]::IsNullOrWhiteSpace($UpdateSourceCnb) -or
+        [string]::IsNullOrWhiteSpace($UpdateSourceGithub)) {
+        $errors.Add('受管模式要求 -UpdateSourceCnb 与 -UpdateSourceGithub 同时提供（同一货架的两个下载地址）')
+    } else {
+        $sourceLines = [System.Collections.Generic.List[string]]::new()
+        $sourceLines.Add("cnb|$($UpdateSourceCnb.Trim())")
+        $sourceLines.Add("github|$($UpdateSourceGithub.Trim())")
+        Set-Content -Path (Join-Path $StageRoot 'update-source.txt') -Value $sourceLines -Encoding ascii
+        Write-Host '[assemble] update-source.txt 已写入命名下载地址（cnb/github）'
     }
 } else {
 # 旧 ZIP 模式（保留原逻辑）：根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见

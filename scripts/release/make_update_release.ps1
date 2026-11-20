@@ -9,6 +9,11 @@
 #     -Channel stable -OutDir <release assets dir> [-VpkPath <vpk.exe>] [-DryRun]
 # The client reads the feed location from the bundled update-source.txt written at
 # assembly time; the frontend only sends fixed intents (no source/URL/version params).
+# Channel semantics: -Channel only names the index file (releases.<channel>.json) and
+# groups the feed; the client ALWAYS passes its channel explicitly (user setting,
+# default stable) via UpdateOptions.ExplicitChannel, so the value vpk bakes into the
+# package is never read. Downgrades are not offered: after switching back from preview
+# the client waits until the stable track publishes a higher version.
 
 param(
     [Parameter(Mandatory=$true)][string]$StageDir,

@@ -88,8 +88,8 @@ def test_render_paths_contain_no_innerHTML():
         )
 
 
-def test_update_source_defaults_to_cnb_and_menu_stays_pure():
-    """来源选择：默认 CNB、记忆与菜单保留（镜像语义由发布索引接入后生效）；
+def test_update_source_defaults_to_cnb_and_settings_stay_pure():
+    """来源选择：默认 CNB、记忆与设置浮窗保留（镜像语义由发布索引接入后生效）；
     更新主流程只发固定意图——来源/路径/URL 不得由前端拼进请求。"""
     src = APP_JS.read_text(encoding="utf-8")
     assert "let updateSource = 'cnb'" in src
@@ -99,9 +99,10 @@ def test_update_source_defaults_to_cnb_and_menu_stays_pure():
         "更新主流程不得携带 URL"
     )
     html = INDEX_HTML.read_text(encoding="utf-8")
-    assert 'id="btn-update-source"' in html
-    assert 'id="update-source-menu"' in html
-    assert 'id="update-source-label"' in html
+    assert 'id="btn-update-settings"' in html
+    assert 'id="update-settings-popover"' in html
+    assert 'id="upd-source-options"' in html
+    assert 'id="upd-channel-options"' in html
     assert 'src="cnb.svg"' in html
     assert 'data-icon="github-solid"' in html
 

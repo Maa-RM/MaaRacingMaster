@@ -274,7 +274,8 @@ def _publish_fixture(publish: Path) -> None:
     _put(publish, ".cache-fingerprint", "publish/")
 
 
-def _managed_setup(tmp_path: Path, managed: bool, update_source: str = "") -> str:
+def _managed_setup(tmp_path: Path, managed: bool,
+                   update_source_cnb: str = "", update_source_github: str = "") -> str:
     source = tmp_path / "src"
     source.mkdir(parents=True, exist_ok=True)
     _put(source, "apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj", "fixture")
@@ -289,7 +290,8 @@ def _managed_setup(tmp_path: Path, managed: bool, update_source: str = "") -> st
         f"$RepoRoot={_ps(source)}; $StageRoot={_ps(stage)}; "
         f"$HostPython={_ps(sys.executable)}; "
         f"$SkipPublish=$true; $pubFinger='publish/'; "
-        f"$Managed={'$true' if managed else '$false'}; $UpdateSource={_ps(update_source)}; "
+        f"$Managed={'$true' if managed else '$false'}; "
+        f"$UpdateSourceCnb={_ps(update_source_cnb)}; $UpdateSourceGithub={_ps(update_source_github)}; "
         f"$VcVarsAll={_ps(tmp_path / 'no-msvc')}; "
 
         # $appDir 与缓存指纹函数的派生在脚本 param/指纹区（本节提取范围之外），
@@ -327,17 +329,38 @@ def test_legacy_layout_keeps_app_dir(tmp_path):
     assert not (stage / "MaaRacingMaster.Shell.exe").exists()
 
 
-def test_managed_mode_writes_update_source(tmp_path):
-    """受管模式：随包更新源配置写入内容树；未配置时不写文件（客户端诚实降级）。"""
-    setup, stage = _managed_setup(tmp_path, managed=True, update_source="https://feed.example/base")
+def test_managed_mode_writes_named_source_lines(tmp_path):
+    """受管模式：两个命名下载地址由脚本统一产出命名行，指向同一发行货架；
+    行为锁——真实执行 assemble 的 2.6 节并读产物，删掉生产者即红。"""
+    setup, stage = _managed_setup(
+        tmp_path, managed=True,
+        update_source_cnb="https://cnb.example/feed",
+        update_source_github="https://github.example/feed",
+    )
     result = _run(setup, _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist"))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (stage / "update-source.txt").read_text(encoding="utf-8").strip() == "https://feed.example/base"
+    lines = (stage / "update-source.txt").read_text(encoding="utf-8").strip().splitlines()
+    assert lines == [
+        "cnb|https://cnb.example/feed",
+        "github|https://github.example/feed",
+    ], "命名地址未按 cnb|/github| 格式写入"
 
-    setup2, stage2 = _managed_setup(tmp_path / "b", managed=True, update_source="")
-    result2 = _run(setup2, _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist"))
-    assert result2.returncode == 0, result2.stdout + result2.stderr
-    assert not (stage2 / "update-source.txt").exists()
+
+def test_managed_mode_requires_both_named_sources(tmp_path):
+    """缺任一命名地址 → 报错且不写文件：不合规配置属发行事故，不得流出；
+    客户端无单源兼容模式，残缺包只会诚实报「更新源未配置」。"""
+    setup, stage = _managed_setup(
+        tmp_path / "missing", managed=True,
+        update_source_cnb="https://cnb.example/feed",
+    )
+    result = _run(
+        setup,
+        _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist")
+        + '\n$errors | ForEach-Object { Write-Host "ERR: $_" }',
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "同时提供" in result.stdout + result.stderr
+    assert not (stage / "update-source.txt").exists(), "缺地址时不得产出随包来源配置"
 
 
 def test_managed_mode_skips_launcher_and_reports_missing(tmp_path):

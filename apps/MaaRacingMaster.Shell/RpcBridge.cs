@@ -39,9 +39,11 @@ internal static class RpcBridge
         "set_boost_priority",
         "get_achievements", "set_achievement_notify", "note_ui_event",
         "export_achievements", "import_achievements", "reset_achievements",
-        // 宿主更新动作（UpdateCoordinator）：固定意图，不携带来源/路径/目标版本
+        // 宿主更新动作（UpdateCoordinator）：固定意图，不携带 URL/路径；设置类只带
+        // 枚举值（stable/preview、cnb/github），由协调器校验，前端不传地址。
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
+        "update_set_channel", "update_set_source",
     };
 
     /// <summary>宿主更新动作集（壳自有，处理不经 sidecar；后端不可用不影响它们）。
@@ -50,6 +52,7 @@ internal static class RpcBridge
     {
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
+        "update_set_channel", "update_set_source",
     };
 
     /// <summary>
@@ -91,20 +94,21 @@ internal static class RpcBridge
             _ = ReplyAsync(sender, callId, false, null, $"method not allowed: {method}");
             return true;
         }
-        if (HostMethods.Contains(method))
-        {
-            // 宿主动作：壳自有能力，与业务后端解耦（backend unavailable 不影响更新状态查询）
-            _ = HandleHostCallAsync(sender, callId, method);
-            return true;
-        }
         var paramsEl = root.TryGetProperty("params", out var p) && p.ValueKind != JsonValueKind.Null
             ? p
             : (JsonElement?)null;
+        if (HostMethods.Contains(method))
+        {
+            // 宿主动作：壳自有能力，与业务后端解耦（backend unavailable 不影响更新状态查询）
+            _ = HandleHostCallAsync(sender, callId, method, paramsEl);
+            return true;
+        }
         _ = HandleCallAsync(sender, callId, method, paramsEl);
         return true;
     }
 
-    private static async Task HandleHostCallAsync(WebView2 sender, long callId, string method)
+    private static async Task HandleHostCallAsync(WebView2 sender, long callId, string method,
+                                                  JsonElement? paramsEl)
     {
         UpdateSnapshot data;
         string? error = null;
@@ -125,6 +129,8 @@ internal static class RpcBridge
                     "update_start_download" => await coordinator.StartDownloadAsync(),
                     "update_cancel_download" => coordinator.CancelDownload(),
                     "update_apply" => await coordinator.ApplyAsync(),
+                    "update_set_channel" => await coordinator.SetChannelAsync(ReadParam(paramsEl, "value")),
+                    "update_set_source" => await coordinator.SetSourceAsync(ReadParam(paramsEl, "value")),
                     _ => coordinator.GetStatus(), // update_status 与未知宿主名兜底
                 };
             }
@@ -159,6 +165,16 @@ internal static class RpcBridge
         }
 
         await ReplyAsync(sender, callId, ok, data, error);
+    }
+
+    private static string? ReadParam(JsonElement? paramsEl, string name)
+    {
+        // 畸形 params（数组/标量/null）显式判为「无此参数」，不靠 TryGetProperty 抛异常
+        // 再被外层 catch 兜成错误响应——非法值一律走协调器的拒绝分支。
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object) return null;
+        return paramsEl.Value.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
     }
 
     private static Task ReplyAsync(WebView2 sender, long callId, bool ok, object? data, string? error)

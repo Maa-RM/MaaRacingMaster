@@ -1,0 +1,194 @@
+# -*- coding: utf-8 -*-
+"""宿主更新协调器的渠道 / 下载源契约锁。
+
+**语义基线**（与计划文档一致）：两个下载地址指向同一发行货架，名字只决定
+首选顺序；渠道是用户设置，总是显式传给更新器、默认稳定轨；不做降级安装，
+从测试轨切回后等稳定轨追上（数据只升不降）。
+
+**分工**：本文件只锁「形态不被改回旧 bug」，不冒充行为验证。行为真值由壳
+合同探针承担，它直接链接本仓库的 UpdateCoordinator.cs 并跑 Velopack 1.2.161：
+
+    dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe \\
+        -c Debug -- settings
+
+该模式覆盖：默认显式稳定轨、切回稳定轨真的换索引、等待标记且无降级目标、
+切下载源保留就绪目标、首选不可达回退、渠道切换作废旧世代检查。本文件末尾
+的用例会在有 dotnet 的环境里自动驱动它，避免「静态锁全绿但功能没接线」。
+
+**空过防护**：每处抽取都锚定具体字面量，规则失效时报错而非静默通过。
+"""
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SHELL = REPO / "apps" / "MaaRacingMaster.Shell"
+COORD = SHELL / "UpdateCoordinator.cs"
+PREFS = SHELL / "UpdatePreferences.cs"
+RPC = SHELL / "RpcBridge.cs"
+ASSEMBLE = REPO / "scripts" / "release" / "assemble.ps1"
+RELEASE_YML = REPO / ".github" / "workflows" / "release.yml"
+PROBE = SHELL / "tools" / "ShellContractProbe" / "Program.cs"
+PROBE_PROJ = SHELL / "tools" / "ShellContractProbe" / "ShellContractProbe.csproj"
+
+
+def test_snapshot_carries_channel_source_and_awaiting():
+    """快照带 channel/source 与等待标记；被否决的「分组可切换」伪状态不得回潮。"""
+    src = COORD.read_text(encoding="utf-8")
+    for field in ("channel", "source", "awaiting_stable"):
+        assert re.search(rf'JsonPropertyName\("{field}"\)\]', src), f"快照缺 {field} 字段"
+    assert "source_switchable" not in src, "「分组 switchable」伪状态应已删除"
+    assert "ChannelStable = \"stable\"" in src and "ChannelPreview = \"preview\"" in src
+    assert "SourceCnb = \"cnb\"" in src and "SourceGithub = \"github\"" in src
+
+
+def test_channel_is_always_explicit_and_never_downgrades():
+    """渠道总是显式传入（用户设置、默认稳定轨）；降级开关不得存在：
+    从测试轨切回后等稳定轨追上，数据只升不降。"""
+    src = COORD.read_text(encoding="utf-8")
+    assert "AllowVersionDowngrade" not in src, "降级开关应已整体删除"
+    assert "_channelExplicit" not in src, "「未选过渠道」隐藏态应已删除"
+    manager = _cs_method(src, "public UpdateManager CreateManager(string source, IVelopackLocator? locator)")
+    assert "ExplicitChannel = Channel" in manager, "未向更新器显式传渠道"
+    switch = _cs_method(src, "private async Task<UpdateSnapshot> SwitchSettingAsync(string? value, bool isChannel)")
+    assert "_awaitingStable = value == UpdateSnapshot.ChannelStable" in switch, (
+        "切回稳定轨时未如实设置等待标记"
+    )
+    assert "UpdateSnapshot.ChannelPreview" in switch, "未区分切到测试轨与切回稳定轨"
+
+
+def test_sources_are_named_addresses_not_shelves():
+    """配置 = 命名地址行，名字只决定首选顺序：偏好在前、其余地址作回退；
+    不存在分组筛选。无标签行按无名地址参与回退，空地址行跳过。"""
+    src = COORD.read_text(encoding="utf-8")
+    assert "private sealed class SourceCatalog" in src, "来源目录抽象缺失"
+    for_body = src[src.index("public string[] For(string preference)"):]
+    for_body = for_body[:for_body.index("\n\n")]
+    assert "OrderByDescending" in for_body, "偏好未排到首位"
+    assert "string.Equals(e.Tag, preference" in for_body, "未按偏好排序"
+    assert "Where(e => e.Url.Length > 0)" in src, "空地址行未跳过"
+
+
+def test_switch_semantics_differ_by_dimension():
+    """切渠道清空在途与就绪并当场重查（换的是目标发行）；切源保留在途与就绪、
+    只换首选（等价地址），不当场重查。"""
+    src = COORD.read_text(encoding="utf-8")
+    switch = _cs_method(src, "private async Task<UpdateSnapshot> SwitchSettingAsync(string? value, bool isChannel)")
+    assert "ResetForNewEpoch()" in switch, "渠道切换未重置在途状态"
+    assert "return isChannel ? await CheckAsync().ConfigureAwait(false) : GetStatus()" in switch, (
+        "渠道切换未当场重查，或源切换错误地触发了重查"
+    )
+    assert "Preparing or" in switch and "Applying)" in switch, "提交临界区未禁止切换"
+    assert "_savePreferences(_channel, _source, _awaitingStable)" in switch, "偏好未落盘"
+    reset = _cs_method(src, "private void ResetForNewEpoch()")
+    assert "_epoch++" in reset, "渠道切换未开启新世代"
+    assert "_activeIntent = null" in reset and "_pending = null" in reset
+
+
+def test_epoch_guards_every_async_write():
+    """所有异步回写（检查/下载完成/取消回退/进度/镜像）都携带世代，
+    经 SetState(epoch) 唯一出口校验。"""
+    src = COORD.read_text(encoding="utf-8")
+    setter = _cs_method(
+        src,
+        "private UpdateSnapshot SetState(long epoch, string phase, int? progress = null, string? error = null)",
+    )
+    assert "if (epoch != _epoch) return Snapshot();" in setter, "状态翻转出口未校验世代"
+    back = _cs_method(src, "private void BackToAvailable(CheckIntent intent, string error)")
+    assert "intent.Epoch == _epoch" in back, "旧下载取消后的回写未校验世代（竞态窗口）"
+    ready = _cs_method(src, "private void MarkReadyIfDownloading(CheckIntent intent)")
+    assert "intent.Epoch == _epoch" in ready, "下载完成翻转未校验世代"
+    progress = _cs_method(src, "private async Task DownloadOnManagerAsync(UpdateManager manager, UpdateInfo update,")
+    assert "intent.Epoch == _epoch" in progress, "进度回调未校验世代"
+    mirror = _cs_method(src, "private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)")
+    assert "intent.Epoch != _epoch" in mirror, "镜像回退未校验世代"
+    assert "foreach (var source in intent.Sources)" in mirror, "镜像候选未取自事务上下文"
+    assert "epoch != Epoch || phase != StartPhase" in src, "检查意图缺相位/世代双重作废判据"
+
+
+def test_awaiting_marker_persists_and_clears():
+    """等待标记随偏好落盘；稳定轨追上（出现可安装目标）时清除并落盘，
+    避免重启后旧标记让已升级的用户看到错误文案。"""
+    src = COORD.read_text(encoding="utf-8")
+    checker = _cs_method(src, "public async Task<UpdateSnapshot> CheckAsync()")
+    assert "_awaitingStable = false" in checker, "稳定轨追上时未清除等待标记"
+    assert "_savePreferences(_channel, _source, false)" in checker, (
+        "清除后未落盘，重启后旧标记会显示错误文案"
+    )
+    prefs = PREFS.read_text(encoding="utf-8")
+    assert "from_preview" in prefs, "偏好文件未携带等待标记"
+    assert "channel == UpdateSnapshot.ChannelStable && fromPreview" in prefs, (
+        "等待标记在测试轨上无意义，应一律落 false"
+    )
+    assert "(string Channel, string Source, bool FromPreview) Load()" in prefs, (
+        "偏好不再区分「未选过渠道」——渠道与源都有显式默认值"
+    )
+
+
+def test_publisher_requires_both_named_addresses():
+    """发布端是命名行的唯一生产者且两个地址必填：缺任一报错不写文件，
+    不合规配置不得流出；单源兼容模式不得回潮。"""
+    script = ASSEMBLE.read_text(encoding="utf-8-sig")
+    assert "-UpdateSourceCnb" in script and "-UpdateSourceGithub" in script
+    assert "$UpdateSource " not in script and "IsNullOrWhiteSpace($UpdateSource)" not in script, (
+        "单源兼容参数 -UpdateSource 应已删除"
+    )
+    assert "$sourceLines.Add(\"cnb|" in script and "$sourceLines.Add(\"github|" in script, (
+        "发布端未产出与客户端对称的命名行"
+    )
+    assert "同时提供" in script, "缺任一地址未报错"
+    ci = RELEASE_YML.read_text(encoding="utf-8")
+    assert "尚未接入 CI" in ci, "CI 需如实标注受管发行链未接线（脚本能力 != 发行事实）"
+
+
+def test_rpc_exposes_two_setting_actions():
+    """RPC 白名单含两个设置动作；只带枚举 value，前端不传 URL。"""
+    src = RPC.read_text(encoding="utf-8")
+    for action in ("update_set_channel", "update_set_source"):
+        assert f'"{action}"' in src, f"RPC 白名单缺 {action}"
+    assert 'ReadParam(paramsEl, "value")' in src, "设置动作未读取枚举参数"
+
+
+def test_contract_probe_settings_mode_is_reachable():
+    """行为验证链必须存在且覆盖切渠道/切源/等待标记/世代守卫，不能只剩文本锁。"""
+    probe = PROBE.read_text(encoding="utf-8")
+    assert 'case "settings"' in probe, "合同探针缺 settings 模式"
+    body = _cs_method(probe, "private static async Task CheckUpdateSettingsAsync()")
+    for marker in ("SetChannelAsync", "SetSourceAsync", "AwaitingStable", "inFlight"):
+        assert marker in body, f"settings 行为用例未覆盖 {marker}"
+
+
+def test_contract_probe_settings_assertions_actually_pass():
+    """有 dotnet 的环境直接跑真实 Velopack 行为断言；无 dotnet 时明确跳过，
+    不把「没跑」伪装成通过。"""
+    if shutil.which("dotnet") is None:
+        import pytest
+
+        pytest.skip("本机无 dotnet；行为真值由合同探针 settings 模式在开发机验证")
+    result = subprocess.run(
+        ["dotnet", "run", "--project", str(PROBE_PROJ), "-c", "Debug", "--", "settings"],
+        cwd=str(REPO), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=300,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0 and "ALL PASS" in output, (
+        "合同探针 settings 行为断言未全过:\n" + output
+    )
+    assert output.count("[PASS]") >= 10, "行为断言数量不足以覆盖渠道/源/等待三类语义"
+
+
+def _cs_method(src: str, signature: str) -> str:
+    start = src.index(signature)
+    brace = src.index("{", start)
+    depth = 0
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[brace:i + 1]
+    raise AssertionError(f"{signature} 未闭合")
