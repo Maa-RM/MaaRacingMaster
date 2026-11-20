@@ -47,6 +47,10 @@ _USER_PLUGIN_PACKAGE = "maarm_user_plugins"
 # 已注册插件的物理目录（mod_id → plugins/<name>/），供资源存在性校验定位
 _PLUGIN_DIRS: dict[str, Path] = {}
 
+# 已注册插件的导入包名（mod_id → <pkg>）：用于按 manifest 声明加载插件自有能力，
+# core 只认通用声明字段，不硬编码任何模块名或实现路径。
+_PLUGIN_PACKAGES: dict[str, str] = {}
+
 # 已注册插件声明的有效期（mod_id → (VALID_FROM, VALID_UNTIL)），未声明的一端为 None
 _PLUGIN_VALIDITY: dict[str, tuple[datetime | None, datetime | None]] = {}
 
@@ -160,6 +164,7 @@ def _register_entry(entry: Path, pkg: str, root_label: str) -> None:
             return
         MODULE_REGISTRY[mod_id] = cls
         _PLUGIN_DIRS[mod_id] = entry
+        _PLUGIN_PACKAGES[mod_id] = pkg
         _PLUGIN_VALIDITY[mod_id] = (
             _parse_validity(getattr(manifest, "VALID_FROM", None), entry.name, "VALID_FROM"),
             _parse_validity(getattr(manifest, "VALID_UNTIL", None), entry.name, "VALID_UNTIL"),
@@ -193,6 +198,28 @@ def _discover_plugins() -> None:
 
 
 _discover_plugins()
+
+
+def plugin_declared_ref(module_id: str, field: str) -> str | None:
+    """读插件 manifest 的通用能力声明（如 ASSET_INSTALLER），未声明返回 None。"""
+    pkg = _PLUGIN_PACKAGES.get(module_id)
+    if not pkg:
+        return None
+    manifest = importlib.import_module(f"{pkg}.manifest")
+    value = getattr(manifest, field, None)
+    return value if isinstance(value, str) and value else None
+
+
+def load_plugin_ref(module_id: str, ref: str):
+    """按 "子模块.属性" 从已注册插件包加载声明的对象；非法引用抛 ValueError。"""
+    pkg = _PLUGIN_PACKAGES.get(module_id)
+    if not pkg or not ref or any(ch in ref for ch in "/\\:"):
+        raise ValueError(f"非法插件能力引用: {module_id}/{ref}")
+    path, _, attr = ref.rpartition(".")
+    if not attr:
+        raise ValueError(f"非法插件能力引用: {module_id}/{ref}")
+    module = importlib.import_module(f"{pkg}.{path}" if path else pkg)
+    return getattr(module, attr)
 
 
 def module_validity(module_id: str) -> tuple[datetime | None, datetime | None]:

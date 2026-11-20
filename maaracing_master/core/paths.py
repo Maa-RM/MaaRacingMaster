@@ -19,7 +19,10 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 
 
 def user_data_dir() -> Path:
@@ -41,6 +44,24 @@ def data_dir() -> Path:
     与 debug/（调试产物，可随手清）分家：这里放用户需要保留、或被生产代码读取的东西。
     """
     return user_data_dir() / "data"
+
+
+def module_data_dir(module_id: str, *parts: str) -> Path:
+    """模块专属数据目录：data/<module_id>/<parts...>，带名称与越界校验。
+
+    module_id 取 manifest.ID，不由前端提供；每段必须是单个安全名称，拒绝绝对路径、
+    盘符、`.`/`..` 与分隔符。解析后复核结果仍在 data_dir() 内，防符号链接越界。
+    """
+    names = (module_id, *parts)
+    if not names or any(not _SAFE_NAME.fullmatch(name) for name in names):
+        raise ValueError(f"非法的模块数据目录名: {names!r}")
+    root = data_dir().resolve()
+    path = root.joinpath(*names).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"模块数据目录越界: {path}") from exc
+    return path
 
 
 def logs_dir() -> Path:

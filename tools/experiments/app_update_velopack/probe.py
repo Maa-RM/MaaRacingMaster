@@ -505,6 +505,11 @@ def _managed_update_chain() -> dict:
     profile = userdata / "profile.json"
     profile.write_text('{"keep":"用户配置"}', encoding="utf-8")
     user_before = profile.read_bytes()
+    # 模型子目录哨兵：确认整树替换不触碰用户数据区内的插件资产
+    model_sentinel = userdata / "data" / "infinite_drive" / "models" / "depth" / "sentinel.onnx"
+    model_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    model_sentinel.write_bytes(b"model-asset-sentinel")
+    model_before = model_sentinel.read_bytes()
     ev: dict = {"case": info["case"], "live": info["live"]}
 
     # 1 生成入口两跳探针启动（最小壳早退；证据为退出码）
@@ -742,7 +747,9 @@ def _formal_update_chain() -> dict:
     _wait_marker(current, info["versions"][1], 600)
     ev["disk_replaced"] = info["versions"][1]
     assert profile.read_bytes() == user_before, "包外用户数据被改动"
+    assert model_sentinel.read_bytes() == model_before, "用户数据区内的模型资产被升级改动"
     ev["outside_user_data"] = "unchanged"
+    ev["outside_model_asset"] = "unchanged"
 
     # 6 升级后自动重启的 GUI：侧车 + 用户数据根 UDF + 壳日志决策行 + 双时点采证
     deadline = time.monotonic() + 120

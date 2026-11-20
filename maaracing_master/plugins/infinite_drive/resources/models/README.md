@@ -14,7 +14,9 @@ models/
 
 ## 安装（深度模式与线观测）
 
-发布包默认不带这些权重；要用深度几何与线观测，需要先安装模型包：
+发布包默认不带这些权重；要用深度几何与线观测，需要安装模型包。程序内提供一键安装：模块配置面板出现「一键安装模型」时点击即可下载、校验并安装与当前程序匹配的模型包，完成后无需重启；下载中可取消，失败可重试。安装落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，旧模型与手动目录保持可用。
+
+手动安装仍然可用：
 
 1. 从 GitHub 或 CNB 的 Release 下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`。
 2. 打开 zip，把里面的 `perception/`、`depth/` 与 `lane/` 文件夹复制到用户数据目录的

@@ -99,7 +99,7 @@
 
 - **活动全链路自动化**：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行
 - **驾驶能力基建**：全程直行、深度几何（识别赛道并自动选道、避车、超车）、宏录制（录制并回放手柄 / 键盘操作）的感知与控制基建；v2 操作流程施工中
-- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何时从 Release 下载模型包，按提示放入数据目录即可
+- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何与线观测时在模块面板点「一键安装模型」，下载、校验、安装无需重启，也可手动从 Release 下载模型包放入数据目录
 - **多模态识别**：模板匹配 / OCR / 目标检测 / 单目深度 / 车道线观测，按活动需求组合
 - **任务队列与断点**：多个任务顺序执行，可从任意阶段起步，卡片实时显示排队与进度
 - **PEEP 实时预览**：不打断运行，实时观察画面与决策
@@ -127,7 +127,7 @@
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
 
-> **深度几何与线观测需要额外下载模型包：** 主包默认不带大体积权重；要用「深度几何」与线观测，从同一 Release 下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
+> **深度几何与线观测需要额外安装模型包：** 主包默认不带大体积权重；模块配置面板出现「一键安装模型」时点击即可下载与当前程序匹配的模型包，完成后无需重启。也可从同一 Release 手动下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
 > 成功标志：GUI 窗口出现，主控页任务卡正常加载，底栏状态球显示「系统就绪」（后端已连接）。
 

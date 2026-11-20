@@ -9,3 +9,5 @@ NAME / STAGE_ORDER / REQUIRES / REQUIRES_GAMEPAD_EXCLUSIVE 从模块类读取（
 
 ID = "infinite_drive"
 MODULE_CLASS = "module.InfiniteDriveModule"
+# 插件自有的资产安装器：core 只按本声明加载，不硬编码模型实现
+ASSET_INSTALLER = "model_installer.ModelInstaller"

@@ -40,6 +40,7 @@ def _svc() -> tuple[SidecarService, ctl.MaaRacingMasterController]:
     svc._update_freeze = False
     svc._controller = c
     svc._worker = None
+    svc._asset_installers = {}
     svc._queue_order = ["a"]
     svc._queue_enabled = {"a": True}
     svc._start_from = {}

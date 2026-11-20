@@ -27,6 +27,7 @@ internal static class RpcBridge
         "get_initial_state", "set_run_queue", "set_start_from", "get_status", "start", "stop",
         "get_module_config", "set_module_config",
         "open_vigembus_download", "open_external_url", "open_user_data_folder",
+        "install_model_start", "install_model_cancel", "install_model_status",
         "get_data_usage",
         "get_registry_optimizations", "set_optimization_prompt_ignored",
         "set_registry_optimization",

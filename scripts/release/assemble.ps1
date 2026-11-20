@@ -46,6 +46,7 @@ param(
     [string]$ExcludeModules = '',  # 人工兜底：按 plugins/<目录名> 追加剔除（逗号分隔）；自动剔除见 §3.5
     [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
     [switch]$WithModels,    # 离线全量包：把可选权重也打进包；默认不带（由可选模型包提供）
+    [string]$ModelDescriptor = '',  # make_model_pack.py 生成的 download.json；注入主包供一键安装消费
     [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$Managed,       # 受管模式：GUI 发布产物落内容根（更新器标准布局），
                             # 不编译根入口（入口 exe 由 SDK CLI 生成）；发布流程用 vpk 打包内容树
@@ -699,6 +700,16 @@ Get-ChildItem $StageRoot -Recurse -Directory -Force -Filter '.mimosa' -EA Silent
 # 可选权重默认不进包：这些 ONNX 只服务深度/线观测，由独立模型包分发
 # （用户数据目录优先，见 model_assets.py）。-WithModels 产出离线全量包。
 $modelDir = Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\resources\models'
+# 构建描述注入主包：运行时按 manifest 声明加载插件安装器，URL/哈希只来自本文件。
+if ($ModelDescriptor) {
+    if (-not (Test-Path -LiteralPath $ModelDescriptor)) {
+        throw "模型下载描述不存在: $ModelDescriptor"
+    }
+    New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+    Copy-Item -LiteralPath $ModelDescriptor `
+        -Destination (Join-Path $modelDir 'download.json') -Force
+    Write-Host '[assemble] 已注入模型下载描述 download.json'
+}
 # 默认包不带可选权重；-WithModels 的全量离线包保留权重
 if (-not $WithModels) {
     foreach ($sub in @('lane', 'perception', 'depth')) {

@@ -90,6 +90,7 @@ RPC 层不信任调用方给的地址。
   数字 / 文本），`config-panel.js` 按类型通用渲染；壳不认识任何模块字段。契约、字段白名单
   与状态机（`none/ok/partial/invalid/unsupported_version`）见 `core/config_ui_contract.py`
   与 ADR-0016。
+- 资产安装：插件 manifest 声明 `ASSET_INSTALLER` 时，面板额外显示一行「一键安装模型」及进度、取消与错误；数据来自 `install_model_status/start/cancel`，前端只传模块 id，不传 URL、目标路径或哈希，旧 revision 的响应丢弃。安装器由插件实现，宿主只做白名单转发与生命周期协调。
 - `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
   `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
 - 数据约定：`_choices` 填下拉（表单里的 `choices` 只是引用键）、`_summary` 是任务卡 chips、

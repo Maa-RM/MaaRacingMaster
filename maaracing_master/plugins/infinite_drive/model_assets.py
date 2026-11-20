@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from maaracing_master.core.paths import data_dir
+from maaracing_master.core.paths import data_dir, module_data_dir
 from maaracing_master.plugins.infinite_drive import (
     DEPTH_MODEL_REL,
     LANE_FP16_MODEL_REL,
@@ -24,6 +24,7 @@ from maaracing_master.plugins.infinite_drive import (
 )
 
 PACK_PREFIX = "resources/models/"
+MODULE_ID = "infinite_drive"
 
 # 深度档必需：缺任一项就不允许启动深度模式
 DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
@@ -59,8 +60,24 @@ _VERIFIED: dict[tuple[str, int, int], bool] = {}
 
 
 def model_pack_dir() -> Path:
-    """用户下载的模型包根目录。"""
-    return data_dir() / "infinite_drive" / "models"
+    """用户手动解压的旧模型包根目录（兼容既有安装，不再作为一键安装落点）。"""
+    return data_dir() / MODULE_ID / "models"
+
+
+def manifest_digest() -> str:
+    """模型清单摘要：排序后的 (路径, 尺寸, SHA256) 再取 SHA256。
+
+    清单不变则摘要不变，跨程序版本复用同一安装目录；清单变化才换目录。
+    """
+    canonical = "\n".join(
+        f"{rel}|{size}|{sha}" for rel, (size, sha) in sorted(MODEL_MANIFEST.items())
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def managed_pack_dir() -> Path:
+    """一键安装的受管目录：data/<module>/models/<manifest-digest>/。"""
+    return module_data_dir(MODULE_ID, "models", manifest_digest())
 
 
 def packed_rel(rel: str) -> str:
@@ -72,9 +89,15 @@ def pack_path(rel: str) -> Path:
     return model_pack_dir() / packed_rel(rel)
 
 
+def installed_path(rel: str) -> Path:
+    """一键安装时的目标路径（受管目录内）。"""
+    return managed_pack_dir() / packed_rel(rel)
+
+
 def candidates(rel: str) -> tuple[Path, ...]:
-    """候选文件，按优先级：用户下载包 → 安装包内权重。"""
-    return (pack_path(rel), MODELS_DIR / packed_rel(rel))
+    """候选文件，按优先级：受管安装 → 旧手动解压 → 安装包内权重。"""
+    relative = packed_rel(rel)
+    return (managed_pack_dir() / relative, pack_path(rel), MODELS_DIR / relative)
 
 
 def resolve(rel: str) -> Path | None:
