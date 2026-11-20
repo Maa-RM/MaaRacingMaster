@@ -69,6 +69,9 @@ archive/
 # WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
 apps/MaaRacingMaster.Shell/bin/
 apps/MaaRacingMaster.Shell/obj/
+# 壳专用工具（合同探针等）自己的构建产物
+apps/MaaRacingMaster.Shell/tools/**/bin/
+apps/MaaRacingMaster.Shell/tools/**/obj/
 
 # 本地构建缓存/实验/验证产物目录（整体忽略：zip/dll/runtime-cache/publish-cache/C1 基准/7z 下载缓存等均不入库；
 # 唯一入库的 7za.exe 已在 scripts/release/tools/ 单独跟踪）

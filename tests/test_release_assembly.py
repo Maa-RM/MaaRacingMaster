@@ -37,6 +37,7 @@ def _section(start: str, end: str | None = None) -> str:
 
 def _run(setup: str, section: str) -> subprocess.CompletedProcess:
     command = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n"
         "$ErrorActionPreference = 'Stop'\n"
         "$errors = [System.Collections.Generic.List[string]]::new()\n"
         "$Fail = { param($m) Write-Host $m; exit 1 }\n"
@@ -262,3 +263,146 @@ def test_pruned_cached_runtime_passes_real_behavior_smoke(tmp_path):
     after = sum(path.stat().st_size for path in runtime.rglob("*") if path.is_file())
     print(f"\nruntime removed: {(before - after) / 1024 / 1024:.2f} MiB")
     print("\n".join(line for line in result.stdout.splitlines() if line.startswith("[smoke]")))
+
+
+# ---------- 受管模式 ----------
+
+def _publish_fixture(publish: Path) -> None:
+    """预置 GUI 发布产物与缓存指纹（指纹段对空源码树算出的固定值），使 -SkipPublish 跳过真实编译。"""
+    for name in ("MaaRacingMaster.Shell.exe", "mscordbi.dll", "onnxruntime.dll"):
+        _put(publish, name, "binary")
+    _put(publish, ".cache-fingerprint", "publish/")
+
+
+def _managed_setup(tmp_path: Path, managed: bool,
+                   update_source_cnb: str = "", update_source_github: str = "") -> str:
+    source = tmp_path / "src"
+    source.mkdir(parents=True, exist_ok=True)
+    _put(source, "apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj", "fixture")
+    # Launcher 目录存在但源缺失：Push-Location 成功后走「源缺失」确定性报错分支
+    # （真实编译分支依赖 MSVC 环境，夹具不触发；$VcVarsAll 指向不存在路径以固定分支）
+    (source / "apps" / "MaaRacingMaster.Launcher").mkdir(parents=True)
+    # GUI 发布夹具放脚本派生路径（$RepoRoot\build\publish-cache——脚本节内会重新赋值该变量）
+    _publish_fixture(source / "build" / "publish-cache")
+    stage = tmp_path / "stage"
+    stage.mkdir(parents=True, exist_ok=True)
+    setup = (
+        f"$RepoRoot={_ps(source)}; $StageRoot={_ps(stage)}; "
+        f"$HostPython={_ps(sys.executable)}; "
+        f"$SkipPublish=$true; $pubFinger='publish/'; "
+        f"$Managed={'$true' if managed else '$false'}; "
+        f"$UpdateSourceCnb={_ps(update_source_cnb)}; $UpdateSourceGithub={_ps(update_source_github)}; "
+        f"$VcVarsAll={_ps(tmp_path / 'no-msvc')}; "
+
+        # $appDir 与缓存指纹函数的派生在脚本 param/指纹区（本节提取范围之外），
+        # 夹具按同一规则补齐；指纹函数与 fixture 的 .cache-fingerprint 值一致 → -SkipPublish 跳过真实编译
+        f"$appDir={_ps(stage)}; if (-not $Managed) {{ $appDir = Join-Path $StageRoot 'app' }}; "
+        "$CacheFPWrite = { param($dir,$finger) Set-Content -Path (Join-Path $dir '.cache-fingerprint') -Value $finger -Encoding ascii }; "
+        "$CacheFPMatch = { param($dir,$finger) $f = Join-Path $dir '.cache-fingerprint'; if (Test-Path $f) { return ((Get-Content $f -Raw).Trim() -eq $finger) }; return $false }; "
+        f"$errors=[System.Collections.Generic.List[string]]::new()"
+    )
+    return setup, stage
+
+
+def test_managed_layout_puts_gui_at_content_root(tmp_path):
+    """受管模式：GUI 发布产物落内容根（壳 exe 在根），不再有 app/ 子目录。"""
+    setup, stage = _managed_setup(tmp_path, managed=True)
+    result = _run(
+        setup,
+        _section("# ---------- 2. dotnet publish", "# ---------- 2.5"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (stage / "MaaRacingMaster.Shell.exe").is_file()
+    assert (stage / "mscordbi.dll").is_file()
+    assert not (stage / "app").exists(), "受管模式不得再建 app/ 子目录"
+
+
+def test_legacy_layout_keeps_app_dir(tmp_path):
+    """旧 ZIP 模式回归锁：GUI 仍落 app/ 子目录，根目录不放壳 exe。"""
+    setup, stage = _managed_setup(tmp_path, managed=False)
+    result = _run(
+        setup,
+        _section("# ---------- 2. dotnet publish", "# ---------- 2.5"),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (stage / "app" / "MaaRacingMaster.Shell.exe").is_file()
+    assert not (stage / "MaaRacingMaster.Shell.exe").exists()
+
+
+def test_managed_mode_writes_named_source_lines(tmp_path):
+    """受管模式：两个命名下载地址由脚本统一产出命名行，指向同一发行货架；
+    行为锁——真实执行 assemble 的 2.6 节并读产物，删掉生产者即红。"""
+    setup, stage = _managed_setup(
+        tmp_path, managed=True,
+        update_source_cnb="https://cnb.example/feed",
+        update_source_github="https://github.example/feed",
+    )
+    result = _run(setup, _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = (stage / "update-source.txt").read_text(encoding="utf-8").strip().splitlines()
+    assert lines == [
+        "cnb|https://cnb.example/feed",
+        "github|https://github.example/feed",
+    ], "命名地址未按 cnb|/github| 格式写入"
+
+
+def test_managed_mode_requires_both_named_sources(tmp_path):
+    """缺任一命名地址 → 报错且不写文件：不合规配置属发行事故，不得流出；
+    客户端无单源兼容模式，残缺包只会诚实报「更新源未配置」。"""
+    setup, stage = _managed_setup(
+        tmp_path / "missing", managed=True,
+        update_source_cnb="https://cnb.example/feed",
+    )
+    result = _run(
+        setup,
+        _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist")
+        + '\n$errors | ForEach-Object { Write-Host "ERR: $_" }',
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "同时提供" in result.stdout + result.stderr
+    assert not (stage / "update-source.txt").exists(), "缺地址时不得产出随包来源配置"
+
+
+def test_managed_mode_skips_launcher_and_reports_missing(tmp_path):
+    """受管模式不编译 Launcher（入口由 SDK CLI 生成）：缺壳在 stage 时报错、不产根入口。"""
+    setup, stage = _managed_setup(tmp_path, managed=True)
+    # 故意不放壳 exe：受管入口校验必须报错（防内容树缺真实壳静默通过）
+    (stage / "MaaRacingMaster.Shell.exe").unlink(missing_ok=True)
+    result = _run(
+        setup,
+        _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist")
+        + '\n$errors | ForEach-Object { Write-Host "ERR: $_" }',
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "受管内容树缺少真实壳" in result.stdout + result.stderr
+    assert not (stage / "MaaRacingMaster.exe").exists(), "受管模式不得产出根入口（SDK CLI 职责）"
+
+
+def test_legacy_launcher_reports_missing_source(tmp_path):
+    """旧 ZIP 模式回归锁：Launcher 源缺失时显式报错（原逻辑保留）。"""
+    setup, stage = _managed_setup(tmp_path, managed=False)
+    result = _run(
+        setup,
+        _section("# ---------- 2.6 根入口", "# ---------- 3. whitelist")
+        + '\n$errors | ForEach-Object { Write-Host "ERR: $_" }',
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "missing launcher source" in result.stdout + result.stderr
+
+
+def test_full_script_parses_without_errors():
+    """全脚本语法解析锁：阶段抽取执行绕过了 param 参数列表，这里锁整个脚本能被
+    PowerShell 解析器接受（历史回归：新增参数漏逗号导致所有打包入口在解析期即失效）。"""
+    command = (
+        "$tokens=$null; $parseErrors=$null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"{_ps(ASSEMBLE)}, [ref]$tokens, [ref]$parseErrors) | Out-Null; "
+        "if ($parseErrors.Count -gt 0) { "
+        "$parseErrors | ForEach-Object { Write-Host (\"PARSE: {0} (line {1})\" -f $_.Message, $_.Extent.StartLineNumber) }; "
+        "exit 1 }; exit 0"
+    )
+    result = subprocess.run(
+        [POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

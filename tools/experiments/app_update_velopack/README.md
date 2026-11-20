@@ -30,17 +30,48 @@ status: active
 
 ```powershell
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py tool
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py probe
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py hooks
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py update
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py nested-update
+# 受管真实壳整链（标准布局内容树 + 双版本打包 + 提权链；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-minimal
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-managed
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-update
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py managed-manifests
+# P0 收尾用例（孤儿侧车升级 + 旧应用根毒化；feed 追加 0.3.0，三轮窗口）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-p0-tail
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py p0-tail
+# P1 正式壳整链（直接发布正式工程，无任何注入；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py formal-shell
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-formal
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py formal-update
+# P1 dev 启动回归烟囘（工作树 Debug 壳 + 主线检出借用运行时；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py dev-smoke --shell <Debug壳路径> --dev-root <主线检出路径>
+# P3 整链：真实按钮驱动全链（用户在关于页检查/下载/重启升级；UAC 与关窗需人工配合）
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py p3-chain
+# 壳合同探针（pytest 同级 .NET 侧合同锁；--python 供侧车关停用例指定解释器）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- approot
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- hook
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- sidecar --python .venv/Scripts/python.exe
+# cleanup 的 --python-foreign 指一个检出根之外的解释器（锁跨检出不误杀；--python 的应用根 = 其解释器上两层）
+# cleanup 自建隔离根并复制 --runtime-dir 指定的自包含解释器（清场影响范围限定在
+# 本次新建的临时目录内，不波及调用环境；--python-foreign 为可选的跨检出反例）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- cleanup --runtime-dir build/runtime-cache --python-foreign <另一检出>\.venv\Scripts\python.exe --python-foreign <另一检出>\.venv\Scripts\python.exe
+# P2 宿主更新协调器（真实库 + 本地源 + 显式定位器，树外驱动；夹具显式传入，
+# 由 pack-formal 产出——live/feed 路径见 _out/formal-case.json）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -- update --root <formal-case 的 live> --feed <formal-feed 目录>
+# 白窗取证与拆分（历史判定轮，详见「白窗现象」）
 .\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pack-real-shell
-.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py manifests
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py publish-fd
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-nl
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-v1
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py managed-shell-v1fd
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/prepare.py pure-sc-publish
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py targets-launch
+.\.venv\Scripts\python.exe -B -X utf8 tools/experiments/app_update_velopack/probe.py fd-launch
 ```
 
-所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。
+所有实验程序为独立样本或正式壳的隔离源码副本，不向真实安装目录应用更新。便携升级使用本地目录源，未测试线上 CNB/GitHub 分发。受管整链需要提权上下文：探针经一次 UAC 自提权，子进程无控制台窗口、进度写 `_out/managed-result.launch.log`；**运行期间不要关闭任何弹出的终端窗口**（关闭控制台会连带杀掉整棵实验进程树）。运行时复用主线检出的 `build/runtime-cache`（可用 `MAARM_RUNTIME_SOURCE` 覆盖）；worktree 检出无 `.venv` 时，实验脚本用主线虚拟环境的 Python 驱动。
 
 ## 已验证结果
 
@@ -54,14 +85,28 @@ status: active
 | 真实壳是否能加入 SDK | 隔离副本添加 SDK 引用与启动前置调用后编译、发布、打包成功；未修改正式工程 |
 | 真实壳钩子验证了什么 | 通过 `dotnet` 宿主调用程序集，证明钩子早于单实例与 GUI；该宿主定位不是壳自身路径，不证明真实受管版本识别或 UI/侧车已运行 |
 | 提权声明是否保留 | PE 资源读取确认壳与生成入口均请求管理员权限；不证明实际 UAC、取消提权和更新后提权链通过 |
+| 受管标准布局整包升级（真实壳，最小注入 + 树外助手） | 提权状态下全链完成：生成入口两跳启动、内容根与版本识别正确、下载、普通启动不提交待更新包、提交后磁盘替换为 0.2.0、包外用户数据未动、更新器自动重启新版、**重启 GUI 的 WebView2 环境成功创建（EBWebView 完整生成）**、升级后助手在新装上下文读到 0.2.0、入口探针正常 | 壳的 WebView2 数据目录仍在 exe 旁（P1 待迁用户数据根）；重启窗口未被人工确认关闭（探针按上限自动收尾） |
+| 中文与空格路径 | live 副本位于「中文 目录 空格」层级；入口启动、升级、重启全程无路径故障 | 无 |
+| 白窗现象 | 带完整注入（版本报告 + 下载/提交探针）的发布产物，WebView2 环境创建必然挂起：UDF 目录被创建但 EBWebView 结构不生成、无异常、无 WER 事件、壳自身 stderr 无输出；最小注入（仅 VelopackApp.Run + 探针参数早退）与无注入产物必正常渲染（各 7:5 样本，含同二进制复跑） | 根因机制未明：挂起/正常样本的文件级差异只有壳自身 IL（执行层面无差别）；已排除 Release/Debug、自包含/依赖框架、发布/构建、深/短路径、中/英文路径、stub/直启、句柄形态、APPDATA 重定向、VelopackLocator 访问、提权、侧车有无。**已绕开**：壳保持最小注入，下载/提交改由受管树外的独立助手以显式定位器（TestVelopackLocator）驱动，整链实测通过 |
+| 受管树内运行次要 exe | 独立更新助手（非注册主程序）在受管安装树内直启必挂（默认定位器解析），与路径无关；以主程序身份运行无此问题 | 机制未明（默认定位器对「运行 exe ≠ 注册主程序」的处理）；规避方式：助手住树外，经 TestVelopackLocator 显式指定受管根 |
+| 崩溃遗留侧车（孤儿用例） | 强杀壳后侧车无遗留：侧车主循环读 stdin（sidecar.py:762），父死即 EOF 自退；其后下载与提交照常完成（0.1.0→0.3.0） | 无（孤儿风险对侧车不成立；有序关闭路径的退出确认由 P1 关停契约覆盖） |
+| 旧应用根毒化 | 壳带 MaaRM_APP_ROOT 覆盖值启动：环境变量压过内容根——无侧车进程、无新会话日志（前端落旧根不可用） | 无（确认受管模式必须拒绝冲突覆盖值，已由 P1 实现） |
+| P1 正式壳整链（2026-11-14 第二轮，修复后） | 发布正式工程（含启动钩子/受管解析/WebView2 迁移/侧车关停确认）组装标准布局：三段完整 GUI 会话全过——首次启动侧车就绪、助手报告 0.1.0、下载、普通启动不提交、提交后整树替换 0.2.0、包外用户数据不动、自动重启新版报告 0.2.0；**WebView2 数据目录三轮均落隔离用户数据根（EBWebView 完整生成），exe 旁不再创建**；随包侧车真实工作（框架配置写出 + 中文路径兼容日志）；无 WER 事件；**人工目视确认已取得（用户确认所见窗口渲染正常）** | 首轮暴露两问题已修复：壳与 Python 用户数据根口径分裂（C# 已知目录 API 不认环境变量重定向，改取 APPDATA 环境变量）；启动清场 PowerShell/WMI 扫描提权下超时（改 ntdll 原生读命令行，毫秒级）。窗口由探针按上限自动收尾 |
+| dev 启动回归烟囘（非受管口径） | 工作树 Debug 壳 + 主线检出借用运行时：应用根决策落壳日志（环境变量覆盖值被采纳并记录）、单实例替换实机运转（新实例询问后接管、旧实例被清）、WebView2 数据目录落隔离用户数据根（EBWebView 实体）、侧车启动并完整初始化（框架配置写出）、关窗后无残留、无 WER | 取证链路与单实例对话框竞态导致部分链内字段时序失真，实体证据以目录与日志为准；遗留侧车观察：父壳死后自退存在延迟窗口（非瞬时），实证启动清场能力的必要性 |
+| 启动清场合同（原生扫描） | 探针造命令行含侧车标记的子进程：扫描命中 1、毫秒级完成、目标进程终止；无关 python 进程（常驻工具）正确不命中 | 无 |
+| P3 整链（真实按钮驱动，2026-11-14） | 用户在关于页亲手完成检查→下载→重启升级：壳日志时间线完整还原（受管识别 → 提交排队目标 0.2.0 → 计划内关闭 → 7 秒后新版自动重启）；磁盘替换、包外数据不动、升级后助手报告 0.2.0；随包受控源配置被正确读取 | 无（用户确认渲染正常） |
+| 白窗终验（壳内 UpdateManager + 新前端，受管树内） | 壳内协调器形态下两轮渲染环境都完整生成（EBWebView 落用户数据根、exe 旁无创建、无 WER 事件、用户目视正常）——壳内直接用更新管理器的形态成立；白窗异常未再复现 | 注入产物挂起机制仍未明（历史样本保留）；该形态随 CI/二机复验 |
 
 ## 独立复核裁决
 
 - 嵌套入口在固定工具版本下通过实测，SDK 源码也有对应定位分支；但该分支明确提示不推荐深层嵌套。保留为候选兼容路线，首版优先按更新器标准布局评估仅在打包时调整 GUI 文件位置，不改产品版本模型。
-- 现有侧车关闭超时后发出终止请求，但没有等待最终退出。正式适配须补充实际退出与占用确认，不能把壳关闭回调结束当作全部释放。
-- 正式资源定位优先采信继承的应用根覆盖值；受管入口应优先使用更新器确认的内容根，开发与旧 ZIP 模式再保留原有路径规则。
+- 现有侧车关闭超时后发出终止请求，但没有等待最终退出。P1 已补：关停契约区分「流程走完」与「确认已退」，强杀后有界等待并传播未退出结果；启动清场处理父壳死亡与自退之间的延迟窗口。
+- 正式资源定位优先采信继承的应用根覆盖值；受管入口以内容根为唯一权威并拒绝冲突覆盖值（P1 已实现并落壳日志），开发与旧 ZIP 模式保留原有路径规则。
 - 更新器的退出等待有上限；它只应在业务任务和模型安装收尾、必要数据快照完成后启动，不能用它等待游戏自然结束。
-- 真实 UAC、WebView/侧车握手与退出、业务数据迁移、自定义插件保留、旧 ZIP 首次迁移、损坏包与取消等仍未验收。样本成功不能写成完整产品已经适配。
+- 真实 UAC 取消路径、业务数据迁移、自定义插件保留、旧 ZIP 首次迁移、损坏包与取消等仍未验收；侧车会话日志级握手仍未取得（文件日志默认关闭）。人工目视确认已取得（2026-11-14）。样本成功不能写成完整产品已经适配。
+- 白窗矩阵推翻了句柄、路径、构建配置、发布方式、APPDATA、定位器访问等全部归因；「注入执行层无差但产物必挂」机制未明，属本机待解异常。P0/P1 曾以「最小注入 + 树外助手」绕开；P3 壳内 UpdateManager + 新前端在受管树内实测渲染正常（真实按钮整链），壳内形态成立——挂起机制仍未明，历史注入样本保留，随 CI/二机复验。
+- 受管树内运行非注册主程序必挂默认定位器解析；任何「在受管树内跑工具 exe」的想法都必须改走树外显式定位器模式。
+- 壳与 Python 的用户数据根必须同口径（APPDATA 环境变量）：.NET 已知目录 API 不认环境变量重定向，隔离场景两边分叉（2026-11-14 实测踩坑）。
 
 ## 后续最小实施边界
 

@@ -18,9 +18,8 @@ namespace MaaRacingMaster.Shell;
 internal static class RpcBridge
 {
     /// <summary>
-    /// 前端通道方法白名单（与 sidecar.py 的 HANDLERS 同源子集；shutdown/close
-    /// 属 shell 生命周期通道，由 PythonSidecar 直接发起，前端不得调用）。
-    /// 新增 RPC 必须同时改：RpcBridge 此表、sidecar.py HANDLERS、SidecarService 方法。
+    /// 前端通道方法白名单 = 业务方法（与 sidecar.py 的 HANDLERS 同源，扣除壳直发通道）
+    /// ∪ 宿主更新动作（壳自有能力，不经 sidecar）。所有者分离：宿主集与业务集不交叠。
     /// 三方一致性由 tests/test_rpc_allowlist.py 锁（前端 JS 亦在断言范围内）。
     /// </summary>
     private static readonly HashSet<string> AllowedMethods = new(StringComparer.Ordinal)
@@ -40,6 +39,20 @@ internal static class RpcBridge
         "set_boost_priority",
         "get_achievements", "set_achievement_notify", "note_ui_event",
         "export_achievements", "import_achievements", "reset_achievements",
+        // 宿主更新动作（UpdateCoordinator）：固定意图，不携带 URL/路径；设置类只带
+        // 枚举值（stable/preview、cnb/github），由协调器校验，前端不传地址。
+        "update_check", "update_start_download", "update_cancel_download",
+        "update_status", "update_apply",
+        "update_set_channel", "update_set_source",
+    };
+
+    /// <summary>宿主更新动作集（壳自有，处理不经 sidecar；后端不可用不影响它们）。
+    /// 与 sidecar HANDLERS 的分离由 tests/test_rpc_allowlist.py 锁定。</summary>
+    private static readonly HashSet<string> HostMethods = new(StringComparer.Ordinal)
+    {
+        "update_check", "update_start_download", "update_cancel_download",
+        "update_status", "update_apply",
+        "update_set_channel", "update_set_source",
     };
 
     /// <summary>
@@ -56,9 +69,13 @@ internal static class RpcBridge
         LongCallMethods.Contains(method) ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(10);
 
     private static PythonSidecar? s_sidecar;
+    private static UpdateCoordinator? s_coordinator;
 
     /// <summary>绑定/解绑业务后端。窗口启动时绑定，sidecar 关闭后置 null（此后请求回 backend unavailable）。</summary>
     public static void Attach(PythonSidecar? sidecar) => s_sidecar = sidecar;
+
+    /// <summary>绑定宿主更新协调器（窗口启动时绑定；宿主动作不经业务后端）。</summary>
+    public static void AttachCoordinator(UpdateCoordinator? coordinator) => s_coordinator = coordinator;
 
     /// <summary>
     /// 尝试接管一条前端消息：只处理 <c>type=call</c>，其余消息类型留给各窗口自行处理。
@@ -80,8 +97,53 @@ internal static class RpcBridge
         var paramsEl = root.TryGetProperty("params", out var p) && p.ValueKind != JsonValueKind.Null
             ? p
             : (JsonElement?)null;
+        if (HostMethods.Contains(method))
+        {
+            // 宿主动作：壳自有能力，与业务后端解耦（backend unavailable 不影响更新状态查询）
+            _ = HandleHostCallAsync(sender, callId, method, paramsEl);
+            return true;
+        }
         _ = HandleCallAsync(sender, callId, method, paramsEl);
         return true;
+    }
+
+    private static async Task HandleHostCallAsync(WebView2 sender, long callId, string method,
+                                                  JsonElement? paramsEl)
+    {
+        UpdateSnapshot data;
+        string? error = null;
+        var ok = true;
+        var coordinator = s_coordinator;
+        if (coordinator is null)
+        {
+            ok = false;
+            error = "更新协调器不可用";
+        }
+        else
+        {
+            try
+            {
+                data = method switch
+                {
+                    "update_check" => await coordinator.CheckAsync(),
+                    "update_start_download" => await coordinator.StartDownloadAsync(),
+                    "update_cancel_download" => coordinator.CancelDownload(),
+                    "update_apply" => await coordinator.ApplyAsync(),
+                    "update_set_channel" => await coordinator.SetChannelAsync(ReadParam(paramsEl, "value")),
+                    "update_set_source" => await coordinator.SetSourceAsync(ReadParam(paramsEl, "value")),
+                    _ => coordinator.GetStatus(), // update_status 与未知宿主名兜底
+                };
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                data = coordinator.GetStatus();
+                error = ex.Message;
+            }
+            await ReplyAsync(sender, callId, ok, ok ? data : null, error);
+            return;
+        }
+        await ReplyAsync(sender, callId, ok, null, error);
     }
 
     private static async Task HandleCallAsync(WebView2 sender, long callId, string method, JsonElement? paramsEl)
@@ -103,6 +165,16 @@ internal static class RpcBridge
         }
 
         await ReplyAsync(sender, callId, ok, data, error);
+    }
+
+    private static string? ReadParam(JsonElement? paramsEl, string name)
+    {
+        // 畸形 params（数组/标量/null）显式判为「无此参数」，不靠 TryGetProperty 抛异常
+        // 再被外层 catch 兜成错误响应——非法值一律走协调器的拒绝分支。
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object) return null;
+        return paramsEl.Value.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
     }
 
     private static Task ReplyAsync(WebView2 sender, long callId, bool ok, object? data, string? error)

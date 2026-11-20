@@ -107,21 +107,14 @@
         <div class="card">
           <div class="card-head"><h3>版本与更新</h3>
             <div class="ver-head-actions">
-              <button class="maarm-btn update-source-trigger" id="btn-update-source" type="button"
-                      aria-haspopup="listbox" aria-expanded="false" aria-controls="update-source-menu"
-                      title="选择更新源">
-                <span class="update-source-icon" id="update-source-icon-cnb">
-                  <img src="cnb.svg" alt="">
-                </span>
-                <span class="update-source-icon" id="update-source-icon-github" hidden>
-                  <i data-icon="github-solid"></i>
-                </span>
-                <span id="update-source-label">CNB</span>
-                <i data-icon="chevron-down"></i>
+              <button class="maarm-btn update-settings-trigger" id="btn-update-settings" type="button"
+                      aria-haspopup="dialog" aria-expanded="false" aria-controls="update-settings-popover"
+                      title="更新设置">
+                <i data-icon="settings"></i>
               </button>
-              <button class="maarm-btn" id="btn-check-update" type="button">
+              <button class="maarm-btn maarm-btn--primary" id="btn-update-action" type="button">
                 <i data-icon="rotate-cw"></i>
-                检查更新
+                <span id="btn-update-action-label">检查更新</span>
               </button>
             </div>
           </div>
@@ -229,19 +222,36 @@
 
   <div id="error-toast"></div>
 
-  <!-- 固定定位，挂 body 下避免被卡片 overflow 裁切 -->
-  <div class="update-source-menu" id="update-source-menu" role="listbox"
-       aria-label="更新源" hidden>
-    <button class="update-source-item is-active" type="button" role="option"
-            data-source="cnb" aria-selected="true">
-      <img src="cnb.svg" alt=""><span>CNB</span>
-      <i data-icon="check" class="update-source-check"></i>
-    </button>
-    <button class="update-source-item" type="button" role="option"
-            data-source="github" aria-selected="false">
-      <i data-icon="github-solid"></i><span>GitHub</span>
-      <i data-icon="check" class="update-source-check"></i>
-    </button>
+  <!-- 更新设置浮窗：固定定位，挂 body 下避免被卡片 overflow 裁切 -->
+  <div class="update-settings-popover" id="update-settings-popover" role="dialog"
+       aria-label="更新设置" hidden>
+    <div class="upd-set-group">
+      <div class="upd-set-label">下载源</div>
+      <div class="upd-set-options" id="upd-source-options">
+        <button class="upd-set-opt is-active" type="button" data-source="cnb" aria-pressed="true">
+          <img src="cnb.svg" alt=""><span>CNB</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+        <button class="upd-set-opt" type="button" data-source="github" aria-pressed="false">
+          <i data-icon="github-solid"></i><span>GitHub</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+      </div>
+    </div>
+    <div class="upd-set-group">
+      <div class="upd-set-label">版本渠道</div>
+      <div class="upd-set-options" id="upd-channel-options">
+        <button class="upd-set-opt is-active" type="button" data-channel="stable" aria-pressed="true">
+          <span>稳定版</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+        <button class="upd-set-opt" type="button" data-channel="preview" aria-pressed="false">
+          <span>测试版</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+      </div>
+    </div>
+    <div class="upd-set-note" id="upd-set-note">切换版本渠道立即重新检查；切换下载源自下次检查起作为首选</div>
   </div>
 
   <!-- ===== 成就解锁提示条挂点（灵动岛 + 礼花画布，层级见 style.css 成就节） ===== -->

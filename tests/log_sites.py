@@ -327,8 +327,10 @@ SITES: list[LogSite] = [
 
     # ---- core/registry.py ----
     _s('core/registry.py', '_parse_validity', '[registry] 插件 {}: {}，按未声明处理', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
-    _s('core/registry.py', '_discover_plugins', '[registry] 插件 {}: {} 非 ActivityModule 子类，跳过', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
-    _s('core/registry.py', '_discover_plugins', '[registry] 插件 {} 加载失败，跳过: {}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/registry.py', '_register_entry', '[registry] 插件 {}: {} 非 ActivityModule 子类，跳过', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/registry.py', '_discover_plugins', '[registry] 用户插件 {} 包初始化失败，跳过: {}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/registry.py', '_register_entry', '[registry] 插件 {} 加载失败，跳过: {}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/registry.py', '_register_entry', '[registry] 用户插件 {} 与内置插件同 ID（{}），以内置版本为准，跳过', 'WARNING', 'state', 'cross', '双根同 ID 冲突的可见提示：用户根副本被视为过时残留，以内置为准；发生在组外线程，无归属可挂。'),
 
     # ---- core/sidecar.py ----
     # set_run_queue 的任务列表回显已降为 DEBUG（面板降噪，见 test_panel_noise_lines_are_file_only）。

@@ -25,42 +25,175 @@ public sealed partial class MainWindow : Window
     private const int MinWindowWidth = 1000;
     private const int MinWindowHeight = 700;
 
+    /// <summary>读安装树内随包的更新源配置（壳 exe 同目录 update-source.txt，发行时写入）。
+    /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随受管树整体替换，受信任。</summary>
+    private static string? ReadUpdateSourceFile()
+    {
+        try
+        {
+            var path = Path.Combine(AppContext.BaseDirectory, "update-source.txt");
+            if (!File.Exists(path)) return null;
+            var value = File.ReadAllText(path).Trim();
+            return value.Length == 0 ? null : value;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 更新源配置读取失败（按未配置处理）: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>提交进入替换相位（applying）后的计划内关窗：给前端一帧渲染
+    /// 「即将关闭」提示，再走正常关窗收尾（侧车已退出，收尾幂等）。
+    /// 与异常关闭的区分：本路径先置关窗态，Update.exe 重启属预期行为。</summary>
+    private void ScheduleApplyShutdown()
+    {
+        if (_roundState == RoundState.Closing) return;
+        EnterClosing();
+        if (_closeScheduled) return;
+        _closeScheduled = true;
+        var dispatcher = DispatcherQueue;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
+            dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    if (!_windowClosed) Close();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[shell] 升级关窗失败: {ex.Message}");
+                }
+            });
+        });
+        ShellLog.Append("[update] 提交已进入替换相位，壳计划内关闭");
+    }
+
+    /// <summary>提交闸门：后端原子冻结 → 有界退出确认。
+    /// 任一步失败负责解冻并返回原因（协调器据此放弃提交、状态回 ready）；
+    /// 全部通过返回 null（可交更新器）。解冻失败只留日志：后端已断开时冻结随进程消亡。</summary>
+    private async Task<string?> PrepareForUpdateAsync()
+    {
+        var sidecar = _sidecar;
+        if (sidecar is null)
+            return "后端不可用，无法进入升级准备";
+        try
+        {
+            await sidecar.CallAsync("prepare_update", null, TimeSpan.FromSeconds(10));
+        }
+        catch (Exception ex)
+        {
+            return $"升级准备被拒绝: {ex.Message}";
+        }
+        try
+        {
+            var shutdown = await Task.Run(() => sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)));
+            if (!shutdown.ConfirmedExit)
+            {
+                await TryUnfreezeAsync(sidecar);
+                ShellLog.Append("[update] 后端未在时限内退出，放弃提交（已解冻，保留可继续使用的旧版）");
+                return "后端未在时限内退出，已放弃提交（保留可继续使用的旧版）";
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            await TryUnfreezeAsync(sidecar);
+            ShellLog.Append($"[update] 升级准备异常: {ex.Message}（已解冻）");
+            return $"升级准备失败: {ex.Message}";
+        }
+    }
+
+    private static async Task TryUnfreezeAsync(PythonSidecar sidecar)
+    {
+        try
+        {
+            await sidecar.CallAsync("cancel_update_freeze", null, TimeSpan.FromSeconds(5));
+        }
+        catch
+        {
+            // 后端已断开：冻结随进程消亡，无需解冻
+        }
+    }
+
+    /// <summary>创建并接线上业务后端：启动清场 → 解释器选择（发布版随包 runtime 优先，
+    /// 开发模式回退 .venv）→ 事件接线（轮次/退出）→ RPC 绑定。启动与交接失败恢复共用；
+    /// 失败返回 null（调用方自行降级，前端显示后端不可用）。</summary>
+    private PythonSidecar? CreateSidecar(string projectRoot)
+    {
+        // 启动清场：上一会话异常退出可能遗留侧车（正忙未到 EOF 自退窗口），先清理
+        // 本应用根内的遗留进程再启动新侧车（只动本应用根，扫描失败不阻断启动）
+        var cleaned = PythonSidecar.CleanupLeftovers(projectRoot);
+        if (cleaned > 0)
+            Console.Error.WriteLine($"[shell] 启动清场：清理遗留侧车 {cleaned} 个");
+        var releasePython = Path.Combine(projectRoot, "runtime", "python", "python.exe");
+        var pythonExe = File.Exists(releasePython)
+            ? releasePython
+            : Path.Combine(projectRoot, ".venv", "Scripts", "python.exe");
+        try
+        {
+            var sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
+            // 轮次开始/结束 → 任务栏与通知；自动退出 → 延迟关窗；EOF → 后端死亡提示
+            sidecar.SidecarEvent += OnSidecarEvent;
+            sidecar.BackendExited += OnBackendExited;
+            // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
+            RpcBridge.Attach(sidecar);
+            return sidecar;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] sidecar 启动失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>交接失败恢复（升级闸门通过后后端已确认退出）：重启后端让旧版本立即可用，
+    /// 业务查询与重试升级都恢复。成功返回 true；失败返回 false（协调器据此把提示改为
+    /// 「请重启应用」，不谎称旧版可继续使用）。</summary>
+    private async Task<bool> RestartSidecarAfterHandoffFailureAsync()
+    {
+        await Task.CompletedTask; // 保持异步签名与恢复委托一致（重启本身是同步启动）
+        try
+        {
+            var old = _sidecar;
+            if (old is not null)
+            {
+                try { old.Dispose(); }
+                catch { /* 进程已退出：仅句柄清理 */ }
+                _sidecar = null;
+            }
+            var projectRoot = ResolveRepoRoot();
+            if (projectRoot is null)
+                return false;
+            var sidecar = CreateSidecar(projectRoot);
+            if (sidecar is null)
+                return false;
+            _sidecar = sidecar;
+            ShellLog.Append("[update] 交接失败已重启后端，旧版本可继续使用");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 交接失败后重启后端失败: {ex.Message}");
+            return false;
+        }
+    }
+
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
-    /// 优先级（见 .trae/documents 报告 §5.3）：--app-root 参数 > MaaRM_APP_ROOT 环境变量 > exe 向上探测 pyproject.toml。
-    /// 第一版 PoC：native Launcher 经环境变量 MaaRM_APP_ROOT 传入安装根（避免命令行 quoting），
-    /// 此处用 Path.GetFullPath 归一化为绝对路径（不变量：启动期只解析一次，此后不因 cwd/exe 位置再推导）。
+    /// 解析单一真源在 AppRootResolver（Program 启动前检查与这里共用；进程内缓存，
+    /// 启动期只解析一次）：非受管沿用「--app-root 参数 > MaaRM_APP_ROOT 环境变量 > 向上探测」，
+    /// 受管安装以内容根为唯一权威并拒绝冲突覆盖值。
     /// 找不到返回 null。
     /// </summary>
     private static string? ResolveRepoRoot()
-    {
-        // --app-root 参数（未来 CLI 用，当前 Launcher 未走此路径）
-        var argRoot = Environment.GetCommandLineArgs()
-            .SkipWhile(a => a != "--app-root").Skip(1).FirstOrDefault();
-        if (argRoot is not null && argRoot.Length > 0)
-        {
-            try { return Path.GetFullPath(argRoot); }
-            catch { /* 非法路径，继续降级 */ }
-        }
-
-        // MaaRM_APP_ROOT 环境变量（第一版 PoC transport）
-        var envRoot = Environment.GetEnvironmentVariable("MaaRM_APP_ROOT");
-        if (!string.IsNullOrWhiteSpace(envRoot))
-        {
-            try { return Path.GetFullPath(envRoot); }
-            catch { /* 非法路径，继续降级 */ }
-        }
-
-        // 开发模式回退：从 exe 运行目录逐级向上找含 pyproject.toml 的目录（repo marker）
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "pyproject.toml")))
-                return dir.FullName;
-            dir = dir.Parent;
-        }
-        return null;
-    }
+        => AppRootResolver.Resolve(
+            Environment.GetCommandLineArgs(),
+            Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
+            AppContext.BaseDirectory,
+            Environment.GetEnvironmentVariable("APPDATA")).Root;
 
     /// <summary>
     /// 从仓库根向上查找指定相对路径的资源文件（sidecar / venv 等一律以仓库根为锚）。
@@ -75,7 +208,7 @@ public sealed partial class MainWindow : Window
         return File.Exists(candidate) ? candidate : null;
     }
 
-    private readonly PythonSidecar? _sidecar;
+    private PythonSidecar? _sidecar; // 交接失败恢复会整实例替换（非只读）
 
     /// <summary>壳侧轮次状态：轮次事件的亮灭/通知只以这四态为准。</summary>
     private enum RoundState
@@ -150,6 +283,28 @@ public sealed partial class MainWindow : Window
             (int)(MinWindowWidth * startupScale),
             (int)(MinWindowHeight * startupScale)));
 
+        // 宿主更新协调器：与后端生命周期解耦（后端不可用不影响更新状态查询）。
+        // 来源固定 = 安装树内随包配置（发行时写入，用户不可改、前端不可传；缺失 = 未配置，
+        // 检查诚实返回不可用）；提交闸门 = 后端原子冻结 → 有界退出确认，任一步失败解冻并
+        // 放弃提交（见 PrepareForUpdateAsync）；交接失败由壳重启后端（闸门通过 = 后端已
+        // 确认退出，见 RestartSidecarAfterHandoffFailureAsync）；提交进入替换相位后由壳做计划内关窗。
+        var (prefChannel, prefSource, prefFromPreview) = UpdatePreferences.Load();
+        var coordinator = new UpdateCoordinator(
+            feedSource: ReadUpdateSourceFile(),
+            managed: AppRootResolver.Resolve(
+                Environment.GetCommandLineArgs(),
+                Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
+                AppContext.BaseDirectory,
+                Environment.GetEnvironmentVariable("APPDATA")).Managed,
+            prepareGate: PrepareForUpdateAsync,
+            handoffRecovery: RestartSidecarAfterHandoffFailureAsync,
+            initialChannel: prefChannel,
+            initialSource: prefSource,
+            initialAwaitingStable: prefFromPreview,
+            savePreferences: UpdatePreferences.Save);
+        coordinator.ApplyingStarted += ScheduleApplyShutdown;
+        RpcBridge.AttachCoordinator(coordinator);
+
         // 仓库根（含 pyproject.toml 的目录）作为所有相对路径的锚：venv、前端 HTML 一律以其为基准。
         // 从 exe 基目录向上推导，彻底摆脱硬编码的本机绝对路径，仓库可 clone 到任意位置运行。
         var projectRoot = ResolveRepoRoot();
@@ -160,28 +315,7 @@ public sealed partial class MainWindow : Window
 
         // 1. 启动 Python sidecar（唯一业务后端；失败不阻塞窗口，前端显示 backend unavailable）
         if (projectRoot is not null)
-        {
-            // 发布模式优先用随包的自带 runtime（runtime\python\python.exe），
-            // 否则回退开发模式的 .venv\Scripts\python.exe，保证两种环境都能跑。
-            var releasePython = Path.Combine(projectRoot, "runtime", "python", "python.exe");
-            var pythonExe = File.Exists(releasePython)
-                ? releasePython
-                : Path.Combine(projectRoot, ".venv", "Scripts", "python.exe");
-            try
-            {
-                _sidecar = new PythonSidecar(pythonExe, "-u -m maaracing_master.core.sidecar", projectRoot);
-                // 轮次开始/结束 → 任务栏与通知；自动退出 → 延迟关窗；EOF → 后端死亡提示
-                _sidecar.SidecarEvent += OnSidecarEvent;
-                _sidecar.BackendExited += OnBackendExited;
-                // RPC 转发层绑定后端：主窗口与 PEEP 悬浮窗共用（回发按 sender 定位）
-                RpcBridge.Attach(_sidecar);
-            }
-            catch (Exception ex)
-            {
-                _sidecar = null;
-                Console.Error.WriteLine($"[shell] sidecar 启动失败: {ex.Message}");
-            }
-        }
+            _sidecar = CreateSidecar(projectRoot);
 
         web.WebMessageReceived += OnWebMessageReceived;
         Closed += OnClosed;
@@ -199,6 +333,48 @@ public sealed partial class MainWindow : Window
             web.Focus(FocusState.Programmatic);
             SendMaximizedState();
         };
+        _ = InitializeWebViewAsync();
+    }
+
+    /// <summary>
+    /// WebView2 显式环境初始化：用户数据目录指定到用户数据根（升级不触碰前端存储），
+    /// 环境就绪后才加载前端页面。自定义环境不可用时回落默认初始化（源码/ZIP 兜底，见 WebView2Runtime）。
+    /// 必须先 Ensure 再设 Source：先设 Source 会触发控件用默认环境自动初始化，显式环境就接不上了。
+    /// </summary>
+    private async Task InitializeWebViewAsync()
+    {
+        var env = await WebView2Runtime.GetOrCreateAsync();
+        // 隐私模式（评审裁决）：界面浏览数据不落盘——持久化目录不再累积几十 MB 缓存；
+        // 站点偏好无真实消费者（业务偏好住后端 config），丢失无影响。
+        try
+        {
+            if (env is null)
+                throw new InvalidOperationException("自定义环境不可用");
+            var options = env.CreateCoreWebView2ControllerOptions();
+            options.IsInPrivateModeEnabled = true;
+            await web.EnsureCoreWebView2Async(env, options);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[webview2] 隐私模式初始化失败，回落共享环境: {ex.Message}");
+            try
+            {
+                await web.EnsureCoreWebView2Async(env);
+            }
+            catch (Exception ex2)
+            {
+                ShellLog.Append($"[webview2] 显式环境初始化失败，回落默认: {ex2.Message}");
+                try
+                {
+                    await web.EnsureCoreWebView2Async(null);
+                }
+                catch (Exception ex3)
+                {
+                    ShellLog.Append($"[webview2] 默认初始化也失败，页面不可用: {ex3.Message}");
+                    return;
+                }
+            }
+        }
         var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");
         if (indexPath is not null)
         {
@@ -609,9 +785,14 @@ public sealed partial class MainWindow : Window
                 // UI 线程同步 await 带 UI SynchronizationContext 的 async 会死锁
                 // （OnClosed 在 UI 线程，ShutdownAsync 内部 await 需要回 UI 上下文续体）。
                 // Task.Run 把整个调用挪到线程池（无 SynchronizationContext），
-                // 同步等待只阻塞本线程，不会死锁；最坏等待 grace 3s。
-                Task.Run(() => _sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)))
+                // 同步等待只阻塞本线程，不会死锁；最坏等待 grace 3s + 强杀确认 5s。
+                var shutdown = Task.Run(() => _sidecar.ShutdownAsync(TimeSpan.FromSeconds(3)))
                     .GetAwaiter().GetResult();
+                if (!shutdown.ConfirmedExit)
+                {
+                    // 未确认退出的事实不吞掉：日志留痕（受管升级前由更新协调以此判断能否提交）
+                    ShellLog.Append("[sidecar] 关窗关停未确认退出（grace 3s + 强杀确认 5s 内仍未退出）");
+                }
             }
             catch (Exception ex)
             {

@@ -163,6 +163,12 @@ jobs:
   # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
   # 组装成 MaaRacingMaster-<ver>-win-x64.zip 并补传同一 Release（见 scripts/release/assemble.ps1）。
   # 在 release job 之后顺序执行，避免与「创建 Release」竞态。
+  #
+  # 【发行链现状，勿误判】本 job 走 legacy ZIP（-Managed 未启用），随包不含 update-source.txt，
+  # 因此正式发行包里的自动升级诚实降级为手动入口。受管内容树（assemble -Managed）、
+  # vpk --channel stable/preview 分渠道打包与两套索引的产出脚本虽已就绪，但尚未接入 CI：
+  # 真实 feed 地址、上传与产物公开时机属 P4 未验收项，需发布授权后单独接线。
+  # 脚本具备能力 != 该能力已上线；见 docs/plan/应用自动升级.md。
   win-build:
     name: 构建解压即用 Windows 包
     runs-on: windows-latest
