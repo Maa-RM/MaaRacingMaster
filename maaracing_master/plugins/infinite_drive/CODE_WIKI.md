@@ -36,7 +36,7 @@
 | [manifest.py](./manifest.py) | 插件清单，供 core/registry 自动扫描发现与注册；NAME / STAGE_ORDER / REQUIRES 从模块类读取（单一来源） |
 | [__init__.py](./__init__.py) | 插件自包含契约：代码、标定、HUD 区域、模型权重全部位于本目录内，拷走即卸载、放入即安装 |
 | [module.py](./module.py) | v2 持久流程模块：FLOW 直驱循环 + 选卡（OCR 优先级，点槽等商店自关、重发自愈）+ 驾驶等待占位 + 弹窗两层驱赶 + 录制模式 + 战绩看板 |
-| [dashboard_store.py](./dashboard_store.py) | 结算记录存储（JSONL，data/infinite_drive/）与战绩看板载荷：只收程序局（非录制局），录制局=人工驾驶语料局不落战绩；字段按 v2 最终结算页定；读侧容忍坏行 |
+| [dashboard_store.py](./dashboard_store.py) | 结算记录存储（JSONL，data/infinite_drive/）与战绩看板载荷：只收程序局（非录制局），录制局=人工驾驶语料局不落战绩；字段按 v2 最终结算页定；读侧容忍坏行；无记录时下发契约的 `empty` 空态块 |
 
 ### 感知
 

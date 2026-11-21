@@ -518,7 +518,7 @@
 
 **资格位（模块自述）**：`ActivityModule.HAS_DASHBOARD` 是显式旧标志，`DASHBOARD_CONTRACT` 是新契约版本（`0` = 已登记但尚未实现，不进入候选集；大于 `0` 的版本才生效）；两者任一成立即进入候选集。资格并集由 `base.declares_dashboard()` 单点定义，`get_module_info()`、`get_initial_state.modules[]` 的 `has_dashboard` 与路由共用；内置步骤恒 `False`。
 
-**内容契约（新模块）**：模块置 `DASHBOARD_CONTRACT = 1` 并实现 `read_dashboard()`，返回版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。标题、布局、间距、配色、翻页与生命周期归前端看板中心；模块只组合 block 与文本。新增视觉原语时扩展共享 block 词表（[dashboard_contract.py](./dashboard_contract.py) + 前端渲染器），不做模块私有页面。
+**内容契约（新模块）**：模块置 `DASHBOARD_CONTRACT = 1` 并实现 `read_dashboard()`，返回版本化 block 载荷（`stats` / `list` / `text` / `path` / `action` / `empty`）。标题、布局、间距、配色、翻页与生命周期归前端看板中心；模块只组合 block 与文本。「有看板但还没有数据」用 `empty` 块表达（标题必填、说明可选），前端以「没有候选」空态同一套视觉渲染，不拿 `text` 块拼空态。新增视觉原语时扩展共享 block 词表（[dashboard_contract.py](./dashboard_contract.py) + 前端渲染器），不做模块私有页面。
 
 **统一路由与校验**：`get_module_dashboard(module_id)` 只按 id 分发；`normalize_dashboard()` 校验版本、block 白名单、色调与标准动作（当前 `open_user_data_folder`），非法块丢弃并记 WARNING。动作只走白名单，后端不下发 HTML、不接受任意 RPC/URL。版本 `0` 的占位模块返回「看板尚未实现」的明确错误。
 

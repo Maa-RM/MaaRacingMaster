@@ -116,7 +116,8 @@ def read_dashboard_payload() -> dict:
         return {
             "version": DASHBOARD_CONTRACT_VERSION,
             "title": "极速狂飙战绩",
-            "blocks": [{"type": "text", "text": "还没有结算记录——用程序跑一局就有了。"}],
+            "blocks": [{"type": "empty", "title": "还没有结算记录",
+                        "text": "用程序跑一局就有了。"}],
         }
 
     today = datetime.now().date()

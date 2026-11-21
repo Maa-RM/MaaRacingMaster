@@ -442,7 +442,9 @@
         </div>`;
   }
 
-  function dashEmptyHtml() {
+  // 空态统一视觉：插图框 + 标题 + 一句说明。没有候选（dashEmptyHtml）、模块
+  // 空态（empty block）与空载荷共用同一个生成器，文案一律经 escHtml 转义。
+  function dashEmptyStateHtml(title, text) {
     return '<div class="dash-empty">'
       + '<div class="empty-art" aria-hidden="true"><svg viewBox="0 0 24 24">'
       + '<rect x="3" y="3" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
@@ -450,9 +452,14 @@
       + '<rect x="3" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
       + '<rect x="13" y="13" width="8" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/>'
       + '</svg></div>'
-      + '<b>还没有可显示的模块看板</b>'
-      + '<p>任务列表里还没有声明看板的模块。模块接入看板后，这里会显示它的数据；内置步骤不参与看板中心。</p>'
+      + (title ? '<b>' + escHtml(title) + '</b>' : '')
+      + (text ? '<p>' + escHtml(text) + '</p>' : '')
       + '</div>';
+  }
+
+  function dashEmptyHtml() {
+    return dashEmptyStateHtml('还没有可显示的模块看板',
+      '任务列表里还没有声明看板的模块。模块接入看板后，这里会显示它的数据；内置步骤不参与看板中心。');
   }
 
   function dashLoadingHtml() {
@@ -533,6 +540,8 @@
       }
       case 'text':
         return '<p class="dash-note">' + escHtml(block.text) + '</p>';
+      case 'empty':
+        return dashEmptyStateHtml(block.title, block.text);
       case 'path':
         return '<div class="path-chip" title="' + escHtml(block.text) + '">'
           + escHtml(block.text) + '</div>';
@@ -610,7 +619,7 @@
       + captionRow
       + (blocks.length
         ? blocks.map(dashBlockHtml).join('')
-        : '<p class="dash-none">看板暂无内容</p>')
+        : dashEmptyStateHtml('看板暂无内容'))
       + '</div>';
   }
 

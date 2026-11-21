@@ -938,7 +938,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .kind-chip--negative { color: var(--maarm-danger); background: var(--maarm-danger-bg); }
 .kind-chip--warn { color: var(--maarm-warning-strong); background: var(--maarm-warning-bg); }
 
-/* 标准 block：stats / list / text / path / action */
+/* 标准 block：stats / list / text / path / action / empty */
 /* 统计：一行四列窄条；超过四项时换行，行首不画左边线 */
 .dash-stats {
   display: grid;
@@ -993,7 +993,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font: inherit; font-size: 12px; cursor: pointer;
 }
 .dash-action:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
-.dash-none { font-size: 12px; color: var(--maarm-foreground-muted); padding: 4px 0; }
 
 /* 空态 / 加载 / 错误：给槽位一个可读高度，内容仍居中 */
 .dash-empty {

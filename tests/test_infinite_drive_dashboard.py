@@ -68,7 +68,9 @@ def test_append_read_roundtrip_and_bad_lines(tmp_path) -> None:
 
 def test_payload_empty_and_filled() -> None:
     empty = dashboard_store.read_dashboard_payload()
-    assert empty["blocks"][0]["type"] == "text"  # 空态
+    assert empty["blocks"][0]["type"] == "empty"       # 空态走契约 empty 原语
+    assert empty["blocks"][0]["title"] == "还没有结算记录"
+    assert normalize_dashboard(empty)[0] is not None   # 空态载荷同样过契约校验
 
     for round_no in (1, 2):
         dashboard_store.append(dashboard_store.record_settlement(

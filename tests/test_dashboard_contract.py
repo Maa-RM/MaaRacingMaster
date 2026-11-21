@@ -37,12 +37,13 @@ def test_valid_blocks_are_normalized():
         {"type": "text", "text": "说明"},
         {"type": "path", "text": "debug/speedrush/manual/"},
         {"type": "action", "label": "打开数据目录", "action": "open_user_data_folder"},
+        {"type": "empty", "title": "还没有结算记录", "text": "用程序跑一局就有了。"},
     )
     normalized, warnings = normalize_dashboard(payload)
     assert warnings == ()
     assert normalized["version"] == DASHBOARD_CONTRACT_VERSION
     assert [block["type"] for block in normalized["blocks"]] == [
-        "stats", "list", "text", "path", "action",
+        "stats", "list", "text", "path", "action", "empty",
     ]
     assert normalized["badge"]["tone"] == "neutral"
     assert normalized["blocks"][0]["items"][0]["tone"] == "positive"
@@ -86,6 +87,36 @@ def test_text_is_truncated_and_control_chars_rejected():
     assert len(normalized["blocks"][0]["text"]) == 2000
     assert any("截断" in warning for warning in warnings)
     assert any("控制字符" in warning for warning in warnings)
+
+
+def test_empty_block_title_required_text_optional():
+    normalized, warnings = normalize_dashboard(_payload(
+        {"type": "empty", "title": "还没有结算记录", "text": "用程序跑一局就有了。"},
+        {"type": "empty", "title": "只有标题"},
+    ))
+    assert warnings == ()
+    assert normalized["blocks"][0] == {
+        "type": "empty", "title": "还没有结算记录", "text": "用程序跑一局就有了。"}
+    assert normalized["blocks"][1] == {"type": "empty", "title": "只有标题"}
+
+
+def test_empty_block_without_title_is_dropped():
+    normalized, warnings = normalize_dashboard(_payload(
+        {"type": "empty"},
+        {"type": "empty", "text": "只有说明没有标题"},
+    ))
+    assert normalized["blocks"] == []
+    assert any("empty.title" in warning for warning in warnings)
+
+
+def test_empty_block_long_text_is_truncated():
+    normalized, warnings = normalize_dashboard(_payload(
+        {"type": "empty", "title": "甲" * 60, "text": "乙" * 200},
+    ))
+    block = normalized["blocks"][0]
+    assert block["title"] == "甲" * 40
+    assert block["text"] == "乙" * 80
+    assert any("截断" in warning for warning in warnings)
 
 
 def test_invalid_tones_fall_back_to_neutral():
