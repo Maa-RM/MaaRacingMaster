@@ -221,6 +221,362 @@
     };
   }
 
+  // ---------- 滚轮计数器（stepper 字段）----------
+  // 行为移植自 21st.dev 的 Rolling Counter（MIT，作者 Syed；vanilla JS 重写、
+  // 外观换本仓设计 token）：每列一个 rAF 弹簧模拟（高位错峰起步），速度越大
+  // 模糊越重；± 可按住加速连滚；数字窗竖向拖拽带惯性甩动；键盘走 spinbutton
+  // 语义；prefers-reduced-motion 全部瞬时落位。写后端的时机：一律等弹簧收敛
+  // （动画落定）才 savePatch——连滚/拖拽期间只在本地滚动，不逐变化发请求。
+  // unit_seconds 是模块下发的「每 1 单位配置值的预计秒数」，预计用时按当前值
+  // 即时重算；值为 0 表示不限，不出估计。
+
+  var CELL_H = 36;          // 数字窗高 = 单格高（滚动一行 = 一格）
+  var STAGGER_MS = 32;      // 列间错峰：高位晚这么久起步，滚出层次感
+  var BOUNCE = 40;          // 弹簧弹性（0~100，原控件默认）
+  var BLUR = 24;            // 速度模糊强度（0~100，原控件默认）
+  var HOLD_DELAY_MS = 320;  // 按住 ± 多久后开始连滚
+  var REDUCED_COMMIT_MS = 300;  // 无动画档的落定等待：连点只写最后一次
+  var FALLBACK_COMMIT_MS = 900; // 落定兜底：rAF 在窗口隐藏/遮挡时会暂停
+  var DRAG_PX = 12;         // 拖拽每走一格的像素
+  // 数字条 12 格：末尾补 0/1，9→0 向前绕回时不断带（减量走 mod 环绕同样成立）
+  var DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1];
+
+  function prefersReducedMotion() {
+    return !!(window.matchMedia
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function formatEstimateSeconds(seconds) {
+    var minutes = Math.round(seconds / 60);
+    if (minutes < 1) return '不足 1 分钟';
+    if (minutes < 60) return '约 ' + minutes + ' 分钟';
+    var hours = Math.floor(minutes / 60);
+    var rest = minutes % 60;
+    return rest ? '约 ' + hours + ' 小时 ' + rest + ' 分钟'
+                : '约 ' + hours + ' 小时';
+  }
+
+  function buildStepper(entry, field) {
+    var min = field.min != null ? Number(field.min) : 0;
+    var max = Number(field.max);
+    var stepv = field.step != null ? Number(field.step) : 1;
+    var unitSeconds = field.unit_seconds != null ? Number(field.unit_seconds) : null;
+    var places = String(max).length;
+
+    var wrap = el('div', 'module-options-row');
+    var box = el('div', 'maarm-field');
+    var label = el('label', 'maarm-field-label');
+    label.textContent = field.label;
+    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
+    var estimate = null;
+    if (unitSeconds) {
+      estimate = el('span', 'field-hint');
+      label.appendChild(estimate);
+    }
+
+    var stepper = el('div', 'maarm-stepper');
+    var dec = el('button', 'stepper-btn', '\u2212');
+    dec.type = 'button';
+    dec.tabIndex = -1;
+    dec.setAttribute('aria-label', '减少');
+    var inc = el('button', 'stepper-btn', '+');
+    inc.type = 'button';
+    inc.tabIndex = -1;
+    inc.setAttribute('aria-label', '增加');
+
+    var win = el('div', 'stepper-window');
+    win.tabIndex = 0;
+    win.setAttribute('role', 'spinbutton');
+    win.setAttribute('aria-label', field.label);
+    win.setAttribute('aria-valuemin', String(min));
+    win.setAttribute('aria-valuemax', String(max));
+
+    var columns = [];
+    for (var i = 0; i < places; i += 1) {
+      var p = places - 1 - i;   // DOM 从高位列到低位列；columns 仍按位权 p 索引
+      var colBox = el('div', 'stepper-col');
+      var strip = el('div', 'stepper-strip');
+      DIGITS.forEach(function (d) {
+        strip.appendChild(el('div', 'stepper-num', String(d)));
+      });
+      colBox.appendChild(strip);
+      win.appendChild(colBox);
+      columns[p] = { box: colBox, strip: strip, pos: 0, vel: 0, target: 0,
+                     due: [], next: [] };
+    }
+    if (field.suffix) win.appendChild(el('span', 'stepper-suffix', field.suffix));
+
+    stepper.appendChild(dec);
+    stepper.appendChild(win);
+    stepper.appendChild(inc);
+    box.appendChild(label);
+    box.appendChild(stepper);
+    var desc = null;
+    if (field.description) {
+      desc = el('p', 'option-desc', field.description);
+      box.appendChild(desc);
+    }
+    wrap.appendChild(box);
+
+    var shown = null;        // 本地显示值；弹簧收敛前可与服务端配置暂时不同
+    var rafId = 0;
+    var lastTime = 0;
+    var flingRaf = 0;
+    var commitTimer = 0;
+
+    function clamp(v) {
+      if (Number.isNaN(v)) v = min;
+      if (v < min) v = min;
+      if (v > max) v = max;
+      return Math.round(v);
+    }
+
+    function valueText(v) {
+      return v <= 0 ? '不限' : v + (field.suffix ? ' ' + field.suffix : '');
+    }
+
+    function updateEstimate(v) {
+      if (!estimate) return;
+      estimate.textContent = v <= 0 ? '（不限）'
+        : '（预计用时' + formatEstimateSeconds(v * unitSeconds) + '）';
+    }
+
+    function paint() {
+      columns.forEach(function (col) {
+        var mod = ((col.pos % 10) + 10) % 10;
+        var smear = Math.min(2.2, Math.abs(col.vel) * 1.8) * (BLUR / 50);
+        col.strip.style.transform = 'translate3d(0,' + (-mod * CELL_H) + 'px,0)';
+        col.strip.style.filter = smear > 0.12
+          ? 'blur(' + smear.toFixed(2) + 'px)' : 'none';
+      });
+    }
+
+    function flushCommit() {
+      if (!ST.isAlive(entry, generation) || locked || entry.locked) return;
+      if (entry.cfg && entry.cfg[field.key] === shown) return;
+      var patch = {};
+      patch[field.key] = shown;
+      savePatch(entry.mid, patch);
+    }
+
+    function tick(time) {
+      if (!ST.isAlive(entry, generation)) {   // 面板重建：孤儿循环就地收
+        rafId = 0;
+        return;
+      }
+      var dt = lastTime ? Math.min(2.5, Math.max(0, (time - lastTime) / 16.67)) : 1;
+      lastTime = time;
+      // 弹簧参数随 BOUNCE 取（原控件同款：k 刚度 / d 阻尼）
+      var k = 0.1 + (BOUNCE / 100) * 0.16;
+      var damp = 0.64 + (BOUNCE / 100) * 0.18;
+      var now = performance.now();
+      var active = false;
+      columns.forEach(function (col) {
+        // 错峰队列：到点的目标才生效，快速连改在队列里排队不跳变
+        while (col.due.length && col.due[0] <= now) {
+          col.due.shift();
+          col.target = col.next.shift();
+        }
+        if (col.due.length) active = true;
+        var delta = col.target - col.pos;
+        if (Math.abs(delta) > 20) {
+          // 大跨度（Home/End、×10 连滚）：先按十位跳近，别让弹簧拉到失真
+          col.pos += Math.round((delta - (delta > 0 ? 20 : -20)) / 10) * 10;
+        }
+        col.vel += (col.target - col.pos) * k * dt;
+        col.vel *= Math.pow(damp, dt);
+        col.pos += col.vel * dt;
+        if (Math.abs(col.target - col.pos) < 0.003 && Math.abs(col.vel) < 0.003) {
+          col.pos = col.target;
+          col.vel = 0;
+        } else {
+          active = true;
+        }
+      });
+      paint();
+      if (active) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        rafId = 0;
+        lastTime = 0;
+        flushCommit();   // 动画落定才写后端（连滚期间只滚不写）
+      }
+    }
+
+    function runSimulation() {
+      if (!rafId) {
+        lastTime = 0;
+        rafId = requestAnimationFrame(tick);
+      }
+    }
+
+    function syncVisibility() {
+      var sig = Math.max(1, String(shown).length);
+      columns.forEach(function (col, p) {
+        col.box.classList.toggle('stepper-col--hidden', p >= sig);
+      });
+    }
+
+    function applyValue(nextVal) {
+      nextVal = clamp(nextVal);
+      var mount = shown == null;
+      if (!mount && nextVal === shown) return;
+      shown = nextVal;
+      var reduced = prefersReducedMotion();
+      columns.forEach(function (col, p) {
+        var to = Math.floor(nextVal / Math.pow(10, p));
+        if (mount || reduced) {
+          col.pos = col.target = to;
+          col.vel = 0;
+          col.due = [];
+          col.next = [];
+        } else {
+          col.due.push(performance.now() + p * STAGGER_MS);
+          col.next.push(to);
+        }
+      });
+      if (mount || reduced) {
+        paint();
+        if (!mount) {   // 无动画档也要攒一拍：连点只写最后一次
+          clearTimeout(commitTimer);
+          commitTimer = setTimeout(flushCommit, REDUCED_COMMIT_MS);
+        }
+      } else {
+        runSimulation();   // 落定后的 flushCommit 在 tick 收敛分支里
+        // 兜底：rAF 在窗口隐藏/遮挡时会暂停，模拟可能迟迟不收敛——定时器
+        // 保证最终值一定落库（弹簧先收敛时本定时器到点即空转）。
+        clearTimeout(commitTimer);
+        commitTimer = setTimeout(flushCommit, FALLBACK_COMMIT_MS);
+      }
+      syncVisibility();
+      win.setAttribute('aria-valuenow', String(nextVal));
+      win.setAttribute('aria-valuetext', valueText(nextVal));
+      updateEstimate(nextVal);
+    }
+
+    function bump(multiplier) {
+      if (shown == null) return;
+      applyValue(shown + multiplier * stepv);
+    }
+
+    function sync(value) {
+      if (value == null || !Number.isFinite(value)) return;
+      var target = clamp(value);
+      if (shown !== target) applyValue(target);
+      else updateEstimate(shown);   // _ui 重建带来新 unit_seconds 时重算估时
+    }
+
+    function bindHold(btn, dir) {
+      var holdTimer = 0;
+      var holdStart = 0;
+      function repeat() {
+        if (locked || entry.locked) { holdTimer = 0; return; }
+        // 原控件同款加速曲线：0.7s 后 ×5、1.4s 后 ×10，节拍 85ms → 55ms
+        var elapsed = performance.now() - holdStart;
+        var speedUp = elapsed > 1400 ? 10 : elapsed > 700 ? 5 : 1;
+        bump(dir * speedUp);
+        holdTimer = setTimeout(repeat, elapsed > 700 ? 55 : 85);
+      }
+      function stop() {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
+      }
+      btn.addEventListener('pointerdown', function (event) {
+        if (locked || entry.locked) return;
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        try { btn.setPointerCapture(event.pointerId); } catch (e) { /* 无碍 */ }
+        bump(dir);
+        holdStart = performance.now();
+        holdTimer = setTimeout(repeat, HOLD_DELAY_MS);
+        event.preventDefault();
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (type) {
+        btn.addEventListener(type, stop);
+      });
+      // 键盘激活（Enter/Space 的 click 无 pointer 来源）：补一次步进
+      btn.addEventListener('click', function (event) {
+        if (event.detail === 0 && !locked && !entry.locked) bump(dir);
+      });
+    }
+    bindHold(dec, -1);
+    bindHold(inc, 1);
+
+    win.addEventListener('keydown', function (event) {
+      if (locked || entry.locked) return;
+      var handled = true;
+      switch (event.key) {
+        case 'ArrowUp': case 'ArrowRight': bump(1); break;
+        case 'ArrowDown': case 'ArrowLeft': bump(-1); break;
+        case 'PageUp': bump(10); break;
+        case 'PageDown': bump(-10); break;
+        case 'Home': applyValue(min); break;
+        case 'End': applyValue(max); break;
+        default: handled = false;
+      }
+      if (handled) event.preventDefault();
+    });
+
+    win.addEventListener('wheel', function (event) {
+      if (locked || entry.locked) return;
+      event.preventDefault();
+      bump(event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+
+    // 竖向拖拽 + 惯性甩动（原控件同款：12px 一格，松手按速度衰减续滚）
+    var drag = null;
+    function offsetTicks(acc) {
+      var ticks = acc > 0 ? Math.floor(acc / DRAG_PX) : Math.ceil(acc / DRAG_PX);
+      return { ticks: ticks, rest: acc - ticks * DRAG_PX };
+    }
+    win.addEventListener('pointerdown', function (event) {
+      if (locked || entry.locked) return;
+      cancelAnimationFrame(flingRaf);
+      try { win.setPointerCapture(event.pointerId); } catch (e) { /* 无碍 */ }
+      drag = { y: event.clientY, acc: 0, vel: 0, time: performance.now() };
+    });
+    win.addEventListener('pointermove', function (event) {
+      if (!drag) return;
+      var now = performance.now();
+      var dy = drag.y - event.clientY;
+      drag.y = event.clientY;
+      var dt = Math.max(1, now - drag.time);
+      drag.time = now;
+      drag.vel = drag.vel * 0.6 + (dy / dt) * 0.4;
+      var move = offsetTicks(drag.acc + dy);
+      if (move.ticks) bump(move.ticks);
+      drag.acc = move.rest;
+    });
+    function endDrag(event) {
+      if (!drag) return;
+      try { win.releasePointerCapture(event.pointerId); } catch (e) { /* 已释放 */ }
+      var track = drag;
+      drag = null;
+      if (prefersReducedMotion()) return;
+      var v = (performance.now() - track.time > 80) ? 0 : track.vel * 16.67;
+      if (Math.abs(v) < 1.5) return;
+      var acc = 0;
+      (function coast() {
+        var move = offsetTicks(acc + v);
+        if (move.ticks) bump(move.ticks);
+        acc = move.rest;
+        v *= 0.93;
+        if (Math.abs(v) > 0.35) flingRaf = requestAnimationFrame(coast);
+      })();
+    }
+    win.addEventListener('pointerup', endDrag);
+    win.addEventListener('pointercancel', endDrag);
+
+    function setLockedState(isLocked) {
+      dec.disabled = isLocked;
+      inc.disabled = isLocked;
+      stepper.classList.toggle('maarm-stepper--locked', isLocked);
+    }
+
+    return {
+      field: field, wrap: wrap, stepper: stepper, title: label, desc: desc,
+      sync: sync, setLocked: setLockedState,
+    };
+  }
+
   function buildText(entry, field) {
     var wrap = el('div', 'module-options-row');
     var box = el('div', 'maarm-field');
@@ -379,6 +735,7 @@
       case 'segmented': return buildSegmented(entry, field);
       case 'select': return buildSelect(entry, field);
       case 'number': return buildNumber(entry, field);
+      case 'stepper': return buildStepper(entry, field);
       case 'text': return buildText(entry, field);
       default: return null;
     }
@@ -391,7 +748,16 @@
     var label = (variant && variant.label) || field.label;
     var desc = variant && variant.description !== undefined
       ? variant.description : field.description;
-    node.title.textContent = label;
+    // 标题只换文本；挂在标题上的元素子节点（field-hint / 滚轮估时 span）原样保留
+    // ——textContent 整体赋值会连子节点一起抹掉，同步一跑提示就消失。
+    var title = node.title;
+    var spans = [];
+    for (var child = title.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 1) spans.push(child);
+    }
+    title.textContent = '';
+    title.appendChild(document.createTextNode(label));
+    spans.forEach(function (s) { title.appendChild(s); });
     if (node.desc) {
       if (desc) {
         node.desc.textContent = desc;
@@ -448,6 +814,9 @@
       });
     } else if (node.select) {
       syncSelect(node, cfg);
+    } else if (node.stepper) {
+      var raw = value == null ? null : Number(value);
+      node.sync(raw);
     } else if (node.input && node.input.type === 'number') {
       if (document.activeElement !== node.input) {
         node.input.value = value == null ? '' : String(value);
@@ -492,6 +861,7 @@
       if (node.buttons) node.buttons.forEach(function (b) { b.disabled = locked; });
       if (node.select) node.select.disabled = locked;
       if (node.input) node.input.disabled = locked;
+      if (node.stepper) node.setLocked(locked);
     });
   }
 

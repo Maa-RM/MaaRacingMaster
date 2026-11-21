@@ -64,7 +64,7 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 
 ---
 
-## 四、前端图标资源（随发布包再分发）
+## 四、前端资源（随发布包再分发）
 
 以下组件的数据/代码随发布包内 `apps/MaaRacingMaster.Shell/frontend/` 一并分发。
 
@@ -72,6 +72,7 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 |---|---|---|
 | Lucide（图标 path 数据） | **ISC** | <https://lucide.dev> / <https://github.com/lucide-icons/lucide>；`icons.js` 的 `LUCIDE` 分区拷贝自 lucide v1.45.0 图标几何数据（`github` 为 lucide 1.x 移除品牌图标前 0.x 版本数据）。ISC 为宽松许可，义务仅为保留版权声明与本许可标识。 |
 | morphicons | **MIT** | <https://github.com/guillermolg00/morphicons>；`vendor.morphicons.js` 为 v1.7.1 上游 dist 的 ESM→经典脚本摊平版（未改函数体），用于图标变形动画。 |
+| Rolling Counter（滚轮计数器交互） | **MIT** | <https://21st.dev/@abushaidislam7/components/rolling-counter>（作者 Syed）；`js/config-panel.js` 的 stepper 渲染器为该组件的 vanilla JS 行为移植（rAF 弹簧滚动、按住加速连滚、拖拽惯性甩动），外观以本仓设计 token 重制，来源与许可随代码注释携带。 |
 
 Lucide 许可原文（ISC）：
 

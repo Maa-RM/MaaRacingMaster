@@ -100,6 +100,18 @@ def test_panel_renders_option_badges_and_notice_actions():
     assert "innerHTML" not in src
 
 
+def test_stepper_renderer_rolls_and_estimates():
+    """滚轮计数器：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端。"""
+    src = PANEL.read_text(encoding="utf-8")
+    for token in ("maarm-stepper", "unit_seconds", "prefers-reduced-motion",
+                  "spinbutton", "aria-valuenow", "formatEstimateSeconds",
+                  "requestAnimationFrame", "flushCommit"):
+        assert token in src, f"滚轮计数器缺少 {token}"
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    assert "stepper-col--hidden" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+
+
 def test_switch_aria_keeps_explicit_title_and_desc_ids():
     body = _js_function_body(SETTINGS.read_text(encoding="utf-8"), "function wireSwitchAria")
     assert "if (!title.id)" in body
