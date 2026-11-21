@@ -32,7 +32,7 @@ class _None:
 
 
 class _VersionOnly:
-    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
 
 
 class _UiOnly:
@@ -45,7 +45,7 @@ class _BadVersion:
 
 
 class _Minimal:
-    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
     CONFIG_UI = {"groups": [{"title": "通用", "fields": [
         {"key": "alpha", "type": "switch", "label": "开关"}]}]}
 
@@ -64,7 +64,7 @@ def test_contract_state_matrix():
 
 def test_fields_are_filtered_by_config_surface():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": [{"fields": [
             {"key": "alpha", "type": "switch", "label": "可用"},
             {"key": "unknown", "type": "switch", "label": "越界"},
@@ -81,7 +81,7 @@ def test_fields_are_filtered_by_config_surface():
 
 def test_conditions_and_variants_require_declared_field():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": [{"fields": [
             {"key": "alpha", "type": "switch", "label": "A",
              "visible_if": {"key": "ghost", "op": "equals", "value": 1},
@@ -101,7 +101,7 @@ def test_conditions_and_variants_require_declared_field():
 
 def test_option_contracts_and_unknown_members_are_rebuilt():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": [{"fields": [
             {"key": "mode", "type": "segmented", "label": "模式",
              "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}],
@@ -122,9 +122,36 @@ def test_option_contracts_and_unknown_members_are_rebuilt():
     assert result.state == C.UI_PARTIAL
 
 
+def test_stepper_contract_ints_max_required_and_unit_seconds():
+    """滚轮控件：整数约束、max 必填（列数真源）、unit_seconds 只收正数。"""
+    class _Mod:
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
+        CONFIG_UI = {"groups": [{"fields": [
+            {"key": "rounds", "type": "stepper", "label": "轮数",
+             "min": 0, "max": 99, "step": 1, "suffix": "轮",
+             "unit_seconds": 152.4},
+            {"key": "nomax", "type": "stepper", "label": "缺max"},
+            {"key": "bad", "type": "stepper", "label": "坏约束",
+             "min": 20, "max": 10, "step": 0, "unit_seconds": -1,
+             "options": [{"value": 1, "label": "A"}]},
+            {"key": "frac", "type": "stepper", "label": "小数约束",
+             "max": 50.5},
+        ]}]}
+
+    result = C.normalize_config_ui(_Mod, {"rounds", "nomax", "bad", "frac"})
+    assert result.state == C.UI_PARTIAL
+    fields = {f["key"]: f for f in result.schema["groups"][0]["fields"]}
+    rounds = fields["rounds"]
+    assert rounds["min"] == 0 and rounds["max"] == 99 and rounds["step"] == 1
+    assert rounds["suffix"] == "轮" and rounds["unit_seconds"] == 152.4
+    assert "nomax" not in fields and "bad" not in fields and "frac" not in fields
+    assert any("缺少整数 max" in w for w in result.warnings)
+    assert any("unit_seconds" in w for w in result.warnings)
+
+
 def test_option_badge_and_field_notice_are_normalized():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": [{"fields": [{
             "key": "mode", "type": "segmented", "label": "模式",
             "options": [
@@ -163,7 +190,7 @@ def test_option_badge_and_field_notice_are_normalized():
 
 def test_badge_is_segmented_only_and_unsafe_subpath_is_dropped():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": [{"fields": [
             {"key": "pick", "type": "select", "label": "选",
              "options": [{"value": "a", "label": "A", "badge": {"text": "↓"}}]},
@@ -184,7 +211,7 @@ def test_badge_is_segmented_only_and_unsafe_subpath_is_dropped():
 
 def test_empty_declaration_is_invalid_not_none():
     class _Mod:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
         CONFIG_UI = {"groups": []}
 
     result = C.normalize_config_ui(_Mod, {"alpha"})
@@ -206,7 +233,7 @@ def test_summary_and_status_normalization():
 class _FakeModule:
     ID = "fake"
     DEFAULT_MODULE_CONFIG = {"alpha": 1, "beta": "x", "mode": "a", "count": 5}
-    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI_CONTRACT = C.CONFIG_UI_CONTRACT_VERSION
     CONFIG_UI = {"groups": [{"fields": [
         {"key": "alpha", "type": "switch", "label": "开关"},
         {"key": "mode", "type": "segmented", "label": "模式", "options": [

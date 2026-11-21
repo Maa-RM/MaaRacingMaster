@@ -454,7 +454,7 @@ class SpeedRushModule(ActivityModule):
     }
     # 配置表单（契约见 core/config_ui_contract.py）：默认值/动态候选分别来自
     # DEFAULT_MODULE_CONFIG 与 config_choices()，这里只描述「怎么呈现」。
-    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI_CONTRACT = 2
     CONFIG_UI = _build_config_ui(not model_assets.missing())
 
     # ---------- 启动约束（按本次配置求值，见基类说明）----------

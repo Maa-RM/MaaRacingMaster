@@ -63,8 +63,8 @@ class SampleModule(ActivityModule):
 
     # 配置表单（契约见 core/config_ui_contract.py）：宿主通用渲染，插件不提供自带 HTML/JS。
     # 默认值 / 动态候选分别由 DEFAULT_MODULE_CONFIG / config_choices() 提供，这里只描述呈现。
-    # 控件五型：switch / segmented / select / number / text；字段键必须在 DEFAULT_MODULE_CONFIG 内。
-    CONFIG_UI_CONTRACT = 1
+    # 控件六型：switch / segmented / select / number / stepper / text；字段键必须在 DEFAULT_MODULE_CONFIG 内。
+    CONFIG_UI_CONTRACT = 2
     CONFIG_UI = {
         "groups": [
             {
