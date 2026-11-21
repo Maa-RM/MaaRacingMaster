@@ -345,7 +345,8 @@ def test_real_modules_declare_their_config_surface():
     cls = real_registry["infinite_drive"]
 
     declared = set(cls.DEFAULT_MODULE_CONFIG)
-    assert declared == {"drive_mode", "record_mode"}, "配置面变化时同步更新期望集"
+    assert declared == {"drive_mode", "record_mode", "round_total"}, \
+        "配置面变化时同步更新期望集"
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     keys = set(sc._module_config_defaults("infinite_drive"))
     assert keys == declared

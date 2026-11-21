@@ -9,7 +9,11 @@
 from __future__ import annotations
 
 from maaracing_master import SOURCE_MODE
-from maaracing_master.core.config_ui_contract import UI_OK, normalize_config_ui
+from maaracing_master.core.config_ui_contract import (
+    CONFIG_UI_CONTRACT_VERSION,
+    UI_OK,
+    normalize_config_ui,
+)
 from maaracing_master.plugins.infinite_drive.module import (
     REC_DRIVE_FPS,
     REC_NAV_FPS,
@@ -47,15 +51,16 @@ def test_straight_drive_clears_record_mode() -> None:
 
     straight_on = {"drive_mode": "straight", "record_mode": True}
     assert InfiniteDriveModule.normalize_config(straight_on)["record_mode"] is False
-    # 直线档归一化后录制按关处理，摘要回落到驾驶档位标签。
-    assert InfiniteDriveModule.config_summary(straight_on) == ["驾驶: 全程直行"]
+    # 直线档归一化后录制按关处理，摘要回落到驾驶档位标签（带连刷轮数）。
+    assert InfiniteDriveModule.config_summary(straight_on) == \
+        ["驾驶: 全程直行", "连刷不限"]
     assert InfiniteDriveModule.required_capabilities(straight_on) == \
         InfiniteDriveModule.REQUIRES
     assert InfiniteDriveModule.requires_exclusive_gamepad(straight_on) is True
 
     # 自动驾驶档录制仍生效（回归锁：新判据不能误伤正常录制局）。
     depth_on = {"drive_mode": "depth", "record_mode": True}
-    assert InfiniteDriveModule.config_summary(depth_on) == ["录制: 开"]
+    assert InfiniteDriveModule.config_summary(depth_on) == ["录制: 开", "连刷不限"]
     assert InfiniteDriveModule.required_capabilities(depth_on) == frozenset({"capture"})
     assert InfiniteDriveModule.requires_exclusive_gamepad(depth_on) is False
 
@@ -70,11 +75,102 @@ def test_set_module_config_ignores_non_dict_and_unknown_keys() -> None:
 def test_config_summary_announces_drive_mode_unless_recording() -> None:
     """录制开只报录制；录制关报当前驾驶档位（直行档同样有标签，不留空）。"""
     assert InfiniteDriveModule.config_summary(
-        {"drive_mode": "depth", "record_mode": True}) == ["录制: 开"]
+        {"drive_mode": "depth", "record_mode": True}) == ["录制: 开", "连刷不限"]
     assert InfiniteDriveModule.config_summary(
-        {"drive_mode": "depth", "record_mode": False}) == ["驾驶: 自动驾驶"]
+        {"drive_mode": "depth", "record_mode": False}) == ["驾驶: 自动驾驶", "连刷不限"]
     assert InfiniteDriveModule.config_summary(
-        {"drive_mode": "straight", "record_mode": False}) == ["驾驶: 全程直行"]
+        {"drive_mode": "straight", "record_mode": False}) == ["驾驶: 全程直行", "连刷不限"]
+
+
+def test_round_total_normalize_clamps_and_coerces() -> None:
+    """轮数归一：0 = 不限，负数/垃圾回落默认，上限 99，字符串折算整数。"""
+    normalize = InfiniteDriveModule.normalize_config
+    assert normalize({"round_total": 0})["round_total"] == 0
+    assert normalize({"round_total": 5})["round_total"] == 5
+    assert normalize({"round_total": -3})["round_total"] == 0
+    assert normalize({"round_total": 100})["round_total"] == 99
+    assert normalize({"round_total": "7"})["round_total"] == 7
+    assert normalize({"round_total": "垃圾"})["round_total"] == 0
+    assert normalize({"round_total": None})["round_total"] == 0
+    assert normalize({})["round_total"] == 0
+
+
+def test_round_total_config_roundtrip() -> None:
+    """轮数读写往返：实例读写与越界钳制，非法载荷不影响已有值。"""
+    m = _module()
+    assert m.get_module_config()["round_total"] == 0
+    assert m.set_module_config({"round_total": 5})["round_total"] == 5
+    assert m.get_module_config()["round_total"] == 5
+    assert m.set_module_config({"round_total": 999})["round_total"] == 99
+    m.set_module_config("not-a-dict")  # type: ignore[arg-type]
+    assert m.get_module_config()["round_total"] == 99
+
+
+def test_config_summary_includes_round_total() -> None:
+    """标题栏摘要直读本次设置：连刷 N 轮 / 连刷不限。"""
+    assert InfiniteDriveModule.config_summary(
+        {"drive_mode": "depth", "round_total": 5}) == ["驾驶: 自动驾驶", "连刷 5 轮"]
+    assert InfiniteDriveModule.config_summary(
+        {"drive_mode": "depth", "record_mode": True, "round_total": 3}) == \
+        ["录制: 开", "连刷 3 轮"]
+
+
+def test_round_total_field_carries_estimate_only_with_history(monkeypatch) -> None:
+    """预计用时只在有历史依据时下发：轮均间隔来自战绩库，None 不冒充有数。"""
+    from maaracing_master.plugins.infinite_drive import dashboard_store
+
+    monkeypatch.setattr(dashboard_store, "median_round_seconds", lambda: 152.4)
+    field = _ui_fields(True)["round_total"]
+    assert field["type"] == "stepper" and field["max"] == 99
+    assert field["suffix"] == "轮"
+    assert field["unit_seconds"] == 152
+    monkeypatch.setattr(dashboard_store, "median_round_seconds", lambda: None)
+    assert "unit_seconds" not in _ui_fields(True)["round_total"]
+
+
+class _AllOkGraph:
+    """所有锚点/动作都成功的图桩：_run_flow 的轮次推进纯看桩返回。"""
+
+    def run(self, *args, **kwargs) -> bool:
+        return True
+
+
+def _stub_flow_steps(monkeypatch, mod) -> None:
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_run_step", lambda node, stage: True)
+
+
+def test_run_flow_stops_after_round_total(monkeypatch) -> None:
+    """刷满设定轮数即正常收尾；0 = 不限维持连刷（停止信号仍优先）。"""
+    m = _module()
+    m._running = True
+    m._graph = _AllOkGraph()
+    m._round_total = 2
+    seen: list[str] = []
+    monkeypatch.setattr(m, "_pick_cards", lambda phase: seen.append(phase) or True)
+    monkeypatch.setattr(m, "_drive", lambda phase: seen.append(phase) or True)
+    monkeypatch.setattr(m, "_run_step", lambda node, stage: True)
+    monkeypatch.setattr(m, "_read_settlement", lambda: seen.append("settle"))
+    assert m._run_flow(0) is True
+    assert seen.count("settle") == 2 and m._round_no == 2
+
+    # 不限档：不因轮数停（由停止信号收）；这里用桩在第 3 轮后给停止信号
+    m2 = _module()
+    m2._running = True
+    m2._graph = _AllOkGraph()
+    m2._round_total = 0
+    _stub_flow_steps(monkeypatch, m2)
+    counter = {"n": 0}
+
+    def _settle() -> None:
+        counter["n"] += 1
+        if counter["n"] >= 3:
+            m2._running = False
+
+    monkeypatch.setattr(m2, "_read_settlement", _settle)
+    assert m2._run_flow(0) is True
+    assert counter["n"] == 3
 
 
 def test_drive_mode_roundtrip_and_legacy_default() -> None:
@@ -114,18 +210,24 @@ def _ui_fields(source_mode: bool) -> dict[str, dict]:
 def test_record_switch_only_declared_in_source_mode() -> None:
     """录制开关只在源码模式声明；正式包连字段都不下发，前端无从渲染。"""
     source = _ui_fields(True)
-    assert set(source) == {"drive_mode", "record_mode"}
+    assert set(source) == {"drive_mode", "record_mode", "round_total"}
     # 显隐由驾驶模式决定：直线行驶档不显示录制，其余档显示；驾驶档自身常显。
     assert source["record_mode"]["visible_if"] == {
         "key": "drive_mode", "op": "not_equals", "value": "straight"}
     assert "visible_if" not in source["drive_mode"]
 
     packaged = _ui_fields(False)
-    assert set(packaged) == {"drive_mode"}
+    assert set(packaged) == {"drive_mode", "round_total"}
     # 裁掉录制字段后不留悬空条件，契约校验才不会降级。
     assert "visible_if" not in packaged["drive_mode"]
 
-    assert InfiniteDriveModule.CONFIG_UI["groups"] == _build_config_ui(SOURCE_MODE)["groups"]
+    # 类属性与构建器同一批字段键。不做全量相等：CONFIG_UI 会被结算落库重建
+    # （unit_seconds 随战绩库变化），键集稳定即可。
+    def _keys(groups: list) -> set:
+        return {f["key"] for g in groups for f in g["fields"]}
+
+    assert _keys(InfiniteDriveModule.CONFIG_UI["groups"]) == \
+        _keys(_build_config_ui(SOURCE_MODE)["groups"])
 
 
 def test_drive_labels_and_record_copy() -> None:
@@ -142,7 +244,7 @@ def test_both_ui_variants_normalize_cleanly() -> None:
     """两种模式都过宿主契约校验：正常态 UI_OK 且无告警（回归锁）。"""
     for source_mode in (True, False):
         class _Probe:
-            CONFIG_UI_CONTRACT = 1
+            CONFIG_UI_CONTRACT = CONFIG_UI_CONTRACT_VERSION
             CONFIG_UI = _build_config_ui(source_mode)
 
         result = normalize_config_ui(

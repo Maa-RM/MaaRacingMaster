@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -64,6 +65,44 @@ def test_append_read_roundtrip_and_bad_lines(tmp_path) -> None:
     rows = dashboard_store.read()
     assert [r["round_no"] for r in rows] == [1, 2, 3]  # 坏行被跳过
     assert [r["round_no"] for r in dashboard_store.read(limit=2)] == [2, 3]
+
+
+# ---------- 轮均用时盘点（预计用时的真源） ----------
+
+def _settle(session: str, round_no: int, ts: str) -> None:
+    dashboard_store.append(dashboard_store.record_settlement(
+        SCORE_OK, PROGRESS_OK, session_token=session, round_no=round_no,
+        now=datetime.fromisoformat(ts)))
+
+
+def test_median_round_seconds_uses_same_session_adjacent_settles() -> None:
+    """同一次运行内相邻结算差 = 一轮用时（胜负都算）；取中位数。"""
+    for round_no, ts in ((1, "2026-11-21T20:30:00"), (2, "2026-11-21T20:33:00"),
+                         (3, "2026-11-21T20:37:00"), (4, "2026-11-21T20:40:00")):
+        _settle("s", round_no, ts)
+    # 间隔 180 / 240 / 180 → 中位数 180；首局含入口导航，天然不参与（无前结算）
+    assert dashboard_store.median_round_seconds() == 180.0
+
+
+def test_median_round_seconds_ignores_cross_session_and_bad_pairs() -> None:
+    """跨运行、序号不连续（漏读一轮）、坏时间戳、超界间隔都不进样本。"""
+    _settle("a", 1, "2026-11-21T20:30:00")
+    _settle("b", 1, "2026-11-21T20:31:00")   # 跨运行（a→b）：不采
+    _settle("b", 3, "2026-11-21T20:33:00")   # 序号 1→3 不连续：不采
+    (dashboard_store.store_path()).open("a", encoding="utf-8").write(
+        json.dumps({"schema": 1, "ts": "垃圾", "session": "b", "round_no": 4},
+                   ensure_ascii=False) + "\n")
+    _settle("b", 5, "2026-11-21T21:30:00")   # 与上一条之间隔 1h（含坏行）：不采
+    _settle("b", 6, "2026-11-21T21:33:00")   # 180s：唯一有效样本
+    _settle("b", 7, "2026-11-21T21:33:10")   # 10s，低于下限：不采
+    assert dashboard_store.median_round_seconds() == 180.0
+
+
+def test_median_round_seconds_none_without_valid_pairs() -> None:
+    """空库 / 只有单局：没有依据就不出估计值。"""
+    assert dashboard_store.median_round_seconds() is None
+    _settle("s", 1, "2026-11-21T20:30:00")
+    assert dashboard_store.median_round_seconds() is None
 
 
 def test_payload_empty_and_filled() -> None:
@@ -157,3 +196,39 @@ def test_module_settlement_skips_record_in_record_mode(tmp_path, monkeypatch) ->
     assert mod._settlement_round == 0            # 不消耗局内序号
     assert mod.last_settlement["score"] == SCORE_OK  # 读数照常留存
     assert not dashboard_store.store_path().exists()  # 战绩库未落
+
+
+def test_module_settlement_refreshes_config_ui_estimate(monkeypatch) -> None:
+    """结算落库后重建表单声明：下一拍配置读取带最新轮均预计用时。"""
+
+    class _FakeOcr:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def recognize(self, _rgb, roi):
+            from maaracing_master.plugins.infinite_drive import flow_data
+
+            text = SCORE_OK if roi == flow_data.RESULT_SCORE_ROI else PROGRESS_OK
+            return type("R", (), {"text": text})()
+
+    class _Capture:
+        def frame_with_age(self):
+            return (object(), 1, 2, 0.0)
+
+    class _Ctx:
+        capture = _Capture()
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
+    monkeypatch.setattr(dashboard_store, "median_round_seconds", lambda: 150.0)
+    saved = m.InfiniteDriveModule.CONFIG_UI
+    try:
+        mod = m.InfiniteDriveModule(None)
+        mod.ctx = _Ctx()
+        mod._read_settlement()
+        fields = {f["key"]: f for g in m.InfiniteDriveModule.CONFIG_UI["groups"]
+                  for f in g["fields"]}
+        assert fields["round_total"]["unit_seconds"] == 150
+    finally:
+        m.InfiniteDriveModule.CONFIG_UI = saved   # 重建落在类属性上，测完还原

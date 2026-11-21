@@ -17,6 +17,10 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 跳过选卡2与阶段2直达结算步。退出序列中途失败自动回赶（取消/继续）续驾，触发自然
 重试；读数不可用只停用触发，不拖垮驾驶循环。
 
+**连刷轮数**（配置项，默认 0 = 不限）：本次运行连跑的循环数，胜负都算一轮，
+刷满即正常收尾；预计用时按历史程序局结算记录的轮均间隔估出（无历史不下发），
+随每次结算落库刷新。
+
 **录制模式**（配置开关，默认关）：开启后整个流程会话落盘取证（画面 + 物理手柄
 → ``debug/infinite_drive/``），供真机验证流程与识别框落地。录制是旁路：取帧
 走独立线程读 WGC 中心缓存，队列满丢帧不阻塞流程；录制失败只告警不中止流程。
@@ -131,6 +135,9 @@ _DRIVE_THROTTLE = 220  # 直行油门与自动驾驶的油门上限
 _CAMERA_SETTLE_S = 0.25
 # 已保存的 depth 档继续指向自动转向模式。
 _DRIVE_MODES = {"straight": "全程直行", "depth": "自动驾驶"}
+# 连刷轮数（本次运行一共跑几轮循环，胜负都算）：0 = 不限，正整数 = 刷满即收。
+_ROUND_TOTAL_DEFAULT = 0
+_ROUND_TOTAL_MAX = 99
 
 # 提前结算（分数达标中途退出，省时路径）：一关 = 阶段1+阶段2，目标分整关累计
 # （真源 flow_data.PVE_STAGE_TARGETS），驾驶中任一阶段超分即可退出立即结算。
@@ -201,6 +208,22 @@ def _camera_button():
     return vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER
 
 
+def _round_total_field() -> dict:
+    """连刷轮数字段声明；预计用时真源 = 历史程序局的轮均结算间隔。
+
+    unit_seconds 是宿主通用语义（每 1 单位配置值的预计秒数），前端按当前值
+    即时乘出「预计用时」；没有历史（返回 None）就不带该成员，不冒充有依据。
+    """
+    field: dict = {"key": "round_total", "type": "stepper", "label": "循环轮数",
+                   "min": 0, "max": _ROUND_TOTAL_MAX, "step": 1, "suffix": "轮",
+                   "description": "本次运行连跑的循环数：从关卡挑战到结算算一轮，"
+                                  "胜负都计入；0 = 不限。预计用时按历史对局估出。"}
+    per_round = dashboard_store.median_round_seconds()
+    if per_round is not None:
+        field["unit_seconds"] = round(per_round)
+    return field
+
+
 def _build_config_ui(source_mode: bool) -> dict:
     """配置表单声明；录制字段只在源码模式出现。
 
@@ -210,6 +233,7 @@ def _build_config_ui(source_mode: bool) -> dict:
     规范化会因引用未声明字段而丢弃条件并告警。测试通过入参覆盖两种模式。
     """
     groups = [{"title": "驾驶", "fields": [
+        _round_total_field(),
         {"key": "drive_mode", "type": "segmented", "label": "驾驶模式",
          "options": [{"value": mode, "label": label}
                      for mode, label in _DRIVE_MODES.items()]},
@@ -223,6 +247,13 @@ def _build_config_ui(source_mode: bool) -> dict:
                             "value": "straight"}},
         ]})
     return {"groups": groups}
+
+
+def _refresh_config_ui() -> None:
+    """结算落库后重建表单声明：轮均用时随记录增长，CONFIG_UI 是类属性，
+    重新赋值才对下一次配置读取可见。记录只由本模块落库写入，落库点重建即
+    覆盖全部真实变化；面板在运行结束重建任务列表时重取配置，届时可见。"""
+    InfiniteDriveModule.CONFIG_UI = _build_config_ui(SOURCE_MODE)
 
 
 class InfiniteDriveModule(ActivityModule):
@@ -241,13 +272,14 @@ class InfiniteDriveModule(ActivityModule):
 
     # ---------- 配置面（契约见 core/config_ui_contract.py） ----------
 
-    DEFAULT_MODULE_CONFIG: dict = {"drive_mode": "straight", "record_mode": False}
-    CONFIG_UI_CONTRACT = 1
+    DEFAULT_MODULE_CONFIG: dict = {"drive_mode": "straight", "record_mode": False,
+                                   "round_total": _ROUND_TOTAL_DEFAULT}
+    CONFIG_UI_CONTRACT = 2
     CONFIG_UI = _build_config_ui(SOURCE_MODE)
 
     @classmethod
     def normalize_config(cls, config: dict) -> dict:
-        """施加档位不变量：全程直行档不提供录制，配置里也不留开启态。
+        """施加档位不变量与轮数边界：全程直行档不提供录制，配置里也不留开启态。
 
         core 在读回存档与接收 GUI 写入前各调一次；类判据与实例写入同样共用
         它，让「界面藏起开关」与「功能确实关闭」出于同一条判据，不靠各处补检查。
@@ -255,6 +287,12 @@ class InfiniteDriveModule(ActivityModule):
         out = dict(config)
         if out.get("drive_mode") == "straight":
             out["record_mode"] = False
+        raw = out.get("round_total", _ROUND_TOTAL_DEFAULT)
+        try:
+            total = int(raw)
+        except (TypeError, ValueError):
+            total = _ROUND_TOTAL_DEFAULT
+        out["round_total"] = min(_ROUND_TOTAL_MAX, max(0, total))
         return out
 
     # 线程名 → 中文别名（core 嗅探线程后按此贴标签）
@@ -289,11 +327,14 @@ class InfiniteDriveModule(ActivityModule):
 
     @classmethod
     def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要：档位/录制之外带连刷轮数，标题栏直读本次设置。"""
         cfg = cls.normalize_config({**cls.DEFAULT_MODULE_CONFIG, **config})
+        total = cfg["round_total"]
+        chip = "连刷不限" if total <= 0 else f"连刷 {total} 轮"
         if bool(cfg["record_mode"]):
-            return ["录制: 开"]
+            return ["录制: 开", chip]
         mode = _DRIVE_MODES.get(cfg["drive_mode"])
-        return [f"驾驶: {mode}"] if mode else []
+        return [f"驾驶: {mode}", chip] if mode else [chip]
 
     def __init__(self, ctx: ActivityContext):
         super().__init__(ctx)
@@ -304,6 +345,8 @@ class InfiniteDriveModule(ActivityModule):
         self._ocr: RapidOcrEngine | None = None
         self.last_settlement: dict[str, str] = {}
         self._drive_mode = self.DEFAULT_MODULE_CONFIG["drive_mode"]
+        # 连刷轮数（0 = 不限）：本次运行一共跑几轮循环，胜负都算
+        self._round_total = int(self.DEFAULT_MODULE_CONFIG["round_total"])
         self._lane_drive: LaneDrive | None = None
         # 录制模式：开启后全程落盘取证（真源配置键 record_mode，默认关）
         self._record_mode = bool(self.DEFAULT_MODULE_CONFIG["record_mode"])
@@ -377,10 +420,12 @@ class InfiniteDriveModule(ActivityModule):
         rec = self._recorder
         stats = rec.stats if rec is not None else None
         effective = self.normalize_config({
-            "drive_mode": self._drive_mode, "record_mode": self._record_mode})
+            "drive_mode": self._drive_mode, "record_mode": self._record_mode,
+            "round_total": self._round_total})
         return {
             "drive_mode": effective["drive_mode"],
             "record_mode": bool(effective["record_mode"]),
+            "round_total": int(effective["round_total"]),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -399,6 +444,9 @@ class InfiniteDriveModule(ActivityModule):
                                     else self.DEFAULT_MODULE_CONFIG["drive_mode"])
             if "record_mode" in config:
                 self._record_mode = bool(config["record_mode"])
+            if "round_total" in config:
+                self._round_total = self.normalize_config(
+                    {"round_total": config["round_total"]})["round_total"]
             # 直线档撤销录制态：注入/写入的录制开关在直线档一律按关处理。
             if self._drive_mode == "straight":
                 self._record_mode = False
@@ -435,8 +483,10 @@ class InfiniteDriveModule(ActivityModule):
             "drive_mode": self._drive_mode,
             "record_mode": self._record_mode})["record_mode"])
         record_active = self._record_mode
+        rounds_text = "不限" if self._round_total <= 0 else f"{self._round_total}轮"
         self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if record_active else '关'}"
-                       f"·驾驶模式:{_DRIVE_MODES[self._drive_mode]}）", "session")
+                       f"·驾驶模式:{_DRIVE_MODES[self._drive_mode]}·连刷{rounds_text}）",
+                       "session")
         ok = False
         try:
             # 开组后的所有出口都在 try 内：图加载/深度启动失败也不能漏收组。
@@ -599,7 +649,9 @@ class InfiniteDriveModule(ActivityModule):
     def _run_flow(self, index: int) -> bool:
         assert self._graph is not None
         round_no = 0
-        while self._running:
+        # 连刷上限（胜负都算一轮；0 = 不限）：刷满即正常收尾，停止信号优先于轮数。
+        while self._running and (self._round_total <= 0
+                                 or round_no < self._round_total):
             round_no += 1
             # 局前缀每轮刷新：控制局调试图的两个驾驶阶段共用（段目录名真源）
             self._round_no = round_no
@@ -637,6 +689,9 @@ class InfiniteDriveModule(ActivityModule):
                         return self._stop_received()
                 index += 1
             index = LOOP_START_INDEX
+        if self._running and self._round_total > 0:
+            self._tlog(f"[极速狂飙] 已刷满设定的 {self._round_total} 轮，本次运行完成",
+                       "INFO")
         return True
 
     def _stop_received(self) -> bool:
@@ -823,6 +878,11 @@ class InfiniteDriveModule(ActivityModule):
             self._tlog(f"[无限驾驶] 结算记录落库失败: {exc!r}", "WARNING")
             return
         self.last_settlement["record"] = entry
+        # 轮均用时随记录变化：重建表单声明，下一次配置读取就带新预计用时。
+        try:
+            _refresh_config_ui()
+        except Exception as exc:  # noqa: BLE001 —— 估计值刷新是旁路，不影响流程
+            self._tlog(f"[无限驾驶] 预计用时刷新失败: {exc!r}", "WARNING")
 
     @classmethod
     def read_dashboard(cls) -> dict:

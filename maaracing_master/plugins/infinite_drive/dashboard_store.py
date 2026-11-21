@@ -109,6 +109,45 @@ def read(limit: int | None = None) -> list[dict]:
     return rows[-limit:] if limit else rows
 
 
+# 单轮用时（相邻结算间隔）的合理区间（秒）：一轮 = 关卡挑战 → 驾驶 → 结算的完整
+# 循环，正常约 2~3 分钟；下限挡同拍重复与异常对，上限挡中途长期停顿留下的垃圾间隔。
+_ROUND_INTERVAL_MIN_S = 30.0
+_ROUND_INTERVAL_MAX_S = 1800.0
+
+
+def median_round_seconds() -> float | None:
+    """历史程序局的轮均用时（秒）：同一次运行内相邻两次结算的时间差中位数。
+
+    一轮 = 一次完整循环（胜负都算），相邻结算差恰好覆盖「结算 → 下一轮挑战 →
+    结算」一整轮；首局含入口导航、时长偏长，天然不参与（它前面没有结算）。
+    跨运行（session 不同）、局内序号不连续（毛刺漏读一轮）与坏时间戳的行跳过；
+    有效间隔不足（从未连刷两轮）返回 None——没有依据就不出估计值。
+    """
+    rows = read()
+    intervals: list[float] = []
+    for prev, cur in zip(rows, rows[1:]):
+        if not prev.get("session") or prev.get("session") != cur.get("session"):
+            continue
+        if not (isinstance(prev.get("round_no"), int)
+                and isinstance(cur.get("round_no"), int)
+                and cur["round_no"] == prev["round_no"] + 1):
+            continue
+        try:
+            dt = (datetime.fromisoformat(str(cur["ts"]))
+                  - datetime.fromisoformat(str(prev["ts"]))).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if _ROUND_INTERVAL_MIN_S <= dt <= _ROUND_INTERVAL_MAX_S:
+            intervals.append(dt)
+    if not intervals:
+        return None
+    intervals.sort()
+    mid = len(intervals) // 2
+    if len(intervals) % 2:
+        return intervals[mid]
+    return (intervals[mid - 1] + intervals[mid]) / 2.0
+
+
 def read_dashboard_payload() -> dict:
     """战绩看板载荷：统计 + 最近结算列表；无记录返回空态。"""
     rows = read()
