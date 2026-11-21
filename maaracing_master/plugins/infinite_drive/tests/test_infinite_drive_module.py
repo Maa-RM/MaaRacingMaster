@@ -3,7 +3,7 @@
 
 覆盖：录制开关的配置读写往返、任务卡摘要、录制态放宽启动约束（虚拟手柄能力 /
 手柄独占）、人工接管期声明只落驾驶阶段、配置表单字段键都在默认配置里、
-录制状态行跟随录制器实况、录制开关仅在源码模式暴露。
+录制状态行跟随录制器实况、录制开关仅在源码模式暴露、直线档不保留录制开启态。
 """
 
 from __future__ import annotations
@@ -27,9 +27,36 @@ def _module() -> InfiniteDriveModule:
 def test_record_mode_config_roundtrip() -> None:
     m = _module()
     assert m.get_module_config()["record_mode"] is False
+    m.set_module_config({"drive_mode": "depth"})
     out = m.set_module_config({"record_mode": True})
     assert out["record_mode"] is True
     assert m.get_module_config()["record_mode"] is True
+
+
+def test_straight_drive_clears_record_mode() -> None:
+    """直线档不许残留录制开启态：写入、读回、启动约束三处口径一致。"""
+    m = _module()
+    m.set_module_config({"drive_mode": "depth", "record_mode": True})
+    assert m.get_module_config()["record_mode"] is True
+    # 开着录制切回直线档：录制态被撤销。
+    out = m.set_module_config({"drive_mode": "straight"})
+    assert out["record_mode"] is False
+    assert m.get_module_config()["record_mode"] is False
+    # 直线档下直接写开录制也被归零（core 归一化会做同样的事）。
+    assert m.set_module_config({"record_mode": True})["record_mode"] is False
+
+    straight_on = {"drive_mode": "straight", "record_mode": True}
+    assert InfiniteDriveModule.normalize_config(straight_on)["record_mode"] is False
+    assert InfiniteDriveModule.config_summary(straight_on) == []
+    assert InfiniteDriveModule.required_capabilities(straight_on) == \
+        InfiniteDriveModule.REQUIRES
+    assert InfiniteDriveModule.requires_exclusive_gamepad(straight_on) is True
+
+    # 自动驾驶档录制仍生效（回归锁：新判据不能误伤正常录制局）。
+    depth_on = {"drive_mode": "depth", "record_mode": True}
+    assert InfiniteDriveModule.config_summary(depth_on) == ["录制: 开"]
+    assert InfiniteDriveModule.required_capabilities(depth_on) == frozenset({"capture"})
+    assert InfiniteDriveModule.requires_exclusive_gamepad(depth_on) is False
 
 
 def test_set_module_config_ignores_non_dict_and_unknown_keys() -> None:
@@ -40,8 +67,12 @@ def test_set_module_config_ignores_non_dict_and_unknown_keys() -> None:
 
 
 def test_config_summary_announces_recording_only_when_on() -> None:
-    assert InfiniteDriveModule.config_summary({"record_mode": True}) == ["录制: 开"]
-    assert InfiniteDriveModule.config_summary({"record_mode": False}) == []
+    assert InfiniteDriveModule.config_summary(
+        {"drive_mode": "depth", "record_mode": True}) == ["录制: 开"]
+    assert InfiniteDriveModule.config_summary(
+        {"drive_mode": "depth", "record_mode": False}) == ["驾驶: 自动驾驶"]
+    assert InfiniteDriveModule.config_summary(
+        {"drive_mode": "straight", "record_mode": False}) == []
 
 
 def test_drive_mode_roundtrip_and_legacy_default() -> None:
@@ -54,12 +85,12 @@ def test_drive_mode_roundtrip_and_legacy_default() -> None:
 
 def test_record_mode_relaxes_startup_constraints() -> None:
     """录制态不要求虚拟手柄能力、不独占手柄——验证轮驾驶阶段由用户物理手柄驾驶。"""
-    assert InfiniteDriveModule.required_capabilities({"record_mode": True}) == \
-        frozenset({"capture"})
-    assert InfiniteDriveModule.required_capabilities({"record_mode": False}) == \
-        InfiniteDriveModule.REQUIRES
+    on = {"drive_mode": "depth", "record_mode": True}
+    assert InfiniteDriveModule.required_capabilities(on) == frozenset({"capture"})
+    assert InfiniteDriveModule.required_capabilities(
+        {"drive_mode": "depth", "record_mode": False}) == InfiniteDriveModule.REQUIRES
     assert InfiniteDriveModule.required_capabilities(None) == InfiniteDriveModule.REQUIRES
-    assert InfiniteDriveModule.requires_exclusive_gamepad({"record_mode": True}) is False
+    assert InfiniteDriveModule.requires_exclusive_gamepad(on) is False
     assert InfiniteDriveModule.requires_exclusive_gamepad(None) is \
         InfiniteDriveModule.REQUIRES_GAMEPAD_EXCLUSIVE
 
@@ -82,16 +113,27 @@ def test_record_switch_only_declared_in_source_mode() -> None:
     """录制开关只在源码模式声明；正式包连字段都不下发，前端无从渲染。"""
     source = _ui_fields(True)
     assert set(source) == {"drive_mode", "record_mode"}
-    # 源码模式下驾驶模式仍受录制开关联动：录制开时隐藏驾驶模式选择。
-    assert source["drive_mode"]["visible_if"] == {
-        "key": "record_mode", "op": "equals", "value": False}
+    # 显隐由驾驶模式决定：直线行驶档不显示录制，其余档显示；驾驶档自身常显。
+    assert source["record_mode"]["visible_if"] == {
+        "key": "drive_mode", "op": "not_equals", "value": "straight"}
+    assert "visible_if" not in source["drive_mode"]
 
     packaged = _ui_fields(False)
     assert set(packaged) == {"drive_mode"}
-    # 裁掉录制字段时联动条件必须一并裁掉，否则契约校验丢弃引用未声明字段并告警。
+    # 裁掉录制字段后不留悬空条件，契约校验才不会降级。
     assert "visible_if" not in packaged["drive_mode"]
 
     assert InfiniteDriveModule.CONFIG_UI["groups"] == _build_config_ui(SOURCE_MODE)["groups"]
+
+
+def test_drive_labels_and_record_copy() -> None:
+    """档位改名与录语文案是给用户看的，锁住实际下发的字符串。"""
+    drive = _ui_fields(True)["drive_mode"]
+    assert [o["label"] for o in drive["options"]] == ["全程直行", "自动驾驶"]
+    record = _ui_fields(True)["record_mode"]
+    assert record["label"] == "录制人工语料"
+    assert "程序不会操作车辆" in record["description"]
+    assert "自动驾驶仪的影子数据" in record["description"]
 
 
 def test_both_ui_variants_normalize_cleanly() -> None:
@@ -112,7 +154,7 @@ def test_both_ui_variants_normalize_cleanly() -> None:
 def test_manual_input_active_scoped_to_drive_stage() -> None:
     """人工接管期只落驾驶阶段且只在录制态：UI 步进仍是程序操作期。"""
     m = _module()
-    m.set_module_config({"record_mode": True})
+    m.set_module_config({"drive_mode": "depth", "record_mode": True})
     m._recorder = object()  # 只判在场，不读其状态
     m._stage_name = "驾驶·阶段1"
     assert m.manual_input_active() is True
@@ -390,7 +432,7 @@ def test_drive_wait_sweeps_transient_popup(monkeypatch) -> None:
     monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 0.1)
     graph = _SweepTrackingGraph()
     m = _step_module(graph)
-    m.set_module_config({"record_mode": True})
+    m.set_module_config({"drive_mode": "depth", "record_mode": True})
 
     ok = m._drive("p2")
 
@@ -635,8 +677,10 @@ def test_debug_drive_off_saves_nothing(monkeypatch, tmp_path) -> None:
 
     mod2 = _step_module(SimpleNamespace(run=lambda *_args: True))
     mod2.ctx.debug = SimpleNamespace(enabled=True)
-    mod2.set_module_config({"record_mode": True})
+    mod2.set_module_config({"drive_mode": "depth", "record_mode": True})
     _drive_frames_stub(mod2, monkeypatch, object())
     assert mod2._drive("p1") is True
 
     assert not (tmp_path / "sess_dbg").exists()             # 两种局都不落 debug 面
+
+

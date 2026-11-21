@@ -116,10 +116,10 @@ _DRIVE_STAGES = frozenset({"驾驶·阶段1", "驾驶·阶段2"})
 _DRIVE_TICK_S = 0.05
 _MAX_DRIVE_FRAME_AGE_MS = 200.0
 _DRIVE_HUD_GAP_S = 0.65
-_DRIVE_THROTTLE = 220  # 直行油门与车道线驾驶的油门上限
+_DRIVE_THROTTLE = 220  # 直行油门与自动驾驶的油门上限
 _CAMERA_SETTLE_S = 0.25
 # 已保存的 depth 档继续指向自动转向模式。
-_DRIVE_MODES = {"straight": "全程直行", "depth": "车道线驾驶"}
+_DRIVE_MODES = {"straight": "全程直行", "depth": "自动驾驶"}
 
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
 # 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
@@ -169,26 +169,25 @@ def _camera_button():
 
 
 def _build_config_ui(source_mode: bool) -> dict:
-    """配置表单声明；录制字段与其联动条件只在源码模式出现。
+    """配置表单声明；录制字段只在源码模式出现。
 
     录制是取证旁路，正式包不该给用户这个开关；整字段不下发，比渲染后再隐藏
-    更彻底。裁掉录制字段时必须同时裁掉驾驶模式的 visible_if——契约规范化会
-    丢弃引用未声明字段的条件并告警。测试通过入参覆盖两种模式。
+    更彻底。显隐由驾驶模式决定：直线行驶档不显示录制，避免给无需人工语料的
+    场景添开关。录制字段的 visible_if 只在字段本身下发时才声明——否则契约
+    规范化会因引用未声明字段而丢弃条件并告警。测试通过入参覆盖两种模式。
     """
-    drive_field = {
-        "key": "drive_mode", "type": "segmented", "label": "驾驶模式",
-        "options": [{"value": mode, "label": label}
-                    for mode, label in _DRIVE_MODES.items()],
-    }
-    groups = [{"title": "驾驶", "fields": [drive_field]}]
+    groups = [{"title": "驾驶", "fields": [
+        {"key": "drive_mode", "type": "segmented", "label": "驾驶模式",
+         "options": [{"value": mode, "label": label}
+                     for mode, label in _DRIVE_MODES.items()]},
+    ]}]
     if source_mode:
-        drive_field["visible_if"] = {
-            "key": "record_mode", "op": "equals", "value": False}
         groups.append({"title": "录制", "fields": [
-            {"key": "record_mode", "type": "switch", "label": "录制全程画面",
-             "description": "开启后运行时把全程画面与手柄输入落盘到调试目录，"
-                            "供流程与识别框的真机核验；驾驶阶段不接管车辆，"
-                            "可用手柄自行驾驶。"},
+            {"key": "record_mode", "type": "switch", "label": "录制人工语料",
+             "description": "程序不会操作车辆，只记录你用物理手柄驾驶的画面"
+                            "与操作，作为自动驾驶仪的影子数据落盘到调试目录。",
+             "visible_if": {"key": "drive_mode", "op": "not_equals",
+                            "value": "straight"}},
         ]})
     return {"groups": groups}
 
@@ -213,6 +212,18 @@ class InfiniteDriveModule(ActivityModule):
     CONFIG_UI_CONTRACT = 1
     CONFIG_UI = _build_config_ui(SOURCE_MODE)
 
+    @classmethod
+    def normalize_config(cls, config: dict) -> dict:
+        """施加档位不变量：全程直行档不提供录制，配置里也不留开启态。
+
+        core 在读回存档与接收 GUI 写入前各调一次；类判据与实例写入同样共用
+        它，让「界面藏起开关」与「功能确实关闭」出于同一条判据，不靠各处补检查。
+        """
+        out = dict(config)
+        if out.get("drive_mode") == "straight":
+            out["record_mode"] = False
+        return out
+
     # 线程名 → 中文别名（core 嗅探线程后按此贴标签）
     THREAD_LABELS: dict[str, str] = {
         "infinite_drive-rec-capture": "录制取帧",
@@ -229,24 +240,27 @@ class InfiniteDriveModule(ActivityModule):
         不这么分的话，机器上没装虚拟手柄驱动时连"只录不控"都启动不了；录制期
         用户以物理手柄驾驶，虚拟手柄本就不该在场。
         """
+        cfg = cls.normalize_config({**cls.DEFAULT_MODULE_CONFIG, **(config or {})})
         caps = set(cls.REQUIRES)
-        if bool((config or {}).get("record_mode")):
+        if bool(cfg["record_mode"]):
             caps.discard("gamepad")
         return frozenset(caps)
 
     @classmethod
     def requires_exclusive_gamepad(cls, config: dict | None = None) -> bool:
         """录制模式不独占手柄：验证轮的驾驶阶段可由用户以物理手柄驾驶。"""
-        if bool((config or {}).get("record_mode")):
+        cfg = cls.normalize_config({**cls.DEFAULT_MODULE_CONFIG, **(config or {})})
+        if bool(cfg["record_mode"]):
             return False
         return cls.REQUIRES_GAMEPAD_EXCLUSIVE
 
     @classmethod
     def config_summary(cls, config: dict) -> list[str]:
-        if bool(config.get("record_mode")):
+        cfg = cls.normalize_config({**cls.DEFAULT_MODULE_CONFIG, **config})
+        if bool(cfg["record_mode"]):
             return ["录制: 开"]
-        if config.get("drive_mode") == "depth":
-            return ["驾驶: 车道线驾驶"]
+        if cfg["drive_mode"] == "depth":
+            return ["驾驶: 自动驾驶"]
         return []
 
     def __init__(self, ctx: ActivityContext):
@@ -320,9 +334,11 @@ class InfiniteDriveModule(ActivityModule):
         """读配置。运行中由 sidecar 路由到本实例，``_state`` 是录制实况。"""
         rec = self._recorder
         stats = rec.stats if rec is not None else None
+        effective = self.normalize_config({
+            "drive_mode": self._drive_mode, "record_mode": self._record_mode})
         return {
-            "drive_mode": self._drive_mode,
-            "record_mode": bool(self._record_mode),
+            "drive_mode": effective["drive_mode"],
+            "record_mode": bool(effective["record_mode"]),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
                 "frames": int(stats["frames_written"]) if stats else 0,
@@ -341,6 +357,9 @@ class InfiniteDriveModule(ActivityModule):
                                     else self.DEFAULT_MODULE_CONFIG["drive_mode"])
             if "record_mode" in config:
                 self._record_mode = bool(config["record_mode"])
+            # 直线档撤销录制态：注入/写入的录制开关在直线档一律按关处理。
+            if self._drive_mode == "straight":
+                self._record_mode = False
         return self.get_module_config()
 
     def config_status(self) -> dict | None:
@@ -369,7 +388,12 @@ class InfiniteDriveModule(ActivityModule):
             logger.log("[无限驾驶] 游戏窗口不是 16:9（模板与 ROI 按 720p 设计），模块终止", "ERROR")
             return False
         self._running = True
-        self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
+        # 启动决策同样过档位判据：绕过 set_module_config 写进来的录制态不生效。
+        self._record_mode = bool(self.normalize_config({
+            "drive_mode": self._drive_mode,
+            "record_mode": self._record_mode})["record_mode"])
+        record_active = self._record_mode
+        self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if record_active else '关'}"
                        f"·驾驶模式:{_DRIVE_MODES[self._drive_mode]}）", "session")
         ok = False
         try:
@@ -387,14 +411,14 @@ class InfiniteDriveModule(ActivityModule):
                 names = [s for s, _, _ in FLOW]
                 if start_from in names:
                     index = names.index(start_from)
-            if self._record_mode:
+            if record_active:
                 self._begin_recording()
             elif self._drive_mode == "depth":
                 try:
                     self._lane_drive = LaneDrive()
                     self._lane_drive.start()
                 except Exception as exc:  # noqa: BLE001 —— 模型缺失或会话启动失败
-                    self._tlog(f"[无限驾驶] 车道线驾驶启动失败，请检查车道线模型：{exc}", "ERROR")
+                    self._tlog(f"[无限驾驶] 自动驾驶启动失败，请检查模型包：{exc}", "ERROR")
                     return False
             ok = self._run_flow(index)
         finally:
