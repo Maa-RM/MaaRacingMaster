@@ -28,7 +28,7 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 UP = HERE.parent / "upstream"
-WEIGHTS_ONNX = HERE.parents[3] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx"
+WEIGHTS_ONNX = HERE.parents[3] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx"
 RAW_ROOT = Path.home() / "AppData/Roaming/MaaRacingMaster/debug/speedrush"
 
 # model/model.py 顶层 import 了 matplotlib（仅 import 未使用）；桩掉避免装依赖

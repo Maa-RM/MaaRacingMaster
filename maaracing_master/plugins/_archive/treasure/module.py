@@ -725,7 +725,7 @@ class TreasureModule(ActivityModule):
     }
     # 配置表单（契约见 core/config_ui_contract.py）：面板随归档目录自包含，
     # 壳不再保留鉴宝专属块（归档插件不注册，此声明由退役测试直接校验）。
-    CONFIG_UI_CONTRACT = 1
+    CONFIG_UI_CONTRACT = 2
     CONFIG_UI = {
         "groups": [{
             "fields": [

@@ -29,7 +29,7 @@ from maa.tasker import Tasker
 
 REPO = Path(__file__).resolve().parents[3]
 CORE_PIPELINE = REPO / "maaracing_master/core/resources/pipeline"
-SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/speedrush/resources/pipeline"
+SPEEDRUSH_PIPELINE = REPO / "maaracing_master/plugins/_archive/speedrush/resources/pipeline"
 
 RESULTS: dict[str, dict] = {}
 TRACE: list[str] = []
@@ -185,7 +185,7 @@ def run_once(tag: str, node: str, cap_frame: np.ndarray, bridge_frame: np.ndarra
 
 
 def main() -> None:
-    nav = Path(os.environ.get("MAAR_A0_NAV")
+    nav = Path(os.environ.get("MAARM_PROBE_A0_NAV")
                or Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
                / "MaaRacingMaster" / "debug" / "20261106_185832" / "speedrush" / "nav")
     drive = cv2.imread(str(nav / "000895.jpg"), cv2.IMREAD_COLOR)   # 驾驶画面

@@ -17,8 +17,10 @@
     页面/锚点/入口链/出价策略等一切导航地图 → 两份真源
         plugins/<id>/resources/pipeline/<id>*.json             模块图（含本模块的入口链与页面锚点）
         plugins/<id>/resources/policy/<id>.policy.json          感知规格+决策规则+执行资产
-        core/resources/pipeline/*.json                          跨模块共用段（**当前无内容**，
-            目录按存在性纳入；出现真共用链时再建，见下"分层红线"）
+        core/resources/pipeline/default_pipeline.json           跨模块共享默认值（maafw 5.12.3 无
+            原生套用机制，由 _post_pipeline_merged 在 post 前以 Python 侧套用；
+            见 _load_shared_defaults）。共用链节点目录仍按存在性预留：出现真共用
+            链时再建，见下"分层红线"
     分层红线（truth 校验器第 7 条机检）：协议层节点名全城唯一、没有命名空间，
     所以 core 与 plugin 的"分离"只能靠**引用方向单向**守住——core 不得占用也不得
     引用 `<module>.` 节点名，业务层的边由业务层自己声明。把通用知识放进 core 是
@@ -567,6 +569,74 @@ class InputAction(CustomAction):
         return ok
 
 
+DEFAULT_PIPELINE_FILENAME = "default_pipeline.json"
+
+
+def _load_shared_defaults(dirs: list[Path]) -> dict:
+    """收集真源目录里的共享默认值文件（MaaFW 原生 ``default_pipeline.json`` 格式）。
+
+    最多允许一份（多处同时出现 = 双真源，直接报错）；返回其顶层 ``Default`` 键的
+    字段表（无文件或无该键返回空 dict）。**实测 maafw 5.12.3 没有原生套用机制**
+    ——``Default`` 顶层键会被当普通节点注册（2026-11-21 实证），故由
+    ``_post_pipeline_merged`` 在 post 前以 Python 侧套用同一份文件；框架升级带上
+    ``DefaultPipelineMgr`` 后可删掉套用逻辑，文件格式不用动。
+    """
+    doc: dict | None = None
+    owner: Path | None = None
+    for d in dirs:
+        f = d / DEFAULT_PIPELINE_FILENAME
+        if not f.is_file():
+            continue
+        if doc is not None:
+            raise ValueError(
+                f"default_pipeline.json 双真源: {owner} 与 {f}（共享默认值只允许一份）")
+        doc = json.loads(f.read_text(encoding="utf-8-sig"))
+        owner = f
+    if not isinstance(doc, dict):
+        return {}
+    fields = doc.get("Default")
+    return fields if isinstance(fields, dict) else {}
+
+
+def _fill_pipeline_defaults(root: Path, fields: dict) -> tuple[int, list[str]]:
+    """对目录内每个节点 JSON 缺省的 timing 字段补共享默认值。
+
+    返回 ``(被补齐的节点数, 解析失败被跳过的文件名)``——告警由调用方（持有
+    「有组走组」包装器）统一发，本函数不做日志直调。
+
+    协议缺省四件套（pre/post_delay 各 200ms、rate_limit 1000ms、timeout 20s）对
+    UI 导航全是陷阱：不写字段 = 每次执行白等 400ms、识别轮询被拖到秒级、未命中
+    一等 20 秒。各模块手写节点向来显式写齐，本兜底只接住未来漏写的节点——显式
+    值一律不覆盖。``$`` 前缀根键（MPE 元数据）与非对象条目跳过；解析失败的文件
+    不静默（套用不完整必须可发现）。
+    """
+    filled = 0
+    skipped: list[str] = []
+    for path in sorted(root.rglob("*.json")):
+        if path.name == DEFAULT_PIPELINE_FILENAME:
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            skipped.append(f"{path.name}（{exc!r}）")
+            continue
+        file_filled = 0
+        for name, node in doc.items():
+            if name.startswith("$") or not isinstance(node, dict):
+                continue
+            added = False
+            for key, val in fields.items():
+                if key not in node:
+                    node[key] = val
+                    added = True
+            if added:
+                file_filled += 1
+        if file_filled:
+            filled += file_filled
+            path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return filled, skipped
+
+
 def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
                           group_id: str | None = None) -> bool:
     """支持互指文件集的 post_pipeline：多条目（目录或单文件）合并临时目录后一次 post。
@@ -576,6 +646,11 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
     post 时同步解析为内部节点，加载完成即清理临时目录，源文件/目录（MPE
     编辑入口）不受影响。仅一个目录条目时直接 post，无合并开销。
     group_id 非空时过程日志归入该组（调用方显式捕获的组号）。
+
+    共享默认值：目录集里带 ``default_pipeline.json`` 时，合并后、post 前把其
+    ``Default`` 字段套到缺省节点上（maafw 5.12.3 无原生机制，见
+    ``_load_shared_defaults``）——此时即使单目录也走合并路径，避免把 ``Default``
+    键当节点 post 出去。
     """
     def _lg(msg: str, level: str = "ERROR") -> None:
         if group_id is not None:
@@ -587,10 +662,10 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
         if not d.exists():
             _lg(f"[{tag}] 真源路径不存在: {d}")
             return False
-    if len(dirs) == 1 and dirs[0].is_dir():
-        target = dirs[0]
-        merged_dir: Path | None = None
-    else:
+    default_fields = _load_shared_defaults(dirs)
+    use_merge = not (len(dirs) == 1 and dirs[0].is_dir() and not default_fields)
+    merged_dir: Path | None = None
+    if use_merge:
         merged_tmp = Path(tempfile.mkdtemp(prefix="pipeline-graph-"))
         try:
             seen: dict[str, Path] = {}
@@ -599,6 +674,8 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
                 base = d.parent if d.is_file() else d
                 for f in files:
                     rel = f.relative_to(base).as_posix()
+                    if rel == DEFAULT_PIPELINE_FILENAME:
+                        continue  # 默认值文件不进 post（原生 5.12.3 会把它当节点）
                     if rel in seen:
                         _lg(
                             f"[{tag}] 真源文件冲突: {rel}（{seen[rel]} 与 {base}）")
@@ -608,11 +685,21 @@ def _post_pipeline_merged(resource: "Resource", dirs: list[Path], tag: str,
                     dest = merged_tmp / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(f, dest)
+            if default_fields:
+                filled, skipped = _fill_pipeline_defaults(merged_tmp, default_fields)
+                if skipped:
+                    _lg(f"[{tag}] 共享默认值跳过不可解析真源: {'; '.join(skipped)}",
+                        "WARNING")
+                if filled:
+                    _lg(f"[{tag}] 已为 {filled} 个节点套用共享默认值"
+                        f"（{DEFAULT_PIPELINE_FILENAME}）", "DEBUG")
             target = merged_tmp
         except BaseException:
             shutil.rmtree(merged_tmp, ignore_errors=True)
             raise
         merged_dir = merged_tmp
+    else:
+        target = dirs[0]
     try:
         job = resource.post_pipeline(str(target)).wait()
     finally:
@@ -641,8 +728,9 @@ class NavGraph:
         self.ctx = ctx
         self._last_fg_warn = 0.0
         self.image_dirs = [CORE_RES_DIR / "image"]
-        # core 侧跨模块共用链目录按存在性纳入：目录不存在或无 json 时不该让
-        # load() 对着空路径去 post_pipeline（当前项目即无共用链，属合法状态）。
+        # core 侧跨模块内容按存在性纳入：共享默认值文件（default_pipeline.json）
+        # 常驻；共用链节点目录尚无内容，目录不存在或无 json 时不该让 load() 对着
+        # 空路径去 post_pipeline（空目录属合法状态）。
         core_pipeline = CORE_RES_DIR / "pipeline"
         self._pipeline_dirs = ([core_pipeline]
                                if core_pipeline.is_dir() and any(core_pipeline.rglob("*.json*"))

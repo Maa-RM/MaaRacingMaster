@@ -22,7 +22,7 @@ from typing import Any, cast
 DASHBOARD_CONTRACT_VERSION = 1
 
 # block 白名单。
-BLOCK_TYPES = frozenset({"stats", "list", "text", "path", "action"})
+BLOCK_TYPES = frozenset({"stats", "list", "text", "path", "action", "empty"})
 
 # 色调只影响前端样式，不允许任意类名/内联样式。
 # info = 蓝（本体/本方），negative = 红；两者不表达好坏，只表达归属。
@@ -204,6 +204,21 @@ def _plain_text(block: dict, kind: str, warnings: list[str]) -> dict | None:
     return {"type": kind, "text": text} if text is not None else None
 
 
+def _empty(block: dict, warnings: list[str]) -> dict | None:
+    """空态块：「有看板但还没有数据」的统一原语——标题必填，说明可选。
+
+    视觉归前端（与「没有候选」空态同一套插图 + 标题 + 说明），模块只给文案。
+    """
+    title = _text(block.get("title"), "empty.title", MAX_TITLE, warnings)
+    if title is None:
+        return None
+    entry: dict[str, Any] = {"type": "empty", "title": title}
+    text = _text(block.get("text"), "empty.text", MAX_SUB, warnings, required=False)
+    if text is not None:
+        entry["text"] = text
+    return entry
+
+
 def _action(block: dict, warnings: list[str]) -> dict | None:
     action = block.get("action")
     if not isinstance(action, str) or action not in ACTIONS:
@@ -221,6 +236,7 @@ _BLOCK_NORMALIZERS = {
     "text": lambda block, warnings: _plain_text(block, "text", warnings),
     "path": lambda block, warnings: _plain_text(block, "path", warnings),
     "action": _action,
+    "empty": _empty,
 }
 
 

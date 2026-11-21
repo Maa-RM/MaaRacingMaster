@@ -99,7 +99,7 @@ MaaFramework 生态已经给出标准答案：**pipeline 节点即真源**，且
 
 - **根级扩展字段双向无损**：节点根级的未知字段（含 `_` 前缀）由 MPE `extras` 机制原样保留并导出散回；`custom_recognition_param` / `custom_action_param` 内容整体黑盒透传。**扩展字段禁止写进标准字段的 param 深处**（那里 MPE 会丢未知键）。
 
-- **协议形态 = v2 归一**：`get_node_data`（官方 PipelineDumper）只吐 v2 并补齐默认值，MPE 保存亦产 v2；强制 v1 = 每次画布存盘与工具对赌、diff 反复翻转。v1 平铺协议框架仍合法（`PipelineParser` 唯一废弃硬报错是 `is_sub`/`interrupt`，v1/v2 共用同一套参数解析路径，新字段两边同时生效），读取面双形态兼容不许删（人手写/历史文件/官方示例仍可能是 v1）。真源自洽由 `tools/pipeline/truth.py`（CI）看护；speedrush 另有生成器回归锁 `tests/test_speedrush_truth.py`（生成器输出 == 入库真源）。
+- **协议形态 = v2 归一**：`get_node_data`（官方 PipelineDumper）只吐 v2 并补齐默认值，MPE 保存亦产 v2；强制 v1 = 每次画布存盘与工具对赌、diff 反复翻转。v1 平铺协议框架仍合法（`PipelineParser` 唯一废弃硬报错是 `is_sub`/`interrupt`，v1/v2 共用同一套参数解析路径，新字段两边同时生效），读取面双形态兼容不许删（人手写/历史文件/官方示例仍可能是 v1）。真源自洽由 `tools/pipeline/truth.py`（CI）看护；归档 speedrush 另有生成器回归锁 `maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_truth.py`（生成器输出 == 入库真源）。
 
 - **默认值省写**：`DirectHit`/`DoNothing` 等协议默认值 MPE 会省略导出，加载器按 MaaFW 默认值语义补齐即可，不算数据丢失。
 

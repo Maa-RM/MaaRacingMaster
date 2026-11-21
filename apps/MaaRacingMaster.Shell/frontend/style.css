@@ -614,6 +614,64 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-size: 12px; color: var(--maarm-foreground-muted); pointer-events: none;
 }
 
+/* ---------- 滚轮计数器（stepper 字段）----------
+   单颗胶囊：− / 数字窗 / + 一体（布局对齐 21st.dev rolling counter，颜色、
+   圆角、阴影走本仓 token）。每列是 36px 高的开窗，12 格数字条由
+   config-panel.js 的 rAF 弹簧逐帧驱动；列随位数自动收展，速度带动态模糊。 */
+.maarm-stepper {
+  display: inline-flex; align-items: center; gap: 3px;
+  width: fit-content; padding: 3px; user-select: none;
+  border: 1px solid var(--maarm-border); border-radius: 9px;
+  background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm);
+}
+.maarm-stepper--locked { opacity: 0.6; pointer-events: none; }
+.stepper-btn {
+  width: 36px; height: 36px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border-light);
+  background: var(--maarm-surface-active); color: var(--maarm-foreground-secondary);
+  font-size: 16px; line-height: 1; font-family: var(--maarm-font-sans);
+  cursor: pointer; user-select: none;
+  transition: background .15s ease-out, border-color .15s ease-out,
+              color .15s ease-out, transform .15s ease-out;
+}
+.stepper-btn:hover {
+  background: var(--maarm-surface); border-color: var(--maarm-border-strong);
+  color: var(--maarm-foreground);
+}
+.stepper-btn:active { transform: scale(0.96); background: var(--maarm-surface-hover); }
+.stepper-btn:disabled { opacity: 0.4; pointer-events: none; }
+.stepper-window {
+  display: flex; align-items: center;
+  height: 36px; min-width: 56px; padding: 0 10px;
+  font-size: 21px;   /* 列宽与数字都按这个 em 走 */
+  border-radius: var(--maarm-radius-sm);
+  cursor: ns-resize; touch-action: none;   /* 纵向拖拽归这里，别让页面滚走 */
+}
+.stepper-col {
+  position: relative; width: 0.62em; height: 100%; overflow: hidden;
+  transition: width .2s ease-out, opacity .2s ease-out;   /* 位数收展 */
+}
+.stepper-col--hidden { width: 0; opacity: 0; }
+.stepper-strip {
+  position: absolute; top: 0; left: 0; width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  will-change: transform;   /* rAF 逐帧写 transform + filter */
+}
+.stepper-num {
+  height: 36px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 600; letter-spacing: -0.03em; line-height: 1;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.stepper-suffix {
+  margin-left: 6px; font-size: 12px; font-weight: 400;
+  color: var(--maarm-foreground-muted); pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stepper-col { transition: none; }
+}
+
 /* ---------- 内置步骤（启动游戏 / 关闭游戏）的选项面板 ---------- */
 /* 字段行与开关行同住一个纵向节奏容器：间距只由 gap 给，避免"字段有间距、开关没间距" */
 .builtin-fields { display: flex; flex-direction: column; gap: 16px; }
@@ -938,7 +996,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .kind-chip--negative { color: var(--maarm-danger); background: var(--maarm-danger-bg); }
 .kind-chip--warn { color: var(--maarm-warning-strong); background: var(--maarm-warning-bg); }
 
-/* 标准 block：stats / list / text / path / action */
+/* 标准 block：stats / list / text / path / action / empty */
 /* 统计：一行四列窄条；超过四项时换行，行首不画左边线 */
 .dash-stats {
   display: grid;
@@ -993,7 +1051,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font: inherit; font-size: 12px; cursor: pointer;
 }
 .dash-action:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
-.dash-none { font-size: 12px; color: var(--maarm-foreground-muted); padding: 4px 0; }
 
 /* 空态 / 加载 / 错误：给槽位一个可读高度，内容仍居中 */
 .dash-empty {
@@ -1045,6 +1102,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-radio-card--selected { border-color: var(--maarm-primary); background-color: var(--maarm-primary-soft); }
 .maarm-radio-card--selected .maarm-radio-dot { border-color: var(--maarm-primary); }
 .maarm-radio-card--selected .maarm-radio-dot::after { transform: translate(-50%, -50%) scale(1); }
+/* 禁用态（如「后台(手柄)」开发中）：置灰且不可点，保留徽章醒目 */
+.maarm-radio-card--disabled { cursor: not-allowed; background-color: var(--maarm-surface-hover); border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled:hover { border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled .radio-title strong,
+.maarm-radio-card--disabled .radio-desc { color: var(--maarm-foreground-muted); }
+.maarm-radio-card--disabled .maarm-radio-dot { opacity: 0.4; }
 .radio-inner { display: flex; align-items: flex-start; gap: 10px; }
 .maarm-radio-dot {
   width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--maarm-border-strong);
@@ -1335,34 +1398,43 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 
 /* 版本与更新卡 */
 .ver-head-actions { display: flex; align-items: center; gap: 8px; }
-.update-source-trigger { gap: 5px; padding-right: 9px; }
-.update-source-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 14px; height: 14px; flex-shrink: 0;
-}
-.update-source-icon[hidden] { display: none; }
-.update-source-icon img, .update-source-icon svg { width: 14px; height: 14px; }
-.update-source-menu {
-  position: fixed; z-index: 1000; min-width: 148px; padding: 4px;
+.update-settings-popover {
+  position: fixed; z-index: 1000; width: 224px; padding: 12px;
   background: var(--maarm-surface); border: 1px solid var(--maarm-border);
-  border-radius: var(--maarm-radius-sm);
+  border-radius: var(--maarm-radius-md);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  font-family: var(--maarm-font-sans);
 }
-.update-source-menu[hidden] { display: none; }
-.update-source-item {
+.update-settings-popover[hidden] { display: none; }
+.upd-set-group + .upd-set-group { margin-top: 14px; }
+.upd-set-label {
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  padding: 0 2px 6px; letter-spacing: 0.02em;
+}
+.upd-set-options { display: flex; flex-direction: column; gap: 3px; }
+.upd-set-opt {
   width: 100%; display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px; border: none; border-radius: calc(var(--maarm-radius-sm) - 2px);
+  padding: 7px 9px; border: 1px solid transparent;
+  border-radius: calc(var(--maarm-radius-sm) - 1px);
   background: transparent; color: var(--maarm-foreground-secondary);
   font-family: var(--maarm-font-sans); font-size: 12px; font-weight: 500;
   text-align: left; cursor: pointer;
 }
-.update-source-item:hover, .update-source-item:focus-visible {
+.upd-set-opt:hover, .upd-set-opt:focus-visible {
   background: var(--maarm-surface-hover); color: var(--maarm-foreground); outline: none;
 }
-.update-source-item.is-active { color: var(--maarm-primary); font-weight: 600; }
-.update-source-item img, .update-source-item svg { width: 14px; height: 14px; flex-shrink: 0; }
-.update-source-check { margin-left: auto; visibility: hidden; }
-.update-source-item.is-active .update-source-check { visibility: visible; }
+.upd-set-opt.is-active {
+  color: var(--maarm-primary); font-weight: 600;
+  background: color-mix(in srgb, var(--maarm-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--maarm-primary) 24%, transparent);
+}
+.upd-set-opt img, .upd-set-opt svg { width: 14px; height: 14px; flex-shrink: 0; }
+.upd-set-check { margin-left: auto; visibility: hidden; }
+.upd-set-opt.is-active .upd-set-check { visibility: visible; }
+.upd-set-note {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--maarm-border-light);
+  font-size: 11px; line-height: 1.5; color: var(--maarm-foreground-muted);
+}
 .ver-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
 .ver-label { font-size: 12px; color: var(--maarm-foreground-muted); width: 64px; flex-shrink: 0; }
 .ver-value { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); font-family: var(--maarm-font-mono); }
@@ -1471,6 +1543,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .new-release .nr-info { flex: 1; min-width: 0; }
 .new-release .nr-title { font-size: 13px; font-weight: 700; color: var(--maarm-primary); }
 .new-release .nr-sub { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 2px; }
+/* 升级进度条：轨道 + 单色内条，宽度由 JS 按快照百分比写入 */
+.update-progress-track {
+  flex: 1; height: 6px; border-radius: 3px; overflow: hidden;
+  background: color-mix(in srgb, var(--maarm-primary) 12%, transparent);
+}
+.update-progress-bar {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: var(--maarm-primary);
+  transition: width 0.3s ease;
+}
 .maarm-btn--primary { background: var(--maarm-primary); color: var(--maarm-primary-foreground); border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent); }
 .maarm-btn--primary:hover { background: var(--maarm-primary-hover); }
 .maarm-btn--primary:active { background: var(--maarm-primary-active); }

@@ -38,7 +38,7 @@ sys.path.insert(0, str(HERE / "fine_tune"))
 import probe_first_look as P  # noqa: E402
 import make_target_labels as mtl  # noqa: E402
 
-OLD = (HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+OLD = (HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
        / "plus_small_384x640.onnx")
 RAW_ROOT = Path.home() / "AppData/Roaming/MaaRacingMaster/debug/speedrush"
 OUT = HERE / "first_look_out" / "full_session"

@@ -333,26 +333,20 @@ def test_set_config_migrates_legacy_keys(monkeypatch):
 # ---------- 真实模块的回归锁（缺插件注册时跳过）----------
 
 @pytest.mark.skipif(
-    not (_OK and "speedrush" in sc.MODULE_REGISTRY),
+    not (_OK and "infinite_drive" in sc.MODULE_REGISTRY),
     reason="真实插件未注册（依赖缺失时 registry 会跳过该插件）",
 )
 def test_real_modules_declare_their_config_surface():
-    """真实模块必须自述配置面——尤其 speedrush 的 record_mode 要能被持久化。
+    """真实模块必须自述配置面：core 白名单读到的键与模块声明一致（不多不少）。
 
-    这条是修复的回归锁：record_mode 曾经不在 core 的键白名单里，写盘后回填被静默丢弃。
+    无限驾驶的驾驶模式与录制开关都需要经过 core 持久化和回填。
     """
     from maaracing_master.core.registry import MODULE_REGISTRY as real_registry
-    speedrush = real_registry["speedrush"]
+    cls = real_registry["infinite_drive"]
 
-    sr = dict(speedrush.DEFAULT_MODULE_CONFIG)
-    assert "record_mode" in sr and sr["record_mode"] is False
+    declared = set(cls.DEFAULT_MODULE_CONFIG)
+    assert declared == {"drive_mode", "record_mode", "round_total"}, \
+        "配置面变化时同步更新期望集"
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
-    # perception_mode：阶段 B 感知开关（2026-09-21 接线）；
-    # control_mode：实机闭环接管开关（2026-09-22 planner §九 step 3，默认关）；
-    # drive_mode：驾驶模式单键（depth/straight/macro，2026-11-04 由直行/宏两个
-    #   互斥布尔键收敛而来；旧存档经 normalize_config 折算）；
-    # macro_group：宏录制模式的回放宏组（2026-11-03）；
-    # geo_master 已删（2026-09-28 v3：黄线簇为唯一供数，A/B 换尺档废弃）。
-    keys = set(sc._module_config_defaults("speedrush"))
-    assert keys == {"record_mode", "perception_mode", "control_mode",
-                    "drive_mode", "macro_group"}
+    keys = set(sc._module_config_defaults("infinite_drive"))
+    assert keys == declared

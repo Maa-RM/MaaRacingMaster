@@ -47,9 +47,9 @@ README 安装**（lane 的完整 BDD100K 条款随模型包分发）。每个权
 
 | 权重文件（插件内相对路径） | 许可证 | 声明真源 |
 |---|---|---|
-| speedrush `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/speedrush/resources/models/README.md](maaracing_master/plugins/speedrush/resources/models/README.md) |
-| speedrush `resources/models/depth/moge2_vits_static_336x598_t1032_q4f16.onnx` | Apache-2.0 | 同上 |
-| speedrush `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/speedrush/resources/models/LICENSE-BDD100K.txt) |
+| infinite_drive `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/infinite_drive/resources/models/README.md](maaracing_master/plugins/infinite_drive/resources/models/README.md) |
+| infinite_drive `resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx` | Apache-2.0 | 同上 |
+| infinite_drive `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/infinite_drive/resources/models/LICENSE-BDD100K.txt) |
 
 AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
 发布包保留本文件与插件内声明文件，义务即满足。
@@ -64,7 +64,7 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 
 ---
 
-## 四、前端图标资源（随发布包再分发）
+## 四、前端资源（随发布包再分发）
 
 以下组件的数据/代码随发布包内 `apps/MaaRacingMaster.Shell/frontend/` 一并分发。
 
@@ -72,6 +72,7 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 |---|---|---|
 | Lucide（图标 path 数据） | **ISC** | <https://lucide.dev> / <https://github.com/lucide-icons/lucide>；`icons.js` 的 `LUCIDE` 分区拷贝自 lucide v1.45.0 图标几何数据（`github` 为 lucide 1.x 移除品牌图标前 0.x 版本数据）。ISC 为宽松许可，义务仅为保留版权声明与本许可标识。 |
 | morphicons | **MIT** | <https://github.com/guillermolg00/morphicons>；`vendor.morphicons.js` 为 v1.7.1 上游 dist 的 ESM→经典脚本摊平版（未改函数体），用于图标变形动画。 |
+| Rolling Counter（滚轮计数器交互） | **MIT** | <https://21st.dev/@abushaidislam7/components/rolling-counter>（作者 Syed）；`js/config-panel.js` 的 stepper 渲染器为该组件的 vanilla JS 行为移植（rAF 弹簧滚动、按住加速连滚、拖拽惯性甩动），外观以本仓设计 token 重制，来源与许可随代码注释携带。 |
 
 Lucide 许可原文（ISC）：
 

@@ -147,7 +147,7 @@ jobs:
             ${{ steps.changelog.outputs.log }}
 
             ---
-            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-speedrush-models-${{ steps.version.outputs.version }}.zip`（同页资产）；直行与宏录制不需要下载。
+            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-infinite_drive-models-${{ steps.version.outputs.version }}.zip`（同页资产）；其余功能不需要下载。
             > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
           files: |
             dist/*.tar.gz
@@ -163,6 +163,12 @@ jobs:
   # 解压即用的 Windows 可执行包：embedded Python3.11 runtime + 预装依赖 + dotnet publish GUI，
   # 组装成 MaaRacingMaster-<ver>-win-x64.zip 并补传同一 Release（见 scripts/release/assemble.ps1）。
   # 在 release job 之后顺序执行，避免与「创建 Release」竞态。
+  #
+  # 【发行链现状，勿误判】本 job 走 legacy ZIP（-Managed 未启用），随包不含 update-source.txt，
+  # 因此正式发行包里的自动升级诚实降级为手动入口。受管内容树（assemble -Managed）、
+  # vpk --channel stable/preview 分渠道打包与两套索引的产出脚本虽已就绪，但尚未接入 CI：
+  # 真实 feed 地址、上传与产物公开时机属 P4 未验收项，需发布授权后单独接线。
+  # 脚本具备能力 != 该能力已上线；见 docs/plan/应用自动升级.md。
   win-build:
     name: 构建解压即用 Windows 包
     runs-on: windows-latest
@@ -236,6 +242,21 @@ jobs:
           python -m pip install "pytest>=7.0"
           python -B -m pytest tests/test_release_assembly.py tests/test_release_ship_expiry.py -q
 
+      - name: 生成可选模型包与下载描述（深度 + 线观测）
+        shell: pwsh
+        run: |
+          # 先出模型 ZIP 与 download.json，再把描述注入主包——主包与模型资产同 tag 同源。
+          python scripts/release/make_model_pack.py `
+            --version "$env:VER" `
+            --out "${{ github.workspace }}\build\release" `
+            --github-repo "${{ github.repository }}" `
+            --cnb-path "${{ secrets.CNB_ORG }}/${{ secrets.CNB_REPO }}"
+          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-infinite_drive-models-$env:VER.zip"
+          $desc = "${{ github.workspace }}\build\release\model-download.json"
+          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
+          if (-not (Test-Path $desc)) { throw "下载描述未生成: $desc" }
+          Get-Item $mp, "$mp.sha256", $desc | Select-Object Name, Length
+
       - name: 组装解压即用包（runtime + publish + 白名单 + 自检 + zip + sha256）
         shell: pwsh
         run: |
@@ -245,6 +266,7 @@ jobs:
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
             -OutRoot "${{ github.workspace }}\build\release" `
+            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json" `
             -SevenZ
 
       - name: 校验产物存在（zip 保底 + 7z 主推）
@@ -256,28 +278,47 @@ jobs:
           if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
           Get-Item $zip, $sevenz | Select-Object Name, Length
 
-      - name: 生成可选模型包（深度 + 线观测）
+      - name: 同 tag 资产不可变检查（GitHub）
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # 主包默认不带权重；模型包单独作为 Release 资产分发（用户按 models/README 安装）
-          python scripts/release/make_model_pack.py `
-            --version "$env:VER" `
-            --out "${{ github.workspace }}\build\release"
-          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-speedrush-models-$env:VER.zip"
-          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
-          Get-Item $mp, "$mp.sha256" | Select-Object Name, Length
+          $rel = gh api "repos/${{ github.repository }}/releases/tags/$env:TAGNAME" | ConvertFrom-Json
+          $names = @(
+            "MaaRacingMaster-$env:VER-win-x64.zip",
+            "MaaRacingMaster-$env:VER-win-x64.zip.sha256",
+            "MaaRacingMaster-$env:VER-win-x64.7z",
+            "MaaRacingMaster-$env:VER-win-x64.7z.sha256",
+            "MaaRacingMaster-infinite_drive-models-$env:VER.zip",
+            "MaaRacingMaster-infinite_drive-models-$env:VER.zip.sha256"
+          )
+          foreach ($name in $names) {
+            $asset = $rel.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+            if (-not $asset -or -not $asset.digest) { continue }
+            $sumFile = if ($name.EndsWith('.sha256')) {
+              "${{ github.workspace }}\build\release\$name"
+            } else {
+              "${{ github.workspace }}\build\release\$name.sha256"
+            }
+            $local = (Get-Content $sumFile -Raw).Split(' ')[0]
+            if ($asset.digest -ne "sha256:$local") {
+              throw "同 tag 资产 $name 已存在且内容不同，拒绝覆盖（旧程序内置哈希会失效）"
+            }
+            Write-Host "同 tag 资产 $name 已存在且哈希一致，复用"
+          }
 
       - name: 补传 zip + 7z + 模型包到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAGNAME }}
+          overwrite: false
           files: |
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
-            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-speedrush-models-${{ env.VER }}.zip.sha256
+            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip
+            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip.sha256
 
   # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
   # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
@@ -307,7 +348,7 @@ jobs:
           VER="${TAG#v}"
           ZIP="MaaRacingMaster-${VER}-win-x64.zip"
           SZ7="MaaRacingMaster-${VER}-win-x64.7z"
-          MODELS="MaaRacingMaster-speedrush-models-${VER}.zip"
+          MODELS="MaaRacingMaster-infinite_drive-models-${VER}.zip"
 
           # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推 + 深度模型包，各带 sha256
           for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"; do
@@ -337,14 +378,31 @@ jobs:
           RID=$(jq -r '.id' /tmp/rel.json)
           echo "CNB release id=$RID (tag=$TAG)"
 
-          # 3) 三步上传资产：申请预签名 URL → PUT 文件 → POST 确认
+          # 3) 三步上传资产：申请预签名 URL → PUT 文件 → POST 确认。
+          # 同 tag 同名资产若已存在：哈希一致则复用，哈希不同则阻断——旧程序内置的
+          # ZIP 哈希必须与线上资产一一对应，重跑发布不得悄悄换字节。
           upload_asset() {
             local f="$1"
+            local name; name=$(basename "$f")
+            local url="https://cnb.cool/${CNB_PATH}/-/releases/download/${TAG}/${name}"
+            local existing; existing=$(mktemp)
+            if curl -fsSL -o "$existing" "$url" 2>/dev/null; then
+              local want have
+              want=$(sha256sum "$f" | cut -d' ' -f1)
+              have=$(sha256sum "$existing" | cut -d' ' -f1)
+              rm -f "$existing"
+              if [ "$want" != "$have" ]; then
+                echo "同 tag 资产 $name 已存在且内容不同，拒绝覆盖"; exit 1
+              fi
+              echo "同 tag 资产 $name 已存在且哈希一致，复用"
+              return 0
+            fi
+            rm -f "$existing"
             local size; size=$(stat -c%s "$f")
             local resp; resp=$(curl -fsSL -X POST -H "$AUTH" \
               -H 'Accept: application/json' \
               -H 'Content-Type: application/json' \
-              -d "{\"asset_name\":\"$(basename "$f")\",\"size\":${size},\"overwrite\":true}" \
+              -d "{\"asset_name\":\"${name}\",\"size\":${size},\"overwrite\":false}" \
               "${API}/-/releases/${RID}/asset-upload-url")
             local up_url verify_url
             up_url=$(echo "$resp" | jq -r '.upload_url')

@@ -28,7 +28,7 @@ dev-lint = [
     "ruff==0.16.7",
     "pyright==1.1.411",
 ]
-# 训练/导出模型所用（plugins/speedrush/tools/training/train.py）。运行时推理走 onnxruntime-directml，
+# 训练/导出模型所用（plugins/infinite_drive/tools/training/train.py）。运行时推理走 onnxruntime-directml，
 # 不依赖 ultralytics/torch，故作为可选 extra 避免发布包拽入 torch。
 train = [
     "ultralytics>=8.4.92",
@@ -38,7 +38,7 @@ train = [
 include = ["maaracing_master*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "maaracing_master/plugins/infinite_drive/tests"]
 # 单测只覆盖纯逻辑模块，避免拉入 maa/opencv 等重量级依赖
 # retired：已退役活动模块（treasure）的回归锁——默认不跑，避免死模块的测试反向约束
 # core 演进（core 改接口→退役模块测试红→被迫修死模块或留兼容垫）。需要考古或复活时
@@ -52,9 +52,9 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 # 门禁规则集：错误级（E4/E7/E9）+ Pyflakes（F）。存量已全量清零，
-# 新增违规即 CI 红。tools/experiments/ 为一次性探针（负结果也是证据），
-# 不在门禁内——它的价值在可复跑，不在风格。
-extend-exclude = ["tools/experiments", "build", "archive"]
+# 新增违规即 CI 红。tools/experiments/ 与归档插件下的 experiments/ 为一次性探针
+# （负结果也是证据），不在门禁内——它们的价值在可复跑，不在风格。
+extend-exclude = ["tools/experiments", "maaracing_master/plugins/_archive/*/experiments", "build", "archive"]
 line-length = 120
 target-version = "py311"
 

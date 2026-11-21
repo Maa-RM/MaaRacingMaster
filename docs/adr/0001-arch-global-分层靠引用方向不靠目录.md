@@ -11,7 +11,7 @@ MaaFramework 的 Pipeline 协议**没有命名空间**：一个 `pipeline` 目�
 
 由此产生一个诱人但错误的方案：**靠目录摆放实现 core / plugin 分离**——把通用节点放 `core/`，模块节点放 `plugins/<id>/`，以为运行时互不可见。
 
-这个方案在实践中失效并被证实为债：`core/resources/pipeline/global.json` 曾以"大厅骨架"名义装 7 个节点，其中 6 个带 `_owner: treasure`、模板图是鉴宝入口卡片，并抄了 `treasure.__boot.dwell` 已有的 13 条全页面清单两遍——**只有一个实现时抽出来的"公共层"，内容必然全是那个实现的私货**。
+这个方案在实践中失效并被证实为债：core 曾设的 `global.json`（大厅骨架层，2026-09-10 归位删除，见下方实施 commit）曾以"大厅骨架"名义装 7 个节点，其中 6 个带 `_owner: treasure`、模板图是鉴宝入口卡片，并抄了 `treasure.__boot.dwell` 已有的 13 条全页面清单两遍——**只有一个实现时抽出来的"公共层"，内容必然全是那个实现的私货**。
 
 **根本约束**：协议层不提供隔离手段，且一旦两侧互指，`post_pipeline` 时 PipelineChecker 校验引用闭合，必须先合并为单次 post（本项目由 `nav_graph._post_pipeline_merged` 承担）。
 
@@ -47,5 +47,5 @@ MaaFramework 的 Pipeline 协议**没有命名空间**：一个 `pipeline` 目�
 - **协议事实（一手）**：MAAFW_GUIDE §5.6「真源组织与分层」——节点名全城唯一、无命名空间、互指须合并单次 post。
 - **机检**：[`tools/pipeline/truth.py`](../../tools/pipeline/truth.py) `namespace_checks`。
 - **机检活性测试**：[`maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py`](../../maaracing_master/plugins/_archive/treasure/tests/test_navkit_truth.py) —— 合成违规图必须报错、盘上真源必须零报（防校验退化成装饰）。
-- **实证案例**：`core/resources/pipeline/global.json` 归位（2026-09-10），完整叙事见 MAAFW_GUIDE §5.6「过早抽象同样是债」。
+- **实证案例**：core 曾设的 `global.json` 大厅骨架层归位（2026-09-10），完整叙事见 MAAFW_GUIDE §5.6「过早抽象同样是债」。
 - **实施 commit**：`5d6c320` refactor(navkit): 真源归位 plugin、协议形态统一 v2、分层红线入机检。

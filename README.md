@@ -56,8 +56,8 @@
 > \[!IMPORTANT]
 > 🚧 **当前内容**
 >
-> 现役活动插件为 **极速狂飙**（`speedrush`），支持全程直行、深度几何与宏录制三种驾驶方式；
-> 此前的 **巅峰鉴宝** 已随活动结束归档（`plugins/_archive/`），不再随安装包分发。
+> 现役活动插件为 **无限驾驶**（`infinite_drive`，「极速狂飙」玩法 v2）：感知、几何、观测与控制基建及模型权重已就位，操作流程施工中；
+> 此前的 **极速狂飙 v1**（`speedrush`）与 **巅峰鉴宝**（`treasure`）已归档（`plugins/_archive/`），不再随安装包分发。
 > 各插件的功能细节与完成度以其自述文档为准；如遇异常，请提交 Issue 或参考开发文档自诊。
 
 ***
@@ -72,7 +72,7 @@
 
 基于画面识别与模拟输入，自动完成活动流程：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行。
 
-每个活动是一个独立插件，放入即用、删除即卸。现役插件是「极速狂飙」，提供全程直行、深度几何与宏录制三种驾驶方式；需要深度几何时，按提示下载可选的模型包即可。
+每个活动是一个独立插件，放入即用、删除即卸。现役插件是「无限驾驶」（极速狂飙 v2），操作流程施工中；感知、深度几何与车道线观测基建已就位，需要深度几何时，按提示下载可选的模型包即可。
 
 ## 演示
 
@@ -98,8 +98,8 @@
 ## 亮点功能
 
 - **活动全链路自动化**：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行
-- **三种驾驶方式**：全程直行（默认）、深度几何（识别赛道并自动选道、避车、超车）、宏录制（录制并回放手柄 / 键盘操作）
-- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何时从 Release 下载模型包，按提示放入数据目录即可
+- **驾驶能力基建**：全程直行、深度几何（识别赛道并自动选道、避车、超车）、宏录制（录制并回放手柄 / 键盘操作）的感知与控制基建；v2 操作流程施工中
+- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何与线观测时在模块面板点「一键安装模型」，下载、校验、安装无需重启，也可手动从 Release 下载模型包放入数据目录
 - **多模态识别**：模板匹配 / OCR / 目标检测 / 单目深度 / 车道线观测，按活动需求组合
 - **任务队列与断点**：多个任务顺序执行，可从任意阶段起步，卡片实时显示排队与进度
 - **PEEP 实时预览**：不打断运行，实时观察画面与决策
@@ -127,7 +127,7 @@
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
 
-> **深度几何需要额外下载模型包：** 主包默认只带「全程直行 / 宏录制」；要用「深度几何」，从同一 Release 下载 `MaaRacingMaster-speedrush-models-<版本>.zip`，解压到用户数据目录的 `data/speedrush/models/`，重启后在任务卡里切换。线观测模型也在同一包内；缺包时线观测自动退回深度/墙。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
+> **深度几何与线观测需要额外安装模型包：** 主包默认不带大体积权重；模块配置面板出现「一键安装模型」时点击即可下载与当前程序匹配的模型包，完成后无需重启。也可从同一 Release 手动下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
 > 成功标志：GUI 窗口出现，主控页任务卡正常加载，底栏状态球显示「系统就绪」（后端已连接）。
 
@@ -225,10 +225,10 @@ dotnet build apps\MaaRacingMaster.Shell\MaaRacingMaster.Shell.csproj -c Debug
 
 1. 打开游戏到主界面（分辨率 **1280×720**）
 2. 运行解压根目录的 `MaaRacingMaster.exe`（启动时自动请求管理员权限）
-3. 在主控页用任务卡编排执行顺序（如：启动游戏 → 极速狂飙 → 关闭游戏）；点卡片展开可设置驾驶模式、宏与起始阶段
+3. 在主控页用任务卡编排执行顺序（如：启动游戏 → 无限驾驶 → 关闭游戏）；点卡片展开可设置起始阶段
 4. 点击「开始运行」；勾选多个任务时按列表顺序连续执行
 
-> **驾驶方式**：默认「全程直行」；「深度几何」需要先安装模型包；「宏录制」先在卡片里录制或选择宏。缺少依赖时，设置页的「环境中心」会给出检测与下载引导。
+> **当前状态**：无限驾驶的操作流程施工中，任务卡阶段为占位项；模型包可先行安装。缺少依赖时，设置页的「环境中心」会给出检测与下载引导。
 
 > **调试功能**：PEEP 实时预览调试帧；「DEBUG 截图与记录」把原始证据帧与标注数据（`frames.jsonl` 的 `overlay` 字段）保存至用户数据目录，标注由 Studio 回放时叠加，不写进像素。
 
@@ -254,8 +254,8 @@ MaaRacingMaster/
 ├── maaracing_master/              # 📦 Python 应用包
 │   ├── core/                      # 应用编排、JSONL RPC、识别与日志等共享能力
 │   └── plugins/
-│       ├── speedrush/             # 现役插件：极速狂飙（含模型清单、策略与文档）
-│       └── _archive/              # 已退役插件（不随安装包分发）
+│       ├── infinite_drive/        # 现役插件：无限驾驶（极速狂飙 v2，含模型清单与文档）
+│       └── _archive/              # 已退役插件（speedrush / treasure，不随安装包分发）
 ├── apps/MaaRacingMaster.Shell/    # 🖥️ WinUI 3 壳 + WebView2 前端
 ├── apps/MaaRacingMaster.Launcher/ # 🚀 发布包根入口（薄 Launcher，提权拉起 Shell）
 ├── templates/plugin/              # 🧪 插件开发样板（复制到 plugins/ 即成新模块）
@@ -286,9 +286,9 @@ MaaRacingMaster/
 
 - **开发新活动插件**：从 [templates/plugin/](templates/plugin/README.md) 样板开始，复制即装
 
-- **极速狂飙域**：规则事实见 [RULES.md](maaracing_master/plugins/speedrush/RULES.md)，实现与坑点见 [CODE_WIKI.md](maaracing_master/plugins/speedrush/CODE_WIKI.md)
+- **无限驾驶域（极速狂飙 v2）**：规则事实见 [RULES.md](maaracing_master/plugins/infinite_drive/RULES.md)，实现与坑点见 [CODE_WIKI.md](maaracing_master/plugins/infinite_drive/CODE_WIKI.md)
 
-- **模型权重与安装**：[模型说明](maaracing_master/plugins/speedrush/resources/models/README.md)
+- **模型权重与安装**：[模型说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)
 
 - 快速诊断环境/依赖问题：[docs/SELF\_CHECK.md](docs/SELF_CHECK.md)
 
@@ -309,7 +309,7 @@ MaaRacingMaster/
 本项目源码采用 [Apache-2.0](LICENSE) © ZRY。本项目为非营利开源项目，不提供商业授权。
 
 > 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，深度几何为 Apache-2.0，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
-> 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/speedrush/resources/models/README.md)。
+> 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
 ***
 

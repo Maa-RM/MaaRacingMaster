@@ -23,7 +23,7 @@ UP = ROOT / "upstream"
 CKPT = ROOT / "fine_tune_out" / (sys.argv[1] if len(sys.argv) > 1 else "ft_small_best.pth")
 OUT_ONNX = ROOT / "weights" / (sys.argv[2] if len(sys.argv) > 2
                                else "plus_small_ft_384x640.onnx")
-OLD_ONNX = HERE.parents[3] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx"
+OLD_ONNX = HERE.parents[3] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx"
 RAW_ROOT = Path.home() / "AppData/Roaming/MaaRacingMaster/debug/speedrush"
 
 _mpl = types.ModuleType("matplotlib")

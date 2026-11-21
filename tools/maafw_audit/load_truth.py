@@ -27,7 +27,7 @@ from maa.resource import Resource  # noqa: E402
 
 PACK = REPO / "maaracing_master"
 CORE_PIPE = PACK / "core" / "resources" / "startup"
-PLUGIN_PIPE = PACK / "plugins" / "speedrush" / "resources" / "pipeline"
+PLUGIN_PIPE = PACK / "plugins" / "_archive" / "speedrush" / "resources" / "pipeline"
 
 
 class _StubReco(CustomRecognition):

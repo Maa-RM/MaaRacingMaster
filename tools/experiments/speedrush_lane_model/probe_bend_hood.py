@@ -25,7 +25,7 @@ import numpy as np
 import onnxruntime as ort
 
 HERE = Path(__file__).resolve().parent
-MODEL = (HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane"
+MODEL = (HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
          / "plus_small_384x640.onnx")
 FP = (Path.home() / "AppData/Roaming/MaaRacingMaster/debug/20261110_204716"
       / "speedrush/drive/20261110_205224_p1/raw/0202_raw.jpg")

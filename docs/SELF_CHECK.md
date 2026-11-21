@@ -77,7 +77,7 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 | 依赖 | 缺失时的现象 |
 |------|--------------|
 | `maafw` | 截图/窗口连接不可用 |
-| `rapidocr` | 文字识别（OCR）失效（如 speedrush HUD 读数） |
+| `rapidocr` | 文字识别（OCR）失效（如 infinite_drive HUD 读数） |
 | `onnxruntime-directml` | YOLO 推理能力不可用（供含检测的插件使用） |
 | `vgamepad` | 虚拟手柄能力不可用（供需要手柄的插件使用） |
 
@@ -89,9 +89,9 @@ pip show maafw vgamepad onnxruntime-directml rapidocr numpy opencv-python
 
 | 文件 | 路径 | 缺失后果 |
 |------|------|---------|
-| 模型权重 | 各插件自带（真源：插件 `resources/` 内许可 README 与 `REQUIRED_ASSETS` 声明，sidecar 启动前机检存在性） | 按插件各自的降级口径（speedrush：深度模式缺感知/深度权重在连接游戏前终止；直行与宏录制不依赖权重） |
+| 模型权重 | 各插件自带（真源：插件 `resources/` 内许可 README 与 `REQUIRED_ASSETS` 声明，sidecar 启动前机检存在性） | 按插件各自的降级口径（权重由可选模型包分发，安装见插件 `resources/models/README.md`） |
 
-> speedrush 感知权重训练导出见 `maaracing_master/plugins/speedrush/tools/training/train.py`（产物直接落插件目录）。
+> infinite_drive 感知权重训练导出见 `maaracing_master/plugins/infinite_drive/tools/training/train.py`（产物直接落插件目录）。
 
 ---
 
@@ -161,7 +161,7 @@ echo {"id":1,"method":"get_initial_state","params":{}}
 | 日志出现「窗口连接失败」 | 游戏未开 / 未前台 / 游戏窗口标题不符 → 确认游戏已到主界面 |
 | 日志频繁「前台校验失败」 | 游戏窗口不在前台（安全策略不抢前台）→ 把游戏切到前台 |
 | OCR 心跳正常、阶段正常流转 | 截图 + 识别链路健康 |
-| 模块中途静默退出 | 参考 [极速狂飙文档 CODE_WIKI](../maaracing_master/plugins/speedrush/CODE_WIKI.md) 的坑点与调试 |
+| 模块中途静默退出 | 参考 [无限驾驶文档 CODE_WIKI](../maaracing_master/plugins/infinite_drive/CODE_WIKI.md) 的坑点与调试 |
 
 > 单帧异常已被主循环兜底（忽略并继续），只有连续多帧系统性问题才会终止——若持续异常，请收集 `Debug` 存盘截图 + 日志后提 Issue。
 

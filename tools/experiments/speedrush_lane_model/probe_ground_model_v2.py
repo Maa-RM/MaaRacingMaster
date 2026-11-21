@@ -25,10 +25,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
 
 APPDATA = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-MODEL = ROOT / "maaracing_master/plugins/speedrush/resources/models/depth" \
+MODEL = ROOT / "maaracing_master/plugins/_archive/speedrush/resources/models/depth" \
                "/relative_mnv4m_slim_spf_448_default.onnx"
 
 COLS_LO, COLS_HI = 0.30, 0.70   # 中央列带（粗拟 + 质量门）

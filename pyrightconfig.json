@@ -8,6 +8,7 @@
   "exclude": [
     "tools/experiments",
     "maaracing_master/plugins/_archive",
+    "maaracing_master/plugins/*/tests",
     "build",
     "archive",
     "tests",

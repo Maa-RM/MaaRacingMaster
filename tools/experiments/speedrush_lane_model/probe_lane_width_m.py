@@ -30,9 +30,9 @@ import onnxruntime as ort
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
-from maaracing_master.plugins.speedrush import depth_geo as dg  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
 
-MODEL = ("maaracing_master/plugins/speedrush/resources/models/depth/"
+MODEL = ("maaracing_master/plugins/_archive/speedrush/resources/models/depth/"
          "relative_mnv4m_slim_spf_448_default.onnx")
 _APPDATA = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
 LOG_ROOT = os.path.join(_APPDATA, "MaaRacingMaster", "logs")

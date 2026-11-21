@@ -87,9 +87,20 @@ RPC 层不信任调用方给的地址。
 ## 模块配置面板（插件声明、宿主渲染）
 
 - 面板内容来自 `get_module_config` 的 `_ui`：插件类声明有序分组字段（开关 / 分段 / 下拉 /
-  数字 / 文本），`config-panel.js` 按类型通用渲染；壳不认识任何模块字段。契约、字段白名单
-  与状态机（`none/ok/partial/invalid/unsupported_version`）见 `core/config_ui_contract.py`
-  与 ADR-0016。
+  数字 / 滚轮计数器 / 文本），`config-panel.js` 按类型通用渲染；壳不认识任何模块字段。字段显隐走
+  `visible_if`，组内字段全部隐藏时组标题一并隐藏（标题显隐跟着字段走，不单独声明）。
+  契约、字段白名单与状态机（`none/ok/partial/invalid/unsupported_version`）见
+  `core/config_ui_contract.py` 与 ADR-0016。
+- 滚轮计数器（`stepper`）移植自 21st.dev 的 Rolling Counter（MIT，作者 Syed；
+  vanilla JS 重写、外观换本仓 token）：每列一个 rAF 弹簧模拟（高位错峰起步），
+  速度越大模糊越重；± 可按住加速连滚（0.7s 后 ×5、1.4s 后 ×10）；数字窗竖向
+  拖拽带惯性甩动；键盘走 spinbutton 语义（方向键 / PageUp·Down / Home·End）；
+  列随位数自动收展；`prefers-reduced-motion` 全部瞬时落位。**写后端一律等弹簧
+  收敛（动画落定）才 savePatch**——连滚/拖拽期间只在本地滚动，不逐变化发请求。
+  字段可带 `unit_seconds`（每单位配置值的预计秒数，数值来自插件），标签旁的
+  「预计用时约 X」按当前值即时乘算；值为 0 表示不限，显示「（不限）」不出估计。
+  回归锁：`tests/test_frontend_config_panel.py` 的滚轮专项与类型覆盖锁。
+- 资产安装：插件 manifest 声明 `ASSET_INSTALLER` 时，面板额外显示一行安装入口（按钮文字与缺失提示来自插件的 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT`，宿主不认识模块语义）及进度、取消与错误；数据来自 `install_asset_status/start/cancel`，前端只传模块 id，不传 URL、目标路径或哈希，旧 revision 的响应丢弃。安装器由插件实现，宿主只做白名单转发与生命周期协调。
 - `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
   `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
 - 数据约定：`_choices` 填下拉（表单里的 `choices` 只是引用键）、`_summary` 是任务卡 chips、
@@ -103,6 +114,18 @@ RPC 层不信任调用方给的地址。
 - 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
   不再二次解释模块内容。
 - 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走本面板。
+
+## 底栏状态行与 PEEP 标题栏（`js/status-label.js`）
+
+两个窗口显示同一句话（`运行中 · 当前: X`），取词规则只此一份：`activeLabel(d)` 吃 `get_status`
+载荷，返回模块自报的阶段名；没有阶段就返回运行项名（模块或内置步骤的 `NAME`，由
+`queue_run.current_name` 下发）。返回空串才落到「停止中...」——那是「有活干却取不到标签」的分支。
+
+- **不显示调试流归属**：`debug_stage` 是导航图此刻在试的节点名（如
+  `startup.popup.close_marketing`），读作「在匹配哪个控件」，界面上没有含义；它仍在 PEEP
+  画面底带与调试索引 `index.jsonl` 里。
+- 内置步骤本来就没有阶段，卡片里已写明「这一步没有细分阶段」，状态行给步骤名即可。
+- 回归锁：`tests/js/status_label.test.mjs`（node --test）。
 
 ## 文字扫描光效（`.maarm-text-scan`）
 
@@ -313,9 +336,11 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 - **生命周期**：只挂载并轮询当前看板；数据页不可见时不拉数，切换看板即丢弃在途响应。
 - **版式**：卡头固定为「看板中心」+ 当前模块名胶囊；主体顶部一行日期说明（取 payload 的 `subtitle`）；统计为一行四列窄条；列表行为「时间 / 正文 / 状态 / 结果」四列，列表上下边界用 8px 不透明度淡出、行间保留细分隔线；卡片高度随内容收缩。
 
-内容统一走 `get_module_dashboard` 的版本化 block 载荷（`stats` / `list` / `text` / `path` / `action`）。
+内容统一走 `get_module_dashboard` 的版本化 block 载荷（`stats` / `list` / `text` / `path` / `action` / `empty`）。
 `dashBlockHtml` 是唯一渲染入口，所有文本经 `escHtml` 转义；标准动作按钮只把后端白名单里的动作名交回 RPC。
-`text` 块渲染为弱化说明，极速狂飙的载荷不含底部说明。
+`text` 块渲染为弱化说明，极速狂飙的载荷不含底部说明。`empty` 块是「有看板但还没有数据」的
+空态原语（标题必填、说明可选），与「没有候选」空态、空载荷共用同一个生成器——插图框 + 标题 + 说明；
+极速狂飙无结算记录时下发。
 
 前端渲染器与后端 `BLOCK_TYPES` 的对齐、候选集口径与统一路由由
 `tests/test_frontend_dashboard_center.py` 静态锁定。

@@ -25,14 +25,14 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from maaracing_master.core import dml_lock                       # noqa: E402
-from maaracing_master.plugins.speedrush import depth_geo, lane_obs  # noqa: E402
-from maaracing_master.plugins.speedrush.perception import StreetPerception  # noqa: E402
-from maaracing_master.plugins.speedrush.world_model import load_calib  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo, lane_obs  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
 HERE = Path(__file__).parent
 OUT = HERE / "concurrency_out"
 FRAMES = HERE / "frames" / "20261109_201359_p1_stable41"
-MODELS = ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources" / "models"
+MODELS = ROOT / "maaracing_master" / "plugins" / "_archive" / "speedrush" / "resources" / "models"
 TICK_S = 0.05
 DURATION_S = 10.0
 

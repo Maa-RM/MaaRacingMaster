@@ -50,12 +50,12 @@ def _patch(monkeypatch, threads, times):
 
 def test_default_named_threads_are_skipped(monkeypatch):
     """`Thread-N` 是解释器起的名字，进清单只是噪声。"""
-    _patch(monkeypatch, [(1, "Thread-7"), (2, "speedrush-depth-worker")],
+    _patch(monkeypatch, [(1, "Thread-7"), (2, "infinite_drive-depth-worker")],
            {1: [(100, 0.0)], 2: [(200, 0.0)]})
     p = ThreadProbe(min_age_s=0)
     p.sample(None)
     out = p.sample(None)
-    assert [r["name"] for r in out["rows"]] == ["speedrush-depth-worker"]
+    assert [r["name"] for r in out["rows"]] == ["infinite_drive-depth-worker"]
 
 
 def test_short_lived_thread_never_listed(monkeypatch):
@@ -132,9 +132,9 @@ def test_negative_delta_marks_identity_unknown(monkeypatch):
 
 def test_labels_bind_by_name_and_report_missing(monkeypatch):
     """标签按名字匹配；整场没出现的声明收尾时能列出来。"""
-    _patch(monkeypatch, [(1, "speedrush-depth-worker")], {1: [(100, 0.0)]})
+    _patch(monkeypatch, [(1, "infinite_drive-depth-worker")], {1: [(100, 0.0)]})
     p = ThreadProbe(min_age_s=0)
-    p.set_labels({"speedrush-depth-worker": "深度链", "lane-obs": "车道观测"})
+    p.set_labels({"infinite_drive-depth-worker": "深度链", "lane-obs": "车道观测"})
     p.sample(None)
     out = p.sample(None)
     assert out["rows"][0]["label"] == "深度链"

@@ -56,6 +56,7 @@ def test_truth_passes_checker():
     errors += ct.action_checks(graph)
     errors += ct.namespace_checks(graph, origin)
     errors += ct.rect_checks(graph)
+    errors += ct.template_fit_checks(graph, origin)
     assert errors == []
     assert warns == []
 

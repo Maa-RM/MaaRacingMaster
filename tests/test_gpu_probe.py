@@ -13,8 +13,8 @@ import time
 import pytest
 
 from maaracing_master.core import dml_lock
-from maaracing_master.plugins.speedrush import gpu_probe
-from maaracing_master.plugins.speedrush.gpu_probe import GpuProbe
+from maaracing_master.plugins.infinite_drive import gpu_probe
+from maaracing_master.plugins.infinite_drive.gpu_probe import GpuProbe
 
 # 真实线程 CPU 时间读数只有 Windows 有（句柄 API）；非 Windows 恒返回 None、
 # 判读恒「不具判读条件」——那条路径有独立用例（fake thread_times），三个
