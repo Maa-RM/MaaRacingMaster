@@ -7,14 +7,14 @@
 ```
 models/
 ├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
-├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 深度几何（DepthART MNV4-M-slim-SPF，Apache-2.0）
+├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 仓库内离线深度验证（DepthART MNV4-M-slim-SPF，Apache-2.0）
 └── lane/plus_small_384x640.onnx                             # 线观测（TwinLiteNet+ Small，BDD100K 非商业/科研）
     └── plus_small_fp16_384x640.onnx                         # 同上权重的 FP16 版（DML 专用加速件）
 ```
 
-## 安装（深度模式与线观测）
+## 安装（车道线驾驶）
 
-发布包默认不带这些权重。深度模式使用深度模型定位道路和全精度车道线模型估计车头角，需要安装模型包。程序内提供一键安装：模块配置面板出现「一键安装模型」时点击即可下载、校验并安装与当前程序匹配的模型包，完成后无需重启；下载中可取消，失败可重试。安装落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，旧模型与手动目录保持可用。
+发布包默认不带 ONNX 权重。车道线驾驶使用车道线和街车检测模型，模型包内容以 [模型清单](../../model_assets.py) 为准。配置面板出现「一键安装模型」时可下载、校验并安装，完成后无需重启。安装落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`。旧受管包和手动目录里通过现行校验的权重可直接复用。
 
 手动安装仍然可用：
 
@@ -36,7 +36,7 @@ models/
   `abdf3d46706c0dc259d178df8a27ae23b9c3ce03f658e75aadc391b035bd9e26`
   （由上一份权重 `keep_io_types` 转 FP16，仅 DML 使用；缺失或会话失败时回退 FP32）
 
-权重缺失或校验失败时，依赖它们的深度几何与线观测不可用。
+车道线权重缺失或校验失败时，车道线驾驶无法启动。街车权重缺失时可保持车道。
 
 ## perception/model.onnx —— 物品感知（AGPL-3.0）
 

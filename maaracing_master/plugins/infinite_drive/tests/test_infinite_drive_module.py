@@ -406,7 +406,7 @@ def test_program_drive_only_commands_pad_while_driving(monkeypatch) -> None:
     assert controls[-1][-1] == (0, 0)
 
 
-def test_depth_mode_sends_feedback_steer_in_both_phases(monkeypatch) -> None:
+def test_lane_mode_switches_camera_once_at_first_hud_in_p1_and_drives_both_phases(monkeypatch) -> None:
     from contextlib import nullcontext
     from types import SimpleNamespace
 
@@ -414,33 +414,41 @@ def test_depth_mode_sends_feedback_steer_in_both_phases(monkeypatch) -> None:
 
     monkeypatch.setattr(m, "_DRIVE_HUD_GAP_S", 0.0)
     drive_frame = object()
-    frames = iter([(drive_frame, 1, 1, 0), (object(), 2, 2, 0),
-                   (drive_frame, 3, 3, 0), (object(), 4, 4, 0)])
+    frames = iter([(object(), 0, 0, 0), (drive_frame, 1, 1, 0), (drive_frame, 2, 2, 0), (object(), 3, 3, 0),
+                   (drive_frame, 4, 4, 0), (object(), 5, 5, 0)])
     directions = []
+    throttles = []
     armed = []
     detected = []
+    camera = []
     pad = SimpleNamespace(left_joystick=lambda x_value: directions.append(x_value),
-                          right_trigger=lambda **_: None, update=lambda: None)
+                          right_trigger=lambda value: throttles.append(value), update=lambda: None)
     monkeypatch.setattr(m, "drive_hud_visible", lambda frame: frame is drive_frame,
                         raising=False)
-    mod = _step_module(SimpleNamespace(run=lambda *args: True))
+    menu_ticks = iter([False, True, True])
+    mod = _step_module(SimpleNamespace(run=lambda *args: next(menu_ticks)))
     mod.set_module_config({"drive_mode": "depth"})
+    monkeypatch.setattr(mod, "_switch_drive_view", lambda pad: camera.append(len(detected)) or True)
+    monkeypatch.setattr(mod, "_sweep_transient_popup", lambda: None)
     mod.ctx.capture = SimpleNamespace(frame_with_age=lambda: next(frames))
     mod.ctx.gamepad = SimpleNamespace(acquire=lambda: nullcontext(pad))
 
     def steer(frame, fid, timestamp):
         detected.append((frame, fid, timestamp))
-        return 0.2, False
+        mod._lane_drive.throttle_scale = 0.0 if fid == 1 else 1.0
+        return 0.2
 
-    mod._depth_drive = SimpleNamespace(begin=lambda **options: armed.append(options), steer=steer,
+    mod._lane_drive = SimpleNamespace(begin=lambda **options: armed.append(options), steer=steer,
                                        release=lambda: None)
     assert mod._drive("p1") and mod._drive("p2")
-    assert armed == [{"allow_view_switch": True}, {"allow_view_switch": False}]
-    assert detected == [(drive_frame, 1, 1), (drive_frame, 3, 3)]
-    assert directions[0] == directions[1] > 0
+    assert camera == [0]
+    assert len(armed) == 2
+    assert detected == [(drive_frame, fid, fid) for fid in (1, 2, 4)]
+    assert directions[0] == directions[1] == directions[2] > 0
+    assert throttles == [0, m._DRIVE_THROTTLE, m._DRIVE_THROTTLE]
 
 
-def test_depth_view_switch_releases_camera_button(monkeypatch) -> None:
+def test_view_switch_releases_camera_button(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import module as m

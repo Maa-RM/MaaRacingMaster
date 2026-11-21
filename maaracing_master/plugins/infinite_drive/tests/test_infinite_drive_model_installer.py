@@ -24,7 +24,7 @@ def _sha(data: bytes) -> str:
 
 def _patch(monkeypatch, tmp_path):
     monkeypatch.setattr(model_assets, "MODEL_MANIFEST", {REL: (len(GOOD), _sha(GOOD))})
-    monkeypatch.setattr(model_assets, "DEPTH_MANIFEST", {REL: (len(GOOD), _sha(GOOD))})
+    monkeypatch.setattr(model_assets, "DRIVE_MANIFEST", {REL: (len(GOOD), _sha(GOOD))})
     managed = tmp_path / "data" / "infinite_drive" / "models" / "digest"
     monkeypatch.setattr(model_assets, "managed_pack_dir", lambda: managed)
     monkeypatch.setattr(

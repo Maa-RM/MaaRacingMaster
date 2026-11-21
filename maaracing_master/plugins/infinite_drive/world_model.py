@@ -34,6 +34,11 @@ from functools import lru_cache
 
 from maaracing_master.plugins.infinite_drive import GATE0_FILE
 
+# 保险杠视角的地面纵深投影尺。线角的全幅焦距独立从标定文件读取。
+# 焦距取横向视场口径的实测值，相机高见 RULES §8.1。
+GROUND_FOCAL_PX = 470.0
+BUMPER_CAM_H_M = 1.25
+
 
 @dataclass(frozen=True)
 class Calib:

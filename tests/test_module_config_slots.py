@@ -339,16 +339,13 @@ def test_set_config_migrates_legacy_keys(monkeypatch):
 def test_real_modules_declare_their_config_surface():
     """真实模块必须自述配置面：core 白名单读到的键与模块声明一致（不多不少）。
 
-    这条是修复的回归锁：配置键曾经不在 core 的键白名单里，写盘后回填被静默丢弃
-    （speedrush 的 record_mode 事故；v1 模块留档 _archive/speedrush/，其配置面
-    回归锁随插件归档）。后继 infinite_drive 目前只声明录制开关；接线新增配置键时
-    同步更新这里的期望集。
+    无限驾驶的驾驶模式与录制开关都需要经过 core 持久化和回填。
     """
     from maaracing_master.core.registry import MODULE_REGISTRY as real_registry
     cls = real_registry["infinite_drive"]
 
     declared = set(cls.DEFAULT_MODULE_CONFIG)
-    assert declared == {"record_mode"}, "配置面变化时同步更新期望集"
+    assert declared == {"drive_mode", "record_mode"}, "配置面变化时同步更新期望集"
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     keys = set(sc._module_config_defaults("infinite_drive"))
     assert keys == declared

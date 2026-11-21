@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""深度模式模型包：用户数据目录优先、安装包兜底，带完整性校验。
+"""车道线驾驶模型包：用户数据目录优先、安装包兜底，带完整性校验。
 
-发布包默认不带 ONNX 权重；要用深度模式时，把模型包解压到
+发布包默认不带 ONNX 权重；要用车道线驾驶时，把模型包解压到
 ``<用户数据>/data/infinite_drive/models/``（布局与本目录 ``resources/models/`` 同构，
 去掉 ``resources/models/`` 前缀）。源码运行或显式全量包仍可直接读包内权重。
-深度驾驶要求深度模型和全精度车道线模型；模型包同时分发物品感知和半精度线观测权重。
+车道线驾驶要求全精度车道线模型，模型包同时分发物品感知和半精度线观测权重。
 
 校验口径：尺寸 + SHA256，按（路径、大小、mtime）缓存，同一进程只哈希一次。
 模型文件更新时必须同步改 ``MODEL_MANIFEST``；旧下载包会被拒绝并提示重新下载。
@@ -16,7 +16,6 @@ from pathlib import Path
 
 from maaracing_master.core.paths import data_dir, module_data_dir
 from maaracing_master.plugins.infinite_drive import (
-    DEPTH_MODEL_REL,
     LANE_FP16_MODEL_REL,
     LANE_MODEL_REL,
     MODELS_DIR,
@@ -26,12 +25,10 @@ from maaracing_master.plugins.infinite_drive import (
 PACK_PREFIX = "resources/models/"
 MODULE_ID = "infinite_drive"
 
-# 深度驾驶的启动和安装检查共用这份必需资产清单。
-DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
-    DEPTH_MODEL_REL: (
-        24155097,
-        "825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71",
-    ),
+# 已安装的旧版受管包仍可提供其中通过现行校验的车道线与街车模型。
+_PREVIOUS_PACK_DIGEST = "fc71dcab51857e7c9967fa45e21183549535a12744d12277b27c8cb8c9d72154"
+
+DRIVE_MANIFEST: dict[str, tuple[int, str]] = {
     LANE_MODEL_REL: (
         543156,
         "bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc",
@@ -39,7 +36,7 @@ DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
 }
 
 MODEL_MANIFEST: dict[str, tuple[int, str]] = {
-    **DEPTH_MANIFEST,
+    **DRIVE_MANIFEST,
     PERCEPTION_MODEL_REL: (
         10665412,
         "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
@@ -89,9 +86,10 @@ def installed_path(rel: str) -> Path:
 
 
 def candidates(rel: str) -> tuple[Path, ...]:
-    """候选文件，按优先级：受管安装 → 旧手动解压 → 安装包内权重。"""
+    """候选文件，按优先级：现行受管包、旧受管包、手动解压和包内权重。"""
     relative = packed_rel(rel)
-    return (managed_pack_dir() / relative, pack_path(rel), MODELS_DIR / relative)
+    previous = module_data_dir(MODULE_ID, "models", _PREVIOUS_PACK_DIGEST)
+    return (managed_pack_dir() / relative, previous / relative, pack_path(rel), MODELS_DIR / relative)
 
 
 def resolve(rel: str) -> Path | None:
@@ -103,9 +101,9 @@ def resolve(rel: str) -> Path | None:
 
 
 def missing() -> tuple[str, ...]:
-    """深度档缺失或大小不符的权重（便宜检查；线观测可选，不计入门禁）。"""
+    """车道线驾驶缺失或大小不符的必需权重。"""
     out: list[str] = []
-    for rel, (want_size, _sha) in DEPTH_MANIFEST.items():
+    for rel, (want_size, _sha) in DRIVE_MANIFEST.items():
         ok = False
         for path in candidates(rel):
             try:
@@ -171,9 +169,9 @@ def select(rel: str) -> tuple[Path | None, str | None]:
 
 
 def check_pack() -> str | None:
-    """完整校验深度模式所需权重；None 表示可运行。线观测不计入。"""
+    """完整校验车道线驾驶的必需权重。"""
     errors = []
-    for rel in DEPTH_MANIFEST:
+    for rel in DRIVE_MANIFEST:
         _path, err = select(rel)
         if err:
             errors.append(err)

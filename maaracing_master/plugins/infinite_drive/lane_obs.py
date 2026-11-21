@@ -75,12 +75,7 @@ LANE_SLOT_S = 0.030       # 线观测槽窗：拍后 30ms 内必须开跑
 LANE_WAIT_NOTE_S = 0.045  # 拍首提交等目标节拍的截止（按提交时刻计）：生产等
                           # ~9ms（感知检测段），45ms 兜底感知停摆；超时按超窗弃帧
 SLOT_FRESH_S = 1.0        # 最近一拍在 1s 内 = 控制拍在跑，才按槽位排队
-# 线几何可用的相机高带（v5 2026-11-12）：输入已从「深度平面 c」换成车道线
-# 反解值，与视角守卫同源。带要覆盖两种合法机位（保险杠 ≈1.25、追尾 ≈1.9），
-# **不是视角判定门**（判定门在 view_guard，仍只认保险杠）；上界只挡反解失败
-# 的离谱值。旧带 1.12~1.55 会把追尾机位砍回标定值 1.28，线横位静默错 1~2
-# 道；旧注释「坏平面 coef[2] 飙到 3.2~4.5」是 v4 事实，v5 下 c 恒定。
-# 放宽后的单点离群由 module 侧 5 拍中位滤除，本带只兜底。
+# 线几何接受的相机标定高度范围。
 CAM_H_LO = 1.10
 CAM_H_HI = 2.20
 # 近/中/远三段的**米制边界**住 ranges.py（单一真源）；这里只留无焦距冷启动
@@ -118,11 +113,6 @@ YV_STEP_ESCAPE_PX = 3.0
 # 实测这些拍是假灭点的主要来源（n_lines=1~2 时 raw 落到 342/379）。
 # 历史为空（阶段头/断检恢复）时不过门，否则冷启动永远没有第一个样本。
 YV_MIN_LINES = 3
-# 相机高反解（线间距法）的物理带与样本门：结果只给视角守卫用（粗门），
-# 与深度链的 1.25 无耦合关系。
-CAM_H_EST_LO, CAM_H_EST_HI = 0.6, 3.0
-CAM_H_EST_MIN_ROWS = 10.0     # 两条线在同一行的可比对行窗（行）
-CAM_H_EST_MIN_DX = 5.0        # 同一行上两线的像素间距下限（重合线不算）
 TRACK_TOL = 0.15
 TRACK_GAP = 6
 COAST_MAX_TICKS = 10
@@ -292,14 +282,7 @@ def _side_from_x(x: float | None) -> int | None:
 
 
 def _lane_cam_h(cam_h: float | None) -> tuple[float, bool]:
-    """线几何用的相机高度：无值或反解明显失真时回退标定值。
-
-    v5 起输入来自车道线间距反解（``cam_h_lane``），不再是深度平面 c——合成
-    点图把贴地像素钉在 Y≡CAM_H_M，读 c 等于读常数；机位被打回追尾时线几何
-    仍按保险杠高度换算，横位静默错 1~2 道。这里只挡反解失败的离谱值，合法
-    机位（保险杠 1.25 / 追尾 1.9）都原样采用；单点反解噪声由调用方（module
-    侧的近 5 拍中位）先滤一层，本函数不做二次平滑。
-    """
+    """取调用方的相机标定高度，缺值或超出标定范围时用默认值。"""
     if cam_h is None or not (CAM_H_LO <= cam_h <= CAM_H_HI):
         return DEFAULT_CAM_H, True
     return float(cam_h), False
@@ -405,8 +388,8 @@ def _join_track_fragments(tracks: list, cam_h: float,
                     continue
                 if _fits_joinable(inner, outer, cam_h, y_v):
                     merged = pending[i] + pending[j]
-                    trial = [_fit(merged, cam_h, *win, focal, y_v, min_span=span)
-                             for win, span in windows]
+                    trial = [_fit(merged, cam_h, y_lo, y_hi, focal, y_v, min_span=span)
+                             for (y_lo, y_hi), span in windows]
                     if all(ft is None or ft["rms"] <= LINE_RMS_MAX for ft in trial):
                         edges.append((i, j))
         unique = [(i, j) for i, j in edges
@@ -853,67 +836,6 @@ def _smooth_vanish(hist: deque, raw: float, now: float, last_t: float,
     return float(prev) + math.copysign(YV_SLEW_PX, step), last_t, False
 
 
-def _cam_h_from_lines(lines: list[dict], y_v: float | None) -> float | None:
-    """车道线反解相机高（像素间距法，与深度链完全无关）。
-
-    地面线满足 ``x = vpx + L·LANE_W·(y−y_v)/cam_h``，两条线在同一行的像素间距
-    ``Δx = |Δk|·LANE_W·(y−y_v)/cam_h``，于是 ``cam_h = |Δk|·LANE_W·(y−y_v)/Δx``。
-    只用 accepted 且已定道号（``k``）的线；每对取两段拟合的行窗交集的中点行，
-    两两结果取中位（≥3 个时先按 MAD 剔一次）。
-
-    这是视角守卫的**唯一诚实判据**：合成点图把贴地像素的高度钉在 Y≡cam_h，平面
-    系数 c 恒等于 1.25，读它等于读一个常数（2026-11-12 实机 18 帧逐帧核对）。
-    证据不足（<2 条可用线 / 行窗不重叠 / 间距过小）返回 None——调用方按「无判据」
-    处理，不盲判。"""
-    if y_v is None:
-        return None
-    fs: list[tuple[int, float, float, float, float]] = []
-    for c in lines:
-        if not c.get("accepted") or not _local_line_good(c):
-            continue
-        k = c.get("k")
-        fts = c.get("fits") or ()
-        if k is None or not fts:
-            continue
-        ft = fts[0]                     # (near, far)：近段优先，行窗更贴近车
-        s, a = ft.get("s"), ft.get("a")
-        y0, y1 = ft.get("y0"), ft.get("y1")
-        if s is None or a is None or y0 is None or y1 is None:
-            continue
-        fs.append((int(k), float(s), float(a), float(y0), float(y1)))
-    if len(fs) < 2:
-        return None
-    est: list[float] = []
-    for i in range(len(fs)):
-        for j in range(i + 1, len(fs)):
-            k1, s1, a1, lo1, hi1 = fs[i]
-            k2, s2, a2, lo2, hi2 = fs[j]
-            dk = abs(k1 - k2)
-            if dk < 1:
-                continue            # 同一条道（两段拟合重叠/碎片）
-            lo = max(lo1, lo2, y_v + 20.0)
-            hi = min(hi1, hi2)
-            if hi - lo < CAM_H_EST_MIN_ROWS:
-                continue
-            y = 0.5 * (lo + hi)
-            dx = abs((s1 - s2) * y + (a1 - a2))
-            if dx < CAM_H_EST_MIN_DX:
-                continue
-            h = dk * LANE_W * (y - y_v) / dx
-            if CAM_H_EST_LO <= h <= CAM_H_EST_HI:
-                est.append(float(h))
-    if not est:
-        return None
-    med = float(np.median(est))
-    if len(est) >= 3:
-        mad = float(np.median(np.abs(np.asarray(est) - med)) * 1.4826)
-        if mad > 0.02:
-            kept = [v for v in est if abs(v - med) <= 2.5 * mad]
-            if kept:
-                med = float(np.median(kept))
-    return med
-
-
 class LineTracker:
     """线观测状态机：等间距约束 + 深度路心定整数道号（2026-10-24 重写）。
 
@@ -1093,7 +1015,7 @@ class LineTracker:
                v_lat: float = 0.0, fid_jump: bool = False,
                anchor: float | None = None,
                anchor_strict: bool = False,
-               frame_ts_ns: int | None = None) -> dict:
+               frame_ts_ns: int | None = None, *, anchor_source: str = "depth") -> dict:
         # 角度是否重算按拍标记：保持拍/单线拍沿用上一有效角度，此时
         # theta_updated=False——上游据此区分「新角度」与「旧角度再发一次」。
         self.theta_updated = False
@@ -1143,7 +1065,7 @@ class LineTracker:
         if anchor is not None and math.isfinite(anchor) \
                 and abs(anchor) <= self.OFF_MAX:
             x_anchor = float(anchor)
-        self.anchor_src = ("depth" if x_anchor is not None
+        self.anchor_src = (anchor_source if x_anchor is not None
                            else ("lines" if self.x_last is not None
                                  else "none"))
         if x_anchor is None and self.x_last is None:
@@ -1269,9 +1191,9 @@ class LineTracker:
             support = len(keep)
             set_changed = (self._last_ks is not None
                            and ks_now != self._last_ks)
-            step_raw = (None if self.x_last is None
-                        else x_raw - self.x_last)
-            if step_raw is not None:
+            last_x = self.x_last
+            if last_x is not None:
+                step_raw = x_raw - last_x
                 # 单线只有在本拍与上一拍是同一根线（道号有交集）时才允许
                 # 子道细化；换线/新线先按换线门处理，避免新身份的 L 改写 x。
                 same_single = (support == 1 and self._last_ks is not None
@@ -1299,7 +1221,7 @@ class LineTracker:
                     # 新测量），单拍大跳不会原样灌给控制器。
                     d = float(np.clip(step_raw, -LINE_X_STEP_MAX,
                                       LINE_X_STEP_MAX))
-                    x_out = self.x_last + d
+                    x_out = last_x + d
                     hold = abs(x_raw - x_out) > 1e-9
                     # 只有「单线新身份」或整道级跳变才作废线锁；多线集合
                     # 变化但横位被限速跟随时保留锁定，位置权威不因丢一条
@@ -1506,7 +1428,8 @@ class LineTracker:
 class LaneObsWorker:
     """后台线观测线程；`latest()` 只读，失败静默返回 None。"""
 
-    def __init__(self, cfg: LaneObsConfig, off_max: float = OFF_MAX) -> None:
+    def __init__(self, cfg: LaneObsConfig, off_max: float = OFF_MAX, *,
+                 drive_observations: bool = False, perception=None) -> None:
         self.cfg = cfg
         self._q: queue.Queue = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
@@ -1518,6 +1441,12 @@ class LaneObsWorker:
         self._thread: threading.Thread | None = None
         self._sess = None
         self._tracker = LineTracker(off_max)
+        self._perception = perception
+        self._yellow = None
+        if drive_observations:
+            from maaracing_master.plugins.infinite_drive.yellow_line import YellowAnchor
+
+            self._yellow = YellowAnchor()
         self._last_fid = -1
         self._last_t = 0.0
         self._n = 0
@@ -1739,11 +1668,27 @@ class LaneObsWorker:
                 self._n += 1
                 every = max(1, int(self.cfg.detect_every))
                 pred = every > 1 and bool(self._n % every)
+                traffic = traffic_error = yellow_anchor = None
                 if pred:
                     self.pred_n += 1
                     res = self._tracker.predict(dt, v_lat)
                 else:
                     self.det_n += 1
+                    if self._yellow is not None:
+                        if jump:
+                            self._tracker = LineTracker(self._tracker.OFF_MAX)
+                            self._yv_hist.clear()
+                            self._yv_evidence_t = None
+                        # 实际执行的帧自己开线观测槽。YOLO 已在放锁时发拍，控制线程不重复发拍。
+                        seq, _ = dml_lock.TICK_BEAT.snapshot()
+                        if self._perception is not None:
+                            try:
+                                traffic = self._perception.detect(rgb, fid, frame_ts_ns or 0)
+                            except Exception as exc:  # 单帧车辆推理失败，仍可保持车道
+                                traffic_error = repr(exc)
+                        if dml_lock.TICK_BEAT.snapshot()[0] == seq:
+                            dml_lock.TICK_BEAT.note()
+                        self._slot_target = dml_lock.TICK_BEAT.snapshot()[0]
                     rec = self._infer(rgb, cam_h, self._focal)
                     if rec is None:      # DML 被占：本帧让路，下一帧再来
                         continue
@@ -1762,9 +1707,18 @@ class LaneObsWorker:
                             self._yv, self._yv_refill)
                         if not self._yv_refill:
                             self._yv_evidence_t = self._yv_t
+                    if self._yellow is not None:
+                        from maaracing_master.plugins.infinite_drive.yellow_line import detect_yellow_edges
+
+                        yellow_anchor = self._yellow.update(detect_yellow_edges(rgb), rec["lines"], cam_h,
+                                                            (frame_ts_ns or round(t_push * 1e9)) / 1e9,
+                                                            y_v=yv or self._current_yv(time.perf_counter()),
+                                                            reset=jump)
+                        anchor, a_strict = yellow_anchor, yellow_anchor is not None
                     res = self._tracker.update(rec["lines"], fid, dt, v_lat,
                                                jump, anchor, a_strict,
-                                               frame_ts_ns=frame_ts_ns)
+                                               frame_ts_ns=frame_ts_ns,
+                                               anchor_source="yellow" if self._yellow is not None else "depth")
                 t_done = time.perf_counter()
                 if not pred:
                     self._last_det_t = t_done
@@ -1772,6 +1726,8 @@ class LaneObsWorker:
                     self._last_det_ts_ns = frame_ts_ns
                 out = self._snapshot(res, fid, cam_h, t0, t_done, pred,
                                      frame_ts_ns, t_push)
+                if self._yellow is not None:
+                    out.update(traffic=traffic, traffic_error=traffic_error, yellow_anchor=yellow_anchor)
                 with self._lock:
                     self._latest = out
                 # 心跳只在产出结果之后记：面板的「车道观测 频率」必须等于有效
@@ -1791,12 +1747,9 @@ class LaneObsWorker:
         （usable/locked）若在这里漏搬，消费方永远读到 None——线为主会静默
         失效且看不出错误。"""
         is_pred = bool(res.get("pred", pred_fallback))
-        # 相机高反解只在真实检测拍上算：预测拍的线是上一拍的，重复发布等于把
-        # 同一个样本数两遍（守卫按「新样本」计数）。
         yv_age = (None if self._yv_evidence_t is None else
                   max(0.0, t_done - self._yv_evidence_t))
         yv = self._current_yv(t_done)
-        h_lane = None if is_pred else _cam_h_from_lines(res["lines"], yv)
         return {"fid": fid, "cam_h": round(cam_h, 3),
                 "frame_ts_ns": frame_ts_ns,
                 "det_fid": self._last_det_fid,
@@ -1849,8 +1802,6 @@ class LaneObsWorker:
                 "y_v_age_ms": None if yv_age is None else round(yv_age * 1000, 1),
                 "y_v_raw": None if self._yv_raw is None
                 else round(self._yv_raw, 2),
-                # 相机高反解（线间距法）：视角守卫的唯一诚实判据，证据不足=None
-                "cam_h_lane": None if h_lane is None else round(h_lane, 3),
                 "t_done": t_done, "t_det": self._last_det_t,
                 # 线与横位同拍：annotated（k/resid/accepted）由 tracker 给出
                 "lines": res["lines"]}

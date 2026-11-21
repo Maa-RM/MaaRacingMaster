@@ -24,7 +24,7 @@ def _patch_dirs(monkeypatch, tmp_path):
     monkeypatch.setattr(model_assets, "managed_pack_dir", lambda: managed)
     monkeypatch.setattr(model_assets, "MODELS_DIR", packaged)
     monkeypatch.setattr(model_assets, "MODEL_MANIFEST", {REL: (4, _sha(b"good"))})
-    monkeypatch.setattr(model_assets, "DEPTH_MANIFEST", {REL: (4, _sha(b"good"))})
+    monkeypatch.setattr(model_assets, "DRIVE_MANIFEST", {REL: (4, _sha(b"good"))})
     model_assets.clear_cache()
     return pack, packaged, managed
 
@@ -85,12 +85,21 @@ def test_select_skips_corrupt_user_pack_and_uses_packaged(monkeypatch, tmp_path)
     assert err is None and path == good
 
 
-def test_depth_mode_requires_depth_and_full_precision_lane_models():
-    assert set(model_assets.DEPTH_MANIFEST) == {
-        model_assets.DEPTH_MODEL_REL, model_assets.LANE_MODEL_REL,
-    }
+def test_lane_drive_pack_requires_the_lane_model_and_excludes_depth():
+    from maaracing_master.plugins.infinite_drive import DEPTH_MODEL_REL
+
+    assert set(model_assets.DRIVE_MANIFEST) == {model_assets.LANE_MODEL_REL}
+    assert DEPTH_MODEL_REL not in model_assets.MODEL_MANIFEST
     assert model_assets.PERCEPTION_MODEL_REL in model_assets.MODEL_MANIFEST
     assert model_assets.LANE_FP16_MODEL_REL in model_assets.MODEL_MANIFEST
+
+
+def test_unchanged_model_is_reused_from_previous_managed_pack(monkeypatch, tmp_path):
+    previous = tmp_path / "fc71dcab51857e7c9967fa45e21183549535a12744d12277b27c8cb8c9d72154"
+    monkeypatch.setattr(model_assets, "module_data_dir", lambda *parts: tmp_path / parts[-1])
+    monkeypatch.setattr(model_assets, "MODEL_MANIFEST", {REL: (4, _sha(b"good"))})
+    path = _write(previous / model_assets.packed_rel(REL), b"good")
+    assert model_assets.select(REL) == (path, None)
 
 
 def test_manifest_digest_stable_for_same_manifest_and_changes_with_it(monkeypatch):

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成可选模型包（深度几何 + 线观测，DLC）。
+"""生成车道线驾驶模型包。
 
 内容：模型权重组（含线观测 FP16 加速件）+ 许可/安装说明 README + SHA256SUMS，打成一个 zip。
 发布包默认不含权重；用户下载本包后解压到
-``%APPDATA%\\MaaRacingMaster\\data\\infinite_drive\\models\\`` 即可使用深度几何与线观测。
+``%APPDATA%\\MaaRacingMaster\\data\\infinite_drive\\models\\`` 即可使用车道线驾驶。
 线观测受 BDD100K 非商业/科研许可约束，构建时会一并打入
 ``LICENSE-BDD100K.txt``；源文件或许可缺失时本脚本直接失败。
 
@@ -111,7 +111,7 @@ def build(version: str, out_dir: Path, github_repo: str = "",
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="生成可选模型包（深度 + 线观测）")
+    parser = argparse.ArgumentParser(description="生成车道线驾驶模型包")
     parser.add_argument("--version", required=True, help="版本号（可带 v 前缀）")
     parser.add_argument("--out", default=str(REPO_ROOT / "build" / "release"),
                         help="输出目录（默认 build/release）")

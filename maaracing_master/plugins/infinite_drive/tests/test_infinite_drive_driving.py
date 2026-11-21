@@ -27,13 +27,16 @@ def test_heading_control_reuses_measurement_without_reintegrating() -> None:
     assert controller.update(0.02, 0.0, 2_000_000_000) == 0.0
 
 
-def test_depth_anchor_rejects_vehicle_sized_gap_and_uses_ego_sign() -> None:
-    from maaracing_master.plugins.infinite_drive.depth_geo import DepthRoadReading
-    from maaracing_master.plugins.infinite_drive.driving import road_anchor
+def test_lane_drive_constructs_without_depth_model(monkeypatch) -> None:
+    from maaracing_master.plugins.infinite_drive import PERCEPTION_MODEL_REL, model_assets
+    from maaracing_master.plugins.infinite_drive.driving import LaneDrive
 
-    assert road_anchor(DepthRoadReading(-2.5, 1.5, None, None, 2, 0.0)) == 0.5
-    assert road_anchor(DepthRoadReading(-0.7, 0.8, None, None, 2, 0.0)) is None
-    assert road_anchor(DepthRoadReading(-2.5, None, None, None, 1, 0.0)) is None
+    def select(rel):
+        assert rel == PERCEPTION_MODEL_REL
+        return None, "模型缺失"
+
+    monkeypatch.setattr(model_assets, "select", select)
+    LaneDrive()
 
 
 def test_drive_hud_uses_plugin_template_at_its_screen_position() -> None:
@@ -68,49 +71,43 @@ def test_driving_score_bar_recognizes_hud_when_gear_is_unreadable() -> None:
     assert not drive_hud_visible(np.roll(frame, 120, axis=0))
 
 
-@pytest.mark.parametrize("camera_height, switch", [(None, True), (1.25, False), (1.9, True)])
-def test_opening_view_uses_completed_detections_even_without_height(
-        monkeypatch, camera_height, switch) -> None:
+@pytest.mark.parametrize("camera_height", [None, 1.25, 1.9])
+def test_opening_observation_never_requests_camera_input(monkeypatch, camera_height) -> None:
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import driving as d
 
-    driver = d.DepthDrive.__new__(d.DepthDrive)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
     driver._control = d.HeadingControl(3.5)
-    driver._view_config = d.ViewGuardConfig(enabled=True)
     driver._camera_height = 1.25
     driver._cal = SimpleNamespace(focal_px=880)
     driver._trace = SimpleNamespace(append=lambda _: None)
-    driver._depth = SimpleNamespace(take=lambda: (None, None, False), push=lambda *a, **kw: None)
     obs = {}
     driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
     now = 1_000_000_000
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
     driver.begin()
 
-    events = []
     for fid in range(12):
         now = 1_000_000_000 + fid * 120_000_000
         obs.update(det_fid=fid, det_ts_ns=now, cam_h_lane=camera_height)
-        events.append(driver.steer(None, fid, now)[1])
-    assert any(events) is switch
+        assert driver.steer(None, fid, now) == 0.0
 
 
-def test_lane_locks_from_confirmed_lines_after_depth_anchor_expires(monkeypatch) -> None:
+def test_lane_locks_from_confirmed_lines_and_reacts_to_blocked_road(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import driving as d
+    from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
 
     now = 1_100_000_000
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.DepthDrive.__new__(d.DepthDrive)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
     driver._control = d.HeadingControl(3.5)
-    driver._view_config = d.ViewGuardConfig(enabled=True)
     driver._camera_height = 1.25
     driver._cal = SimpleNamespace(focal_px=880)
     rows = []
     driver._trace = SimpleNamespace(append=rows.append)
-    driver._depth = SimpleNamespace(take=lambda: (None, None, False), push=lambda *a, **kw: None)
     obs = {"x": 0.6, "theta": 0.09, "n_locked": 2, "usable": True,
            "cam_h_lane": 1.25, "lines": [
                {"accepted": True, "k": 0, "side": -1},
@@ -119,16 +116,64 @@ def test_lane_locks_from_confirmed_lines_after_depth_anchor_expires(monkeypatch)
     driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
     driver.begin()
 
-    for fid in range(1, 8):
-        now += 100_000_000
-        obs.update(det_fid=fid, det_ts_ns=now, theta_src_fid=fid, theta_src_ts_ns=now)
-        assert driver.steer(None, fid, now) == (0.0, False)
-    assert rows[-1]["target_lane"] is None
-    now += 150_000_000
+    now += 100_000_000
     obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    steer, switch = driver.steer(None, 8, now)
-    assert steer < 0 and not switch
+    assert driver.steer(None, 8, now) < 0
     assert rows[-1]["target_lane"] == 0.5
+    assert driver.throttle_scale == 1.0
+
+    obs.update(x=0.5, theta=0., y_v=365., lines=[
+        {"accepted": True, "k": k, "side": -1 if k <= 0 else 1, "L": k - 0.5,
+         "fits": [{"s": 0., "a": 640 + 100 * (k - 0.5), "y0": 380., "y1": 700., "rms": 1.}]}
+        for k in range(-2, 3)])
+    now += 100_000_000
+    traffic = PerceptionResult(9, now, cars=[Detection(640 + 100 * k, 404, 44, 40, .9)
+                                             for k in range(-2, 2)])
+    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now, traffic=traffic)
+    driver.steer(None, 9, now)
+    assert driver.throttle_scale == 0.0
+    assert rows[-1]["road_path"] == ((0.0, 0.5),)
+
+    now += 100_000_000
+    obs.update(det_fid=10, det_ts_ns=now, theta_src_fid=10, theta_src_ts_ns=now,
+               traffic=PerceptionResult(10, now))
+    driver.steer(None, 10, now)
+    assert driver.throttle_scale == 1.0
+
+
+def test_second_round_steers_when_road_recovers_without_camera_height(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import driving as d
+
+    now = 1_000_000_000
+    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    driver._control = d.HeadingControl(3.5)
+    driver._camera_height = 1.25
+    driver._cal = SimpleNamespace(focal_px=880)
+    driver._trace = SimpleNamespace(append=lambda _: None)
+    pushed = []
+    obs = {}
+    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda _, fid, *a, **kw: pushed.append(fid))
+    driver.begin(settle_s=0.25)
+    assert driver.steer(None, 0, now) == 0.0
+    assert pushed == []
+    for fid in range(1, 85):
+        now = 1_250_000_000 + fid * 100_000_000
+        obs.update(det_fid=fid, det_ts_ns=now, cam_h_lane=None)
+        assert driver.steer(None, fid, now) == 0.0
+    assert pushed[-1] == 84
+
+    now += 100_000_000
+    obs.update(det_fid=85, det_ts_ns=now, theta_src_fid=85, theta_src_ts_ns=now,
+               x=0.55, theta=0.09, usable=True, lines=[
+                   {"accepted": True, "k": 0, "side": -1},
+                   {"accepted": True, "k": 1, "side": 1},
+               ])
+    assert driver.steer(None, 85, now) < 0.0
+    now += 300_000_000
+    assert driver.steer(None, 86, now) == 0.0
 
 
 def test_lane_center_requires_two_adjacent_boundaries() -> None:
@@ -140,6 +185,25 @@ def test_lane_center_requires_two_adjacent_boundaries() -> None:
     assert _lane_center(0.49, lines) is None
     lines[-1]["accepted"] = True
     assert _lane_center(0.49, lines) == 0.5
+
+
+def test_yolo_uses_matching_lane_frame_to_exclude_roadside_parking() -> None:
+    from maaracing_master.plugins.infinite_drive.driving import _road_cars
+    from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+
+    def line(k, pixel):
+        return {"accepted": True, "L": k - 0.5, "fits": [
+            {"s": 0., "a": pixel, "y0": 375., "y1": 710., "rms": 1.}]}
+
+    result = PerceptionResult(12, 100, cars=[
+        Detection(750, 415, 35, 30, .9), Detection(950, 415, 35, 30, .9)])
+    lane = {"lines": [line(0, 600), line(1, 700), line(2, 800)],
+            "x": 0.5, "y_v": 365., "cam_h": 1.25, "det_fid": 12, "det_ts_ns": 100,
+            "traffic": result}
+    cars = _road_cars(lane, 0.5, 1.25)
+    assert len(cars) == 1 and cars[0][0] == pytest.approx(1.5)
+    assert _road_cars(dict(lane, det_fid=13), 0.5, 1.25) is None
+    assert _road_cars(dict(lane, lines=[]), 0.5, 1.25) is None
 
 
 def test_opening_camera_waits_for_consensus_after_one_switch() -> None:

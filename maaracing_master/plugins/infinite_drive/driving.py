@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""无限驾驶的道路定位与车头角闭环。"""
+"""无限驾驶的道路定位、贴边超车与车头角闭环。"""
 
 from __future__ import annotations
 
@@ -10,16 +10,20 @@ from maaracing_master.core.logger import logger
 from maaracing_master.core.template_match import load_template, match_template_cs
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR
-from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
+from maaracing_master.plugins.infinite_drive.lane_obs import lane_membership, lane_pos_nearest
+from maaracing_master.plugins.infinite_drive.ranges import FAR_MAX_M
+from maaracing_master.plugins.infinite_drive.road_path import LOOKAHEAD_M, RoadPath, plan_road_path
+from maaracing_master.plugins.infinite_drive.world_model import BUMPER_CAM_H_M, GROUND_FOCAL_PX, load_calib
+from maaracing_master.plugins.infinite_drive.yellow_line import ROAD_HALF_LANES
 
 _DRIVE_HUD = (
     ("inf_drive_score_rate.png", (0.7539, 0.0333, 0.0672, 0.0458), 0.80),
     ("inf_drive_gear.png", (0.0344, 0.0333, 0.0281, 0.0528), 0.72),
 )
 _MAX_HEADING_AGE_S = 0.22
-_MAX_VIEW_AGE_S = 0.8
-_ANCHOR_PAIR_S = 0.8
-_LANE_CENTERS = (-1.5, -0.5, 0.5, 1.5)
+_FRAME_GAP_S = 0.8
+_LANE_CENTERS = tuple(k + 0.5 for k in range(-ROAD_HALF_LANES, ROAD_HALF_LANES))
+_PATH_AGE_NS = 350_000_000
 
 
 def drive_hud_visible(frame) -> bool:
@@ -39,18 +43,6 @@ def drive_hud_visible(frame) -> bool:
     return False
 
 
-def road_anchor(reading) -> float | None:
-    """两侧同时读到且宽度接近四车道时，返回以路心为原点的自车横位。"""
-    if reading is None or reading.sides != 2 or reading.degraded:
-        return None
-    left, right = reading.left_edge_lane, reading.right_edge_lane
-    if left is None or right is None or not left < 0.0 < right:
-        return None
-    if abs((right - left) - len(_LANE_CENTERS)) > 0.6:
-        return None
-    return -(left + right) / 2.0
-
-
 def _lane_center(x: float, lines) -> float | None:
     """从已锁的左右相邻线选当前车道中心。"""
     left = math.floor(x)
@@ -59,6 +51,33 @@ def _lane_center(x: float, lines) -> float | None:
         return None
     boundaries = {(line.get("k"), line.get("side")) for line in lines if line.get("accepted")}
     return center if {(left, -1), (left + 1, 1)} <= boundaries else None
+
+
+def _road_cars(lane: dict, ego_x: float, camera_height: float) -> list[tuple[float, float]] | None:
+    """同拍框底映射到路面横位与前向距离，剔除路缘外停车。"""
+    traffic = lane.get("traffic")
+    horizon = lane.get("y_v")
+    if (traffic is None or horizon is None or traffic.frame_id != lane.get("det_fid")
+            or traffic.ts_ns != lane.get("det_ts_ns")):
+        return None
+    lines = lane["lines"]
+    height = lane.get("cam_h") or camera_height
+    cars = []
+    for box in traffic.cars:
+        bottom = box.cy + box.h / 2
+        if bottom - horizon < 12:
+            continue
+        distance = GROUND_FOCAL_PX * height / (bottom - horizon)
+        if distance > FAR_MAX_M:
+            continue
+        relative = lane_membership(box.cx, bottom, lines)
+        if relative is None:
+            relative = lane_pos_nearest(box.cx, bottom, lines, cam_h=height, y_v=horizon)
+        if relative is None:
+            return None
+        if abs(ego_x + relative) < ROAD_HALF_LANES:
+            cars.append((ego_x + relative, distance))
+    return cars
 
 
 class HeadingControl:
@@ -75,7 +94,8 @@ class HeadingControl:
         self.desired_heading = 0.0
         self._steer = 0.0
 
-    def update(self, lateral_error_lane: float, heading: float, ts_ns: int) -> float:
+    def update(self, lateral_error_lane: float, heading: float, ts_ns: int, *,
+               preview_m: float | None = None) -> float:
         if ts_ns <= self._ts_ns:
             return self._steer
         dt = (ts_ns - self._ts_ns) / 1e9
@@ -87,39 +107,40 @@ class HeadingControl:
         self._ts_ns, self._heading = ts_ns, heading
 
         # 空间预瞄生成温和的目标角，D 项只看测得的角速度，目标更新不踢杆。
-        desired = math.atan2(lateral_error_lane * self._lane_w_m, 45.0)
+        lookahead = 45.0 if preview_m is None else preview_m
+        desired = math.atan2(lateral_error_lane * self._lane_w_m, lookahead)
         self.desired_heading = max(-0.10, min(0.10, desired))
         steer = 3.5 * (self.desired_heading - heading) - 0.18 * self.yaw_rate
         # 小指令归真零，留给游戏自己的回正。限幅避开卡牌触发的满杆换道。
-        self._steer = 0.0 if abs(steer) < 0.10 else max(-0.45, min(0.45, steer))
+        deadzone = 0.10 if preview_m is None else 0.05
+        self._steer = 0.0 if abs(steer) < deadzone else max(-0.45, min(0.45, steer))
         return self._steer
 
 
-class DepthDrive:
-    """深度提供定位锚，锁定后用新鲜的车道线横位和车头角保持本车道。"""
+class LaneDrive:
+    """用黄线路缘给白线定位，顺着同帧街车间的可行路线转向。"""
 
     def __init__(self) -> None:
         from maaracing_master.plugins.infinite_drive import (
-            DEPTH_MODEL_REL, LANE_FP16_MODEL_REL, LANE_MODEL_REL, model_assets,
-        )
-        from maaracing_master.plugins.infinite_drive.depth_geo import (
-            CAM_H_M, AsyncDepthRoadObserver, DepthRoadObserver, load_session,
+            LANE_FP16_MODEL_REL, LANE_MODEL_REL, PERCEPTION_MODEL_REL, model_assets,
         )
         from maaracing_master.plugins.infinite_drive.lane_obs import LaneObsConfig, LaneObsWorker
-        from maaracing_master.plugins.infinite_drive.world_model import load_calib
-
-        weights, error = model_assets.select(DEPTH_MODEL_REL)
-        if weights is None:
-            raise RuntimeError(error or "未找到深度权重")
+        from maaracing_master.plugins.infinite_drive.perception import StreetPerception
         self._cal = load_calib()
-        self._camera_height = CAM_H_M
+        self._camera_height = BUMPER_CAM_H_M
         self._control = HeadingControl(self._cal.lane_w_m)
-        self._depth = AsyncDepthRoadObserver(DepthRoadObserver(load_session(weights), self._cal))
+        car_weights, car_error = model_assets.select(PERCEPTION_MODEL_REL)
+        perception = None
+        if car_weights is not None:
+            try:
+                perception = StreetPerception(str(car_weights))
+            except Exception as exc:
+                car_error = repr(exc)
+        if perception is None:
+            logger.log(f"[无限驾驶] 街车模型不可用，本次只保持车道：{car_error}", "WARNING")
         self._lines = LaneObsWorker(LaneObsConfig(
             enabled=True, provider="dml", weights=LANE_MODEL_REL, weights_fp16=LANE_FP16_MODEL_REL,
-        ))
-        # 开局先等深度路心和线道号收敛，避免把已在保险杠机位的冷启动当成错机位。
-        self._view_config = ViewGuardConfig(enabled=True, empty_sample_s=2.0)
+        ), drive_observations=True, perception=perception)
         self._trace = get_trace_sink("infinite_drive")
         self.begin()
 
@@ -129,130 +150,103 @@ class DepthDrive:
             raise RuntimeError(self._lines.error)
         if self._lines.note:
             logger.log(f"[无限驾驶] {self._lines.note}", "WARNING")
-        self._depth.start()
 
     def stop(self) -> None:
         self._lines.stop()
-        if not self._depth.stop():
-            logger.log("[无限驾驶] 深度观测线程停止超时", "WARNING")
 
-    def begin(self, *, allow_view_switch: bool = True) -> None:
-        self._view: ViewGuard | None = None
-        self._allow_view_switch = allow_view_switch
-        self._reset_geometry(time.perf_counter_ns())
-
-    def _reset_geometry(self, start_ns: int) -> None:
-        self._phase_start_ns = start_ns
+    def begin(self, *, settle_s: float = 0.0) -> None:
+        self._phase_start_ns = time.perf_counter_ns() + round(settle_s * 1e9)
         self._last_frame_ns = 0
         self._last_fid = -1
-        self._view_fid = None
-        self._anchor_sample: tuple[int, float] | None = None
-        self._anchor: tuple[int, float] | None = None
         self._target: float | None = None
+        self._gross_reanchor = 0
         self.release()
 
     def release(self) -> None:
         self._control.reset()
+        self._road_path: RoadPath | None = None
+        self._road_path_ns = 0
+        self.throttle_scale = 1.0
 
-    def steer(self, frame, fid: int, ts_ns: int) -> tuple[float, bool]:
-        """处理采集帧，返回方向杆和是否请求切换视角。"""
-        from maaracing_master.core import dml_lock
-
+    def steer(self, frame, fid: int, ts_ns: int) -> float:
+        """处理采集帧，返回方向杆。"""
         if ts_ns < self._phase_start_ns:
-            return 0.0, False
+            return 0.0
         now_ns = time.perf_counter_ns()
-        if self._view is None:
-            self._view = ViewGuard(self._view_config, now_ns / 1e9,
-                                   allow_switch=self._allow_view_switch)
         lane = self._lines.latest() or {}
         det_ns = lane.get("det_ts_ns") or 0
-        fresh_view = (det_ns >= self._phase_start_ns
-                      and 0 <= now_ns - det_ns <= _MAX_VIEW_AGE_S * 1e9)
-        cam_h = lane.get("cam_h_lane") if fresh_view else None
-        det_fid = lane.get("det_fid") if fresh_view else None
-        new_view = det_fid is not None and det_fid != self._view_fid
-        if new_view:
-            self._view_fid = det_fid
-        previous_view = self._view.state
-        view = self._view.update(now_ns / 1e9, cam_h, new_view)
-        if view != previous_view:
-            if view == ViewGuard.SWITCH:
-                height = self._view.median
-                evidence = "尚无高度读数" if height is None else f"相机高中位 {height:.2f}m"
-                logger.log(f"[无限驾驶] {evidence}，尝试从追尾切换保险杠视角", "DEBUG")
-                self._reset_geometry(round(self._view.settle_until * 1e9))
-            elif view == ViewGuard.OK:
-                logger.log(f"[无限驾驶] 已确认保险杠视角（相机高中位 {self._view.median:.2f}m）",
-                           "DEBUG")
-            elif view == ViewGuard.FAIL:
-                logger.log("[无限驾驶] 保险杠视角未确认，本阶段仅保持直行", "WARNING")
-        if view == ViewGuard.SWITCH:
-            return 0.0, True
-
-        anchor = (self._anchor[1] if self._anchor is not None
-                  and now_ns - self._anchor[0] <= _ANCHOR_PAIR_S * 1e9 else None)
-        reading, _, new_depth = self._depth.take()
-        if new_depth and self._target is None and anchor is None:
-            depth_ts = self._depth.last_frame_ts_ns or 0
-            pos = road_anchor(reading) if depth_ts >= self._phase_start_ns else None
-            prev = self._anchor_sample
-            self._anchor_sample = None if pos is None else (depth_ts, pos)
-            if (pos is not None and prev is not None
-                    and 0 < depth_ts - prev[0] <= _ANCHOR_PAIR_S * 1e9
-                    and abs(pos - prev[1]) <= 0.3):
-                self._anchor = (depth_ts, pos)
-                anchor = pos
+        fresh = (det_ns >= self._phase_start_ns
+                 and 0 <= now_ns - det_ns <= _MAX_HEADING_AGE_S * 1e9)
 
         new_frame = fid != self._last_fid
-        if new_frame and view != ViewGuard.FAIL:
+        if new_frame:
             gap = (ts_ns - self._last_frame_ns) / 1e9
             dt = gap / max(1, fid - self._last_fid) if self._last_frame_ns else 0.05
-            y_v = None
-            if (lane.get("det_ts_ns") or 0) >= self._phase_start_ns:
-                y_v = lane.get("y_v")
             self._lines.push(frame, fid, self._camera_height, 0.0, dt,
-                             not self._last_frame_ns or gap > _ANCHOR_PAIR_S,
-                             focal=self._cal.focal_px, anchor=anchor,
-                             frame_ts_ns=ts_ns, pre_note=True)
+                             not self._last_frame_ns or gap > _FRAME_GAP_S,
+                             focal=self._cal.focal_px,
+                             frame_ts_ns=ts_ns)
             self._last_fid, self._last_frame_ns = fid, ts_ns
-            # 相机高度反解要先用深度路心给线定道号。已有锚时只给车道线确认定位。
-            if self._target is None and anchor is None:
-                self._depth.push(frame, frame_ts_ns=ts_ns, fid=fid, y_v=y_v)
-            dml_lock.TICK_BEAT.note()
 
         x = lane.get("x")
         heading = lane.get("theta")
         heading_fid = lane.get("theta_src_fid")
         heading_ns = lane.get("theta_src_ts_ns") or 0
-        camera_in_band = (cam_h is not None and self._view_config.cam_h_lo_m
-                          <= cam_h <= self._view_config.cam_h_hi_m)
         position_measured = x is not None and math.isfinite(x) and not lane.get("hold")
-        track_ready = (view == ViewGuard.OK and fresh_view and position_measured
-                       and lane.get("usable") and (cam_h is None or camera_in_band))
+        track_ready = fresh and position_measured and lane.get("usable")
         usable = (track_ready
                   and heading is not None and math.isfinite(heading)
                   and heading_fid == lane.get("det_fid")
                   and heading_ns >= self._phase_start_ns
                   and 0 <= now_ns - heading_ns <= _MAX_HEADING_AGE_S * 1e9)
-        # 深度已为线定道号。稳定检测到当前车道的两边时，直接锁定这两条线的中心。
-        if self._target is None and track_ready:
+        # 线已有绝对道号。稳定检测到当前车道的两边时，锁定其中心作为保持目标。
+        if fresh and self._gross_reanchor != lane.get("gross_reanchor", 0):
+            self._gross_reanchor = lane["gross_reanchor"]
+            self._target = None
+            self.release()
+        if self._target is None and track_ready and x is not None:
             self._target = _lane_center(x, lane.get("lines", ()))
             if self._target is not None:
-                self._anchor = None
                 logger.log(f"[无限驾驶] 已锁定当前车道（中心 {self._target:+.1f}）", "DEBUG")
-        if usable and self._target is not None:
-            steer = self._control.update(self._target - x, heading, heading_ns)
+        route = None
+        preview = None
+        cars = None
+        target = self._target
+        if now_ns - self._road_path_ns > _PATH_AGE_NS:
+            self._road_path = None
+        self.throttle_scale = 1.0 if self._road_path is None else self._road_path.throttle
+        if usable and target is not None and x is not None and heading is not None:
+            cars = _road_cars(lane, x, self._camera_height)
+            if cars is not None and abs(x) < ROAD_HALF_LANES:
+                if heading_ns != self._road_path_ns:
+                    previous = None if self._road_path is None else self._road_path.x_at(LOOKAHEAD_M)
+                    self._road_path = plan_road_path(x, target, cars, previous) if cars else None
+                    self._road_path_ns = heading_ns
+                route = self._road_path
+                self.throttle_scale = 1.0 if route is None else route.throttle
+            if route is not None:
+                preview = route.x_at(LOOKAHEAD_M)
+                # 已进入下一道且近段仍在这条道里，之后以这条道作为无车时的保持目标。
+                if math.floor(preview) == math.floor(x):
+                    self._target = math.floor(x) + 0.5
+            goal = target if preview is None else preview
+            steer = self._control.update(goal - x, heading, heading_ns,
+                                         preview_m=LOOKAHEAD_M if route is not None else None)
             target_heading, yaw_rate = self._control.desired_heading, self._control.yaw_rate
         else:
-            self.release()
+            self._control.reset()
             steer = 0.0
             target_heading = yaw_rate = None
 
-        self._trace.append({"fid": fid, "ts_ns": ts_ns, "anchor_lane": anchor,
+        self._trace.append({"fid": fid, "ts_ns": ts_ns,
                             "ego_lane": x, "target_lane": self._target, "heading_rad": heading,
+                            "road_path": None if route is None else route.points, "path_preview_lane": preview,
+                            "road_cars": cars, "throttle_scale": self.throttle_scale,
+                            "yellow_anchor_lane": lane.get("yellow_anchor"),
+                            "traffic_error": lane.get("traffic_error"),
                             "target_heading_rad": target_heading, "yaw_rate_rad_s": yaw_rate,
-                            "lane_fid": det_fid, "lane_ms": lane.get("ms"),
+                            "lane_fid": lane.get("det_fid"), "lane_ms": lane.get("ms"),
                             "lane_state": lane.get("state"), "lane_locked": lane.get("n_locked"),
                             "heading_fid": heading_fid, "heading_ts_ns": heading_ns or None,
-                            "usable": bool(usable), "cam_h": cam_h, "view": view, "steer": steer})
-        return steer, False
+                            "usable": bool(usable), "steer": steer})
+        return steer

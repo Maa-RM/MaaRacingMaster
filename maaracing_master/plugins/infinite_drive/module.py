@@ -40,7 +40,7 @@ from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR, PIPELINE_DIR
 from maaracing_master.plugins.infinite_drive import dashboard_store
 from maaracing_master.plugins.infinite_drive import flow_data
-from maaracing_master.plugins.infinite_drive.driving import DepthDrive, drive_hud_visible
+from maaracing_master.plugins.infinite_drive.driving import LaneDrive, drive_hud_visible
 from maaracing_master.plugins.infinite_drive.debugview import DebugPairWriter
 from maaracing_master.plugins.infinite_drive.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.infinite_drive.session_layout import (
@@ -115,8 +115,10 @@ _DRIVE_STAGES = frozenset({"驾驶·阶段1", "驾驶·阶段2"})
 _DRIVE_TICK_S = 0.05
 _MAX_DRIVE_FRAME_AGE_MS = 200.0
 _DRIVE_HUD_GAP_S = 0.65
-_DRIVE_THROTTLE = 220  # 两档共用 v1 直行对照的固定油门
-_DRIVE_MODES = {"straight": "全程直行", "depth": "深度模式"}
+_DRIVE_THROTTLE = 220  # 直行油门与车道线驾驶的油门上限
+_CAMERA_SETTLE_S = 0.25
+# 已保存的 depth 档继续指向自动转向模式。
+_DRIVE_MODES = {"straight": "全程直行", "depth": "车道线驾驶"}
 
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
 # 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
@@ -233,7 +235,7 @@ class InfiniteDriveModule(ActivityModule):
         if bool(config.get("record_mode")):
             return ["录制: 开"]
         if config.get("drive_mode") == "depth":
-            return ["驾驶: 深度模式"]
+            return ["驾驶: 车道线驾驶"]
         return []
 
     def __init__(self, ctx: ActivityContext):
@@ -245,7 +247,7 @@ class InfiniteDriveModule(ActivityModule):
         self._ocr: RapidOcrEngine | None = None
         self.last_settlement: dict[str, str] = {}
         self._drive_mode = self.DEFAULT_MODULE_CONFIG["drive_mode"]
-        self._depth_drive: DepthDrive | None = None
+        self._lane_drive: LaneDrive | None = None
         # 录制模式：开启后全程落盘取证（真源配置键 record_mode，默认关）
         self._record_mode = bool(self.DEFAULT_MODULE_CONFIG["record_mode"])
         self._recorder: DriveRecorder | None = None
@@ -378,16 +380,16 @@ class InfiniteDriveModule(ActivityModule):
                 self._begin_recording()
             elif self._drive_mode == "depth":
                 try:
-                    self._depth_drive = DepthDrive()
-                    self._depth_drive.start()
+                    self._lane_drive = LaneDrive()
+                    self._lane_drive.start()
                 except Exception as exc:  # noqa: BLE001 —— 模型缺失或会话启动失败
-                    self._tlog(f"[无限驾驶] 深度模式启动失败，请检查深度和车道线模型：{exc}", "ERROR")
+                    self._tlog(f"[无限驾驶] 车道线驾驶启动失败，请检查车道线模型：{exc}", "ERROR")
                     return False
             ok = self._run_flow(index)
         finally:
-            if self._depth_drive is not None:
-                self._depth_drive.stop()
-                self._depth_drive = None
+            if self._lane_drive is not None:
+                self._lane_drive.stop()
+                self._lane_drive = None
             self._stop_recording("stopped" if not self._running else "normal")
             # 停止信号打断的收 incomplete；其余按组内 ERROR/WARNING 自动判终态。
             self._end_grp("incomplete" if not self._running else None)
@@ -778,9 +780,8 @@ class InfiniteDriveModule(ActivityModule):
         self._open_grp(f"[极速狂飙] 驾驶阶段 {phase}（{label}）", "phase")
         end_node = _DRIVE_END[phase]
         deadline = time.monotonic() + _DRIVE_DURATION[phase] + flow_data.DRIVE_END_MARGIN_S
-        depth = self._depth_drive
-        if depth is not None:
-            depth.begin(allow_view_switch=phase == "p1")
+        driver = self._lane_drive
+        started = False
         last_hud_at = time.monotonic()
         hud_fid = None
         hud_visible = False
@@ -806,15 +807,18 @@ class InfiniteDriveModule(ActivityModule):
                             last_hud_at = tick
                             if pad is None:
                                 pad = lease.enter_context(self.ctx.gamepad.acquire())
-                            steer, switch_view = ((0.0, False) if depth is None
-                                                  else depth.steer(frame, fid, ts_ns))
+                            if driver is not None and not started:
+                                started = True
+                                if phase == "p1" and not self._switch_drive_view(pad):
+                                    return False
+                                driver.begin(settle_s=_CAMERA_SETTLE_S if phase == "p1" else 0.0)
+                            steer = 0.0 if driver is None else driver.steer(frame, fid, ts_ns)
                             if not self._running or not self.ctx.lifecycle.running:
                                 return False
                             pad.left_joystick(x_value=round(steer * 32767))
-                            pad.right_trigger(value=_DRIVE_THROTTLE)
+                            throttle_scale = 1.0 if driver is None else driver.throttle_scale
+                            pad.right_trigger(value=round(_DRIVE_THROTTLE * throttle_scale))
                             pad.update()
-                            if switch_view and not self._switch_drive_view(pad):
-                                return False
                             if not self.ctx.lifecycle.sleep(max(0.0, _DRIVE_TICK_S - (time.monotonic() - tick))):
                                 return False
                             continue
@@ -822,8 +826,8 @@ class InfiniteDriveModule(ActivityModule):
                     if pad is not None:
                         lease.close()
                         pad = None
-                        if depth is not None:
-                            depth.release()
+                        if driver is not None:
+                            driver.release()
                     if not self._record_mode and tick - last_hud_at < _DRIVE_HUD_GAP_S:
                         # 短暂遮挡先归还手柄，快速等回驾驶画面，避免在赛道上启动 OCR。
                         if not self.ctx.lifecycle.sleep(_DRIVE_TICK_S):

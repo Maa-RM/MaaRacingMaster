@@ -59,7 +59,11 @@ import numpy as np
 import onnxruntime as ort
 
 from maaracing_master.core import dml_lock
-from maaracing_master.plugins.infinite_drive.world_model import Calib
+from maaracing_master.plugins.infinite_drive.world_model import (
+    BUMPER_CAM_H_M as CAM_H_M,
+    GROUND_FOCAL_PX as FOCAL_PX,
+    Calib,
+)
 
 # ── 检测带（与既有捕获几何 1280×720 绑定）──
 Y0, DIAG_Y1 = 340, 715
@@ -71,9 +75,6 @@ DA_MEAN = np.array([0.485, 0.456, 0.406], np.float32)   # ImageNet 归一（首�
 DA_STD = np.array([0.229, 0.224, 0.225], np.float32)    # 是 Conv，图内无归一化）
 PT_W, PT_H = 640, 360           # 点图网格（半幅，ds=2；与全幅读数差 p90 ≤0.006 lane）
 PT_CX = 640.5                   # 全幅主点列（探针口径，2026-11-11 合成验证）
-FOCAL_PX = 470.0                # 固定投影焦距（2026-11-18 尺度复核校准值：
-#                                 原 630 是按竖向口径换算的结果，实际画面为横向视场）
-CAM_H_M = 1.25                  # 权威相机高（RULES §8.1）
 # 灭点行缺值时的回退（**不是** gate0.y_h）：y_h 这个纵向米制骨架必须和相机配置
 # 同源，而 gate0 的 354.2 是 MoGe 时代平面拟合的中位、同时承担 2D 尺子的分母
 # （两者不能共用同一个数）。车道线实测段中位 361.3、全池 p25~p75 358.5~362.2。

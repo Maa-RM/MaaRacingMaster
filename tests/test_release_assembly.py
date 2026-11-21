@@ -68,7 +68,8 @@ def _put(root: Path, rel: str, content: str = "fixture") -> Path:
     return path
 
 
-def test_source_copy_excludes_development_material_and_keeps_runtime(tmp_path):
+@pytest.mark.parametrize("with_models", [False, True])
+def test_source_copy_excludes_development_material_and_keeps_runtime(tmp_path, with_models):
     source, stage = tmp_path / "source", tmp_path / "stage"
     keep = [
         "pyproject.toml", "LICENSE", "THIRD_PARTY_LICENSES.md",
@@ -90,12 +91,15 @@ def test_source_copy_excludes_development_material_and_keeps_runtime(tmp_path):
         "maaracing_master/plugins/alpha/tests/test_strategy.py",
         "maaracing_master/plugins/alpha/data/labels.json",
         "maaracing_master/plugins/_archive/old/module.py",
+        "maaracing_master/plugins/infinite_drive/resources/models/depth/research.onnx",
     ]
+    lane_model = "maaracing_master/plugins/infinite_drive/resources/models/lane/model.onnx"
+    (keep if with_models else exclude).append(lane_model)
     for rel in keep + exclude:
         _put(source, rel)
     stage.mkdir()
     result = _run(
-        f"$RepoRoot={_ps(source)}; $StageRoot={_ps(stage)}; $WithModels=$false",
+        f"$RepoRoot={_ps(source)}; $StageRoot={_ps(stage)}; $WithModels=${str(with_models).lower()}",
         _section("# ---------- 3. whitelist", "# ---------- 3.5"),
     )
     assert result.returncode == 0, result.stdout + result.stderr

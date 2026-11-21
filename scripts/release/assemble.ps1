@@ -679,7 +679,8 @@ foreach ($rel in @(
 # 目录位置即判据，不参与下方按 VALID_UNTIL 的剔除判定（那套只覆盖 plugins/ 顶层现役插件）。
 # 下方 §3.5 末尾有反向守卫：stage 里若出现该目录即报错，防静默带出。
 # 插件内工具与内部知识文档同样不分发；用户安装说明、许可和运行资源继续随插件复制。
-robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa data tools tests /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+$researchDepth = Join-Path $RepoRoot 'maaracing_master\plugins\infinite_drive\resources\models\depth'
+robocopy (Join-Path $RepoRoot 'maaracing_master') (Join-Path $StageRoot 'maaracing_master') /E /XD __pycache__ _archive .mimosa data tools tests $researchDepth /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { $errors.Add('robocopy source package failed') }
 Get-ChildItem (Join-Path $StageRoot 'maaracing_master') -Recurse -File |
     Where-Object { $_.Name -in @('CODE_WIKI.md', 'RULES.md') } |
@@ -697,7 +698,7 @@ if (Test-Path -LiteralPath $frontendReadme) {
 Get-ChildItem $StageRoot -Recurse -Directory -Force -Filter '.mimosa' -EA SilentlyContinue |
     ForEach-Object { Remove-Item $_.FullName -Recurse -Force -EA SilentlyContinue }
 
-# 可选权重默认不进包：这些 ONNX 只服务深度/线观测，由独立模型包分发
+# 可选权重默认不进包：车道线和街车检测权重由独立模型包分发
 # （用户数据目录优先，见 model_assets.py）。-WithModels 产出离线全量包。
 $modelDir = Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\resources\models'
 # 构建描述注入主包：运行时按 manifest 声明加载插件安装器，URL/哈希只来自本文件。
@@ -712,7 +713,7 @@ if ($ModelDescriptor) {
 }
 # 默认包不带可选权重；-WithModels 的全量离线包保留权重
 if (-not $WithModels) {
-    foreach ($sub in @('lane', 'perception', 'depth')) {
+    foreach ($sub in @('lane', 'perception')) {
         $p = Join-Path $modelDir $sub
         if (Test-Path $p) { Remove-Item $p -Recurse -Force }
     }
@@ -932,7 +933,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
             $errors.Add('DEV-TREE-LEAK: harness 状态目录入包 -> ' +
                 $_.FullName.Substring($StageRoot.Length).TrimStart('\'))
         }
-    # 默认包不得含深度权重（由可选模型包分发）；排除逻辑失效时当场失败
+    # 默认包不得含可选权重；排除逻辑失效时当场失败
     if (-not $WithModels) {
         Get-ChildItem (Join-Path $StageRoot 'maaracing_master\plugins\infinite_drive\resources\models') `
             -Recurse -File -Filter '*.onnx' -EA SilentlyContinue |
