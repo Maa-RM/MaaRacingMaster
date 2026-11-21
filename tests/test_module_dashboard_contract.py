@@ -80,7 +80,7 @@ def test_archived_speedrush_declares_dashboard():
 
     模块已归档（_archive/speedrush/），不再进 MODULE_REGISTRY；声明面的回归锁
     改用归档模块类直导。注册侧的下发由下方模块列表用例锁定（后继 infinite_drive
-    流程未接线、无看板）。
+    的战绩看板已接线，资格位为 True）。
     """
     try:
         from maaracing_master.plugins._archive.speedrush.module import SpeedRushModule
@@ -115,7 +115,7 @@ def test_module_list_payload_carries_dashboard_flag():
             f"{item['id']} 缺少布尔型 has_dashboard"
         )
 
-    assert by_id["infinite_drive"]["has_dashboard"] is False
+    assert by_id["infinite_drive"]["has_dashboard"] is True    # 战绩看板已接线
     assert by_id["launch_game"]["has_dashboard"] is False
     assert by_id["close_game"]["has_dashboard"] is False
 
