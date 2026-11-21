@@ -398,15 +398,12 @@ SITES: list[LogSite] = [
     _s('plugins/infinite_drive/hud.py', 'HudObserver._write_worker', '[极速狂飙] HUD 落盘失败（累计 {}）: {}', '<dynamic>', 'cross', 'cross', '逐帧重复已降级：首次 WARNING/ERROR，其后 DEBUG（文件仍全量，面板不刷屏）。'),
 
     # ---- plugins/infinite_drive/module.py ----
+    # 阶段日志经 _tlog 归当前业务组（开组点见模块内线性组链），不再逐条裸登记；
+    # 只留组外前提判定、录制旁路两类无归属站点与包装器回退。
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._tlog', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/组外前提判定才走到这里，归属与内容由调用方决定。'),
+    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._open_grp', '<dynamic>', 'INFO', 'state', 'wrapper', 'logger 无 group()（测试桩）时的 legacy 单行回退：开组动作降级为普通日志，内容与归属由调用方决定。'),
     _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 窗口连接失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
     _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 游戏窗口不是 16:9（模板与 ROI 按 720p 设计），模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule.start', '[无限驾驶] 导航图加载失败，模块终止', 'ERROR', 'cross', 'cross', '启动前提判定先于模块业务组开启：无归属可挂；失败即终止，必须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._run_flow', '[无限驾驶] 「{}」未正常结束，本轮中止', 'WARNING', 'state', 'cross', '轮次状态事件（非逐帧）：本局中止的里程碑，须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._run_step', '[无限驾驶] 步骤「{}」重发 {} 次仍未落地，本轮中止', 'WARNING', 'state', 'cross', '步级重试耗尽的状态事件（非逐帧）：失败信号须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._pick_cards', '[无限驾驶] 「{}」等待内未出现选卡页', 'WARNING', 'state', 'cross', '选卡段入口状态事件：页面缺失即中止，须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._pick_cards', '[无限驾驶] 「{}」重发预算内商店未关闭，本轮中止', 'WARNING', 'state', 'cross', '选卡重发预算耗尽的状态事件（非逐帧）：失败信号须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._drive', '[无限驾驶] 驾驶{} 超时未见结束信号', 'WARNING', 'state', 'cross', '驾驶段超时状态事件（非逐帧）：失败信号须留在面板上。'),
-    _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._read_settlement', '[无限驾驶] 结算记录落库失败: {}', 'WARNING', 'state', 'cross', '结算记录旁路失败的状态事件：记录失败不阻断流程，须留在面板上。'),
     _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._begin_recording', '[无限驾驶] 全程录制开启 → {}', 'INFO', 'state', 'cross', '录制旁路开启的回显：录制器不挂业务组，无归属可挂。'),
     _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._begin_recording', '[无限驾驶] 会话目录 {} 已存在，改写到 {}', 'WARNING', 'state', 'cross', '会话目录撞名改写的状态事件：录制旁路，无业务组可挂。'),
     _s('plugins/infinite_drive/module.py', 'InfiniteDriveModule._begin_recording', '[无限驾驶] 录制器启动失败（本轮不录制）: {}', 'WARNING', 'state', 'cross', '录制旁路启动失败的可恢复降级：不阻断流程，但本轮没有取证须让用户知道。'),

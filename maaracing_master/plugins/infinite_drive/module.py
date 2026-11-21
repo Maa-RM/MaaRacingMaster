@@ -196,6 +196,7 @@ class InfiniteDriveModule(ActivityModule):
         self._graph: NavGraph | None = None
         self._running = False
         self._stage_name: str | None = None
+        self._log_grp = None
         self._ocr: RapidOcrEngine | None = None
         self.last_settlement: dict[str, str] = {}
         # 录制模式：开启后全程落盘取证（真源配置键 record_mode，默认关）
@@ -211,6 +212,44 @@ class InfiniteDriveModule(ActivityModule):
     @property
     def current_stage(self) -> str | None:
         return self._stage_name
+
+    # ---------- 结构化日志组归属（speedrush 同款线性组链，类内薄方法） ----------
+    # 组是 GUI 卡片的真源：模块启动 / 每轮流程 / 选卡 / 驾驶各开一组，开新组自动
+    # 收上一组，start 的 finally 收最后一组——每个 group_start 都有归宿，不留悬空。
+    # 阶段日志一律走 _tlog 归当前组；启动前提与录制旁路保持无组（见站点登记）。
+
+    def _tlog(self, msg: str, level: str = "INFO") -> None:
+        """阶段日志：开组期间归当前组，无组时落普通日志（测试桩/前提判定）。"""
+        g = self._log_grp
+        if g is not None:
+            g.log(msg, level)
+        else:
+            logger.log(msg, level)
+
+    def _open_grp(self, title: str, kind: str) -> None:
+        """开业务组；上一组先按组内告警/错误自动收尾，并把组号同步给导航图。"""
+        if getattr(logger, "group", None) is None:
+            logger.log(title)   # 测试桩无 group()：保留 legacy 单行行为
+            return
+        self._end_grp()
+        self._log_grp = logger.group(title, kind=kind)
+        self._sync_log_group()
+
+    def _end_grp(self, outcome: str | None = None) -> None:
+        """收尾当前组；outcome 缺省按组内 ERROR/WARNING 自动推导终态。幂等。"""
+        g = self._log_grp
+        if g is None:
+            return
+        self._log_grp = None
+        g.end(outcome)
+        self._sync_log_group()
+
+    def _sync_log_group(self) -> None:
+        """把当前组号交给导航图：图动作的日志在派发点取快照，不读隐式当前组。"""
+        graph = self._graph
+        sync = getattr(graph, "set_log_group", None)
+        if sync is not None:
+            sync(getattr(self._log_grp, "id", None))
 
     # ---------- 模块配置（GUI 读写；运行实况走 _state） ----------
 
@@ -261,25 +300,30 @@ class InfiniteDriveModule(ActivityModule):
             logger.log("[无限驾驶] 游戏窗口不是 16:9（模板与 ROI 按 720p 设计），模块终止", "ERROR")
             return False
         self._running = True
-        graph = NavGraph(self.ctx)
-        graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
-        self._graph = graph
-        if not graph.load():
-            logger.log("[无限驾驶] 导航图加载失败，模块终止", "ERROR")
-            self._graph = None
-            return False
-        index = 0
-        if start_from:
-            names = [s for s, _, _ in FLOW]
-            if start_from in names:
-                index = names.index(start_from)
+        self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}）", "session")
         ok = False
-        if self._record_mode:
-            self._begin_recording()
         try:
+            # 开组后的所有出口都在 try 内：图加载失败也不能漏收组。
+            graph = NavGraph(self.ctx)
+            graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
+            self._graph = graph
+            self._sync_log_group()   # 图对象晚于开组创建：补一次组号同步
+            if not graph.load():
+                self._tlog("[无限驾驶] 导航图加载失败，模块终止", "ERROR")
+                self._graph = None
+                return False
+            index = 0
+            if start_from:
+                names = [s for s, _, _ in FLOW]
+                if start_from in names:
+                    index = names.index(start_from)
+            if self._record_mode:
+                self._begin_recording()
             ok = self._run_flow(index)
         finally:
             self._stop_recording("stopped" if not self._running else "normal")
+            # 停止信号打断的收 incomplete；其余按组内 ERROR/WARNING 自动判终态。
+            self._end_grp("incomplete" if not self._running else None)
             self._stage_name = None
         return ok
 
@@ -364,7 +408,11 @@ class InfiniteDriveModule(ActivityModule):
 
     def _run_flow(self, index: int) -> bool:
         assert self._graph is not None
+        round_no = 0
         while self._running:
+            round_no += 1
+            # 组边界即轮次边界：开新组自动收上一阶段组，轮内日志归本轮卡片。
+            self._open_grp(f"[极速狂飙] 第 {round_no} 轮", "session")
             while index < len(FLOW):
                 if not self._running:
                     return True
@@ -382,7 +430,7 @@ class InfiniteDriveModule(ActivityModule):
                     else:
                         ok = self._drive(phase)
                     if not ok:
-                        logger.log(f"[无限驾驶] 「{stage}」未正常结束，本轮中止", "WARNING")
+                        self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return self._stop_received()
                 else:
                     if not self._run_step(node, stage):
@@ -451,7 +499,7 @@ class InfiniteDriveModule(ActivityModule):
                     break
                 continue
             if cmd is Command.FAIL:
-                logger.log(f"[无限驾驶] 步骤「{stage}」重发 {STEP_MAX_RETRIES} 次仍未落地，本轮中止",
+                self._tlog(f"[无限驾驶] 步骤「{stage}」重发 {STEP_MAX_RETRIES} 次仍未落地，本轮中止",
                            "WARNING")
                 return False
             return False
@@ -468,12 +516,13 @@ class InfiniteDriveModule(ActivityModule):
         """
         assert self._graph is not None
         assert self.ctx is not None
+        self._open_grp(f"[极速狂飙] 选卡阶段 {phase}", "phase")
         max_picks = 1 if phase == "card1" else flow_data.CARD2_MAX_PICKS
         for _ in range(max_picks + PICK_RESEND_BUDGET):
             if not self._running:
                 return False
             if not self._wait_card_anchor(want_present=True):
-                logger.log(f"[无限驾驶] 「{phase}」等待内未出现选卡页", "WARNING")
+                self._tlog(f"[无限驾驶] 「{phase}」等待内未出现选卡页", "WARNING")
                 return False
             slot = self._choose_card_slot()
             self._graph.run(f"infinite_drive.选卡.r{slot + 1}",
@@ -482,7 +531,7 @@ class InfiniteDriveModule(ActivityModule):
                                       wait_s=PICK_CLOSE_WINDOW_S,
                                       quiet_s=PICK_CLOSE_QUIET_S):
                 return True
-        logger.log(f"[无限驾驶] 「{phase}」重发预算内商店未关闭，本轮中止", "WARNING")
+        self._tlog(f"[无限驾驶] 「{phase}」重发预算内商店未关闭，本轮中止", "WARNING")
         return False
 
     def _wait_card_anchor(self, *, want_present: bool,
@@ -570,7 +619,7 @@ class InfiniteDriveModule(ActivityModule):
                 round_no=self._settlement_round)
             dashboard_store.append(entry)
         except Exception as exc:  # noqa: BLE001 —— 记录失败不阻断流程
-            logger.log(f"[无限驾驶] 结算记录落库失败: {exc!r}", "WARNING")
+            self._tlog(f"[无限驾驶] 结算记录落库失败: {exc!r}", "WARNING")
             return
         self.last_settlement["record"] = entry
 
@@ -616,6 +665,8 @@ class InfiniteDriveModule(ActivityModule):
         """
         assert self._graph is not None
         assert self.ctx is not None
+        label = "录制采集" if self._record_mode else "等待阶段结束"
+        self._open_grp(f"[极速狂飙] 驾驶阶段 {phase}（{label}）", "phase")
         end_node = _DRIVE_END[phase]
         deadline = time.monotonic() + _DRIVE_DURATION[phase] + flow_data.DRIVE_END_MARGIN_S
         while self._running and self.ctx.lifecycle.running:
@@ -623,7 +674,7 @@ class InfiniteDriveModule(ActivityModule):
                 return True
             self._sweep_transient_popup()
             if time.monotonic() >= deadline:
-                logger.log(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
+                self._tlog(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
                 return False
             if not self.ctx.lifecycle.sleep(STEP_POLL_S):
                 return False
