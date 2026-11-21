@@ -33,6 +33,7 @@ from maaracing_master.core.paths import debug_dir
 from maaracing_master.core.session_layout import fresh_session_dir
 from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR, PIPELINE_DIR
+from maaracing_master.plugins.infinite_drive import dashboard_store
 from maaracing_master.plugins.infinite_drive import flow_data
 from maaracing_master.plugins.infinite_drive.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.infinite_drive.session_layout import SOURCE_CONTROL
@@ -139,6 +140,7 @@ class InfiniteDriveModule(ActivityModule):
     REQUIRED_ASSETS: tuple[str, ...] = ()
     COVER = "cover.jpg"
     DEBUG_SAVE = "self"
+    DASHBOARD_CONTRACT = 1
 
     # ---------- 配置面（录制开关；契约见 core/config_ui_contract.py） ----------
 
@@ -203,6 +205,8 @@ class InfiniteDriveModule(ActivityModule):
         self._record_thread: threading.Thread | None = None
         # 偶发弹窗 OCR 兜底的限频时刻（单调钟；0 = 立即可扫）
         self._next_sweep_at = 0.0
+        # 本次运行的结算计数（看板记录的局内序号）
+        self._settlement_round = 0
 
     @property
     def current_stage(self) -> str | None:
@@ -537,7 +541,12 @@ class InfiniteDriveModule(ActivityModule):
         return best_slot
 
     def _read_settlement(self) -> None:
-        """读结算变动量（本场得分 / 进度与累计分），供日志与后续判定；固定量不 OCR。"""
+        """读结算变动量并落一条战绩记录（程序局门槛：只在本流程内产生）。
+
+        字段按 v2 最终结算页定（第 N 关 / 挑战结果 / 本场得分 / 过关条件 / 关卡
+        进度 / 本轮总得分）；解析失败的字段显式置 None 不静默丢。落库失败只告警
+        ——记录是旁路，不阻断流程。
+        """
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
         if self._ocr is None:
@@ -548,6 +557,35 @@ class InfiniteDriveModule(ActivityModule):
         progress_text = getattr(progress, "text", "") or ""
         self.last_settlement = {"score": score_text, "progress": progress_text}
         logger.log(f"[无限驾驶] 结算读数: 得分={score_text} 进度={progress_text}", "DEBUG")
+        self._settlement_round += 1
+        try:
+            entry = dashboard_store.record_settlement(
+                score_text, progress_text,
+                session_token=logger.session_token,
+                round_no=self._settlement_round)
+            dashboard_store.append(entry)
+        except Exception as exc:  # noqa: BLE001 —— 记录失败不阻断流程
+            logger.log(f"[无限驾驶] 结算记录落库失败: {exc!r}", "WARNING")
+            return
+        self.last_settlement["record"] = entry
+
+    @classmethod
+    def read_dashboard(cls) -> dict:
+        """极速狂飙战绩看板：只读结算记录，不创建模块实例。
+
+        记录只在程序局（模块流程内）产生——玩家在程序外自己开的局不进看板。
+        读库失败返回 warn 态兜底，不把异常抛给 sidecar 的轮询。
+        """
+        try:
+            return dashboard_store.read_dashboard_payload()
+        except Exception as exc:  # noqa: BLE001 —— 轮询入口不得打崩数据页
+            logger.log(f"[无限驾驶] 读取战绩失败: {exc!r}", "DEBUG")
+            return {
+                "version": dashboard_store.DASHBOARD_CONTRACT_VERSION,
+                "title": "极速狂飙战绩",
+                "badge": {"text": "读取失败", "tone": "warn"},
+                "blocks": [{"type": "text", "text": "稍后自动重试。"}],
+            }
 
     def _sweep_transient_popup(self) -> None:
         """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它。
