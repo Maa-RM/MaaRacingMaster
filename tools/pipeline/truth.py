@@ -518,6 +518,91 @@ def rect_checks(graph: dict, policy: dict | None = None) -> list[str]:
     return errs
 
 
+FRAME_W, FRAME_H = 1280, 720
+# 模板搜索区的最小边距（px/侧，720p 设计分辨率）：归一化 4 位小数在 720p 上取整
+# 截断能把边距吃掉 1px，零边距则对 1px 漂移零容忍。
+ROI_MIN_MARGIN_PX = 2
+
+
+def _png_size(path: Path) -> tuple[int, int] | None:
+    """读 PNG IHDR 拿尺寸（静态校验不起 opencv）；不可解析返回 None。"""
+    try:
+        with path.open("rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _template_image_dirs(origin_file: Path | None) -> list[Path]:
+    """节点来源文件对应的模板目录：插件 resources/image（或启动链 startup/image）+ core 兜底。"""
+    dirs = [PACK / "core" / "resources" / "image"]
+    if origin_file is not None:
+        dirs.insert(0, origin_file.parent / "image")
+        dirs.insert(0, origin_file.parent.parent / "image")
+    seen: list[Path] = []
+    for d in dirs:
+        if d.is_dir() and d not in seen:
+            seen.append(d)
+    return seen
+
+
+def _resolve_template(name: str, dirs: list[Path]) -> Path | None:
+    for d in dirs:
+        p = d / name
+        if p.is_file():
+            return p
+    return None
+
+
+def template_fit_checks(graph: dict, origin: dict) -> list[str]:
+    """校验器第 8 条：模板搜索区必须以 ≥2px 边距容纳模板（720p 设计分辨率）。
+
+    实证缺陷（2026-11-21 真机）：rect 归一化 4 位小数在 720p 取整截断，多个节点
+    的搜索区比模板小 1px 或零边距——模板在窗内凑不出来，多尺度只能缩档凑合，
+    0.995 分的按钮实测只剩 0.59，运行期表现为「按钮明明在却永远识别未命中」。
+    settle 规格与识别同源复制，一并检查。
+    """
+    errs: list[str] = []
+    for name, node in sorted(graph.items()):
+        specs: list[tuple[str, dict]] = []
+        rp = (node.get("recognition") or {}).get("param") or {}
+        crp = rp.get("custom_recognition_param")
+        if isinstance(crp, dict):
+            specs.append(("recognition", crp))
+        ap = ((node.get("action") or {}).get("param") or {})
+        cap = ap.get("custom_action_param")
+        if isinstance(cap, dict) and isinstance(cap.get("settle"), dict) \
+                and cap["settle"].get("templates"):
+            specs.append(("settle", cap["settle"]))
+        for label, spec in specs:
+            templates = [t for t in spec.get("templates") or [] if isinstance(t, str)]
+            rect = spec.get("rect")
+            if not templates or not (isinstance(rect, list) and len(rect) == 4):
+                continue
+            dirs = _template_image_dirs(origin.get(name))
+            rx1, ry1, rx2, ry2 = (float(v) for v in rect)
+            rw, rh = (rx2 - rx1) * FRAME_W, (ry2 - ry1) * FRAME_H
+            for t in templates:
+                path = _resolve_template(t, dirs)
+                if path is None:
+                    errs.append(f"{name}.{label}: 模板 {t} 在模板目录中不存在")
+                    continue
+                size = _png_size(path)
+                if size is None:
+                    errs.append(f"{name}.{label}: 模板 {t} 不是可解析的 PNG")
+                    continue
+                tw, th = size
+                if rw < tw + 2 * ROI_MIN_MARGIN_PX or rh < th + 2 * ROI_MIN_MARGIN_PX:
+                    errs.append(
+                        f"{name}.{label}: 搜索区 {round(rw)}x{round(rh)} 未以 "
+                        f"≥{ROI_MIN_MARGIN_PX}px/侧容纳模板 {t} {tw}x{th}"
+                        "（截断边距会让模板在窗内凑不出来，见本条 docstring 实证）")
+    return errs
+
+
 def stage_face_checks(graph: dict, policy: dict) -> list[str]:
     """页面清单三方等集（防脱钩机检，2026-09-13）。
 
@@ -636,6 +721,7 @@ def main() -> int:
     errors += action_checks(graph)
     errors += namespace_checks(graph, origin)
     errors += rect_checks(graph)    # 图侧几何全量（含无 policy 的模块）
+    errors += template_fit_checks(graph, origin)  # 搜索区必须容纳模板（含 settle）
     for w in warns:
         print(f"[warn] {w}")
     for e in errors:

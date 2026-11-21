@@ -180,6 +180,26 @@ def _match_colorspace(frame: np.ndarray, tpl: np.ndarray,
     return frame, tpl  # rgb / rgb_strict 用彩色
 
 
+def _fit_roi(roi: Box, frame_shape, tpl_shape) -> Box:
+    """搜索区装不下模板时，以搜索区中心外扩到刚好容纳（数据缺陷兜底）。
+
+    真源 ROI 比模板小哪怕 1px，模板在窗内就凑不出来——多尺度只能缩到能塞进的
+    档位凑合，0.995 分的模板实测只剩 0.59（2026-11-21 关卡挑战按钮，ROI 高 57
+    vs 模板高 58）。外扩不改模板与帧的对齐语义，只把「必然失配」变成「能正常
+    匹配」；热路径不打日志，真源侧的缺陷由数据修复与校验流程兜。
+    """
+    rx, ry, rw, rh = roi
+    th, tw = tpl_shape[:2]
+    if rw >= tw and rh >= th:
+        return roi
+    fh, fw = frame_shape[:2]
+    nw, nh = max(rw, tw), max(rh, th)
+    cx, cy = rx + rw / 2, ry + rh / 2
+    nx1 = max(0, min(int(round(cx - nw / 2)), fw - nw))
+    ny1 = max(0, min(int(round(cy - nh / 2)), fh - nh))
+    return (nx1, ny1, min(nw, fw), min(nh, fh))
+
+
 def match_template_cs(frame: np.ndarray, tpl: np.ndarray, *, colorspace: str = "rgb",
                       threshold: float = 0.7, scales=DEFAULT_SCALES,
                       roi: Box | None = None) -> tuple[Box | None, float]:
@@ -190,7 +210,10 @@ def match_template_cs(frame: np.ndarray, tpl: np.ndarray, *, colorspace: str = "
     - rgb_strict：R/G/B 三通道独立 NCC 取**最低分**——"结构对但颜色错"零容忍。
       负分（反相）必须参与 min，故不走 find_template（其内部 0 下限会吞负分）；
       尺度固定 1.0（strict 场景为固定 UI 的激活态/稀有度判定），多尺度 strict 归 P2b。
+    - roi 装不下模板时以框中心外扩到刚好容纳（见 ``_fit_roi``）。
     """
+    if roi is not None:
+        roi = _fit_roi(roi, frame.shape, tpl.shape)
     if colorspace == "rgb_strict":
         search, ox, oy = frame, 0, 0
         if roi is not None:
