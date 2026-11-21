@@ -75,7 +75,7 @@ templates/plugin/
 | 成员 | 说明 |
 |------|------|
 | `DEFAULT_MODULE_CONFIG` | 用户可设置配置项的键与默认值；同时是存档回填白名单——不加进这里不会被保存 |
-| `CONFIG_UI_CONTRACT` / `CONFIG_UI` | 配置面板声明（控件五型 switch/segmented/select/number/text、文案、显隐、按值换文案）；宿主通用渲染，插件**不提供**自带 HTML/JS——不够用就扩控件类型并升契约版本 |
+| `CONFIG_UI_CONTRACT` / `CONFIG_UI` | 配置面板声明（控件类型与字段白名单以 `core/config_ui_contract.py` 的 `FIELD_TYPES` 为准、文案、显隐、按值换文案）；宿主通用渲染，插件**不提供**自带 HTML/JS——不够用就扩控件类型并升契约版本 |
 | `set_module_config(config)` | 配置注入口：controller 启动时注入实例、GUI 写缓存也走它；非法值静默修正，不抛 |
 | `normalize_config(config)` | 旧键折算与不变量；宿主在读回存档与接收写入前各调一次 |
 | `config_choices()` | 下拉型字段的动态候选；表单里只写引用键，不复制候选清单 |
