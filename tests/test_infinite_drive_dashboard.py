@@ -124,3 +124,34 @@ def test_module_settlement_appends_record(tmp_path, monkeypatch) -> None:
     rows = json.loads((dashboard_store.store_path()).read_text(
         encoding="utf-8").splitlines()[0] or "{}")
     assert rows["level"] == 1
+
+
+def test_module_settlement_skips_record_in_record_mode(tmp_path, monkeypatch) -> None:
+    """录制局（人工驾驶语料局）不落战绩——只读读数，不写记录。"""
+
+    class _FakeOcr:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def recognize(self, _rgb, _roi):
+            return type("R", (), {"text": SCORE_OK})()
+
+    class _Capture:
+        def frame_with_age(self):
+            return (object(), 1, 2, 0.0)
+
+    class _Ctx:
+        capture = _Capture()
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
+    mod = InfiniteDriveModule(None)
+    mod.ctx = _Ctx()
+    mod._record_mode = True
+
+    mod._read_settlement()
+
+    assert mod._settlement_round == 0            # 不消耗局内序号
+    assert mod.last_settlement["score"] == SCORE_OK  # 读数照常留存
+    assert not dashboard_store.store_path().exists()  # 战绩库未落

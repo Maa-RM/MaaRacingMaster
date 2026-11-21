@@ -541,11 +541,13 @@ class InfiniteDriveModule(ActivityModule):
         return best_slot
 
     def _read_settlement(self) -> None:
-        """读结算变动量并落一条战绩记录（程序局门槛：只在本流程内产生）。
+        """读结算变动量；非录制局落一条战绩记录（看板只收程序局）。
 
         字段按 v2 最终结算页定（第 N 关 / 挑战结果 / 本场得分 / 过关条件 / 关卡
-        进度 / 本轮总得分）；解析失败的字段显式置 None 不静默丢。落库失败只告警
-        ——记录是旁路，不阻断流程。
+        进度 / 本轮总得分）；解析失败的字段显式置 None 不静默丢。**录制局**
+        （record_mode，人工驾驶语料局）只落画面与手柄、不写战绩——v1 口径
+        （人工/宏局不写战绩库）的延续；驾驶控制接线后非录制局即真正的程序
+        开车局。落库失败只告警——记录是旁路，不阻断流程。
         """
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
@@ -557,6 +559,9 @@ class InfiniteDriveModule(ActivityModule):
         progress_text = getattr(progress, "text", "") or ""
         self.last_settlement = {"score": score_text, "progress": progress_text}
         logger.log(f"[无限驾驶] 结算读数: 得分={score_text} 进度={progress_text}", "DEBUG")
+        if self._record_mode:
+            # 录制局 = 人工驾驶语料局，不进看板（v1 口径：人工/宏局不写战绩库）
+            return
         self._settlement_round += 1
         try:
             entry = dashboard_store.record_settlement(
@@ -573,8 +578,9 @@ class InfiniteDriveModule(ActivityModule):
     def read_dashboard(cls) -> dict:
         """极速狂飙战绩看板：只读结算记录，不创建模块实例。
 
-        记录只在程序局（模块流程内）产生——玩家在程序外自己开的局不进看板。
-        读库失败返回 warn 态兜底，不把异常抛给 sidecar 的轮询。
+        记录只由程序局（非录制局）产生——录制局是人工驾驶语料局，与程序外
+        人工局一样不进看板。读库失败返回 warn 态兜底，不把异常抛给 sidecar
+        的轮询。
         """
         try:
             return dashboard_store.read_dashboard_payload()
