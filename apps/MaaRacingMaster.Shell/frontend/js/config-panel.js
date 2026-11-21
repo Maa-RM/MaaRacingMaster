@@ -432,6 +432,7 @@
   function applyField(node, cfg) {
     var field = node.field;
     var visible = evalCond(field.visible_if, cfg);
+    node.visible = visible;
     node.wrap.style.display = visible ? '' : 'none';
     if (node.noticeEl) node.noticeEl.style.display = visible ? '' : 'none';
     applyText(node, field, cfg);
@@ -460,6 +461,20 @@
 
   function applyAll(entry, cfg) {
     entry.nodes.fields.forEach(function (node) { applyField(node, cfg); });
+    applyGroups(entry);
+  }
+
+  // 分组标题与字段显隐联动：组内没有任何可见字段时标题一并藏起。
+  // 不认模块字段，只认「组里还有没有看得见的控件」这一条通用规则。
+  function applyGroups(entry) {
+    if (!Array.isArray(entry.nodes.groups)) return;
+    entry.nodes.groups.forEach(function (group) {
+      var visible = group.keys.some(function (key) {
+        var node = entry.nodes.fields.get(key);
+        return !!(node && node.visible);
+      });
+      group.titleEl.style.display = visible ? '' : 'none';
+    });
   }
 
   function applyNote(entry, cfg) {
@@ -517,13 +532,19 @@
     var note = el('p', 'module-options-status config-panel-note');
     note.style.display = 'none';
     root.appendChild(note);
-    var nodes = { host: host, root: root, note: note, status: null, fields: new Map() };
+    var nodes = { host: host, root: root, note: note, status: null,
+                  fields: new Map(), groups: [] };
     entry.nodes = nodes;
     var ui = cfg && cfg._ui;
     if (ui && Array.isArray(ui.groups)) {
       ui.groups.forEach(function (group) {
         if (!group || !Array.isArray(group.fields)) return;
-        if (group.title) root.appendChild(el('div', 'task-panel-label', group.title));
+        var titleEl = null;
+        if (group.title) {
+          titleEl = el('div', 'task-panel-label', group.title);
+          root.appendChild(titleEl);
+        }
+        var keys = [];
         group.fields.forEach(function (field) {
           var node = buildField(entry, field);
           if (!node) return;
@@ -531,7 +552,9 @@
           node.noticeEl = field.notice ? buildNotice(entry, field.notice) : null;
           if (node.noticeEl) root.appendChild(node.noticeEl);
           nodes.fields.set(field.key, node);
+          keys.push(field.key);
         });
+        if (titleEl) nodes.groups.push({ titleEl: titleEl, keys: keys });
       });
     }
     var status = el('p', 'module-options-status');
