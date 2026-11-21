@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """深度模式模型包：用户数据目录优先、安装包兜底，带完整性校验。
 
-发布包默认不带三个 ONNX 权重；要用深度模式时，把模型包解压到
+发布包默认不带 ONNX 权重；要用深度模式时，把模型包解压到
 ``<用户数据>/data/infinite_drive/models/``（布局与本目录 ``resources/models/`` 同构，
 去掉 ``resources/models/`` 前缀）。源码运行或显式全量包仍可直接读包内权重。
-深度档要求 perception + depth；lane 是可选增强，缺失时线观测退回深度/墙供数。
+深度驾驶要求深度模型和全精度车道线模型；模型包同时分发物品感知和半精度线观测权重。
 
 校验口径：尺寸 + SHA256，按（路径、大小、mtime）缓存，同一进程只哈希一次。
 模型文件更新时必须同步改 ``MODEL_MANIFEST``；旧下载包会被拒绝并提示重新下载。
@@ -26,34 +26,28 @@ from maaracing_master.plugins.infinite_drive import (
 PACK_PREFIX = "resources/models/"
 MODULE_ID = "infinite_drive"
 
-# 深度档必需：缺任一项就不允许启动深度模式
+# 深度驾驶的启动和安装检查共用这份必需资产清单。
 DEPTH_MANIFEST: dict[str, tuple[int, str]] = {
-    PERCEPTION_MODEL_REL: (
-        10665412,
-        "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
-    ),
     DEPTH_MODEL_REL: (
         24155097,
         "825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71",
     ),
-}
-
-# 线观测可选：缺失时退回深度/墙供数，不影响深度档启动。
-# FP16 是 DML 专用加速件，缺失时线观测回退 FP32（不降级成故障）。
-LANE_MANIFEST: dict[str, tuple[int, str]] = {
     LANE_MODEL_REL: (
         543156,
         "bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc",
+    ),
+}
+
+MODEL_MANIFEST: dict[str, tuple[int, str]] = {
+    **DEPTH_MANIFEST,
+    PERCEPTION_MODEL_REL: (
+        10665412,
+        "0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af",
     ),
     LANE_FP16_MODEL_REL: (
         314482,
         "abdf3d46706c0dc259d178df8a27ae23b9c3ce03f658e75aadc391b035bd9e26",
     ),
-}
-
-# 模型包内容（可选包一次装齐深度与线观测）
-MODEL_MANIFEST: dict[str, tuple[int, str]] = {
-    **DEPTH_MANIFEST, **LANE_MANIFEST,
 }
 
 _VERIFIED: dict[tuple[str, int, int], bool] = {}

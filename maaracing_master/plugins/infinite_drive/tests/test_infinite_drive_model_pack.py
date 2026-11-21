@@ -85,12 +85,12 @@ def test_select_skips_corrupt_user_pack_and_uses_packaged(monkeypatch, tmp_path)
     assert err is None and path == good
 
 
-def test_lane_model_is_optional_pack_member():
-    """线观测随可选模型包分发，但不参与深度档的启动门禁。"""
-    assert model_assets.LANE_MODEL_REL in model_assets.LANE_MANIFEST
-    assert model_assets.LANE_MODEL_REL not in model_assets.DEPTH_MANIFEST
-    assert set(model_assets.MODEL_MANIFEST) == (
-        set(model_assets.DEPTH_MANIFEST) | set(model_assets.LANE_MANIFEST))
+def test_depth_mode_requires_depth_and_full_precision_lane_models():
+    assert set(model_assets.DEPTH_MANIFEST) == {
+        model_assets.DEPTH_MODEL_REL, model_assets.LANE_MODEL_REL,
+    }
+    assert model_assets.PERCEPTION_MODEL_REL in model_assets.MODEL_MANIFEST
+    assert model_assets.LANE_FP16_MODEL_REL in model_assets.MODEL_MANIFEST
 
 
 def test_manifest_digest_stable_for_same_manifest_and_changes_with_it(monkeypatch):

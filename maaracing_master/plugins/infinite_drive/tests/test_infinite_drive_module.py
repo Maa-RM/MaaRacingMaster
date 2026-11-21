@@ -8,7 +8,13 @@
 
 from __future__ import annotations
 
-from maaracing_master.plugins.infinite_drive.module import InfiniteDriveModule
+from maaracing_master.plugins.infinite_drive.module import (
+    REC_DRIVE_FPS,
+    REC_NAV_FPS,
+    InfiniteDriveModule,
+    _DRIVE_STAGES,
+    _record_fps,
+)
 
 
 def _module() -> InfiniteDriveModule:
@@ -33,6 +39,14 @@ def test_set_module_config_ignores_non_dict_and_unknown_keys() -> None:
 def test_config_summary_announces_recording_only_when_on() -> None:
     assert InfiniteDriveModule.config_summary({"record_mode": True}) == ["录制: 开"]
     assert InfiniteDriveModule.config_summary({"record_mode": False}) == []
+
+
+def test_drive_mode_roundtrip_and_legacy_default() -> None:
+    m = _module()
+    assert m.get_module_config()["drive_mode"] == "straight"
+    assert m.set_module_config({"drive_mode": "depth"})["drive_mode"] == "depth"
+    assert m.set_module_config({"record_mode": True})["drive_mode"] == "depth"
+    assert m.set_module_config({"drive_mode": "macro"})["drive_mode"] == "straight"
 
 
 def test_record_mode_relaxes_startup_constraints() -> None:
@@ -72,6 +86,19 @@ def test_manual_input_active_scoped_to_drive_stage() -> None:
     m.set_module_config({"record_mode": False})
     m._stage_name = "驾驶·阶段1"
     assert m.manual_input_active() is False
+
+
+def test_record_fps_aligned_with_v1_nav_and_drive() -> None:
+    """录制帧率对齐 v1：导航/UI 段 3fps、驾驶段 10fps（用户权威口径）。"""
+    assert REC_NAV_FPS == 3.0
+    assert REC_DRIVE_FPS == 10.0
+    # 每个驾驶阶段都是 10fps
+    for stage in _DRIVE_STAGES:
+        assert _record_fps(stage) == REC_DRIVE_FPS
+    # UI 导航段与未进入任何阶段（None）都是 3fps
+    assert _record_fps(None) == REC_NAV_FPS
+    for stage in ("入口·比赛", "关卡挑战", "卡牌·阶段1", "结算·下一关", "放弃·确认"):
+        assert _record_fps(stage) == REC_NAV_FPS
 
 
 def test_config_status_tracks_recorder_liveness() -> None:
@@ -324,11 +351,148 @@ def test_drive_wait_sweeps_transient_popup(monkeypatch) -> None:
     monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 0.1)
     graph = _SweepTrackingGraph()
     m = _step_module(graph)
+    m.set_module_config({"record_mode": True})
 
     ok = m._drive("p2")
 
     assert ok is False            # 结束信号始终没来，到点显式失败
     assert graph.sweeps >= 2      # 兜底确实在跑
+
+
+def test_program_drive_only_commands_pad_while_driving(monkeypatch) -> None:
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "_DRIVE_HUD_GAP_S", 0.0)
+    drive_frame, menu_frame = object(), object()
+    frames = iter([(menu_frame, 1, 1, 0), (drive_frame, 2, 2, 0),
+                   (drive_frame, 3, 3, 300), (menu_frame, 4, 4, 0)])
+    commands = []
+    controls = []
+    throttle = 0
+    steer = 0
+
+    def joystick(x_value=0, y_value=0):
+        nonlocal steer
+        steer = x_value
+
+    def trigger(value=0):
+        nonlocal throttle
+        throttle = value
+
+    @contextmanager
+    def acquire():
+        yield SimpleNamespace(left_joystick=joystick, right_trigger=trigger,
+                              update=lambda: commands.append((steer, throttle)))
+        commands.append((0, 0))
+
+    def run(entry, _reached):
+        # 导航识别与弹窗不得在持有驾驶输入时运行。
+        controls.append(list(commands))
+        return entry == m._DRIVE_END["p2"] and len(controls) >= 3
+
+    monkeypatch.setattr(m, "drive_hud_visible", lambda frame: frame is drive_frame,
+                        raising=False)
+    mod = _step_module(SimpleNamespace(run=run))
+    mod.ctx.capture = SimpleNamespace(frame_with_age=lambda: next(frames))
+    mod.ctx.gamepad = SimpleNamespace(acquire=acquire)
+
+    assert mod._drive("p2") is True
+    assert controls[0] == []
+    assert commands[0][0] == 0 and commands[0][1] > 0
+    assert all(command == (0, 0) for command in commands[1:])
+    assert controls[-1][-1] == (0, 0)
+
+
+def test_depth_mode_sends_feedback_steer_in_both_phases(monkeypatch) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "_DRIVE_HUD_GAP_S", 0.0)
+    drive_frame = object()
+    frames = iter([(drive_frame, 1, 1, 0), (object(), 2, 2, 0),
+                   (drive_frame, 3, 3, 0), (object(), 4, 4, 0)])
+    directions = []
+    armed = []
+    detected = []
+    pad = SimpleNamespace(left_joystick=lambda x_value: directions.append(x_value),
+                          right_trigger=lambda **_: None, update=lambda: None)
+    monkeypatch.setattr(m, "drive_hud_visible", lambda frame: frame is drive_frame,
+                        raising=False)
+    mod = _step_module(SimpleNamespace(run=lambda *args: True))
+    mod.set_module_config({"drive_mode": "depth"})
+    mod.ctx.capture = SimpleNamespace(frame_with_age=lambda: next(frames))
+    mod.ctx.gamepad = SimpleNamespace(acquire=lambda: nullcontext(pad))
+
+    def steer(frame, fid, timestamp):
+        detected.append((frame, fid, timestamp))
+        return 0.2, False
+
+    mod._depth_drive = SimpleNamespace(begin=lambda **options: armed.append(options), steer=steer,
+                                       release=lambda: None)
+    assert mod._drive("p1") and mod._drive("p2")
+    assert armed == [{"allow_view_switch": True}, {"allow_view_switch": False}]
+    assert detected == [(drive_frame, 1, 1), (drive_frame, 3, 3)]
+    assert directions[0] == directions[1] > 0
+
+
+def test_depth_view_switch_releases_camera_button(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    events = []
+    pad = SimpleNamespace(press_button=lambda button: events.append(("press", button)),
+                          release_button=lambda button: events.append(("release", button)),
+                          update=lambda: events.append(("update",)))
+    mod = _step_module(None)
+    mod.ctx.lifecycle = SimpleNamespace(sleep=lambda _seconds: False)
+    monkeypatch.setattr(m, "_camera_button", lambda: object(), raising=False)
+
+    assert mod._switch_drive_view(pad) is False
+    assert [event[0] for event in events] == ["press", "update", "release", "update"]
+    assert events[0][1] is events[2][1]
+
+
+def test_program_drive_does_not_run_ocr_on_brief_hud_loss(monkeypatch) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    clock = 10.0
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(m, "drive_hud_visible", bool)
+    frames = iter([True, False, True])
+    fid = 0
+    acted = []
+
+    def frame_with_age():
+        nonlocal fid
+        fid += 1
+        return next(frames, False), fid, fid, 0
+
+    def sleep(seconds):
+        nonlocal clock
+        clock += seconds
+        return clock < 12
+
+    graph = _SweepTrackingGraph()
+    mod = _step_module(graph)
+    mod.ctx.lifecycle = SimpleNamespace(running=True, sleep=sleep)
+    mod.ctx.capture = SimpleNamespace(frame_with_age=frame_with_age)
+    pad = SimpleNamespace(left_joystick=lambda **_: None, right_trigger=lambda **_: None,
+                          update=lambda: acted.append(fid))
+    mod.ctx.gamepad = SimpleNamespace(acquire=lambda: nullcontext(pad))
+
+    assert not mod._drive("p2")
+    assert acted == [1, 3]
+    assert graph.sweeps == 1
+    assert mod._next_sweep_at > 13.0
 
 
 def test_sweep_is_rate_limited(monkeypatch) -> None:
@@ -358,3 +522,4 @@ def test_step_retry_sweeps_before_resend(monkeypatch) -> None:
 
     assert ok is False
     assert graph.sweeps >= 1      # 重发循环里兜底至少跑过一次
+

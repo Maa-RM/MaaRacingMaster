@@ -5,12 +5,10 @@
 许可声明 README；发布包默认不带权重，见 model_assets）全部位于本目录内，
 registry 按 manifest.py 自动发现；整个目录拷走即卸载、放入即安装。
 
-本插件承接 speedrush 归档时「游戏事实未变」的感知/几何/观测/控制基建（搬迁判据
-与清单见 _archive/speedrush/RETIRED.md）；v2 的操作流程与策略层尚未接线。
+流程与驾驶入口见 module.py，深度定位和车头角控制见 driving.py。
 
 **真源分立**：**游戏事实** = RULES.md（外部事实，人工复核制）；**几何标定** =
-calibration/gate0.json（唯一入口 ``world_model.load_calib``）。行为参数真源
-（policy/decision.json）随 v1 策略层留在归档，v2 重建时再立。
+calibration/gate0.json（唯一入口 ``world_model.load_calib``）。驾驶行为参数与消费代码同处。
 ``resources/policy/hud_regions.json`` 是驾驶页区域集（v1 标定，v2 HUD 改版后需重验）。
 """
 

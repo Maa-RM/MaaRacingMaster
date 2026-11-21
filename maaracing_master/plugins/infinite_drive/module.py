@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""无限驾驶活动模块：v2 持久流程状态机（骨架）。
+"""无限驾驶活动模块：v2 持久流程状态机。
 
 感知/几何/控制基建自 speedrush 归档搬迁；本模块接线 v2 的**持久流程**导航：
 入口 → 关卡挑战 → 准备 → 选卡 → 驾驶 → 结算 → 放弃回环。弹窗驱赶两层：每回合
@@ -9,8 +9,7 @@ OCR 文案白名单做限频兜底（等待循环与步级重发前各挂一处�
 一次性弹窗（赛季重置 / 规则教学 / 得分规则门）按裁定押后——兜底若命中其推进
 文案会顺带覆盖，但不做确定性驱赶。
 
-驾驶阶段当前为**等待结束信号的占位实现**（不施加控制）：v2 阶段按计时推进，
-骨架据此走通全链路；驾驶控制方案后续接入 ``_drive``。
+程序驾驶在驾驶 HUD 在位时接管虚拟手柄：直行保持零方向，深度档用车头角闭环保持车道。
 
 **录制模式**（配置开关，默认关）：开启后整个流程会话落盘取证（画面 + 物理手柄
 → ``debug/infinite_drive/``），供真机验证流程与识别框落地。录制是旁路：取帧
@@ -22,6 +21,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 from maaracing_master.core.base import ActivityContext, ActivityModule
@@ -35,11 +35,12 @@ from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR, PIPELINE_DIR
 from maaracing_master.plugins.infinite_drive import dashboard_store
 from maaracing_master.plugins.infinite_drive import flow_data
+from maaracing_master.plugins.infinite_drive.driving import DepthDrive, drive_hud_visible
 from maaracing_master.plugins.infinite_drive.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.infinite_drive.session_layout import SOURCE_CONTROL
 
 # 流程表：(阶段名, 动作节点, phase)。node=None 表示非点击段：
-# phase="card1"/"card2" 走选卡，"p1"/"p2" 走驾驶等待。
+# phase="card1"/"card2" 走选卡，"p1"/"p2" 走驾驶。
 FLOW: list[tuple[str, str | None, str | None]] = [
     ("入口·比赛", "infinite_drive.点比赛", None),
     ("入口·娱乐玩法", "infinite_drive.点娱乐玩法", None),
@@ -100,6 +101,11 @@ _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
                    "p2": flow_data.STAGE2_DURATION_S}
 # 驾驶阶段的阶段名（人工接管期判定用：录制轮驾驶阶段可由用户物理手柄驾驶）
 _DRIVE_STAGES = frozenset({"驾驶·阶段1", "驾驶·阶段2"})
+_DRIVE_TICK_S = 0.05
+_MAX_DRIVE_FRAME_AGE_MS = 200.0
+_DRIVE_HUD_GAP_S = 0.65
+_DRIVE_THROTTLE = 220  # 两档共用 v1 直行对照的固定油门
+_DRIVE_MODES = {"straight": "全程直行", "depth": "深度模式"}
 
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
 # 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
@@ -116,11 +122,25 @@ PICK_CLOSE_QUIET_S = 3.0
 # 只弹提示不改状态（源码 CardAlreadySelected），重发无副作用。
 PICK_RESEND_BUDGET = 2
 
-# 录制全程帧率：验证用不需要控制环的 30fps——流程页停留秒级、驾驶段有结束信号
-# 把关，5fps 足以覆盖每次页面切换与点击落地，落盘体积同比例可控。
-REC_FPS = 5.0
+# 录制帧率按阶段分档，对齐 v1 speedrush 的取证口径：
+#   - 导航 / UI 段（入口、选车、选卡、结算、放弃等）3fps —— v1 导航段存图 NAV_SAVE_FPS=3Hz
+#   - 驾驶段（p1/p2）10fps —— v1 驾驶段 debug 图 DebugPairWriter 的 DEBUG_FPS=10Hz
+# 驾驶段要覆盖逐帧车流与 HUD 读数故取高频；UI 段停留秒级，低频即可覆盖页面切换与
+# 点击落地，落盘体积同比例可控。取帧线程每拍重算，阶段切换下一拍即生效。
+REC_NAV_FPS = 3.0
+REC_DRIVE_FPS = 10.0
 # 录制会话目录标签（<时间戳>_flowcheck）：程序驱动的全流程取证局
 _RECORD_TAG = "flowcheck"
+
+
+def _record_fps(stage: str | None) -> float:
+    """当前阶段的录制帧率：驾驶段 10fps，其余（UI 导航段）3fps。
+
+    口径对齐 v1：驾驶段对应 DebugPairWriter 的 10Hz debug 图，导航段对应 core
+    nav 图的 3Hz 存图。``stage`` 取 ``_stage_name``（主线程在 _run_flow 里写，
+    GIL 下读 str 引用是原子的），线程每拍调用，阶段切换下一拍即生效。
+    """
+    return REC_DRIVE_FPS if stage in _DRIVE_STAGES else REC_NAV_FPS
 
 
 def _record_root() -> Path:
@@ -128,8 +148,14 @@ def _record_root() -> Path:
     return debug_dir() / "infinite_drive"
 
 
+def _camera_button():
+    from maaracing_master.core.vgamepad_lazy import vg
+
+    return vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER
+
+
 class InfiniteDriveModule(ActivityModule):
-    """极速狂飙 v2 活动模块（持久流程骨架）。"""
+    """极速狂飙 v2 活动模块。"""
 
     ID = "infinite_drive"
     # 对外模块名沿用玩法名；infinite_drive/无限驾驶只是内部代号（插件 ID 与文档用语）
@@ -142,12 +168,18 @@ class InfiniteDriveModule(ActivityModule):
     DEBUG_SAVE = "self"
     DASHBOARD_CONTRACT = 1
 
-    # ---------- 配置面（录制开关；契约见 core/config_ui_contract.py） ----------
+    # ---------- 配置面（契约见 core/config_ui_contract.py） ----------
 
-    DEFAULT_MODULE_CONFIG: dict = {"record_mode": False}
+    DEFAULT_MODULE_CONFIG: dict = {"drive_mode": "straight", "record_mode": False}
     CONFIG_UI_CONTRACT = 1
     CONFIG_UI = {
         "groups": [
+            {"title": "驾驶", "fields": [
+                {"key": "drive_mode", "type": "segmented", "label": "驾驶模式",
+                 "options": [{"value": mode, "label": label}
+                             for mode, label in _DRIVE_MODES.items()],
+                 "visible_if": {"key": "record_mode", "op": "equals", "value": False}},
+            ]},
             {"title": "录制", "fields": [
                 {"key": "record_mode", "type": "switch", "label": "录制全程画面",
                  "description": "开启后运行时把全程画面与手柄输入落盘到调试目录，"
@@ -168,7 +200,7 @@ class InfiniteDriveModule(ActivityModule):
 
     @classmethod
     def required_capabilities(cls, config: dict | None = None) -> frozenset[str]:
-        """录制模式不需要虚拟手柄能力：骨架不施加控制，也不创建虚拟设备。
+        """录制模式不需要虚拟手柄能力：驾驶期间由玩家接管。
 
         不这么分的话，机器上没装虚拟手柄驱动时连"只录不控"都启动不了；录制期
         用户以物理手柄驾驶，虚拟手柄本就不该在场。
@@ -189,6 +221,8 @@ class InfiniteDriveModule(ActivityModule):
     def config_summary(cls, config: dict) -> list[str]:
         if bool(config.get("record_mode")):
             return ["录制: 开"]
+        if config.get("drive_mode") == "depth":
+            return ["驾驶: 深度模式"]
         return []
 
     def __init__(self, ctx: ActivityContext):
@@ -199,6 +233,8 @@ class InfiniteDriveModule(ActivityModule):
         self._log_grp = None
         self._ocr: RapidOcrEngine | None = None
         self.last_settlement: dict[str, str] = {}
+        self._drive_mode = self.DEFAULT_MODULE_CONFIG["drive_mode"]
+        self._depth_drive: DepthDrive | None = None
         # 录制模式：开启后全程落盘取证（真源配置键 record_mode，默认关）
         self._record_mode = bool(self.DEFAULT_MODULE_CONFIG["record_mode"])
         self._recorder: DriveRecorder | None = None
@@ -258,6 +294,7 @@ class InfiniteDriveModule(ActivityModule):
         rec = self._recorder
         stats = rec.stats if rec is not None else None
         return {
+            "drive_mode": self._drive_mode,
             "record_mode": bool(self._record_mode),
             "_state": {
                 "recording": bool(rec is not None and rec.running),
@@ -270,8 +307,13 @@ class InfiniteDriveModule(ActivityModule):
 
     def set_module_config(self, config: dict) -> dict:
         """写配置。控制器在启动时注入实例；非法值静默修正并返回最终值。"""
-        if isinstance(config, dict) and "record_mode" in config:
-            self._record_mode = bool(config["record_mode"])
+        if isinstance(config, dict):
+            if "drive_mode" in config:
+                mode = config["drive_mode"]
+                self._drive_mode = (mode if isinstance(mode, str) and mode in _DRIVE_MODES
+                                    else self.DEFAULT_MODULE_CONFIG["drive_mode"])
+            if "record_mode" in config:
+                self._record_mode = bool(config["record_mode"])
         return self.get_module_config()
 
     def config_status(self) -> dict | None:
@@ -300,10 +342,11 @@ class InfiniteDriveModule(ActivityModule):
             logger.log("[无限驾驶] 游戏窗口不是 16:9（模板与 ROI 按 720p 设计），模块终止", "ERROR")
             return False
         self._running = True
-        self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}）", "session")
+        self._open_grp(f"[极速狂飙] 模块启动（录制{'开' if self._record_mode else '关'}"
+                       f"·驾驶模式:{_DRIVE_MODES[self._drive_mode]}）", "session")
         ok = False
         try:
-            # 开组后的所有出口都在 try 内：图加载失败也不能漏收组。
+            # 开组后的所有出口都在 try 内：图加载/深度启动失败也不能漏收组。
             graph = NavGraph(self.ctx)
             graph.add_plugin(PIPELINE_DIR, IMAGE_DIR)
             self._graph = graph
@@ -319,8 +362,18 @@ class InfiniteDriveModule(ActivityModule):
                     index = names.index(start_from)
             if self._record_mode:
                 self._begin_recording()
+            elif self._drive_mode == "depth":
+                try:
+                    self._depth_drive = DepthDrive()
+                    self._depth_drive.start()
+                except Exception as exc:  # noqa: BLE001 —— 模型缺失或会话启动失败
+                    self._tlog(f"[无限驾驶] 深度模式启动失败，请检查深度和车道线模型：{exc}", "ERROR")
+                    return False
             ok = self._run_flow(index)
         finally:
+            if self._depth_drive is not None:
+                self._depth_drive.stop()
+                self._depth_drive = None
             self._stop_recording("stopped" if not self._running else "normal")
             # 停止信号打断的收 incomplete；其余按组内 ERROR/WARNING 自动判终态。
             self._end_grp("incomplete" if not self._running else None)
@@ -379,11 +432,12 @@ class InfiniteDriveModule(ActivityModule):
 
     def _record_sampler(self, rec: DriveRecorder, stop: threading.Event) -> None:
         """全程取帧线程：与流程线程同源 ``frame_with_age``（只读 WGC 中心缓存），
-        按 REC_FPS 喂录制器；帧缺席跳过——录制是旁路，不得反压流程。"""
+        按当前阶段帧率（导航 3fps / 驾驶 10fps）喂录制器；帧缺席跳过——录制是旁路，
+        不得反压流程。每拍重算间隔，驾驶段起止的帧率切换无需重启线程。"""
         assert self.ctx is not None
-        interval = 1.0 / REC_FPS
         while not stop.is_set():
             t0 = time.perf_counter()
+            interval = 1.0 / _record_fps(self._stage_name)
             frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
             if frame is not None:
                 rec.record_frame(frame, frame_id=fid, ts_ns=ts_ns, age_ms=age_ms)
@@ -595,8 +649,7 @@ class InfiniteDriveModule(ActivityModule):
         字段按 v2 最终结算页定（第 N 关 / 挑战结果 / 本场得分 / 过关条件 / 关卡
         进度 / 本轮总得分）；解析失败的字段显式置 None 不静默丢。**录制局**
         （record_mode，人工驾驶语料局）只落画面与手柄、不写战绩——v1 口径
-        （人工/宏局不写战绩库）的延续；驾驶控制接线后非录制局即真正的程序
-        开车局。落库失败只告警——记录是旁路，不阻断流程。
+        （人工/宏局不写战绩库）的延续。落库失败只告警——记录是旁路，不阻断流程。
         """
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
@@ -658,24 +711,75 @@ class InfiniteDriveModule(ActivityModule):
         self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS)
 
     def _drive(self, phase: str) -> bool:
-        """驾驶阶段占位：等待本阶段结束信号（不施加控制），响应停止信号。
-
-        等待期每拍做一次偶发弹窗兜底（内部限频）：结算奖励链这类弹窗会盖住
-        结算页，让结束信号永远等不到——兜底点了它，信号自然露出。
-        """
+        """程序驾驶只在新鲜的驾驶画面上出杆；转场先归还手柄，再处理页面。"""
         assert self._graph is not None
         assert self.ctx is not None
-        label = "录制采集" if self._record_mode else "等待阶段结束"
+        label = "录制采集" if self._record_mode else _DRIVE_MODES[self._drive_mode]
         self._open_grp(f"[极速狂飙] 驾驶阶段 {phase}（{label}）", "phase")
         end_node = _DRIVE_END[phase]
         deadline = time.monotonic() + _DRIVE_DURATION[phase] + flow_data.DRIVE_END_MARGIN_S
-        while self._running and self.ctx.lifecycle.running:
-            if self._graph.run(end_node, end_node):
-                return True
-            self._sweep_transient_popup()
-            if time.monotonic() >= deadline:
-                self._tlog(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
-                return False
-            if not self.ctx.lifecycle.sleep(STEP_POLL_S):
-                return False
-        return False
+        depth = self._depth_drive
+        if depth is not None:
+            depth.begin(allow_view_switch=phase == "p1")
+        last_hud_at = time.monotonic()
+        hud_fid = None
+        hud_visible = False
+        pad = None
+        with ExitStack() as lease:
+            while self._running and self.ctx.lifecycle.running:
+                tick = time.monotonic()
+                if tick >= deadline:
+                    self._tlog(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
+                    return False
+                fresh = False
+                if not self._record_mode:
+                    frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
+                    fresh = frame is not None and age_ms <= _MAX_DRIVE_FRAME_AGE_MS
+                    if fresh and fid != hud_fid:
+                        hud_fid, hud_visible = fid, drive_hud_visible(frame)
+                    if fresh and hud_visible:
+                        last_hud_at = tick
+                        if pad is None:
+                            pad = lease.enter_context(self.ctx.gamepad.acquire())
+                        steer, switch_view = ((0.0, False) if depth is None
+                                              else depth.steer(frame, fid, ts_ns))
+                        if not self._running or not self.ctx.lifecycle.running:
+                            return False
+                        pad.left_joystick(x_value=round(steer * 32767))
+                        pad.right_trigger(value=_DRIVE_THROTTLE)
+                        pad.update()
+                        if switch_view and not self._switch_drive_view(pad):
+                            return False
+                        if not self.ctx.lifecycle.sleep(max(0.0, _DRIVE_TICK_S - (time.monotonic() - tick))):
+                            return False
+                        continue
+
+                if pad is not None:
+                    lease.close()
+                    pad = None
+                    if depth is not None:
+                        depth.release()
+                if not self._record_mode and tick - last_hud_at < _DRIVE_HUD_GAP_S:
+                    # 短暂遮挡先归还手柄，快速等回驾驶画面，避免在赛道上启动 OCR。
+                    if not self.ctx.lifecycle.sleep(_DRIVE_TICK_S):
+                        return False
+                    continue
+                if self._record_mode or fresh:
+                    if self._graph.run(end_node, end_node):
+                        return True
+                    self._sweep_transient_popup()
+                if not self.ctx.lifecycle.sleep(STEP_POLL_S):
+                    return False
+            return False
+
+    def _switch_drive_view(self, pad) -> bool:
+        """短按右肩键切视角，中途停止也释放按键。"""
+        assert self.ctx is not None
+        button = _camera_button()
+        pad.press_button(button)
+        try:
+            pad.update()
+            return self.ctx.lifecycle.sleep(0.06)
+        finally:
+            pad.release_button(button)
+            pad.update()

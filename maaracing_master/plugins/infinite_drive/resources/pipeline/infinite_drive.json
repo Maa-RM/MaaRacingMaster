@@ -1180,6 +1180,6 @@
         "rate_limit": 0,
         "pre_delay": 0,
         "post_delay": 0,
-        "timeout": 2500
+        "timeout": 0
     }
 }

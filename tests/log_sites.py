@@ -390,6 +390,13 @@ SITES: list[LogSite] = [
     _s('core/yolo_detector.py', 'YOLODetector.__init__', 'DirectML 会话创建失败，回退 CPU：{}', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；回退原因必须与设备不可用区分，发生在加载期、无业务组。'),
     _s('core/yolo_detector.py', 'YOLODetector.__call__', '模型输出类别维 {} ≠ 声明类别数 {}，请核对 classes 参数', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
 
+    # ---- plugins/infinite_drive/driving.py ----
+    # 深度驾驶对象是逐拍求值的策略对象，不持有业务组句柄：降级告警按跨切面登记，
+    # 不塞组（组边界由流程层 module.py 声明）。
+    _s('plugins/infinite_drive/driving.py', 'DepthDrive.start', '[无限驾驶] {}', 'WARNING', 'state', 'cross', '线观测启动降级提示（文字来自观测 note）：策略对象无业务组可挂；WARNING 不静默，驱动层缺位必须让用户知道。'),
+    _s('plugins/infinite_drive/driving.py', 'DepthDrive.stop', '[无限驾驶] 深度观测线程停止超时', 'WARNING', 'state', 'cross', '收尾路径的资源回收超时告警：发生在停止阶段、无业务组可挂；未干净退出必须留下痕迹。'),
+    _s('plugins/infinite_drive/driving.py', 'DepthDrive.steer', '[无限驾驶] 保险杠视角未确认，本阶段仅保持直行', 'WARNING', 'state', 'cross', '视角守卫判级后的可恢复降级：逐拍求值无稳定业务组；本阶段退直行的原因必须可见。'),
+
     # ---- plugins/infinite_drive/gpu_probe.py ----
     _s('plugins/infinite_drive/gpu_probe.py', 'GpuProbe._dump_scene', '[GpuProbe] 停顿抓拍失败: {}', 'WARNING', 'cross', 'cross', '常驻 daemon 取证线程的跨切面事件：无稳定业务组可挂；抓拍失败不阻断采样主路。'),
 

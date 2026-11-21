@@ -9,8 +9,8 @@ Y≡cam_h，平面 c 恒等于 1.25，读它等于读常数（2026-11-12 实机 
 游戏开局会把机位打回追尾，按 RB 切换的唯一目的就是切回保险杠（追尾视角
 历史读数约 1.6–2.0 m，线几何在撞车段实测段中位 1.605）。
 
-**无判据 ≠ 视角错误**：线观测未启用、或一直给不出可算的相机高时，模块层按
-「无法判定」放行（不切视角、不中止阶段）；只有真的量出三次都在带外才 FAIL。
+第一阶段允许从默认追尾机位请求一次切换。切换后和第二阶段只采证确认当前
+机位；守卫到期仍无法确认时，驾驶层以直行完成当前阶段。
 """
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ class ViewGuardConfig:
     cam_h_hi_m: float = 1.55
     sample_s: float = 0.7
     settle_s: float = 0.25
-    max_views: int = 3
     min_samples: int = 3
-    deadline_s: float = 10.0     # 从首个有效样本起算：覆盖 3 个视角的切换+采样
+    deadline_s: float = 10.0     # 从首个有效样本起算，限制机位确认的总耗时
     arm_timeout_s: float = 8.0   # 首个有效样本的最长等待（加载/冷启动不计入视角预算）
+    empty_sample_s: float | None = None  # 已有检测但缺少保险杠高度证据时的开局等待
 
     def __post_init__(self) -> None:
         if not 0.0 < self.cam_h_lo_m < self.cam_h_hi_m:
@@ -37,14 +37,15 @@ class ViewGuardConfig:
         if self.sample_s <= 0 or self.settle_s < 0:
             raise ValueError(f"view_guard 采样窗非法：{self.sample_s}/"
                              f"{self.settle_s}")
-        if self.max_views < 1 or self.min_samples < 1:
-            raise ValueError(f"view_guard 计数非法：{self.max_views}/"
-                             f"{self.min_samples}")
+        if self.min_samples < 1:
+            raise ValueError(f"view_guard 样本数非法：{self.min_samples}")
         if self.deadline_s <= self.sample_s:
             raise ValueError(f"view_guard 截止 {self.deadline_s}s 必须大于"
                              f"采样窗 {self.sample_s}s")
         if self.arm_timeout_s <= 0:
             raise ValueError(f"view_guard 首个样本等待非法：{self.arm_timeout_s}")
+        if self.empty_sample_s is not None and self.empty_sample_s <= 0:
+            raise ValueError(f"view_guard 空样本窗非法：{self.empty_sample_s}")
 
 
 class ViewGuard:
@@ -54,28 +55,23 @@ class ViewGuard:
     SWITCH = "switch"
     OK = "ok"
     FAIL = "fail"
-    GRACE_S = 0.4   # 样本不足时窗口只延长一次：线观测冷启动前几拍可能无解
+    GRACE_S = 0.4   # 开局切换前给线几何一次短暂宽限
 
-    def __init__(self, cfg: ViewGuardConfig, t0: float) -> None:
+    def __init__(self, cfg: ViewGuardConfig, t0: float, *, allow_switch: bool = True) -> None:
         self.cfg = cfg
         self.t0 = float(t0)
         self.state = "collect"
         self.armed_at: float | None = None
         self.window_start: float | None = None
-        self.grace_until: float | None = None
         self.settle_until = 0.0
         self.samples: list[float] = []
-        self.views = 1                 # 当前是第几个视角（1 起）
+        self._can_switch = allow_switch
         self.median: float | None = None
         self.first_sample_at: float | None = None
 
     def update(self, now: float, cam_h: float | None,
                new: bool) -> str:
-        """喂一拍；``new``=本拍是否有新的线观测检测帧（复用帧不重复计样本）。
-
-        产线调用方（module._tick_view_guard）在调用前先处理「一直拿不到样本」
-        的情形（按无法判定放行）——所以本类的 arm 超时 FAIL 只在直接使用者里
-        成立；量出三次带外仍然走 FAIL。"""
+        """喂一拍；``new`` 表示收到新检测帧，即使该帧没有解出高度。"""
         if self.state in (self.OK, self.FAIL):
             return self.state
         # 截止从首个有效样本起算：游戏加载/深度冷启动不占视角预算
@@ -92,7 +88,6 @@ class ViewGuard:
             self.state = "collect"
             self.armed_at = None
             self.window_start = None
-            self.grace_until = None
             self.samples = []
         if new:
             if self.armed_at is None:
@@ -104,36 +99,27 @@ class ViewGuard:
                     self.window_start = now
                 self.samples.append(float(cam_h))
         if (self.window_start is not None
-                and now - self.window_start >= self.cfg.sample_s):
-            if len(self.samples) < self.cfg.min_samples:
-                if self.grace_until is None:
-                    self.grace_until = (self.window_start
-                                        + self.cfg.sample_s + self.GRACE_S)
-                if now < self.grace_until:
-                    return self.WAIT
-            return self._decide(now)
-        # 整个窗口一个有效样本都没有（线几何算不出相机高）：按坏视角处理
-        if (self.window_start is None and self.armed_at is not None
-                and now - self.armed_at >= self.cfg.sample_s):
-            if self.grace_until is None:
-                self.grace_until = (self.armed_at + self.cfg.sample_s
-                                    + self.GRACE_S)
-            if now < self.grace_until:
-                return self.WAIT
-            return self._decide(now)
+                and now - self.window_start >= self.cfg.sample_s
+                and len(self.samples) >= self.cfg.min_samples):
+            self.median = statistics.median(self.samples)
+            if self.cfg.cam_h_lo_m <= self.median <= self.cfg.cam_h_hi_m:
+                self.state = self.OK
+                return self.OK
+            if self._can_switch and self.median > self.cfg.cam_h_hi_m:
+                return self._switch(now)
+        # 只有第一阶段还没切过时，才可以按默认追尾机位尝试一次。孤立的
+        # 追尾高度也不能封死这条路，但从首次读到它起仍留足一个采样窗。
+        empty_sample_s = self.cfg.empty_sample_s or self.cfg.sample_s
+        if (self._can_switch and self.armed_at is not None
+                and now - self.armed_at >= empty_sample_s + self.GRACE_S
+                and (self.window_start is None or now - self.window_start >= self.cfg.sample_s)
+                and all(height > self.cfg.cam_h_hi_m for height in self.samples)):
+            self.median = statistics.median(self.samples) if self.samples else None
+            return self._switch(now)
         return self.WAIT
 
-    def _decide(self, now: float) -> str:
-        self.median = statistics.median(self.samples) if self.samples else None
-        if (len(self.samples) >= self.cfg.min_samples
-                and self.median is not None
-                and self.cfg.cam_h_lo_m <= self.median <= self.cfg.cam_h_hi_m):
-            self.state = self.OK
-            return self.OK
-        if self.views >= self.cfg.max_views:
-            self.state = self.FAIL
-            return self.FAIL
-        self.views += 1
+    def _switch(self, now: float) -> str:
+        self._can_switch = False
         self.state = "settle"
         self.settle_until = now + self.cfg.settle_s
         return self.SWITCH
