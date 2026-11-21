@@ -822,8 +822,6 @@ def test_score_ocr_failure_disables_trigger() -> None:
     """OCR 不可用：停用触发且只告警一次，后续读数不再碰引擎。"""
     from types import SimpleNamespace
 
-    from maaracing_master.plugins.infinite_drive import module as m
-
     class _BoomOcr:
         calls = 0
 
@@ -963,8 +961,6 @@ def _drive_frames_with_ocr(mod, monkeypatch, texts, count):
 def test_drive_p1_early_exit_sets_jump_flag(monkeypatch) -> None:
     """连续 3 拍超目标：松杆走退出序列，阶段1落点标记置位，阶段就地结束。"""
     from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import module as m
 
     mod = _step_module(SimpleNamespace(run=lambda *_a: False))
     exits = []

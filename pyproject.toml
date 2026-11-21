@@ -52,9 +52,9 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 # 门禁规则集：错误级（E4/E7/E9）+ Pyflakes（F）。存量已全量清零，
-# 新增违规即 CI 红。tools/experiments/ 为一次性探针（负结果也是证据），
-# 不在门禁内——它的价值在可复跑，不在风格。
-extend-exclude = ["tools/experiments", "build", "archive"]
+# 新增违规即 CI 红。tools/experiments/ 与归档插件下的 experiments/ 为一次性探针
+# （负结果也是证据），不在门禁内——它们的价值在可复跑，不在风格。
+extend-exclude = ["tools/experiments", "maaracing_master/plugins/_archive/*/experiments", "build", "archive"]
 line-length = 120
 target-version = "py311"
 
