@@ -60,7 +60,7 @@ tools/pipeline/
 ## 真源
 
 - 活动插件：`plugins/<id>/resources/pipeline/*.json` —— 节点图与锚点
-- 跨模块共用链：`maaracing_master/core/resources/pipeline/` —— **当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `truth.namespace_checks` 与 MAAFW_GUIDE §5.6）
+- 共享默认值：`maaracing_master/core/resources/pipeline/default_pipeline.json` —— 跨模块节点级 timing 默认值（顶层 `Default` 键，MaaFW 原生格式）。maafw 5.12.3 无原生套用机制，由加载边界（`core/nav_graph` 合并 post 前）以 Python 侧套用；校验器跳过此文件。共用链节点目录仍不存在：尚无第二个模块接图，抽公共层为时过早，真出现时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `truth.namespace_checks` 与 MAAFW_GUIDE §5.6）
 - 启动步骤自有链：`maaracing_master/core/resources/startup/` —— （`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**共用目录（否则会被所有模块的导航图一起并入）。规则见该目录下的 `README.md`，决策见 ADR-0018
 - 归档鉴宝的图与策略表仍在 `plugins/_archive/treasure/resources/`；默认发现不扫归档区
 

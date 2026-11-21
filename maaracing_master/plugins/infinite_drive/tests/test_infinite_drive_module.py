@@ -89,3 +89,76 @@ def test_config_status_tracks_recorder_liveness() -> None:
     assert status is not None
     assert status["level"] == "warn"
     assert "120" in status["text"] and "丢帧 3" in status["text"]
+
+
+# ---------- 步级重发策略（_run_step） ----------
+
+class _StubLifecycle:
+    running = True
+
+    @staticmethod
+    def sleep(_seconds: float) -> bool:
+        return True
+
+
+class _StubCtx:
+    lifecycle = _StubLifecycle()
+
+
+def _step_module(graph) -> InfiniteDriveModule:
+    m = InfiniteDriveModule(None)
+    m.ctx = _StubCtx()
+    m._running = True
+    m._graph = graph
+    return m
+
+
+class _SwallowedClickGraph:
+    """点击「送达且 settle 报已生效」但落地确认永不出现（真机 2026-11-21 场景）。"""
+
+    def __init__(self) -> None:
+        self.clicks = 0
+        self.last_click_landed = None
+        self.last_click_sent = False
+
+    def run(self, entry: str, _reached: str | None) -> bool:
+        if entry == "infinite_drive.点比赛":
+            self.clicks += 1
+            self.last_click_sent = True
+            self.last_click_landed = True  # settle 误报：抖动帧分数掉到阈值下
+            return True
+        return False  # 落地确认（比赛页锚点）永不命中
+
+
+def test_run_step_resends_despite_settle_landed(monkeypatch) -> None:
+    """settle 报「已生效」而落地页一直不来时必须重发点击，不得只等不点。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    graph = _SwallowedClickGraph()
+    ok = _step_module(graph)._run_step("infinite_drive.点比赛", "入口·比赛")
+
+    assert ok is False                              # 预算耗尽显式失败
+    assert graph.clicks == 1 + m.STEP_MAX_RETRIES   # 首击 + 全部重发（旧策略停在 1）
+
+
+def test_run_step_resend_recovers_when_page_arrives(monkeypatch) -> None:
+    """重发后落地页出现 → 步骤成功；settle 误报不阻塞真正的落地确认。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+
+    class _LateLandingGraph(_SwallowedClickGraph):
+        def run(self, entry: str, _reached: str | None) -> bool:
+            if entry == "infinite_drive.点比赛":
+                super().run(entry, _reached)
+                return True
+            return self.clicks >= 2  # 第 2 次点击后落地页才到
+
+    graph = _LateLandingGraph()
+    ok = _step_module(graph)._run_step("infinite_drive.点比赛", "入口·比赛")
+
+    assert ok is True
+    assert graph.clicks == 2

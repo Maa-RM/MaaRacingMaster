@@ -108,7 +108,8 @@ class InfiniteDriveModule(ActivityModule):
     """极速狂飙 v2 活动模块（持久流程骨架）。"""
 
     ID = "infinite_drive"
-    NAME = "无限驾驶"
+    # 对外模块名沿用玩法名；infinite_drive/无限驾驶只是内部代号（插件 ID 与文档用语）
+    NAME = "极速狂飙"
     STAGE_ORDER: list[str] = [stage for stage, _, _ in FLOW]
     REQUIRES_GAMEPAD_EXCLUSIVE = True
     REQUIRES: frozenset[str] = frozenset({"capture", "gamepad"})
@@ -365,7 +366,16 @@ class InfiniteDriveModule(ActivityModule):
         return not self._running
 
     def _run_step(self, action_node: str, stage: str) -> bool:
-        """发一次 UI 点击并有限重发；成功 = 源按钮消失 或 落地锚点从无到有，且锚点此刻在位。"""
+        """发一次 UI 点击并有限重发；成功 = 源按钮消失 或 落地锚点从无到有，且锚点此刻在位。
+
+        **落地确认不过窗就重发点击**——settle 的「源按钮已消失」只是提前成功的
+        旁证，不是免重发的豁免凭据：它盯着的是模板分数，页面焦点抖动/转场动画
+        的中间帧能让分数瞬间掉到阈值下（2026-11-21 真机实测：娱乐玩法页签静止态
+        0.985 分，点击后 125ms 的抖动帧却读到 0.766 < 0.8 被判「已生效」，而游戏
+        实际没切页，旧逻辑随后只等落地页不重发，11 秒后预算耗尽中止）。若点击
+        真已生效，重发这边的识别会因源按钮已消失而快速落空（不吃输入、不发点击），
+        代价只是一次识别超时；若被吞（本例），重发就是唯一的自救路径。
+        """
         assert self._graph is not None
         assert self.ctx is not None
         confirm_node = STEP_CONFIRM.get(stage)
@@ -401,10 +411,8 @@ class InfiniteDriveModule(ActivityModule):
             if cmd is Command.DONE:
                 return True
             if cmd is Command.RETRY:
-                if landed_ever:
-                    machine.arm()
-                else:
-                    send_click = True
+                # 落地确认没过窗就重发，settle 判「已生效」不豁免（见方法 docstring）
+                send_click = True
                 continue
             if cmd is Command.WAIT:
                 if not self.ctx.lifecycle.sleep(STEP_POLL_S):

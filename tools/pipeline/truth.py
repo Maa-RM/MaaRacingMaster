@@ -32,6 +32,10 @@ PACK = REPO / "maaracing_master"
 # 单插件退役都不需要回头改本文件。分层面（policy 表）是模块可选物：只对本域有
 # policy 表的插件做两面交叉校验（如 speedrush 的线性玩法无 policy，只进图侧校验）。
 CORE_PIPELINE_DIR = PACK / "core" / "resources" / "pipeline"
+# MaaFW 共享默认值文件（顶层 "Default" 键装节点级字段默认值）。键是字段名不是节点名，
+# 不是节点图——校验器跳过；套用由 core/nav_graph 的加载边界负责（maafw 5.12.3 无
+# 原生 DefaultPipelineMgr，实证 2026-11-21）。
+DEFAULT_PIPELINE_FILENAME = "default_pipeline.json"
 # 启动步骤自有的导航链（ADR-0018）：不并入所有模块的图，由启动步骤显式加载。
 # 但它仍然是 core 侧真源，分层红线与引用闭合一样要机检。
 STARTUP_DIR = PACK / "core" / "resources" / "startup"
@@ -77,7 +81,9 @@ def pipeline_files(extra_dirs: tuple[Path, ...] = ()) -> list[Path]:
     files: list[Path] = []
     for d in [CORE_PIPELINE_DIR, STARTUP_DIR, *PLUGIN_PIPELINE_DIRS, *extra_dirs]:
         if d.is_dir():
-            files += sorted(p for p in d.rglob("*.json") if not p.name.startswith("."))
+            files += sorted(p for p in d.rglob("*.json")
+                            if not p.name.startswith(".")
+                            and p.name != DEFAULT_PIPELINE_FILENAME)
     return files
 
 
