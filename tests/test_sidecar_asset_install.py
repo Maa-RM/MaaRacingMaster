@@ -107,6 +107,32 @@ def test_status_is_idle_before_any_install():
     assert data["supported"] is False
 
 
+def test_status_before_start_lazy_loads_installer_for_real_availability(with_installer):
+    """空闲查询也要懒加载安装器，否则 needs_install 恒 False，已就绪/缺模型无从区分。"""
+    svc = _svc()
+    ok, data, err = svc.install_asset_status({"module_id": MODULE_ID})
+    assert ok and not err
+    assert data["supported"] is True
+    # 安装器一旦被加载，status 取的是它的快照（FakeInstaller 默认 downloading）
+    assert data["phase"] == "downloading"
+    # FakeInstaller.needs_install() 恒 True——首次查询就能拿到它，说明安装器已被加载
+    assert data["needs_install"] is True
+    assert len(with_installer) == 1
+
+
+def test_status_availability_error_degrades_without_breaking_rpc(monkeypatch, with_installer):
+    """插件可用性查询抛错时按无需安装降级，状态 RPC 不能被打断。"""
+    def broken(self):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(FakeInstaller, "needs_install", broken)
+    svc = _svc()
+    ok, data, err = svc.install_asset_status({"module_id": MODULE_ID})
+    assert ok and not err
+    assert data["supported"] is True
+    assert data["needs_install"] is False
+
+
 def test_start_returns_monotonic_status_and_records_installer(with_installer):
     svc = _svc()
     ok, data, err = svc.install_asset_start({"module_id": MODULE_ID})

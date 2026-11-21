@@ -330,14 +330,20 @@
         typeof entry.installRev === 'number' && resp.revision < entry.installRev) return;
     if (typeof resp.revision === 'number') entry.installRev = resp.revision;
     entry.installStatus = resp;
-    nodes.install.style.display = '';
     var label = resp.label || '资产';
     var phase = resp.phase || 'idle';
+    // 空闲且资产已就绪：整行隐藏，缺失提示消失，不留一个永远可点的安装入口。
+    // 缺不缺模型只认后端 needs_install（可刷新查询）。必须放在 revision 守卫之后——
+    // 旧响应的 needs_install 不能覆盖在途安装进度。
+    if (phase === 'idle' && !resp.needs_install) {
+      nodes.install.style.display = 'none';
+      stopInstallPolling(entry);
+      return;
+    }
+    nodes.install.style.display = '';
     var text;
     if (phase === 'idle') {
-      text = resp.needs_install
-        ? (resp.missing_hint || (label + '未安装'))
-        : (label + '已就绪');
+      text = resp.missing_hint || (label + '未安装');
     } else {
       text = INSTALL_PHASE_TEXT[phase] || phase;
       if (phase === 'downloading' && resp.total) {

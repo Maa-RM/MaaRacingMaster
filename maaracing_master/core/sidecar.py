@@ -1749,7 +1749,12 @@ class SidecarService:
     def install_asset_status(self, params):
         module_id = _install_module_id(params)
         supported = bool(plugin_declared_ref(module_id, "ASSET_INSTALLER")) if module_id else False
-        installer = self._asset_installers.get(module_id) if module_id else None
+        # 声明了安装能力就懒加载安装器，才能读到真实的按需可用性。否则首次查询
+        # （用户还没点过安装）installer 恒为 None，needs_install 被硬编码成 False，
+        # 模型已就绪与缺模型两种状态在界面上无从区分。
+        installer = None
+        if supported:
+            installer, _err = self._asset_installer_for(params)
         if installer is None:
             data = {
                 "task_id": "", "phase": "idle", "revision": 0, "downloaded": 0,
@@ -1761,7 +1766,12 @@ class SidecarService:
         data = _install_status_dict(installer.status())
         data["supported"] = supported
         needs = getattr(installer, "needs_install", None)
-        data["needs_install"] = bool(needs()) if callable(needs) else False
+        try:
+            data["needs_install"] = bool(needs()) if callable(needs) else False
+        except Exception as exc:  # 插件可用性查询出错只降级展示，不打断状态 RPC
+            logger.log(f"[资产安装] {module_id} 可用性查询失败，按无需安装处理: {exc!r}",
+                       "WARNING")
+            data["needs_install"] = False
         data.update(self._install_display_fields(module_id))
         return (True, data, None)
 
