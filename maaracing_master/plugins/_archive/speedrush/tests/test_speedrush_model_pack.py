@@ -115,7 +115,7 @@ def test_config_ui_marks_depth_with_badge_and_notice_when_missing():
     assert field["notice"]["actions"][1]["subpath"] == "data/speedrush/models"
 
     class _Decl:
-        CONFIG_UI_CONTRACT = 1
+        CONFIG_UI_CONTRACT = 2
         CONFIG_UI = ui
 
     checked = C.normalize_config_ui(
