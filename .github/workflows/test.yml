@@ -36,7 +36,8 @@ jobs:
         # 留出余量给后续版本的增量 blob。
         # 例外：resources/models/** 下的运行时模型是随包分发的既定产品资产
         # （见 maaracing_master/plugins/infinite_drive/resources/models/README.md），
-        # 单文件上限放宽到 100 MB；其余路径仍按 5 MB 拦截。
+        # 单文件上限放宽到 100 MB；归档插件保留自己的模型资产，同一份模型在不同
+        # 插件目录下是同一个 blob，不额外增加仓库体积。其余路径仍按 5 MB 拦截。
         # 口径用 git ls-tree -l 的对象大小：文本按 .gitattributes 归一（LF）后的
         # 实际入库体积计，不受 runner 上 core.autocrlf 影响。
         run: |
@@ -45,7 +46,7 @@ jobs:
           git ls-tree -r -l HEAD \
             | awk -v max="$LIMIT" -v mmax="$MODEL_LIMIT" '
                 $4 ~ /^[0-9]+$/ {
-                  model = ($NF ~ /^maaracing_master\/plugins\/infinite_drive\/resources\/models\/.*\.onnx$/)
+                  model = ($NF ~ /^maaracing_master\/plugins\/(_archive\/)?[^/]+\/resources\/models\/.*\.onnx$/)
                   limit = model ? mmax : max
                   if ($4 + 0 > limit) printf "%12d  %s\n", $4, $NF
                 }' \
