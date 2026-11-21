@@ -343,7 +343,7 @@ class InfiniteDriveModule(ActivityModule):
         self._stage_name: str | None = None
         self._log_grp = None
         self._ocr: RapidOcrEngine | None = None
-        self.last_settlement: dict[str, str] = {}
+        self.last_settlement: dict[str, object] = {}
         self._drive_mode = self.DEFAULT_MODULE_CONFIG["drive_mode"]
         # 连刷轮数（0 = 不限）：本次运行一共跑几轮循环，胜负都算
         self._round_total = int(self.DEFAULT_MODULE_CONFIG["round_total"])
@@ -670,6 +670,7 @@ class InfiniteDriveModule(ActivityModule):
                 if stage == "结算·下一关":
                     self._read_settlement()
                 if node is None:
+                    assert phase is not None
                     if phase in ("card1", "card2"):
                         ok = self._pick_cards(phase)
                     else:
@@ -834,6 +835,8 @@ class InfiniteDriveModule(ActivityModule):
         """OCR 读三槽名字 → 按优先级表取最优槽；读不出回退默认槽。"""
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
+        if rgb is None:
+            return flow_data.CARD_PICK_SLOT
         if self._ocr is None:
             self._ocr = RapidOcrEngine()
         best_rank = flow_data.CARD_PRIORITY_DEFAULT
@@ -856,6 +859,8 @@ class InfiniteDriveModule(ActivityModule):
         """
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
+        if rgb is None:
+            return
         if self._ocr is None:
             self._ocr = RapidOcrEngine()
         score = self._ocr.recognize(rgb, flow_data.RESULT_SCORE_ROI)
