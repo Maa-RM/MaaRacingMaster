@@ -47,7 +47,8 @@ def test_straight_drive_clears_record_mode() -> None:
 
     straight_on = {"drive_mode": "straight", "record_mode": True}
     assert InfiniteDriveModule.normalize_config(straight_on)["record_mode"] is False
-    assert InfiniteDriveModule.config_summary(straight_on) == []
+    # 直线档归一化后录制按关处理，摘要回落到驾驶档位标签。
+    assert InfiniteDriveModule.config_summary(straight_on) == ["驾驶: 全程直行"]
     assert InfiniteDriveModule.required_capabilities(straight_on) == \
         InfiniteDriveModule.REQUIRES
     assert InfiniteDriveModule.requires_exclusive_gamepad(straight_on) is True
@@ -66,13 +67,14 @@ def test_set_module_config_ignores_non_dict_and_unknown_keys() -> None:
     assert m.get_module_config()["record_mode"] is False
 
 
-def test_config_summary_announces_recording_only_when_on() -> None:
+def test_config_summary_announces_drive_mode_unless_recording() -> None:
+    """录制开只报录制；录制关报当前驾驶档位（直行档同样有标签，不留空）。"""
     assert InfiniteDriveModule.config_summary(
         {"drive_mode": "depth", "record_mode": True}) == ["录制: 开"]
     assert InfiniteDriveModule.config_summary(
         {"drive_mode": "depth", "record_mode": False}) == ["驾驶: 自动驾驶"]
     assert InfiniteDriveModule.config_summary(
-        {"drive_mode": "straight", "record_mode": False}) == []
+        {"drive_mode": "straight", "record_mode": False}) == ["驾驶: 全程直行"]
 
 
 def test_drive_mode_roundtrip_and_legacy_default() -> None:

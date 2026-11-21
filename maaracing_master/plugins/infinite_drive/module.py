@@ -292,9 +292,8 @@ class InfiniteDriveModule(ActivityModule):
         cfg = cls.normalize_config({**cls.DEFAULT_MODULE_CONFIG, **config})
         if bool(cfg["record_mode"]):
             return ["录制: 开"]
-        if cfg["drive_mode"] == "depth":
-            return ["驾驶: 自动驾驶"]
-        return []
+        mode = _DRIVE_MODES.get(cfg["drive_mode"])
+        return [f"驾驶: {mode}"] if mode else []
 
     def __init__(self, ctx: ActivityContext):
         super().__init__(ctx)
