@@ -218,3 +218,76 @@ def test_wait_card_anchor_skips_dismiss_when_page_absent() -> None:
 
     assert ok is True
     assert graph.dismiss_clicks == 0
+
+
+# ---------- 选卡循环：点一槽等商店自关，没关就重选重发 ----------
+
+class _ShopGraph:
+    """选卡商店桩：close_after_clicks 次点击后商店自关（锚点消失）。
+
+    blink_after_first：第一次点击后先闪失两拍再重现（候选刷新动画），验证
+    「持续不在」判据不把闪失误判成关闭。
+    """
+
+    def __init__(self, close_after_clicks: int = 1, blink_after_first: bool = False):
+        from maaracing_master.plugins.infinite_drive import module as m
+
+        self._m = m
+        self.clicks = 0
+        self.anchor_checks = 0
+        self.close_after = close_after_clicks
+        self.blink = blink_after_first
+        self._blink_seen = 0
+
+    def run(self, entry: str, _reached: str | None = None) -> bool:
+        if entry == self._m._EVENT_ANCHOR:
+            return False
+        if entry.startswith("infinite_drive.选卡.r"):
+            self.clicks += 1
+            return True
+        if entry == self._m._CARD_ANCHOR:
+            self.anchor_checks += 1
+            if self.clicks >= self.close_after:
+                return False  # 商店已自关
+            if self.blink and self.clicks >= 1:
+                self._blink_seen += 1
+                return self._blink_seen > 2  # 前两拍闪失，其后重现
+            return True
+        return False
+
+
+def _pick_module(graph, monkeypatch):
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.01)
+    monkeypatch.setattr(m, "PICK_CLOSE_WINDOW_S", 0.3)
+    monkeypatch.setattr(m, "PICK_CLOSE_QUIET_S", 0.05)
+    monkeypatch.setattr(InfiniteDriveModule, "_choose_card_slot", lambda self: 0)
+    return _step_module(graph)
+
+
+def test_pick_cards_resends_swallowed_click(monkeypatch) -> None:
+    """第 1 次点击被吞（商店不关）→ 重发第 2 次 → 商店自关收步。"""
+    graph = _ShopGraph(close_after_clicks=2)
+    ok = _pick_module(graph, monkeypatch)._pick_cards("card2")
+
+    assert ok is True
+    assert graph.clicks == 2
+
+
+def test_pick_cards_refresh_blink_not_mistaken_as_close(monkeypatch) -> None:
+    """候选刷新让锚点闪失两拍：不算关闭，重发后由真实关闭收步。"""
+    graph = _ShopGraph(close_after_clicks=2, blink_after_first=True)
+    ok = _pick_module(graph, monkeypatch)._pick_cards("card2")
+
+    assert ok is True
+    assert graph.clicks == 2
+
+
+def test_pick_cards_budget_exhausted_fails_explicitly(monkeypatch) -> None:
+    """商店一直不关（点击全被吞）：预算耗尽显式失败，不多点。"""
+    graph = _ShopGraph(close_after_clicks=99)
+    ok = _pick_module(graph, monkeypatch)._pick_cards("card1")
+
+    assert ok is False
+    assert graph.clicks == 3  # card1 预算 = max_picks(1) + PICK_RESEND_BUDGET(2)

@@ -93,11 +93,19 @@ _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
 _DRIVE_STAGES = frozenset({"驾驶·阶段1", "驾驶·阶段2"})
 
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
-# 计时归零→横幅动画→开店），阶段2事件介绍页（押后未驱赶）需人工关闭——bounded
-# 等待吃掉开店延迟、刷新动画与人工关闭耗时；超时仍不在即按失败走。
-# 这是等待不是驱赶：全程不点任何弹窗。
+# 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
+# 关闭——bounded 等待吃掉开店延迟、刷新动画与关闭耗时；超时仍不在即按失败走。
 CARD_ANCHOR_WAIT_S = 15.0
-CARD_ANCHOR_GONE_WAIT_S = 5.0
+# 点一槽后等商店自关的窗口（秒，硬上限）：末次选中后商店立即自关（源码
+# PickRemain<=0 → _leaveShopAndClose）；非末次是候选刷新动画，锚点可能短暂
+# 消失——窗口内没关 = 点击被吞或点在已选卡上 → 重选重发。
+PICK_CLOSE_WINDOW_S = 6.0
+# 判「商店已关」的静默门槛（秒）：锚点持续不在达此时长才算关，候选刷新的
+# 短暂闪失（约 1~2s）不误判；门槛必须大于闪失时长、窗口必须容得下门槛。
+PICK_CLOSE_QUIET_S = 3.0
+# 选卡点击的重发预算（不含首次）：点击可能被过渡动画吞掉；重复点已选卡在游戏里
+# 只弹提示不改状态（源码 CardAlreadySelected），重发无副作用。
+PICK_RESEND_BUDGET = 2
 
 # 录制全程帧率：验证用不需要控制环的 30fps——流程页停留秒级、驾驶段有结束信号
 # 把关，5fps 足以覆盖每次页面切换与点击落地，落盘体积同比例可控。
@@ -433,43 +441,53 @@ class InfiniteDriveModule(ActivityModule):
         return False
 
     def _pick_cards(self, phase: str) -> bool:
-        """选卡：识别槽内能力名字排优先级，点该槽固定坐标；阶段2可能连选两轮。
+        """选卡直到商店自关：每轮 OCR 选最优槽点击，等关闭；没关就重选重发。
 
-        每轮点选前等选卡页锚点出现（驾驶结束信号命中横幅时商店尚未开、阶段2
-        事件介绍页需人工关闭、选第2张前有刷新动画——押后未驱赶，全程不点弹窗）；
-        选完等锚点消失（配额归零自动关店有动画）。
+        终止条件 = 商店关闭（配额归零自动关店，源码口径），等价于全部配额选完，
+        所以不数点击次数。点击可能被过渡动画吞掉（真机 2026-11-21 实测：第 2 次
+        点击落在候选刷新动画尾巴上被吞，商店停在待选态）；也可能点在已选卡上
+        （游戏只弹提示不改状态）——两种情况商店都不关，下一轮重选重发即可自愈，
+        重发无副作用。
         """
         assert self._graph is not None
         assert self.ctx is not None
         max_picks = 1 if phase == "card1" else flow_data.CARD2_MAX_PICKS
-        picked = 0
-        for _ in range(max_picks):
+        for _ in range(max_picks + PICK_RESEND_BUDGET):
             if not self._running:
                 return False
             if not self._wait_card_anchor(want_present=True):
-                break
+                logger.log(f"[无限驾驶] 「{phase}」等待内未出现选卡页", "WARNING")
+                return False
             slot = self._choose_card_slot()
             self._graph.run(f"infinite_drive.选卡.r{slot + 1}",
                             f"infinite_drive.选卡.r{slot + 1}")
-            picked += 1
-            if not self.ctx.lifecycle.sleep(0.6):
-                return False
-        if picked == 0:
-            logger.log(f"[无限驾驶] 「{phase}」等待内未出现选卡页", "WARNING")
-            return False
-        return self._wait_card_anchor(want_present=False)
+            if self._wait_card_anchor(want_present=False,
+                                      wait_s=PICK_CLOSE_WINDOW_S,
+                                      quiet_s=PICK_CLOSE_QUIET_S):
+                return True
+        logger.log(f"[无限驾驶] 「{phase}」重发预算内商店未关闭，本轮中止", "WARNING")
+        return False
 
-    def _wait_card_anchor(self, *, want_present: bool) -> bool:
-        """等选卡页锚点到达期望状态（出现/消失）；bounded，响应停止信号。
+    def _wait_card_anchor(self, *, want_present: bool,
+                          wait_s: float | None = None,
+                          quiet_s: float = 0.0) -> bool:
+        """等选卡页锚点到达期望状态（出现 / 持续消失）；bounded，响应停止信号。
 
         want_present 时每拍先驱赶事件介绍页再查选卡页：页面在位就点右上角空白
         （动作节点自带锚点识别，不在位不会发出），点没生效下一拍会再次进入重发，
         直到页面消失露出选卡页——每回合必弹，主动查的成本是每拍一次紧 ROI 模板。
+
+        want_present=False 是「持续消失」判据：锚点连续不在达 ``quiet_s`` 才算
+        消失（候选刷新动画会让锚点闪失 1~2s，不能算商店已关）；重见即重新起算，
+        ``wait_s`` 是硬上限，锚点一直在位也会到期返回 False，不会无限等。
+        quiet_s=0 退化为「首次不在即返回」。
         """
         assert self._graph is not None
         assert self.ctx is not None
-        wait_s = CARD_ANCHOR_WAIT_S if want_present else CARD_ANCHOR_GONE_WAIT_S
+        if wait_s is None:
+            wait_s = CARD_ANCHOR_WAIT_S
         deadline = time.monotonic() + wait_s
+        last_seen = time.monotonic()
         while True:
             if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR):
                 self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS)
@@ -477,8 +495,13 @@ class InfiniteDriveModule(ActivityModule):
                     return False
                 continue
             present = bool(self._graph.run(_CARD_ANCHOR, _CARD_ANCHOR))
-            if present == want_present:
-                return True
+            if want_present:
+                if present:
+                    return True
+            elif present:
+                last_seen = time.monotonic()  # 重见即重新起算静默期
+            elif time.monotonic() - last_seen >= quiet_s:
+                return True   # 持续不在达门槛 = 商店已关
             if not self._running or time.monotonic() >= deadline:
                 return False
             if not self.ctx.lifecycle.sleep(STEP_POLL_S):
