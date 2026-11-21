@@ -93,6 +93,7 @@ class DriveRecorder:
         phase: int | None = None,
         round_no: int | None = None,
         group_id: str | None = None,
+        source: str = SOURCE_MANUAL,
         hud_render: Callable[[Any, dict], Any] | None = None,
         hud_interval_s: float = 0.1,
         hud_jpeg_quality: int = 85,
@@ -107,6 +108,8 @@ class DriveRecorder:
         # 场景分层用：本次会话属于哪个驾驶阶段、第几轮
         self.phase = phase
         self.round_no = round_no
+        # 会话来源（meta.source）：人工驾驶语料 / 程序驱动取证，由调用方按实际形态给
+        self._source = source
         # 程序叠加图（可缺省）：渲染器 + 节流窗 + 质量
         self._hud_render = hud_render
         self._hud_interval = max(0.0, float(hud_interval_s))
@@ -399,7 +402,7 @@ class DriveRecorder:
     def _write_meta(self, reason: str) -> None:
         w, h = self._frame_size or (0, 0)
         meta = build_meta(
-            source=SOURCE_MANUAL,
+            source=self._source,
             started_at=self._started_iso,
             ended_at=datetime.now().isoformat(timespec="seconds"),
             monotonic_start_ns=self._started_ns,

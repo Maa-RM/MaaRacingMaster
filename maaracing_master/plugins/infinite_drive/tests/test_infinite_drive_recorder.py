@@ -17,7 +17,10 @@ from maaracing_master.plugins.infinite_drive.recorder import (
     DriveRecorder,
     make_session_dir,
 )
-from maaracing_master.plugins.infinite_drive.session_layout import SCHEMA_VERSION
+from maaracing_master.plugins.infinite_drive.session_layout import (
+    SCHEMA_VERSION,
+    SOURCE_CONTROL,
+)
 
 
 
@@ -126,6 +129,16 @@ def test_meta_records_scene_strata(tmp_path) -> None:
 
     meta = json.loads((tmp_path / "s8" / "meta.json").read_text(encoding="utf-8"))
     assert meta["phase"] == 2 and meta["round_no"] == 3
+
+
+def test_meta_source_follows_caller(tmp_path) -> None:
+    """会话来源随调用方：程序驱动的全流程取证局不该被误标成人工驾驶语料。"""
+    rec = DriveRecorder(tmp_path / "s9", source=SOURCE_CONTROL, pad_poll_hz=50.0)
+    rec.start()
+    rec.stop()
+
+    meta = json.loads((tmp_path / "s9" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["source"] == "control"
 
 
 def test_queue_full_counts_drop_without_blocking(tmp_path) -> None:

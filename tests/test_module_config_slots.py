@@ -341,14 +341,14 @@ def test_real_modules_declare_their_config_surface():
 
     这条是修复的回归锁：配置键曾经不在 core 的键白名单里，写盘后回填被静默丢弃
     （speedrush 的 record_mode 事故；v1 模块留档 _archive/speedrush/，其配置面
-    回归锁随插件归档）。后继 infinite_drive 流程未接线，配置面尚未声明——接线
-    新增配置键时同步更新这里的期望集。
+    回归锁随插件归档）。后继 infinite_drive 目前只声明录制开关；接线新增配置键时
+    同步更新这里的期望集。
     """
     from maaracing_master.core.registry import MODULE_REGISTRY as real_registry
     cls = real_registry["infinite_drive"]
 
     declared = set(cls.DEFAULT_MODULE_CONFIG)
-    assert declared == set(), "流程未接线阶段不应有配置键；接线时更新期望集"
+    assert declared == {"record_mode"}, "配置面变化时同步更新期望集"
     # 配置面的键与模块实际接受/返回的键必须一致（不多不少）
     keys = set(sc._module_config_defaults("infinite_drive"))
     assert keys == declared
