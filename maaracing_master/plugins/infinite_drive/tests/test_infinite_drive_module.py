@@ -162,3 +162,59 @@ def test_run_step_resend_recovers_when_page_arrives(monkeypatch) -> None:
 
     assert ok is True
     assert graph.clicks == 2
+
+
+# ---------- 选卡等待循环的事件介绍页驱赶 ----------
+
+class _EventPageGraph:
+    """事件介绍页先盖住选卡页，点一次空白后让位（真机每回合阶段2场景）。"""
+
+    def __init__(self) -> None:
+        self.event_checks = 0
+        self.dismiss_clicks = 0
+        self.card_checks = 0
+
+    def run(self, entry: str, _reached: str | None = None) -> bool:
+        from maaracing_master.plugins.infinite_drive import module as m
+
+        if entry == m._EVENT_ANCHOR:
+            self.event_checks += 1
+            return self.dismiss_clicks == 0  # 未关时事件页一直盖着
+        if entry == m._EVENT_DISMISS:
+            self.dismiss_clicks += 1
+            return True
+        if entry == m._CARD_ANCHOR:
+            self.card_checks += 1
+            return self.dismiss_clicks > 0   # 关掉后选卡页才可见
+        return False
+
+
+def test_wait_card_anchor_dismisses_event_page() -> None:
+    """事件页在位 → 点空白 → 选卡页出现；点击只在页面在位时发生。"""
+    graph = _EventPageGraph()
+    ok = _step_module(graph)._wait_card_anchor(want_present=True)
+
+    assert ok is True
+    assert graph.dismiss_clicks == 1
+    assert graph.event_checks >= 1 and graph.card_checks >= 1
+
+
+def test_wait_card_anchor_skips_dismiss_when_page_absent() -> None:
+    """事件页不在位（或已关）→ 不发任何空白点击，直接等选卡页。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    class _NoEventGraph(_EventPageGraph):
+        def run(self, entry: str, _reached: str | None = None) -> bool:
+            if entry == m._EVENT_ANCHOR:
+                self.event_checks += 1
+                return False
+            if entry == m._CARD_ANCHOR:
+                self.card_checks += 1
+                return True
+            return False
+
+    graph = _NoEventGraph()
+    ok = _step_module(graph)._wait_card_anchor(want_present=True)
+
+    assert ok is True
+    assert graph.dismiss_clicks == 0

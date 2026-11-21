@@ -1081,5 +1081,88 @@
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
+    },
+    "infinite_drive.__confirm.事件介绍": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "阶段2特殊事件介绍页在位（点击空白处关闭提示，每回合商店自动弹）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.4488,
+                        0.8153,
+                        0.5504,
+                        0.8472
+                    ],
+                    "templates": [
+                        "inf_event_hint.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
+    "infinite_drive.关闭事件介绍": {
+        "attach": {
+            "_page": "card",
+            "_label": "点右上角空白关闭事件介绍页（识别=提示在位才发点击，点错页不会发出）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "colorspace": "rgb",
+                    "rect": [
+                        0.4488,
+                        0.8153,
+                        0.5504,
+                        0.8472
+                    ],
+                    "templates": [
+                        "inf_event_hint.png"
+                    ],
+                    "threshold": 0.8
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Input",
+                "custom_action_param": {
+                    "point": [
+                        0.9703,
+                        0.05
+                    ],
+                    "wait_after_ms": 800
+                }
+            }
+        },
+        "rate_limit": 100,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 1000
     }
 }

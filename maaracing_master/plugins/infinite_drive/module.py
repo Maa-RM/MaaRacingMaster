@@ -2,9 +2,10 @@
 """无限驾驶活动模块：v2 持久流程状态机（骨架）。
 
 感知/几何/控制基建自 speedrush 归档搬迁；本模块接线 v2 的**持久流程**导航：
-入口 → 关卡挑战 → 准备 → 选卡 → 驾驶 → 结算 → 放弃回环。一次性弹窗（赛季重置 /
-规则教学 / 得分规则门 / 事件介绍等）按裁定押后，不在本骨架内驱赶——真机验证轮
-依赖人工关闭，选卡步骤的 bounded 等待为关闭耗时留窗（只等待，不点弹窗）。
+入口 → 关卡挑战 → 准备 → 选卡 → 驾驶 → 结算 → 放弃回环。事件介绍页（每回合
+阶段2商店自动弹、点空白才关）已在选卡等待循环内驱赶；其余一次性弹窗（赛季重置 /
+规则教学 / 得分规则门）按裁定押后，真机验证轮依赖人工关闭，选卡步骤的 bounded
+等待为其关闭耗时留窗（只等待，不点弹窗）。
 
 驾驶阶段当前为**等待结束信号的占位实现**（不施加控制）：v2 阶段按计时推进，
 骨架据此走通全链路；驾驶控制方案后续接入 ``_drive``。
@@ -78,6 +79,12 @@ STEP_WINDOW_S = 2.0
 STEP_POLL_S = 0.3
 
 _CARD_ANCHOR = "infinite_drive.__confirm.卡牌选择"
+# 阶段2商店自动弹事件介绍页（每回合，点空白才关，盖住选卡页）：等选卡页的循环里
+# 每拍先驱赶再等。检测锚点=「点击空白处关闭」提示（紧 ROI 模板，52 帧实测 1.0 分），
+# 点的是右上角空白（真机帧实测全暗区，左上角是返回箭头不能碰）；动作节点自带同一
+# 锚点识别，页面不在位时点击不会发出。其余一次性弹窗仍按裁定押后。
+_EVENT_ANCHOR = "infinite_drive.__confirm.事件介绍"
+_EVENT_DISMISS = "infinite_drive.关闭事件介绍"
 _DRIVE_END = {"p1": "infinite_drive.__confirm.驾驶1结束",
               "p2": "infinite_drive.__confirm.驾驶2结束"}
 _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
@@ -453,12 +460,22 @@ class InfiniteDriveModule(ActivityModule):
         return self._wait_card_anchor(want_present=False)
 
     def _wait_card_anchor(self, *, want_present: bool) -> bool:
-        """等选卡页锚点到达期望状态（出现/消失）；bounded，响应停止信号。"""
+        """等选卡页锚点到达期望状态（出现/消失）；bounded，响应停止信号。
+
+        want_present 时每拍先驱赶事件介绍页再查选卡页：页面在位就点右上角空白
+        （动作节点自带锚点识别，不在位不会发出），点没生效下一拍会再次进入重发，
+        直到页面消失露出选卡页——每回合必弹，主动查的成本是每拍一次紧 ROI 模板。
+        """
         assert self._graph is not None
         assert self.ctx is not None
         wait_s = CARD_ANCHOR_WAIT_S if want_present else CARD_ANCHOR_GONE_WAIT_S
         deadline = time.monotonic() + wait_s
         while True:
+            if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR):
+                self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS)
+                if not self.ctx.lifecycle.sleep(STEP_POLL_S):
+                    return False
+                continue
             present = bool(self._graph.run(_CARD_ANCHOR, _CARD_ANCHOR))
             if present == want_present:
                 return True
