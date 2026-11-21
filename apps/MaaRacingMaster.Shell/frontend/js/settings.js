@@ -951,11 +951,11 @@
                   </div>
                 </div>
               </div>
-              <div class="maarm-radio-card" data-clickmode="gamepad">
+              <div class="maarm-radio-card maarm-radio-card--disabled" data-clickmode="gamepad">
                 <div class="radio-inner">
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
-                    <div class="radio-title"><strong>后台(手柄)</strong></div>
+                    <div class="radio-title"><strong>后台(手柄)</strong><span class="badge-wip">开发中</span></div>
                     <p class="radio-desc">手柄光标导航到目标后按 A 键确认，游戏可留在后台；需 ViGEmBus 虚拟手柄</p>
                   </div>
                 </div>
@@ -1196,6 +1196,7 @@
     document.querySelectorAll('.radio-grid').forEach((grid) => {
       grid.querySelectorAll('.maarm-radio-card').forEach((card) => {
         card.addEventListener('click', async () => {
+          if (card.classList.contains('maarm-radio-card--disabled')) return; // 开发中选项不可切换
           grid.querySelectorAll('.maarm-radio-card').forEach((c) => c.classList.remove('maarm-radio-card--selected'));
           card.classList.add('maarm-radio-card--selected');
           try {

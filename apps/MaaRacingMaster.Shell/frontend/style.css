@@ -1044,6 +1044,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-radio-card--selected { border-color: var(--maarm-primary); background-color: var(--maarm-primary-soft); }
 .maarm-radio-card--selected .maarm-radio-dot { border-color: var(--maarm-primary); }
 .maarm-radio-card--selected .maarm-radio-dot::after { transform: translate(-50%, -50%) scale(1); }
+/* 禁用态（如「后台(手柄)」开发中）：置灰且不可点，保留徽章醒目 */
+.maarm-radio-card--disabled { cursor: not-allowed; background-color: var(--maarm-surface-hover); border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled:hover { border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled .radio-title strong,
+.maarm-radio-card--disabled .radio-desc { color: var(--maarm-foreground-muted); }
+.maarm-radio-card--disabled .maarm-radio-dot { opacity: 0.4; }
 .radio-inner { display: flex; align-items: flex-start; gap: 10px; }
 .maarm-radio-dot {
   width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--maarm-border-strong);
