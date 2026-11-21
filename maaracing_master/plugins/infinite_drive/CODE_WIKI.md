@@ -148,7 +148,7 @@
 | [model_assets.py](./model_assets.py) | 深度模式模型包：受管安装目录优先、旧手动目录与安装包兜底，尺寸 + SHA256 完整性校验；按清单摘要分目录，权重缺失时深度档降级、线观测退回深度 / 墙 |
 | [model_installer.py](./model_installer.py) | 插件自有模型包安装器：单飞任务、流式下载、来源回退、取消、ZIP 白名单解压、暂存校验与可回退提交；状态带单调修订供前端轮询 |
 
-一键安装的落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，临时下载与解压在同级 `downloads/`。构建时在插件模型资源目录注入下载描述，含 tag、资产名、ZIP 哈希、尺寸、清单摘要与 GitHub/CNB 同 tag 地址；缺失或与当前清单摘要不符时前端回退手动安装。`manifest.py` 的 `ASSET_INSTALLER` 是宿主加载安装器的唯一声明，core 不硬编码模型实现。旧手动解压目录 `data/infinite_drive/models/` 仍是只读候选，不被安装器覆盖。
+一键安装的落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，临时下载与解压在同级 `downloads/`。构建时在插件模型资源目录注入下载描述，含 tag、资产名、ZIP 哈希、尺寸、清单摘要与 GitHub/CNB 同 tag 地址；缺失或与当前清单摘要不符时前端回退手动安装。`manifest.py` 的 `ASSET_INSTALLER` 是宿主加载安装器的唯一声明，`ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 提供面板文案——core 不硬编码模型实现与模块语义。旧手动解压目录 `data/infinite_drive/models/` 仍是只读候选，不被安装器覆盖。宿主接缝（声明加载、双向准入互斥、冻结/关闭收尾）的口径见 [ADR-0027](../../../docs/adr/0027-contract-core-模块资产安装声明与下载落点.md)。
 
 ## 4. 坑点（搬迁模块注释明确记载、与 v2 事实无冲突）
 

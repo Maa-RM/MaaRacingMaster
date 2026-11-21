@@ -532,7 +532,7 @@ HANDLERS = frozenset({
     # 外部资源与下载引导
     "open_vigembus_download", "open_external_url", "open_user_data_folder",
     # 插件自有资产安装（core 只按 manifest 声明加载，前端不传 URL/路径）
-    "install_model_start", "install_model_cancel", "install_model_status",
+    "install_asset_start", "install_asset_cancel", "install_asset_status",
     # 用户数据目录占用（设置页「调试文件夹」面板）
     "get_data_usage",
     # 注册表优化建议
@@ -563,8 +563,18 @@ _MAX_INFLIGHT = 16
 _INSTALL_ACTIVE_PHASES = frozenset({"downloading", "verifying", "extracting", "committing"})
 
 
+def _install_module_id(params) -> str:
+    """从 RPC 参数取模块 id；非 dict / 非字符串一律视为空（宿主不猜）。"""
+    raw = params.get("module_id") if isinstance(params, dict) else None
+    return raw if isinstance(raw, str) and raw else ""
+
+
 def _install_status_dict(status) -> dict:
-    """安装器状态快照 → RPC 安全字典（前端只消费字段，不执行动作）。"""
+    """安装器状态快照 → RPC 安全字典（前端只消费字段，不执行动作）。
+
+    只收模块无关的公共字段；插件私有的版本/摘要键不进宿主契约，避免宿主
+    认识某个模块的资产语义。
+    """
     return {
         "task_id": status.task_id,
         "phase": status.phase,
@@ -573,7 +583,6 @@ def _install_status_dict(status) -> dict:
         "total": status.total,
         "source": status.source,
         "error": status.error,
-        "manifest_digest": status.manifest_digest,
     }
 
 # ---------- 成就：核心 UI 事实 ----------
@@ -1344,6 +1353,9 @@ class SidecarService:
                 return (False, None, "升级准备中，完成或放弃升级后再试")
             if self._worker is not None:  # slot 已占用，不以 is_alive() 判断
                 return (False, None, "已在运行")
+            if self._install_busy():
+                # 与安装入口对称的准入：安装写受管目录时游戏不得并发读/占用权重
+                return (False, None, "资产安装进行中，等待安装完成后再启动")
             enabled = self._enabled_ids()
             if not enabled:
                 return (False, None, "任务列表没有启用的模块")
@@ -1648,7 +1660,7 @@ class SidecarService:
     def open_user_data_folder(self, params):
         """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingMaster）。
 
-        可选 ``subpath`` 指向目录内的子目录（如模型安装位置）；只接受相对路径，
+        可选 ``subpath`` 指向目录内的子目录（如资产安装位置）；只接受相对路径，
         拒绝绝对路径、盘符与 ``..``，解析后再次确认仍在用户数据目录内。
         目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
         原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
@@ -1684,56 +1696,73 @@ class SidecarService:
             return None, "该模块未声明资产安装能力"
         installer = self._asset_installers.get(module_id)
         if installer is None:
-            installer = load_plugin_ref(module_id, ref)()
+            # 第三方插件的错误声明只让本模块不可用，不能把宿主 RPC 打断
+            try:
+                installer = load_plugin_ref(module_id, ref)()
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                return None, f"插件声明的安装器不可用: {exc}"
             self._asset_installers[module_id] = installer
         return installer, None
 
     def _install_busy(self) -> bool:
         return any(
             installer.status().phase in _INSTALL_ACTIVE_PHASES
-            for installer in self._asset_installers.values()
+            for installer in getattr(self, "_asset_installers", {}).values()
         )
 
-    def install_model_start(self, params):
+    def install_asset_start(self, params):
         """启动插件自有资产安装；URL、目标文件名与校验值全部来自插件/构建描述。"""
         with self._lock:
             if self._closed:
-                return (False, None, "正在关闭，无法安装模型")
+                return (False, None, "正在关闭，无法安装资产")
             if self._update_freeze:
-                return (False, None, "升级准备中，暂不能安装模型")
+                return (False, None, "升级准备中，暂不能安装资产")
             if self._worker is not None:
-                return (False, None, "任务运行中，暂不能安装模型")
+                return (False, None, "任务运行中，暂不能安装资产")
             if self._install_busy():
-                return (False, None, "模型安装进行中")
+                return (False, None, "资产安装进行中")
             installer, err = self._asset_installer_for(params)
             if err or installer is None:
                 return (False, None, err or "模块未声明资产安装能力")
             accepted, payload = installer.start()
         if not accepted:
             return (False, None, str(payload))
-        return (True, _install_status_dict(payload), None)
+        data = _install_status_dict(payload)
+        data.update(self._install_display_fields(_install_module_id(params)))
+        return (True, data, None)
 
-    def install_model_cancel(self, params):
+    def install_asset_cancel(self, params):
         installer, err = self._asset_installer_for(params)
         if err or installer is None:
             return (False, None, err or "模块未声明资产安装能力")
-        return (True, _install_status_dict(installer.cancel()), None)
+        data = _install_status_dict(installer.cancel())
+        data.update(self._install_display_fields(_install_module_id(params)))
+        return (True, data, None)
 
-    def install_model_status(self, params):
-        raw_id = params.get("module_id") if isinstance(params, dict) else None
-        module_id = raw_id if isinstance(raw_id, str) and raw_id else ""
+    @staticmethod
+    def _install_display_fields(module_id) -> dict:
+        """安装入口的显示文案来自插件声明，宿主不硬编码任何模块语义。"""
+        label = plugin_declared_ref(module_id, "ASSET_INSTALLER_LABEL") or "资产"
+        hint = plugin_declared_ref(module_id, "ASSET_INSTALLER_MISSING_HINT") or ""
+        return {"label": label, "missing_hint": hint}
+
+    def install_asset_status(self, params):
+        module_id = _install_module_id(params)
         supported = bool(plugin_declared_ref(module_id, "ASSET_INSTALLER")) if module_id else False
         installer = self._asset_installers.get(module_id) if module_id else None
         if installer is None:
-            return (True, {
+            data = {
                 "task_id": "", "phase": "idle", "revision": 0, "downloaded": 0,
-                "total": 0, "source": "", "error": None, "manifest_digest": None,
+                "total": 0, "source": "", "error": None,
                 "supported": supported, "needs_install": False,
-            }, None)
+            }
+            data.update(self._install_display_fields(module_id))
+            return (True, data, None)
         data = _install_status_dict(installer.status())
         data["supported"] = supported
         needs = getattr(installer, "needs_install", None)
         data["needs_install"] = bool(needs()) if callable(needs) else False
+        data.update(self._install_display_fields(module_id))
         return (True, data, None)
 
     def get_data_usage(self, params):
@@ -2487,7 +2516,7 @@ class SidecarService:
             if self._worker is not None:
                 return (False, None, "任务运行中，等待停止后再升级")
             if self._install_busy():
-                return (False, None, "模型安装中，等待安装完成后再升级")
+                return (False, None, "资产安装中，等待安装完成后再升级")
             self._update_freeze = True
             return (True, {"frozen": True}, None)
 
@@ -2525,7 +2554,7 @@ class SidecarService:
         for installer in installers:
             remaining = max(0.0, deadline - time.monotonic())
             if not installer.join(remaining):
-                logger.log("[sidecar] 关闭时模型安装未在有界等待内退出，按有界排空继续收尾",
+                logger.log("[sidecar] 关闭时资产安装未在有界等待内退出，按有界排空继续收尾",
                            "WARNING")
         logger.log("sidecar 业务已停止", "DEBUG")
         logger.close()  # 关写盘句柄，flush 尾部（进程退出路径）

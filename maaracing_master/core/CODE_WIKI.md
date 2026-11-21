@@ -820,7 +820,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 **用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
-- `data/`：运行时数据与用户资产（各活动的业务库、`data/infinite_drive/macros/` 用户录制的宏、模型权重等）。插件自有资产统一使用 `data/<module_id>/`；`paths.module_data_dir()` 按 manifest.ID 授予目录并拒绝越界子路径。模型安装占用与游戏 worker、升级冻结在同层准入互斥（`sidecar.install_model_*`、`prepare_update`）
+- `data/`：运行时数据与用户资产（各活动的业务库、`data/infinite_drive/macros/` 用户录制的宏、模型权重等）。插件自有资产统一使用 `data/<module_id>/`；`paths.module_data_dir()` 按 manifest.ID 授予目录并拒绝越界子路径。插件的资产安装入口由 manifest 的 `ASSET_INSTALLER` 声明（配合 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 文案），core 只按声明加载与转发，不硬编码模块实现；安装与游戏 worker、升级冻结在同层双向准入互斥（`sidecar.install_asset_*`、`start`、`prepare_update`）
 - `logs/`：会话记录 `logs/<会话>/`——运行日志 `MaaRM_<会话>.log`（含 DEBUG 级全量）、`perf.jsonl` 与 `trace/<模块>.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：会话优先的取证布局 `debug/<会话>/<模块>/<行为>/`（行为目录内 `manifest.json` + `frames.jsonl`；会话根 `index.jsonl` 只记段/阶段/开关）。会话编号进程启动即存在，日志与调试两个开关只决定有没有文件

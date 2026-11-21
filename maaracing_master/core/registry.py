@@ -201,7 +201,11 @@ _discover_plugins()
 
 
 def plugin_declared_ref(module_id: str, field: str) -> str | None:
-    """读插件 manifest 的通用能力声明（如 ASSET_INSTALLER），未声明返回 None。"""
+    """读插件 manifest 的字符串声明（能力引用或宿主显示文案），未声明返回 None。
+
+    宿主只认字段名，不认模块实现：`ASSET_INSTALLER` 指向安装器对象，
+    `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 是安装入口文案。
+    """
     pkg = _PLUGIN_PACKAGES.get(module_id)
     if not pkg:
         return None

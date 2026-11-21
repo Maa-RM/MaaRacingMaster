@@ -291,8 +291,9 @@
   var INSTALL_ACTIVE = {
     downloading: true, verifying: true, extracting: true, committing: true,
   };
+  // idle 由声明名词拼出（「<label>已就绪 / 未安装」），宿主不认识任何模块语义
   var INSTALL_PHASE_TEXT = {
-    idle: '模型已就绪', downloading: '下载中', verifying: '校验中',
+    downloading: '下载中', verifying: '校验中',
     extracting: '解压中', committing: '安装中', done: '安装完成',
     failed: '安装失败', cancelled: '已取消',
   };
@@ -315,7 +316,7 @@
     if (!nodes.install) return;
     var resp;
     try {
-      resp = await MaaRM.maarm.call('install_model_status', { module_id: entry.mid });
+      resp = await MaaRM.maarm.call('install_asset_status', { module_id: entry.mid });
     } catch (e) {
       return; // 轮询失败不刷屏，下轮再取
     }
@@ -330,15 +331,22 @@
     if (typeof resp.revision === 'number') entry.installRev = resp.revision;
     entry.installStatus = resp;
     nodes.install.style.display = '';
+    var label = resp.label || '资产';
     var phase = resp.phase || 'idle';
-    var text = INSTALL_PHASE_TEXT[phase] || phase;
-    if (phase === 'downloading' && resp.total) {
-      text += ' ' + Math.round(resp.downloaded * 100 / resp.total) + '%';
+    var text;
+    if (phase === 'idle') {
+      text = resp.needs_install
+        ? (resp.missing_hint || (label + '未安装'))
+        : (label + '已就绪');
+    } else {
+      text = INSTALL_PHASE_TEXT[phase] || phase;
+      if (phase === 'downloading' && resp.total) {
+        text += ' ' + Math.round(resp.downloaded * 100 / resp.total) + '%';
+      }
+      if (resp.error) text += ' · ' + resp.error;
     }
-    if (resp.error) text += ' · ' + resp.error;
-    nodes.installText.textContent = (resp.needs_install && phase === 'idle')
-      ? '深度模型未安装（发布包不含权重）' : text;
-    nodes.installBtn.textContent = INSTALL_ACTIVE[phase] ? '取消' : '一键安装模型';
+    nodes.installText.textContent = text;
+    nodes.installBtn.textContent = INSTALL_ACTIVE[phase] ? '取消' : ('一键安装' + label);
     nodes.installBtn.disabled = !!(locked || entry.locked);
     if (INSTALL_ACTIVE[phase]) ensureInstallPolling(entry);
     else stopInstallPolling(entry);
@@ -346,14 +354,15 @@
 
   async function runInstallAction(entry) {
     var active = entry.installStatus && INSTALL_ACTIVE[entry.installStatus.phase];
-    var method = active ? 'install_model_cancel' : 'install_model_start';
+    var method = active ? 'install_asset_cancel' : 'install_asset_start';
+    var label = (entry.installStatus && entry.installStatus.label) || '资产';
     try {
       await MaaRM.maarm.call(method, { module_id: entry.mid });
       ensureInstallPolling(entry);
       await refreshInstall(entry);
     } catch (e) {
       if (!ST.isAlive(entry, generation)) return;
-      MaaRM.reportError('inline', '模型安装操作失败: ' + (e.message || e),
+      MaaRM.reportError('inline', label + '安装操作失败: ' + (e.message || e),
         { el: entry.nodes && entry.nodes.install });
     }
   }
@@ -526,7 +535,7 @@
     var install = el('div', 'field-notice config-install');
     install.style.display = 'none';
     var installText = el('span', 'field-notice-text', '');
-    var installBtn = el('button', 'field-notice-btn', '一键安装模型');
+    var installBtn = el('button', 'field-notice-btn', '一键安装');
     installBtn.type = 'button';
     installBtn.addEventListener('click', function () { runInstallAction(entry); });
     install.appendChild(installText);

@@ -11,3 +11,6 @@ ID = "infinite_drive"
 MODULE_CLASS = "module.InfiniteDriveModule"
 # 插件自有的资产安装器：core 只按本声明加载，不硬编码模型实现
 ASSET_INSTALLER = "model_installer.ModelInstaller"
+# 安装入口的显示名词与缺失提示：宿主只渲染声明，不硬编码模块语义
+ASSET_INSTALLER_LABEL = "模型"
+ASSET_INSTALLER_MISSING_HINT = "深度模型未安装（发布包不含权重）"
