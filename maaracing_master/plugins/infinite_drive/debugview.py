@@ -848,9 +848,13 @@ class DebugPairWriter:
     def __init__(self, session_dir: Path, cal: Calib | None = None,
                  interval_s: float | None = None,
                  *, phase: int | None = None,
-                 round_no: int | None = None):
+                 round_no: int | None = None,
+                 render_hud: bool = True):
         self._dir = Path(session_dir)
         self._raw_dir = self._dir / "raw"
+        # render_hud=False = 只存 raw（叠加图缺席，索引 hud=null）：控制链还没有
+        # 策略快照可叠时先用纯原帧取证，布局与索引字段不变，后续接上叠加零迁移。
+        self._render_hud = render_hud
         self._cal = cal if cal is not None else load_calib()
         self._interval = DEBUG_INTERVAL_S if interval_s is None else interval_s
         self._last_push = float("-inf")     # 首拍立出图
@@ -883,6 +887,11 @@ class DebugPairWriter:
         return {"saved": self.saved, "dropped": self.dropped,
                 "errors": self.errors, "q": self._q.qsize(),
                 "ms": round(self.last_ms, 1)}
+
+    @property
+    def dir(self) -> Path:
+        """本会话目录（调用方收尾重建行为索引用，不暴露内部状态）。"""
+        return self._dir
 
     def tick(self, frame_rgb: np.ndarray | None, snap: dict) -> None:
         """控制拍调用：每拍先记转向历史，再按节流入队（默认逐拍）。绝不抛。"""
@@ -956,17 +965,18 @@ class DebugPairWriter:
         # 渲染失败只让"叠加图缺席"，原帧照常进索引（hud=null）——与人工局同一条
         # 纪律：索引里的文件一定存在，缺席用 null 表达，而不是整行不留。
         hud_name = None
-        try:
-            hud = render_hud(frame_rgb, snap, self._cal)
-            name = hud_relpath(self._seq)
-            if cv2.imwrite(str(self._dir / name), hud,
-                           [cv2.IMWRITE_JPEG_QUALITY, _HUD_JPEG_QUALITY]):
-                self.hud_written += 1
-                hud_name = name
-            else:
+        if self._render_hud:
+            try:
+                hud = render_hud(frame_rgb, snap, self._cal)
+                name = hud_relpath(self._seq)
+                if cv2.imwrite(str(self._dir / name), hud,
+                               [cv2.IMWRITE_JPEG_QUALITY, _HUD_JPEG_QUALITY]):
+                    self.hud_written += 1
+                    hud_name = name
+                else:
+                    self.errors += 1
+            except Exception:  # noqa: BLE001 —— 可视化失败不碰主路
                 self.errors += 1
-        except Exception:  # noqa: BLE001 —— 可视化失败不碰主路
-            self.errors += 1
         self._write_index(snap, hud_name)
         self.last_ms = (time.perf_counter() - t0) * 1000.0
         self.saved += 1

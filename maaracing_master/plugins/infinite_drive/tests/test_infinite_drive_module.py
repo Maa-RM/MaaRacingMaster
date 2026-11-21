@@ -523,3 +523,73 @@ def test_step_retry_sweeps_before_resend(monkeypatch) -> None:
     assert ok is False
     assert graph.sweeps >= 1      # 重发循环里兜底至少跑过一次
 
+
+# ---------- 控制局 raw 调试图（debug 开关闸；v1 口径的延续） ----------
+
+def _drive_frames_stub(mod, monkeypatch, frame):
+    """给 _drive 三个新鲜帧与假手柄：前两帧驾驶 HUD 在位、第三帧走结束信号。"""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "_DRIVE_HUD_GAP_S", 0.0)
+    monkeypatch.setattr(m, "drive_hud_visible", lambda _frame: _frame is frame,
+                        raising=False)
+    frames = iter([(frame, 1, 1, 0), (frame, 2, 2, 0), (object(), 3, 3, 0)])
+    mod.ctx.capture = SimpleNamespace(frame_with_age=lambda: next(frames))
+    pad = SimpleNamespace(left_joystick=lambda **_: None,
+                          right_trigger=lambda **_: None, update=lambda: None)
+    mod.ctx.gamepad = SimpleNamespace(acquire=lambda: nullcontext(pad))
+
+
+def test_debug_drive_saves_raw_frames(monkeypatch, tmp_path) -> None:
+    """debug 开 + 程序驾驶局：raw 原帧按阶段落盘并登记行为清单段（v1 口径）。
+
+    布局走 session_layout 控制面（debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/），
+    策略面未接先只存 raw（索引 hud=null），行为级索引在收尾重建。"""
+    import json
+
+    import numpy as np
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "debug_dir", lambda: tmp_path)
+    monkeypatch.setattr(m.logger, "_session_token", "sess_dbg")
+    mod = _step_module(SimpleNamespace(run=lambda *_args: True))
+    mod.ctx.debug = SimpleNamespace(enabled=True)
+    _drive_frames_stub(mod, monkeypatch, np.zeros((48, 64, 3), dtype=np.uint8))
+    mod._round_no = 1
+    mod._round_stamp = "20260101_000000"
+
+    assert mod._drive("p1") is True
+    behavior = tmp_path / "sess_dbg" / "infinite_drive" / "drive"
+    seg = behavior / "20260101_000000_p1"
+    assert (behavior / "manifest.json").is_file()           # 行为清单登记了段
+    assert list((seg / "raw").glob("*.jpg"))                # raw 原帧落盘（10fps 节流）
+    rows = [json.loads(line) for line
+            in (seg / "frames.jsonl").read_text(encoding="utf-8").splitlines() if line]
+    assert rows and all(row["hud"] is None for row in rows)  # 只存 raw 不画叠加
+    assert (behavior / "frames.jsonl").is_file()            # 行为级索引收尾重建
+
+
+def test_debug_drive_off_saves_nothing(monkeypatch, tmp_path) -> None:
+    """debug 关（ctx 无该面）：零产物；录制局同样不建 writer（录制器已写同一套）。"""
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "debug_dir", lambda: tmp_path)
+    monkeypatch.setattr(m.logger, "_session_token", "sess_dbg")
+    mod = _step_module(SimpleNamespace(run=lambda *_args: True))
+    _drive_frames_stub(mod, monkeypatch, object())
+    assert mod._drive("p1") is True
+
+    mod2 = _step_module(SimpleNamespace(run=lambda *_args: True))
+    mod2.ctx.debug = SimpleNamespace(enabled=True)
+    mod2.set_module_config({"record_mode": True})
+    _drive_frames_stub(mod2, monkeypatch, object())
+    assert mod2._drive("p1") is True
+
+    assert not (tmp_path / "sess_dbg").exists()             # 两种局都不落 debug 面

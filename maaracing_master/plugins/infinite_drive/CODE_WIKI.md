@@ -139,7 +139,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| [debugview.py](./debugview.py) | 实机调试图（raw + hud 双图）：IO 线程节流渲染落盘，渲染失败静默计数，绝不干扰控制链 |
+| [debugview.py](./debugview.py) | 实机调试图（raw + hud 双图）：IO 线程节流渲染落盘，渲染失败静默计数，绝不干扰控制链。由 [module.py](./module.py) 在 debug 开关（ctx.debug）闸下按驾驶阶段起停（v1 口径：录制局不建 writer，录制器已写同一套布局）；策略面未接先只存 raw（render_hud=False，索引 hud=null），接上叠加零迁移 |
 
 ### GPU 探针
 
