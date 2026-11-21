@@ -1187,7 +1187,8 @@
             "_page": "drive",
             "_label": "驾驶页 → 点击左上齿轮开设置（分数达标提前结算入口）",
             "_owner": "infinite_drive",
-            "_anchor_only": true
+            "_anchor_only": true,
+            "_module_driven": true
         },
         "recognition": {
             "type": "Custom",
@@ -1241,7 +1242,8 @@
             "_page": "settings",
             "_label": "设置页 → 点击底部退出（提前结算第二步）",
             "_owner": "infinite_drive",
-            "_anchor_only": true
+            "_anchor_only": true,
+            "_module_driven": true
         },
         "recognition": {
             "type": "Custom",
@@ -1295,7 +1297,8 @@
             "_page": "exit_dialog",
             "_label": "退出确认框 → 点击确认（按当前分数结算，落地过关结算页）",
             "_owner": "infinite_drive",
-            "_anchor_only": true
+            "_anchor_only": true,
+            "_module_driven": true
         },
         "recognition": {
             "type": "Custom",
@@ -1349,7 +1352,8 @@
             "_page": "exit_dialog",
             "_label": "退出确认框 → 点击取消（提前结算中途失败的回赶出口）",
             "_owner": "infinite_drive",
-            "_anchor_only": true
+            "_anchor_only": true,
+            "_module_driven": true
         },
         "recognition": {
             "type": "Custom",
@@ -1403,7 +1407,8 @@
             "_page": "settings",
             "_label": "设置页 → 点击底部继续（提前结算中途失败的回赶出口，回驾驶）",
             "_owner": "infinite_drive",
-            "_anchor_only": true
+            "_anchor_only": true,
+            "_module_driven": true
         },
         "recognition": {
             "type": "Custom",

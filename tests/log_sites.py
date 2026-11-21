@@ -365,6 +365,7 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService._note_config_meta', '<dynamic>', 'WARNING', 'cross', 'cross', '配置派生问题（表单契约/摘要/状态）的去重告警：RPC 请求线程，无业务组。'),
     _s('core/sidecar.py', '_apply_framework_policy', '框架落盘策略写入失败，框架按既有配置运行', 'WARNING', 'state', 'cross', '启动期框架策略写入失败的可恢复降级：发生在启动路径、无业务组可挂；WARNING 不静默。'),
     _s('core/sidecar.py', '_apply_framework_policy', '框架日志备份清理：删除 {} 个文件，释放 {}MB', 'INFO', 'cross', 'cross', '启动期框架日志清理的回显：发生在启动路径、无业务组可挂。'),
+    _s('core/sidecar.py', 'SidecarService.install_asset_status', '[资产安装] {} 可用性查询失败，按无需安装处理: {}', 'WARNING', 'state', 'cross', '资产可用性查询失败的可恢复降级：发生在安装状态 RPC 路径、无业务组可挂；按「无需安装」继续，但失败原因必须留痕。'),
 
     # ---- core/template_match.py ----
     _s('core/template_match.py', 'load_template', '模板不存在: {}.png/.jpg（搜索 {} 个目录）', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
