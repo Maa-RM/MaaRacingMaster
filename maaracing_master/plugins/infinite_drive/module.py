@@ -29,6 +29,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
+from maaracing_master import SOURCE_MODE
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph
@@ -167,6 +168,31 @@ def _camera_button():
     return vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER
 
 
+def _build_config_ui(source_mode: bool) -> dict:
+    """配置表单声明；录制字段与其联动条件只在源码模式出现。
+
+    录制是取证旁路，正式包不该给用户这个开关；整字段不下发，比渲染后再隐藏
+    更彻底。裁掉录制字段时必须同时裁掉驾驶模式的 visible_if——契约规范化会
+    丢弃引用未声明字段的条件并告警。测试通过入参覆盖两种模式。
+    """
+    drive_field = {
+        "key": "drive_mode", "type": "segmented", "label": "驾驶模式",
+        "options": [{"value": mode, "label": label}
+                    for mode, label in _DRIVE_MODES.items()],
+    }
+    groups = [{"title": "驾驶", "fields": [drive_field]}]
+    if source_mode:
+        drive_field["visible_if"] = {
+            "key": "record_mode", "op": "equals", "value": False}
+        groups.append({"title": "录制", "fields": [
+            {"key": "record_mode", "type": "switch", "label": "录制全程画面",
+             "description": "开启后运行时把全程画面与手柄输入落盘到调试目录，"
+                            "供流程与识别框的真机核验；驾驶阶段不接管车辆，"
+                            "可用手柄自行驾驶。"},
+        ]})
+    return {"groups": groups}
+
+
 class InfiniteDriveModule(ActivityModule):
     """极速狂飙 v2 活动模块。"""
 
@@ -185,22 +211,7 @@ class InfiniteDriveModule(ActivityModule):
 
     DEFAULT_MODULE_CONFIG: dict = {"drive_mode": "straight", "record_mode": False}
     CONFIG_UI_CONTRACT = 1
-    CONFIG_UI = {
-        "groups": [
-            {"title": "驾驶", "fields": [
-                {"key": "drive_mode", "type": "segmented", "label": "驾驶模式",
-                 "options": [{"value": mode, "label": label}
-                             for mode, label in _DRIVE_MODES.items()],
-                 "visible_if": {"key": "record_mode", "op": "equals", "value": False}},
-            ]},
-            {"title": "录制", "fields": [
-                {"key": "record_mode", "type": "switch", "label": "录制全程画面",
-                 "description": "开启后运行时把全程画面与手柄输入落盘到调试目录，"
-                                "供流程与识别框的真机核验；驾驶阶段不接管车辆，"
-                                "可用手柄自行驾驶。"},
-            ]},
-        ],
-    }
+    CONFIG_UI = _build_config_ui(SOURCE_MODE)
 
     # 线程名 → 中文别名（core 嗅探线程后按此贴标签）
     THREAD_LABELS: dict[str, str] = {

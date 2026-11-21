@@ -3,16 +3,19 @@
 
 覆盖：录制开关的配置读写往返、任务卡摘要、录制态放宽启动约束（虚拟手柄能力 /
 手柄独占）、人工接管期声明只落驾驶阶段、配置表单字段键都在默认配置里、
-录制状态行跟随录制器实况。
+录制状态行跟随录制器实况、录制开关仅在源码模式暴露。
 """
 
 from __future__ import annotations
 
+from maaracing_master import SOURCE_MODE
+from maaracing_master.core.config_ui_contract import UI_OK, normalize_config_ui
 from maaracing_master.plugins.infinite_drive.module import (
     REC_DRIVE_FPS,
     REC_NAV_FPS,
     InfiniteDriveModule,
     _DRIVE_STAGES,
+    _build_config_ui,
     _record_fps,
 )
 
@@ -68,6 +71,42 @@ def test_config_ui_fields_are_declared_keys() -> None:
     assert fields, "配置表单不应为空"
     for field in fields:
         assert field["key"] in InfiniteDriveModule.DEFAULT_MODULE_CONFIG
+
+
+def _ui_fields(source_mode: bool) -> dict[str, dict]:
+    ui = _build_config_ui(source_mode)
+    return {f["key"]: f for group in ui["groups"] for f in group["fields"]}
+
+
+def test_record_switch_only_declared_in_source_mode() -> None:
+    """录制开关只在源码模式声明；正式包连字段都不下发，前端无从渲染。"""
+    source = _ui_fields(True)
+    assert set(source) == {"drive_mode", "record_mode"}
+    # 源码模式下驾驶模式仍受录制开关联动：录制开时隐藏驾驶模式选择。
+    assert source["drive_mode"]["visible_if"] == {
+        "key": "record_mode", "op": "equals", "value": False}
+
+    packaged = _ui_fields(False)
+    assert set(packaged) == {"drive_mode"}
+    # 裁掉录制字段时联动条件必须一并裁掉，否则契约校验丢弃引用未声明字段并告警。
+    assert "visible_if" not in packaged["drive_mode"]
+
+    assert InfiniteDriveModule.CONFIG_UI["groups"] == _build_config_ui(SOURCE_MODE)["groups"]
+
+
+def test_both_ui_variants_normalize_cleanly() -> None:
+    """两种模式都过宿主契约校验：正常态 UI_OK 且无告警（回归锁）。"""
+    for source_mode in (True, False):
+        class _Probe:
+            CONFIG_UI_CONTRACT = 1
+            CONFIG_UI = _build_config_ui(source_mode)
+
+        result = normalize_config_ui(
+            _Probe, set(InfiniteDriveModule.DEFAULT_MODULE_CONFIG))
+        assert result.state == UI_OK, (source_mode, result.warnings)
+        assert result.warnings == ()
+        assert "drive_mode" in {f["key"] for g in result.schema["groups"]
+                                for f in g["fields"]}
 
 
 def test_manual_input_active_scoped_to_drive_stage() -> None:
