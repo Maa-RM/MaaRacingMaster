@@ -2,10 +2,12 @@
 """无限驾驶活动模块：v2 持久流程状态机（骨架）。
 
 感知/几何/控制基建自 speedrush 归档搬迁；本模块接线 v2 的**持久流程**导航：
-入口 → 关卡挑战 → 准备 → 选卡 → 驾驶 → 结算 → 放弃回环。事件介绍页（每回合
-阶段2商店自动弹、点空白才关）已在选卡等待循环内驱赶；其余一次性弹窗（赛季重置 /
-规则教学 / 得分规则门）按裁定押后，真机验证轮依赖人工关闭，选卡步骤的 bounded
-等待为其关闭耗时留窗（只等待，不点弹窗）。
+入口 → 关卡挑战 → 准备 → 选卡 → 驾驶 → 结算 → 放弃回环。弹窗驱赶两层：每回合
+必现、有稳定图形锚点的（阶段2事件介绍页）用紧 ROI 模板在选卡等待循环内驱赶；
+偶发、文字提示驱动的（结算奖励链「点击屏幕继续」/通行证升级等）用 core advance
+OCR 文案白名单做限频兜底（等待循环与步级重发前各挂一处，词表真源在 core）。
+一次性弹窗（赛季重置 / 规则教学 / 得分规则门）按裁定押后——兜底若命中其推进
+文案会顺带覆盖，但不做确定性驱赶。
 
 驾驶阶段当前为**等待结束信号的占位实现**（不施加控制）：v2 阶段按计时推进，
 骨架据此走通全链路；驾驶控制方案后续接入 ``_drive``。
@@ -85,6 +87,12 @@ _CARD_ANCHOR = "infinite_drive.__confirm.卡牌选择"
 # 锚点识别，页面不在位时点击不会发出。其余一次性弹窗仍按裁定押后。
 _EVENT_ANCHOR = "infinite_drive.__confirm.事件介绍"
 _EVENT_DISMISS = "infinite_drive.关闭事件介绍"
+# 偶发弹窗兜底（奖励链「点击屏幕继续」/通行证升级「继续」等无专模板弹窗）：OCR
+# 文案白名单扫下半屏，命中推进提示就点它——core advance 机制，启动链同款，词表
+# 真源在 core/advance 默认值。只在等待循环里低频调用（被挡住才扫，OCR 成本有界），
+# 黑名单挡住购买类文案。
+_ADVANCE_DISMISS = "infinite_drive.驱赶偶发弹窗"
+ADVANCE_SWEEP_INTERVAL_S = 2.5
 _DRIVE_END = {"p1": "infinite_drive.__confirm.驾驶1结束",
               "p2": "infinite_drive.__confirm.驾驶2结束"}
 _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
@@ -193,6 +201,8 @@ class InfiniteDriveModule(ActivityModule):
         self._recorder: DriveRecorder | None = None
         self._record_stop: threading.Event | None = None
         self._record_thread: threading.Thread | None = None
+        # 偶发弹窗 OCR 兜底的限频时刻（单调钟；0 = 立即可扫）
+        self._next_sweep_at = 0.0
 
     @property
     def current_stage(self) -> str | None:
@@ -426,7 +436,10 @@ class InfiniteDriveModule(ActivityModule):
             if cmd is Command.DONE:
                 return True
             if cmd is Command.RETRY:
-                # 落地确认没过窗就重发，settle 判「已生效」不豁免（见方法 docstring）
+                # 落地确认没过窗就重发点击，settle 判「已生效」不豁免（见方法
+                # docstring）；重发前做一次偶发弹窗兜底（限频）——奖励链/通行证
+                # 升级这类弹窗盖住按钮时，重发的识别永远落空，先赶再发。
+                self._sweep_transient_popup()
                 send_click = True
                 continue
             if cmd is Command.WAIT:
@@ -536,8 +549,27 @@ class InfiniteDriveModule(ActivityModule):
         self.last_settlement = {"score": score_text, "progress": progress_text}
         logger.log(f"[无限驾驶] 结算读数: 得分={score_text} 进度={progress_text}", "DEBUG")
 
+    def _sweep_transient_popup(self) -> None:
+        """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它。
+
+        奖励链「点击屏幕继续」、通行证升级「继续」这类偶发弹窗没有也不该逐个裁
+        模板——通用解是 core advance 文案识别（启动链同款，词表真源在 core）。
+        只在等待循环里按 ``ADVANCE_SWEEP_INTERVAL_S`` 限频调用：被挡住才扫，
+        OCR 成本有界；黑名单挡住购买类文案，不会误点扣费按钮。
+        """
+        assert self._graph is not None
+        now = time.monotonic()
+        if now < self._next_sweep_at:
+            return
+        self._next_sweep_at = now + ADVANCE_SWEEP_INTERVAL_S
+        self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS)
+
     def _drive(self, phase: str) -> bool:
-        """驾驶阶段占位：等待本阶段结束信号（不施加控制），响应停止信号。"""
+        """驾驶阶段占位：等待本阶段结束信号（不施加控制），响应停止信号。
+
+        等待期每拍做一次偶发弹窗兜底（内部限频）：结算奖励链这类弹窗会盖住
+        结算页，让结束信号永远等不到——兜底点了它，信号自然露出。
+        """
         assert self._graph is not None
         assert self.ctx is not None
         end_node = _DRIVE_END[phase]
@@ -545,6 +577,7 @@ class InfiniteDriveModule(ActivityModule):
         while self._running and self.ctx.lifecycle.running:
             if self._graph.run(end_node, end_node):
                 return True
+            self._sweep_transient_popup()
             if time.monotonic() >= deadline:
                 logger.log(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
                 return False

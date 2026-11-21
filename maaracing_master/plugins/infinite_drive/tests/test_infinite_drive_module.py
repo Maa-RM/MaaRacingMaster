@@ -291,3 +291,70 @@ def test_pick_cards_budget_exhausted_fails_explicitly(monkeypatch) -> None:
 
     assert ok is False
     assert graph.clicks == 3  # card1 预算 = max_picks(1) + PICK_RESEND_BUDGET(2)
+
+
+# ---------- 偶发弹窗 OCR 兜底（限频） ----------
+
+class _SweepTrackingGraph(_SwallowedClickGraph):
+    """记录兜底节点被查询的次数；end 信号可脚本化。"""
+
+    def __init__(self, end_hits: bool = False):
+        super().__init__()
+        self.sweeps = 0
+        self.end_hits = end_hits
+
+    def run(self, entry: str, _reached: str | None = None) -> bool:
+        from maaracing_master.plugins.infinite_drive import module as m
+
+        if entry == m._ADVANCE_DISMISS:
+            self.sweeps += 1
+            return True
+        if entry == m._DRIVE_END["p2"]:
+            return self.end_hits
+        return super().run(entry, _reached)
+
+
+def test_drive_wait_sweeps_transient_popup(monkeypatch) -> None:
+    """驾驶等待期兜底按限频运行：结束信号不来也会扫弹窗，且循环照常到点收步。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.02)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.1)
+    monkeypatch.setattr(m, "_DRIVE_DURATION", {"p1": 0.1, "p2": 0.1})
+    monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 0.1)
+    graph = _SweepTrackingGraph()
+    m = _step_module(graph)
+
+    ok = m._drive("p2")
+
+    assert ok is False            # 结束信号始终没来，到点显式失败
+    assert graph.sweeps >= 2      # 兜底确实在跑
+
+
+def test_sweep_is_rate_limited(monkeypatch) -> None:
+    """限频：窗口内反复调用只真正扫一次。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 10.0)
+    graph = _SweepTrackingGraph()
+    m = _step_module(graph)
+
+    m._sweep_transient_popup()
+    m._sweep_transient_popup()
+    m._sweep_transient_popup()
+
+    assert graph.sweeps == 1
+
+
+def test_step_retry_sweeps_before_resend(monkeypatch) -> None:
+    """步级重发前做兜底：弹窗盖住按钮时先赶再发。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.01)
+    graph = _SweepTrackingGraph()
+    ok = _step_module(graph)._run_step("infinite_drive.点比赛", "入口·比赛")
+
+    assert ok is False
+    assert graph.sweeps >= 1      # 重发循环里兜底至少跑过一次

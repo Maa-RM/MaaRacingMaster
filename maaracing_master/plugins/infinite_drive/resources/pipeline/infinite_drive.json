@@ -1152,5 +1152,34 @@
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 1000
+    },
+    "infinite_drive.驱赶偶发弹窗": {
+        "attach": {
+            "_page": "any",
+            "_label": "偶发弹窗兜底：下半屏按文案找推进提示并点它（点击屏幕继续 / 继续 / 进入等，词表真源在 core/advance 默认值；黑名单挡购买类）。奖励链、通行证升级这类无专模板的偶发弹窗由此覆盖；关闭叉与返回箭头是图形，仍由模板节点负责",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Advance",
+                "custom_recognition_param": {}
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {
+                    "wait_after_ms": 1500
+                }
+            }
+        },
+        "rate_limit": 0,
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 2500
     }
 }
