@@ -27,7 +27,7 @@ import onnxruntime as ort
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-MODEL = HERE.parents[3] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx"
+MODEL = HERE.parents[3] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx"
 RAW_ROOT = Path.home() / "AppData/Roaming/MaaRacingMaster/debug/speedrush"
 OUT = ROOT / "bdd100k"
 SHEET_DIR = ROOT / "fine_tune_out" / "label_sheets"

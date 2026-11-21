@@ -22,7 +22,7 @@ import probe_first_look as P  # noqa: E402
 
 NEW = HERE / "weights" / (sys.argv[1] if len(sys.argv) > 1
                           else "plus_small_samcenter_384x640.onnx")
-OLD = HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx"
+OLD = HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx"
 RAW = Path.home() / "AppData/Roaming/MaaRacingMaster/debug"
 FRAMES = [
     ("f0204", RAW / "speedrush/20261109_104823_manual_p2/raw/0204_raw.jpg",

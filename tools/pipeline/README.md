@@ -60,7 +60,7 @@ tools/pipeline/
 ## 真源
 
 - 活动插件：`plugins/<id>/resources/pipeline/*.json` —— 节点图与锚点
-- 跨模块共用链：`maaracing_master/core/resources/pipeline/` —— **当前不存在**：尚无第二个模块接图，抽公共层为时过早。目录按存在性纳入加载；真出现共用链时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `truth.namespace_checks` 与 MAAFW_GUIDE §5.6）
+- 共享默认值：`maaracing_master/core/resources/pipeline/default_pipeline.json` —— 跨模块节点级 timing 默认值（顶层 `Default` 键，MaaFW 原生格式）。maafw 5.12.3 无原生套用机制，由加载边界（`core/nav_graph` 合并 post 前）以 Python 侧套用；校验器跳过此文件。共用链节点目录仍不存在：尚无第二个模块接图，抽公共层为时过早，真出现时再建，且受分层红线约束（core 不得引用 `<module>.` 节点，见 `truth.namespace_checks` 与 MAAFW_GUIDE §5.6）
 - 启动步骤自有链：`maaracing_master/core/resources/startup/` —— （`pipeline.json` + `image/`）。有终点、有业务归属，由 `LaunchGameStep` 显式加载，**不进**共用目录（否则会被所有模块的导航图一起并入）。规则见该目录下的 `README.md`，决策见 ADR-0018
 - 归档鉴宝的图与策略表仍在 `plugins/_archive/treasure/resources/`；默认发现不扫归档区
 
@@ -80,7 +80,7 @@ tools/pipeline/
 
 **半透明元素不宜作锚点**：压在动态画布上的 HUD 文字与进度条，其像素是逐帧与背景混合的结果，匹配分随背景大幅摆动。此类位置改取**不透明图标**替代，或退为多锚点 Or 组合兜底。
 
-背景干扰还有**第二个入口**：彩色匹配（`colorspace: rgb`）会把搜索区内的**背景颜色**一起算进相似度——换了不透明图标，分数照样会被天光拉低。只比形状（`gray`）可显著收敛，但**根治要靠"跨天光、多轮样本"标定阈值**：单轮样本读出的"稳定"是假象，阈值贴着实际分布的下缘画，就会在实机上抖动成假失配。各域的实测数据见其域文档（如 [speedrush 域 §1](../../maaracing_master/plugins/speedrush/CODE_WIKI.md)）。
+背景干扰还有**第二个入口**：彩色匹配（`colorspace: rgb`）会把搜索区内的**背景颜色**一起算进相似度——换了不透明图标，分数照样会被天光拉低。只比形状（`gray`）可显著收敛，但**根治要靠"跨天光、多轮样本"标定阈值**：单轮样本读出的"稳定"是假象，阈值贴着实际分布的下缘画，就会在实机上抖动成假失配。各域的实测数据见其域文档（如 [归档 speedrush 域 §1](../../maaracing_master/plugins/_archive/speedrush/CODE_WIKI.md)）。
 
 **命名**：`<页面>_<元素>[_限定词].png`，全小写下划线；首段页面名与页注册表一致（`hall_` / `rank_` / `speedrush_`…），看文件名即知归属。
 
@@ -130,7 +130,7 @@ irm https://raw.githubusercontent.com/kqcoxn/MaaPipelineEditor/main/scripts/inst
 
 **打开 MPE 不会自动定位到文件，得手动在文件面板里点**
 正常行为：mpelb 只负责把真源**列进**文件面板，不会自动打开任何一个；MPE 会按浏览器本地记录
-恢复"上次成功打开的文件"。所以**手点一次**你要编辑的真源（例如 speedrush 的图或归档鉴宝的入口图），
+恢复"上次成功打开的文件"。所以**手点一次**你要编辑的真源（例如归档 speedrush 的图或归档鉴宝的入口图），
 之后自动定位就恢复并记住它。无痕窗口、换浏览器、IDE 内嵌 simple browser 的新会话都留不下这条记录。
 
 **"我明明没点保存，文件怎么被 MPE 改了？"**

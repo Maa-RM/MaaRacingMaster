@@ -47,7 +47,9 @@ from maaracing_master.core.registry import (
     check_required_assets,
     first_available_module_id,
     get_module_info,
+    load_plugin_ref,
     module_expired,
+    plugin_declared_ref,
 )
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
@@ -523,10 +525,14 @@ HANDLERS = frozenset({
     # 生命周期与模块
     "get_initial_state", "set_run_queue", "set_start_from", "get_status",
     "start", "stop", "close", "shutdown",
+    # 升级准备冻结（壳宿主经管道直调，前端不可调；测试 SHELL_ONLY 锁定）
+    "prepare_update", "cancel_update_freeze",
     # 模块配置
     "get_module_config", "set_module_config",
     # 外部资源与下载引导
     "open_vigembus_download", "open_external_url", "open_user_data_folder",
+    # 插件自有资产安装（core 只按 manifest 声明加载，前端不传 URL/路径）
+    "install_asset_start", "install_asset_cancel", "install_asset_status",
     # 用户数据目录占用（设置页「调试文件夹」面板）
     "get_data_usage",
     # 注册表优化建议
@@ -552,6 +558,32 @@ HANDLERS = frozenset({
 # 在途请求并发上限：stdin reader 永不阻塞是协议铁律，超限直接拒（前端按
 # 普通错误处理并下轮重试），不排队——排队会让 reader 等锁、违背同一铁律。
 _MAX_INFLIGHT = 16
+
+# 资产安装中的阶段：与升级冻结、游戏 worker 同层竞争，不能只靠前端置灰
+_INSTALL_ACTIVE_PHASES = frozenset({"downloading", "verifying", "extracting", "committing"})
+
+
+def _install_module_id(params) -> str:
+    """从 RPC 参数取模块 id；非 dict / 非字符串一律视为空（宿主不猜）。"""
+    raw = params.get("module_id") if isinstance(params, dict) else None
+    return raw if isinstance(raw, str) and raw else ""
+
+
+def _install_status_dict(status) -> dict:
+    """安装器状态快照 → RPC 安全字典（前端只消费字段，不执行动作）。
+
+    只收模块无关的公共字段；插件私有的版本/摘要键不进宿主契约，避免宿主
+    认识某个模块的资产语义。
+    """
+    return {
+        "task_id": status.task_id,
+        "phase": status.phase,
+        "revision": status.revision,
+        "downloaded": status.downloaded,
+        "total": status.total,
+        "source": status.source,
+        "error": status.error,
+    }
 
 # ---------- 成就：核心 UI 事实 ----------
 # 前端只报原始事件，时间窗判定在这里做。安全口径：UI 事实由前端上报，不保证
@@ -668,12 +700,18 @@ class SidecarService:
     # 组与降级分项计数留痕。
     WORKER_JOIN_TIMEOUT_S = 2.0
 
+    # 升级准备冻结的类级默认：跳过 __init__ 构造的测试桩（object.__new__）与任何
+    # 未显式初始化的形态都读到「未冻结」——冻结位缺省必须安全（不拦任务）。
+    _update_freeze = False
+
     def __init__(self, protocol_stdout):
         self._out = protocol_stdout
         self._out_lock = threading.Lock()
         self._controller = MaaRacingMasterController()
         self._lock = threading.RLock()
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
+        # 插件声明的资产安装器实例（module_id → installer），按 manifest.ID 懒加载
+        self._asset_installers: dict[str, Any] = {}
         # 运行任务列表（数组序 = 执行序）与启用勾选。默认 = 注册表全量按注册序排列、
         # 勾选第一个仍可用模块（对齐旧单选语义的迁移起点，profile 有存档则以存档为准）。
         # 不硬编码任何模块 id（见文件头说明）；set_run_queue 校验后整体覆写。
@@ -689,7 +727,7 @@ class SidecarService:
             self._queue_enabled[first] = True
         # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
         self._start_from: dict[str, str] = {}
-        # 运行实况 {index, total, current_module}（worker 持有期间非 None）与
+        # 运行实况 {index, total, current_module, current_name}（worker 持有期间非 None）与
         # 上一轮各模块结局 {mid: ok|fail|stopped|skip}（None = 本次启动后还没跑完整轮）。
         self._queue_run: dict | None = None
         self._round_result: dict[str, str] | None = None
@@ -704,6 +742,10 @@ class SidecarService:
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
         self._remote_urls: dict[str, str] = {}
         self._closed = False
+        # 升级准备冻结：prepare_update 原子置位，start 据此拒绝新任务。
+        # 进程内状态，不持久化——宿主提交失败时由宿主解冻；宿主中途崩溃则随
+        # 进程消亡，下个会话自然是未冻结状态（已关闭后的恢复行为）。
+        self._update_freeze = False
         # 模块配置缓存：**按模块 id 分槽**，切走的模块配置留在自己的槽里不被覆盖。
         # 槽里只放纯配置数据，**绝不放模块实例**——实例持有线程/文件句柄等资源，
         # 缓存若持有实例，等于把"已经切走的模块"留在内存里继续活着。
@@ -1105,7 +1147,8 @@ class SidecarService:
             "run_id": logger.current_run_id,
             # 上一轮各模块结局（ok|fail|stopped|skip；None = 启动后尚未跑完整轮）
             "round_result": round_result,
-            # 调试流归属：内置步骤没有 current_module/current_stage，状态行用它兜底
+            # 调试流归属（执行器与导航图当前节点）：供排障读取，不进状态行——
+            # 状态行的「当前」只取阶段名或运行项名，节点名是内部细节（见 js/status-label.js）
             "debug_owner": dbg.get("owner"),
             "debug_label": dbg.get("label"),
             "debug_stage": dbg.get("stage"),
@@ -1306,8 +1349,13 @@ class SidecarService:
         with self._lock:
             if self._closed:
                 return (False, None, "正在关闭")
+            if self._update_freeze:
+                return (False, None, "升级准备中，完成或放弃升级后再试")
             if self._worker is not None:  # slot 已占用，不以 is_alive() 判断
                 return (False, None, "已在运行")
+            if self._install_busy():
+                # 与安装入口对称的准入：安装写受管目录时游戏不得并发读/占用权重
+                return (False, None, "资产安装进行中，等待安装完成后再启动")
             enabled = self._enabled_ids()
             if not enabled:
                 return (False, None, "任务列表没有启用的模块")
@@ -1357,7 +1405,9 @@ class SidecarService:
                 if item["start_from"] is not None:
                     self._start_from.pop(item["id"], None)
             self._round_result = None
-            self._queue_run = {"index": 0, "total": len(plan), "current_module": plan[0]["id"]}
+            self._queue_run = {"index": 0, "total": len(plan),
+                               "current_module": plan[0]["id"],
+                               "current_name": _step_display_name(plan[0]["id"])}
             self._round_seq = getattr(self, "_round_seq", 0) + 1
             base = logger.session_token or time.strftime("%Y%m%d_%H%M%S")
             run_id = f"{base}_r{self._round_seq}"
@@ -1471,7 +1521,9 @@ class SidecarService:
                     all_natural = False
                     break
                 with self._lock:
-                    self._queue_run = {"index": i, "total": total, "current_module": step_id}
+                    self._queue_run = {"index": i, "total": total,
+                                       "current_module": step_id,
+                                       "current_name": _step_display_name(step_id)}
                 try:
                     if item["kind"] == "builtin":
                         self._controller.run_builtin_step(step_id, item.get("config"))
@@ -1608,7 +1660,7 @@ class SidecarService:
     def open_user_data_folder(self, params):
         """用资源管理器打开用户数据目录（%APPDATA%/MaaRacingMaster）。
 
-        可选 ``subpath`` 指向目录内的子目录（如模型安装位置）；只接受相对路径，
+        可选 ``subpath`` 指向目录内的子目录（如资产安装位置）；只接受相对路径，
         拒绝绝对路径、盘符与 ``..``，解析后再次确认仍在用户数据目录内。
         目录不存在时自动创建，避免首次运行即报错。os.startfile 是 Windows
         原生调起关联程序的方式，比 subprocess.Popen(['explorer', path]) 更稳。
@@ -1633,6 +1685,95 @@ class SidecarService:
             return (True, {"path": str(path)}, None)
         except Exception as exc:  # noqa: BLE001
             return (False, None, f"打开文件夹失败: {exc}")
+
+    def _asset_installer_for(self, params) -> tuple[Any | None, str | None]:
+        """按插件 manifest 的通用声明取安装器；core 不硬编码任何模块实现。"""
+        module_id = params.get("module_id") if isinstance(params, dict) else None
+        if not module_id or module_id not in MODULE_REGISTRY:
+            return None, "未知模块"
+        ref = plugin_declared_ref(module_id, "ASSET_INSTALLER")
+        if not ref:
+            return None, "该模块未声明资产安装能力"
+        installer = self._asset_installers.get(module_id)
+        if installer is None:
+            # 第三方插件的错误声明只让本模块不可用，不能把宿主 RPC 打断
+            try:
+                installer = load_plugin_ref(module_id, ref)()
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                return None, f"插件声明的安装器不可用: {exc}"
+            self._asset_installers[module_id] = installer
+        return installer, None
+
+    def _install_busy(self) -> bool:
+        return any(
+            installer.status().phase in _INSTALL_ACTIVE_PHASES
+            for installer in getattr(self, "_asset_installers", {}).values()
+        )
+
+    def install_asset_start(self, params):
+        """启动插件自有资产安装；URL、目标文件名与校验值全部来自插件/构建描述。"""
+        with self._lock:
+            if self._closed:
+                return (False, None, "正在关闭，无法安装资产")
+            if self._update_freeze:
+                return (False, None, "升级准备中，暂不能安装资产")
+            if self._worker is not None:
+                return (False, None, "任务运行中，暂不能安装资产")
+            if self._install_busy():
+                return (False, None, "资产安装进行中")
+            installer, err = self._asset_installer_for(params)
+            if err or installer is None:
+                return (False, None, err or "模块未声明资产安装能力")
+            accepted, payload = installer.start()
+        if not accepted:
+            return (False, None, str(payload))
+        data = _install_status_dict(payload)
+        data.update(self._install_display_fields(_install_module_id(params)))
+        return (True, data, None)
+
+    def install_asset_cancel(self, params):
+        installer, err = self._asset_installer_for(params)
+        if err or installer is None:
+            return (False, None, err or "模块未声明资产安装能力")
+        data = _install_status_dict(installer.cancel())
+        data.update(self._install_display_fields(_install_module_id(params)))
+        return (True, data, None)
+
+    @staticmethod
+    def _install_display_fields(module_id) -> dict:
+        """安装入口的显示文案来自插件声明，宿主不硬编码任何模块语义。"""
+        label = plugin_declared_ref(module_id, "ASSET_INSTALLER_LABEL") or "资产"
+        hint = plugin_declared_ref(module_id, "ASSET_INSTALLER_MISSING_HINT") or ""
+        return {"label": label, "missing_hint": hint}
+
+    def install_asset_status(self, params):
+        module_id = _install_module_id(params)
+        supported = bool(plugin_declared_ref(module_id, "ASSET_INSTALLER")) if module_id else False
+        # 声明了安装能力就懒加载安装器，才能读到真实的按需可用性。否则首次查询
+        # （用户还没点过安装）installer 恒为 None，needs_install 被硬编码成 False，
+        # 模型已就绪与缺模型两种状态在界面上无从区分。
+        installer = None
+        if supported:
+            installer, _err = self._asset_installer_for(params)
+        if installer is None:
+            data = {
+                "task_id": "", "phase": "idle", "revision": 0, "downloaded": 0,
+                "total": 0, "source": "", "error": None,
+                "supported": supported, "needs_install": False,
+            }
+            data.update(self._install_display_fields(module_id))
+            return (True, data, None)
+        data = _install_status_dict(installer.status())
+        data["supported"] = supported
+        needs = getattr(installer, "needs_install", None)
+        try:
+            data["needs_install"] = bool(needs()) if callable(needs) else False
+        except Exception as exc:  # 插件可用性查询出错只降级展示，不打断状态 RPC
+            logger.log(f"[资产安装] {module_id} 可用性查询失败，按无需安装处理: {exc!r}",
+                       "WARNING")
+            data["needs_install"] = False
+        data.update(self._install_display_fields(module_id))
+        return (True, data, None)
 
     def get_data_usage(self, params):
         """用户数据目录五类的占用与文件数（设置页「调试文件夹」面板用）。
@@ -2365,6 +2506,37 @@ class SidecarService:
         logger.log(f"[achievement] 已重置成就进度: {scope}（{cleared} 条）", "INFO")
         return (True, {"scope": scope, "cleared": cleared}, None)
 
+    # ---------- 升级准备冻结 ----------
+
+    def prepare_update(self, params):
+        """升级准备第一步：原子「空闲检查＋冻结新任务」。
+
+        空闲 = 未关闭且无模块 worker 在跑。空闲判定与冻结置位在同一个受理锁内
+        完成——冻结之后到达的 start 在同一把锁里读到冻结位，不存在漏判窗口。
+        重复准备幂等（已冻结直接确认成功）。busy 时原因点名竞争者，且**不置
+        冻结位**（失败即无副作用，宿主无需解锁）。
+
+        模型安装占用与模块 worker 同层竞争，均在本锁内检查：安装未结束时
+        不进入冻结，避免升级替换内容树时安装器还在写用户数据区。
+        """
+        del params
+        with self._lock:
+            if self._closed:
+                return (False, None, "正在关闭，无法进入升级准备")
+            if self._worker is not None:
+                return (False, None, "任务运行中，等待停止后再升级")
+            if self._install_busy():
+                return (False, None, "资产安装中，等待安装完成后再升级")
+            self._update_freeze = True
+            return (True, {"frozen": True}, None)
+
+    def cancel_update_freeze(self, params):
+        """解除升级准备冻结（幂等）：宿主提交失败/用户放弃时调用。"""
+        del params
+        with self._lock:
+            self._update_freeze = False
+        return (True, {"frozen": False}, None)
+
     def close(self, params):
         """shell 关闭前的业务清理：置 _closed + 停止 worker + 有界排空 + 关写盘句柄。
 
@@ -2385,6 +2557,15 @@ class SidecarService:
                     logger.log(
                         f"[sidecar] 关闭时模块 worker 在 {self.WORKER_JOIN_TIMEOUT_S:.1f}s "
                         "内未退出，按有界排空继续收尾（未收尾组记 incomplete）", "WARNING")
+        installers = list(getattr(self, "_asset_installers", {}).values())
+        for installer in installers:
+            installer.cancel()
+        deadline = time.monotonic() + self.WORKER_JOIN_TIMEOUT_S
+        for installer in installers:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not installer.join(remaining):
+                logger.log("[sidecar] 关闭时资产安装未在有界等待内退出，按有界排空继续收尾",
+                           "WARNING")
         logger.log("sidecar 业务已停止", "DEBUG")
         logger.close()  # 关写盘句柄，flush 尾部（进程退出路径）
         return (True, None, None)

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 try:
-    from maaracing_master.plugins.speedrush.tools.training.eval_detector import (
+    from maaracing_master.plugins.infinite_drive.tools.training.eval_detector import (
         average_precision,
         load_labels,
         match_flags,

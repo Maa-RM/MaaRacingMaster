@@ -26,6 +26,6 @@
 
 ## 证据
 
-- 实现：`maaracing_master/core/trace_sink.py`、`core/perf_sampler.py`、`core/logger.py`（会话生命周期协议与 token 后缀）、`plugins/speedrush/module.py`（接线：~15 行声明+逐拍 append+阶段边界）、`core/sidecar.py`（perf 聚合与采样器常驻）。
+- 实现：`maaracing_master/core/trace_sink.py`、`core/perf_sampler.py`、`core/logger.py`（会话生命周期协议与 token 后缀）、`plugins/_archive/speedrush/module.py`（接线：~15 行声明+逐拍 append+阶段边界）、`core/sidecar.py`（perf 聚合与采样器常驻）。
 - 机检：`tests/test_trace_sink.py`（序号作用域/预留状态机全表/非连续 gap 拆分/屏障不留假缺口/保护通道满员可关闭/超时终态与三态尾/硬杀无标记判定/同秒 token 隔离/logger 生命周期与保留清理）、`tests/test_perf_sampler.py`（GPU 三态显式与粘性/背景档/事件倾倒唯一落盘/重叠窗口去重/中断 incomplete/环随会话重置/聚合纯函数）。
 - 实测（2026-10-25 本机，1200 拍 × 20Hz 同规模行）：异步汇每拍体耗时 p95 0.28ms / p99 0.35ms / 最大 0.52ms、最大拍间隔 50.94ms、阶段收尾合计 0.41ms；旧路径每拍 p95 0.085ms 但批写拍尖峰 8.3ms、单批写盘 p50 6.8ms、最大拍间隔 58.3ms。真探针回放：同探针代码跑旧布局与转换后的新布局，整跑报告逐字节一致；协议行对朴素加载器的影响已量化（1/22 元素）且统一读取器可剥离后严格等价。

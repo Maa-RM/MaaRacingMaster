@@ -34,13 +34,13 @@ pytestmark = pytest.mark.skipif(not _OK, reason=f"yolo_detector 导入失败: {_
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "archive" / "racing" / "resources" / "onnx" / "model.onnx"
-PLUGIN_MODEL = (ROOT / "maaracing_master" / "plugins" / "speedrush" / "resources"
+PLUGIN_MODEL = (ROOT / "maaracing_master" / "plugins" / "infinite_drive" / "resources"
                 / "models" / "perception" / "model.onnx")
 
 needs_model = pytest.mark.skipif(
     not MODEL.exists(), reason="racing 归档模型不在树内（或资源目录未部署）")
 needs_plugin_model = pytest.mark.skipif(
-    not PLUGIN_MODEL.exists(), reason="speedrush 感知模型不在树内")
+    not PLUGIN_MODEL.exists(), reason="infinite_drive 感知模型不在树内")
 
 
 def _bare_detector(classes: dict[int, str]) -> YOLODetector:

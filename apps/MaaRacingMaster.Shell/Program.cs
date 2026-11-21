@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Velopack;
 
 namespace MaaRacingMaster.Shell;
 
@@ -17,6 +18,7 @@ public static class Program
     // MessageBox 常量（user32）
     private const uint MB_YESNO = 0x00000004;
     private const uint MB_ICONQUESTION = 0x00000020;
+    private const uint MB_ICONERROR = 0x00000030;
     private const int IDYES = 6;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -25,6 +27,31 @@ public static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // 更新器钩子必须最早处理（最小注入形态，壳只在入口调用库的钩子路由）：钩子进程（--veloapp-* 参数）
+        // 在库内自退出，绝不进入单实例/窗口/侧车逻辑；普通启动无钩子参数时立即返回直通。
+        // 只此一处接更新器运行时，下载/提交等更新动作不进壳（由树外助手驱动，P2 起接线）。
+        VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+
+        // 受管安装前置检查：%APPDATA% 缺失时用户数据回退会落进可被整体替换的内容树，
+        // 升级即丢数据——显式拒绝启动，不做静默降级。
+        // 用户数据根取 APPDATA 环境变量（与 core/paths.py 同口径）：系统的已知目录
+        // API 不认环境变量重定向，隔离/重定向场景下两边会分叉（实测踩过）。
+        var appRoot = AppRootResolver.Resolve(
+            Environment.GetCommandLineArgs(),
+            Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
+            AppContext.BaseDirectory,
+            Environment.GetEnvironmentVariable("APPDATA"));
+        // 应用根决策落日志：受管判定、被拒覆盖值（「忽略并记录」的记录半）都从这里可查
+        ShellLog.Append($"[approot] {appRoot.Decision}" +
+                        (appRoot.RefusedReason is null ? "" : $"；拒绝启动: {appRoot.RefusedReason}"));
+        if (appRoot.RefusedReason is not null)
+        {
+            MessageBoxW(IntPtr.Zero,
+                "启动失败。\n\n" + appRoot.RefusedReason,
+                "MaaRM", MB_ICONERROR);
+            return;
+        }
+
         // 单实例检查：已有实例运行 → 弹窗询问用户如何处理（见 AcquireSingleInstance）
         if (!AcquireSingleInstance())
             return; // 用户选择保留旧进程，本进程退出

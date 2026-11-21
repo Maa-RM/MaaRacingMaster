@@ -16,8 +16,8 @@ from maa.resource import Resource  # noqa: E402
 
 PACK = REPO / "maaracing_master"
 CORE = PACK / "core" / "resources" / "startup"
-PLUGIN = PACK / "plugins" / "speedrush" / "resources" / "pipeline"
-POLICY = PACK / "plugins" / "speedrush" / "resources" / "policy" / "decision.json"
+PLUGIN = PACK / "plugins" / "_archive" / "speedrush" / "resources" / "pipeline"
+POLICY = PACK / "plugins" / "_archive" / "speedrush" / "resources" / "policy" / "decision.json"
 
 tmp = Path(tempfile.mkdtemp(prefix="pipeline-audit-redline-"))
 try:

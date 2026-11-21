@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT.parents[2]))
 import probe_lane_geometry as lg  # noqa: E402
 import probe_depthart_prod_sim as sim  # noqa: E402
 import probe_freespace_chain as fs  # noqa: E402
-from maaracing_master.plugins.speedrush import depth_geo  # noqa: E402
+from maaracing_master.plugins._archive.speedrush import depth_geo  # noqa: E402
 
 FY = 630.0
 CAM_H = 1.25

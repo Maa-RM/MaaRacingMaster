@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-10-19
 - **决策者**：用户
-- **相关**：[speedrush CODE_WIKI §19](../../maaracing_master/plugins/speedrush/CODE_WIKI.md)、局 `20261019_204308_p1`、`tests/test_speedrush_tracking.py`、`tests/test_speedrush_hybrid_distance.py`、`tests/test_speedrush_motion_plan.py`
+- **相关**：[speedrush CODE_WIKI §19](../../maaracing_master/plugins/_archive/speedrush/CODE_WIKI.md)、局 `20261019_204308_p1`、`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_tracking.py`、`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_hybrid_distance.py`、`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_motion_plan.py`
 
 ## 背景
 
@@ -26,5 +26,5 @@
 ## 证据
 
 - 实机：`debug/speedrush/20261019_204308_p1`，2002–2014 拍本车道前车 z≈38.6m、无到站时间，计划保持 -0.20；2015 拍到站时间 0.442s 后满舵，0066 帧发生接触。
-- 机检：`tests/test_speedrush_tracking.py`（大框增长、横向位移、相邻车不互换身份）、`tests/test_speedrush_hybrid_distance.py`（HELD 保持与超窗回落）、`tests/test_speedrush_motion_plan.py`（有距无速提前横移、非本车道不触发）。
+- 机检：`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_tracking.py`（大框增长、横向位移、相邻车不互换身份）、`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_hybrid_distance.py`（HELD 保持与超窗回落）、`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_motion_plan.py`（有距无速提前横移、非本车道不触发）。
 - 离线重放：同一 trace 上 2007 拍起计划由 -0.20 改为 -0.55，早于原 2015 拍的应急动作。

@@ -31,7 +31,8 @@ pytestmark = pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
 )
 
-MODULE_SRC = Path(__file__).resolve().parents[1] / "maaracing_master/plugins/speedrush/module.py"
+MODULE_SRC = (Path(__file__).resolve().parents[1]
+              / "maaracing_master/plugins/_archive/speedrush/module.py")
 
 
 @pytest.fixture()

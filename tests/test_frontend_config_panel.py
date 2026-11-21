@@ -8,7 +8,7 @@
 4. wireSwitchAria 保留显式标题/说明 id（文案更新函数要靠它找人）。
 
 为什么是静态锁：前端没有 DOM 测试链；这些契约可从源码文本稳定判定。时序纯逻辑另由
-tests/test_frontend_config_panel_logic.py 跑 node --test 覆盖。
+tests/test_frontend_js_logic.py 跑 node --test 覆盖。
 """
 from __future__ import annotations
 
@@ -98,6 +98,18 @@ def test_panel_renders_option_badges_and_notice_actions():
                   "open_user_data_folder", "subpath"):
         assert token in src, f"配置面板缺少 {token} 渲染/动作分支"
     assert "innerHTML" not in src
+
+
+def test_stepper_renderer_rolls_and_estimates():
+    """滚轮计数器：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端。"""
+    src = PANEL.read_text(encoding="utf-8")
+    for token in ("maarm-stepper", "unit_seconds", "prefers-reduced-motion",
+                  "spinbutton", "aria-valuenow", "formatEstimateSeconds",
+                  "requestAnimationFrame", "flushCommit"):
+        assert token in src, f"滚轮计数器缺少 {token}"
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    assert "stepper-col--hidden" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
 
 
 def test_switch_aria_keeps_explicit_title_and_desc_ids():

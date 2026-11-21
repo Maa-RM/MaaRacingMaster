@@ -17,7 +17,7 @@
   // 前端不认识任何配置键。图标仍是纯展示信息（插件不声明 emoji），未登记模块回落
   // 名称首字——新增模块不必改前端。
   const MODULE_META = {
-    speedrush: { icon: '🏎️' },
+    infinite_drive: { icon: '🏎️' },
   };
   // 内置步骤（启动游戏 / 关闭游戏）与活动模块共用同一套卡片：只登记图标
   MODULE_META.launch_game = { icon: '🚀' };
@@ -771,9 +771,9 @@
     if (d.round_result !== undefined) state.roundResult = d.round_result;
     $('btn-start').disabled = d.is_running || d.worker_active;
     $('btn-stop').disabled = !(d.is_running || d.worker_active);
-    // 内置步骤没有 current_stage：用调试流归属（步骤名/阶段）兜底，
-    // 否则整个启动链会显示成「停止中...」。
-    const activeLabel = d.current_stage || d.debug_stage || d.debug_label || d.debug_owner || '';
+    // 「当前」只认阶段名与运行项名（内置步骤没有阶段，显示步骤名而不是导航图在试的
+    // 节点名）；规则与 PEEP 标题栏同源，见 js/status-label.js。
+    const activeLabel = window.MaaRMStatusLabel.activeLabel(d);
     if (activeLabel) {
       setStatus('运行中 · 当前: ' + activeLabel, 'running');
     } else if (d.queue_run || d.is_running || d.worker_active) {
@@ -928,7 +928,11 @@
     let worst = 'ok';
     let bad = 0;
     rows.forEach((row) => {
-      const lv = row.reason ? 'error' : (row.level || 'ok');
+      // 缺失原因二分：not_reported 是模块说「本轮该项不适用」（导航阶段还没有
+      // 驾驶拍），按行自带等级（idle）聚合；其余三种是监控真的没取到值，才点亮
+      // 异常灯。任何缺失都算 error 会把每局开跑前的正常等待读成异常。
+      const lv = (row.reason && row.reason !== 'not_reported')
+        ? 'error' : (row.level || 'ok');
       if (PERF_LEVEL_RANK[lv] > PERF_LEVEL_RANK[worst]) worst = lv;
       if (lv === 'warn' || lv === 'error') bad += 1;
     });

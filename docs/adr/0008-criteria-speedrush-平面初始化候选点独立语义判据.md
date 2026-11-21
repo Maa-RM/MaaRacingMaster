@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-10-14
 - **决策者**：用户（GPT 对抗复核支持，修复落地并回归验证后按用户条件落笔）
-- **相关**：`plugins/speedrush/CODE_WIKI.md`「平面拟合」条目（实现现状）；`depth_geo._pick_seed_candidate`（具体判据）；AGENTS.md 诊断三原则
+- **相关**：`plugins/_archive/speedrush/CODE_WIKI.md`「平面拟合」条目（实现现状）；`depth_geo._pick_seed_candidate`（具体判据）；AGENTS.md 诊断三原则
 
 ## 背景
 
@@ -30,5 +30,5 @@
 ## 证据
 
 - 一手核查：`depth_geo.py`（`_pick_seed_candidate` / `_fit_road_plane` / `_fit_road_plane_seed`；Y=(v−0.5)·Z/fy 相机系反投影，见 `moge_post.py`）；行走签名数据——贴栏帧右列爬墙段 z 恒定（5.56/3.65/2.60 十几行不动）而地面每步 Δz/理论增量 ≈1~2；左半种子 −0.40~−0.55° 与通过帧一致、右半 −11.7°/−27.9°；紧容差计分 58k vs 97k（3034）、45k vs 91k（3178）。
-- 机检：`tests/test_speedrush_depth_geo.py` 114 passed / 5 skipped（跳过均为离线缓存缺失的既有跳过）。
+- 机检：`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_depth_geo.py` 114 passed / 5 skipped（跳过均为离线缓存缺失的既有跳过）。
 - 实证：取证脚本随 commit `6b768ba` 入库（`probe_seed_wall.py` 三帧分布 + 三候选计分；`probe_seed_regression.py` git HEAD 旧实现独立模块对照，75 帧语料新旧判定逐帧对比），判定输出与蒙太奇为临时产物不入库、脚本可再生；证据包在 `%APPDATA%/MaaRacingMaster/debug/speedrush/`（20261014_112029_p2 三帧 + 20261012 坏帧语料）；产线修复随 commit `6a978bf`。

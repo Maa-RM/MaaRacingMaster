@@ -15,7 +15,8 @@ runs/
 tools/*.pt
 
 # 标注工作区与训练索引（本机数据，不进发布包；打包侧另有 robocopy 排除）
-/maaracing_master/plugins/speedrush/data/
+/maaracing_master/plugins/_archive/speedrush/data/
+/maaracing_master/plugins/infinite_drive/data/
 
 # 日志
 logs/
@@ -69,6 +70,9 @@ archive/
 # WinUI 3 / .NET 构建产物（apps/MaaRacingMaster.Shell）
 apps/MaaRacingMaster.Shell/bin/
 apps/MaaRacingMaster.Shell/obj/
+# 壳专用工具（合同探针等）自己的构建产物
+apps/MaaRacingMaster.Shell/tools/**/bin/
+apps/MaaRacingMaster.Shell/tools/**/obj/
 
 # 本地构建缓存/实验/验证产物目录（整体忽略：zip/dll/runtime-cache/publish-cache/C1 基准/7z 下载缓存等均不入库；
 # 唯一入库的 7za.exe 已在 scripts/release/tools/ 单独跟踪）
@@ -128,6 +132,14 @@ tools/experiments/**/*_out/
 # 工具源码真源仍随目录入库，清理走回收站）
 tools/experiments/**/bin/
 tools/experiments/**/obj/
+
+# 随插件归档的实验目录（plugins/_archive/<插件>/experiments/）沿用实验区同款忽略口径
+maaracing_master/plugins/_archive/*/experiments/**/weights/
+maaracing_master/plugins/_archive/*/experiments/**/upstream/
+maaracing_master/plugins/_archive/*/experiments/**/teachers/
+maaracing_master/plugins/_archive/*/experiments/**/*_out/
+maaracing_master/plugins/_archive/*/experiments/**/bin/
+maaracing_master/plugins/_archive/*/experiments/**/obj/
 
 # 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
 # （教育/科研/非营利可分发，商业用途需另行授权）

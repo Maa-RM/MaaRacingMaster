@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
-"""<插件名> 活动模块骨架：演示 ActivityModule 契约的最小完整实现。
+"""<插件名> 活动模块骨架：演示 ActivityModule 契约与 core 能力门面的最小完整实现。
 
 生命周期：controller.start_module() → start()（新线程）→ stop()/异常 → cleanup()。
 主循环约定：每帧检查 ctx.lifecycle.running，睡眠一律用 ctx.lifecycle.sleep（100ms 级响应停止）。
+
+本骨架演示的契约面：
+- 必填声明与启动约束（REQUIRES / REQUIRED_ASSETS / 断点解析）
+- 配置面板（激活示范：复制后 GUI 即出现面板，字段键 loop_interval_s，按需删减）
+- 封面 / 调试存盘档位（激活声明）；性能行 / 数据看板 / 人工接管期（注释示例，按需启用）
+- 能力门面 ctx（capture / lifecycle / gamepad / debug_renderer / 窗口事实）
+模板匹配 / OCR / YOLO / 玩法流水 / 成就等共享基建的取用见 templates/plugin/README.md。
 """
 
 from __future__ import annotations
@@ -25,8 +32,11 @@ class SampleModule(ActivityModule):
         "结算",
     ]
 
-    # 启动前校验的能力集；可用值见 core/capabilities.py：
+    # 启动前校验的能力集；可用值见 ctx.capabilities（core/base.py）：
     #   "capture"（恒可用） / "gamepad"（需 ViGEmBus 驱动） / "debug_renderer"（恒可用）
+    # 同一模块在不同配置下需要的启动条件可能不同（如录制模式不需要手柄）：
+    # 覆盖 required_capabilities(config) / requires_exclusive_gamepad(config) 按配置求值，
+    # 类属性仍是完整声明，覆盖时基于 cls.REQUIRES 增删，不另抄一份清单。
     # 示例：REQUIRES = frozenset({"gamepad"})
     REQUIRES: frozenset[str] = frozenset()
 
@@ -38,9 +48,90 @@ class SampleModule(ActivityModule):
     # 权重按用途在 onnx/ 下分子目录，许可声明 README 与权重同目录（真源在插件内）
     REQUIRED_ASSETS: tuple[str, ...] = ()
 
-    def __init__(self, ctx: ActivityContext):
+    # 模块封面（相对 resources/ 的文件名）：模块管理弹窗的卡片底图；未声明用通用默认封面
+    # 示例：COVER = "cover.jpg"
+    COVER: str = ""
+
+    # 统一调试流的存盘档位：on=写运行目录（默认） | self=模块自有取证，统一流只记段边界
+    # 与指向、不复制帧 | off=不存盘；PEEP 实时预览不受影响
+    DEBUG_SAVE: str = "on"
+
+    # 配置面声明：GUI 配置项的键与初值；也是 profile 回填的白名单——不加进这里就不会被保存
+    DEFAULT_MODULE_CONFIG: dict = {
+        "loop_interval_s": 0.5,
+    }
+
+    # 配置表单（契约见 core/config_ui_contract.py）：宿主通用渲染，插件不提供自带 HTML/JS。
+    # 默认值 / 动态候选分别由 DEFAULT_MODULE_CONFIG / config_choices() 提供，这里只描述呈现。
+    # 控件六型：switch / segmented / select / number / stepper / text；字段键必须在 DEFAULT_MODULE_CONFIG 内。
+    CONFIG_UI_CONTRACT = 2
+    CONFIG_UI = {
+        "groups": [
+            {
+                "title": "运行",
+                "fields": [
+                    {
+                        "key": "loop_interval_s", "type": "number", "label": "循环间隔",
+                        "description": "每轮阶段处理后的等待时长",
+                        "min": 0.1, "max": 5.0, "step": 0.1, "suffix": "秒",
+                    },
+                ],
+            },
+        ],
+    }
+
+    # 性能面板契约（可选；细则见 core/perf_contract.py）：不声明就只显示资源面。
+    # 模块声明行（key / label / kind / 阈值），运行期在 read_perf_snapshot() 只给值，
+    # 判级归 core；声明了却不报的行在面板恒显示「—」。示例（照抄前先想好谁在报值）：
+    # PERF_CONTRACT = 1
+    # PERF_ROWS = (
+    #     dict(key="tick_rate", label="处理拍率", kind="rate", stat="p50_gap_inverse",
+    #          category="player", precision=1, warn_at=8.0, error_at=4.0,
+    #          worse_when="below", hint="处理变慢：降低调试落盘或游戏画质"),
+    # )
+    # THREAD_LABELS = {"sample-worker": "工作线程"}   # 线程由 core 嗅探，模块只贴中文别名
+
+    # 数据看板（可选；契约见 core/dashboard_contract.py）：DASHBOARD_CONTRACT = 1 并实现
+    # read_dashboard()（classmethod；不得依赖模块实例——读持久化或既有 RPC）。
+    # 载荷 = block 列表（stats / list / text / path / action / empty），非法块被 core 丢弃。
+    # DASHBOARD_CONTRACT = 1
+    # @classmethod
+    # def read_dashboard(cls) -> dict:
+    #     return {"blocks": [{"type": "empty", "title": "暂无记录"}]}
+
+    def __init__(self, ctx: ActivityContext | None):
         super().__init__(ctx)
         self._current_stage: str | None = None
+        self._loop_interval_s: float = type(self).DEFAULT_MODULE_CONFIG["loop_interval_s"]
+
+    # ------------------------------------------------------------------
+    #  配置挂钩（GUI 写入与启动注入都走这里）
+    # ------------------------------------------------------------------
+
+    def set_module_config(self, config: dict) -> dict:
+        """写配置。controller 在启动时注入实例；GUI 经 RPC 改缓存也调它。
+
+        非法值一律静默修正并返回最终值，不抛给调用方；旧键折算与互斥约束写在
+        normalize_config()（宿主在读回存档与接收写入前各调一次），不在这里长堆 if。
+        """
+        value = config.get("loop_interval_s")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            self._loop_interval_s = min(max(float(value), 0.1), 5.0)
+        return {"loop_interval_s": self._loop_interval_s}
+
+    @classmethod
+    def config_summary(cls, config: dict) -> list[str]:
+        """任务卡摘要（入参为宿主投影后的有效配置；只读纯函数，不创建实例）"""
+        return [f"循环间隔 {config.get('loop_interval_s')} 秒"]
+
+    def config_status(self) -> dict | None:
+        """配置面板下的运行状态行（仅运行中的实例被调用）"""
+        return {"text": f"循环间隔 {self._loop_interval_s} 秒", "level": "ok"}
+
+    # 人工接管期声明（可选）：返回 True 的时段，紧急停止不把按键当急停信号
+    # （录制驾驶等「玩家自己操作」阶段；判据与急停循环见 core/CODE_WIKI.md §5.3.1）
+    # def manual_input_active(self) -> bool:
+    #     return self._current_stage == "人工驾驶"
 
     # ------------------------------------------------------------------
     #  ActivityModule 契约（core/base.py）
@@ -72,11 +163,17 @@ class SampleModule(ActivityModule):
         else:
             raise ValueError(f"[{self.ID}] 未知断点「{start_from}」，合法值见 STAGE_ORDER")
 
-        # 3. 能力取用示例（按需删减）：
-        #    frame = self.ctx.capture.screenshot()      # 截图（RGB ndarray，失败返回 None）
-        #    ctx_renderer = self.ctx.debug_renderer      # 调试渲染租约
-        #    renderer = self.ctx.enter_context(ctx_renderer.renderer())  # 生命周期托管
-        #    self.ctx.gamepad.xxx                       # 虚拟手柄（REQUIRES 声明后才可用）
+        # 3. 能力取用示例（按需删减；全部经 ctx 门面，插件不接触高权限宿主对象）：
+        #    frame = self.ctx.capture.screenshot()      # RGB ndarray；None=采集链路故障
+        #    frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()  # 帧龄（新鲜度）
+        #    self.ctx.verify_frame_client(frame.shape[1], frame.shape[0])   # 帧 vs 客户区 1:1
+        #    self.ctx.check_window_aspect()             # 客户区约 16:9（ROI 按 720p 归一化的前提）
+        #    if not self.ctx.window_foreground: ...     # 前台鼠标点击的安全前置（程序不抢前台）
+        #    with self.ctx.gamepad.acquire() as pad:    # 手柄租约：退出自动归零归还
+        #        pad.left_joystick(x_value=0, y_value=-32768); pad.update()
+        #    renderer = self.ctx.enter_context(         # 调试渲染租约 → 生命周期托管
+        #        self.ctx.debug_renderer.renderer(my_renderer))
+        #    self._loop_interval_s                      # 配置已由宿主经 set_module_config 注入
 
         # 4. 阶段驱动：主循环 + 阶段分发
         logger.log(f"[{self.NAME}] 模块启动")
@@ -89,7 +186,7 @@ class SampleModule(ActivityModule):
                 continue
 
             # 睡眠必须走 lifecycle（可中断）；不要用 time.sleep
-            self.ctx.lifecycle.sleep(0.5)
+            self.ctx.lifecycle.sleep(self._loop_interval_s)
 
         logger.log(f"[{self.NAME}] 模块停止")
         return True
@@ -130,7 +227,8 @@ class SampleModule(ActivityModule):
         logger.log(f"[{self.NAME}] 阶段切换 → 「{self._current_stage}」")
         return True
 
-    # 各阶段示例实现：实际逻辑替换为 模板匹配 / OCR / Pipeline 驱动 等
+    # 各阶段示例实现：识别与点击按活动类型取用共享引擎（模板匹配 / OCR / YOLO /
+    # 手柄光标导航）与导航图通路，见 templates/plugin/README.md「core 共享引擎速查」
     def _stage_home(self) -> None:
         frame = self.ctx.capture.screenshot()
         if frame is None:

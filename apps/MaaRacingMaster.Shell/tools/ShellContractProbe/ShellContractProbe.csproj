@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 壳合同探针：不进发布产物，仅开发机验证（pytest/Node 同级的 .NET 侧合同锁）。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 链接正式源码而非复制：探针断言永远针对当前实现 -->
+    <Compile Include="..\..\AppRootResolver.cs" Link="AppRootResolver.cs" />
+    <Compile Include="..\..\PythonSidecar.cs" Link="PythonSidecar.cs" />
+    <Compile Include="..\..\ShellLog.cs" Link="ShellLog.cs" />
+    <Compile Include="..\..\UpdateCoordinator.cs" Link="UpdateCoordinator.cs" />
+    <!-- 钩子自退出断言与壳用同一固定版本（与正式接入版本绑定核验） -->
+    <PackageReference Include="Velopack" Version="1.2.161" />
+  </ItemGroup>
+
+</Project>

@@ -20,7 +20,7 @@ v3 时代的真源是**五套并行概念**——`anchors` / `stages` / `transit
 配套判据：**加逻辑 = 加节点 / 改连线 / 改策略表，不写 Python**。写 Python 仅限引擎能力本身（新识别、新动作），且引擎代码永远不感知业务语义。
 
 落地形态（v4 真源三件套）：
-- `core/resources/pipeline/global.json`（通用层）
+- core 通用层（global.json 大厅骨架方案 2026-09-10 归位废弃；core 侧现仅启动链与共享默认值，共用节点链尚无）
 - `plugins/<id>/resources/pipeline/<id>.json`（业务层）
 - `plugins/<id>/resources/policy/<id>.policy.json`（策略表）
 

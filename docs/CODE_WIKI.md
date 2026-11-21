@@ -12,7 +12,7 @@
 |---|---|---|
 | 项目地图 | **本文** | 分域导航 / 改动去哪 / 约定真源 |
 | 平台核心层 | [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md) | controller / 导航光标 / 采集 / 日志 / 调试 / 坑点 / 类索引 |
-| 极速狂飙 | [plugins/speedrush/CODE_WIKI.md](../maaracing_master/plugins/speedrush/CODE_WIKI.md) | 流程编排 / 驾驶门控与节拍 / 演示录制 |
+| 无限驾驶（极速狂飙 v2） | [plugins/infinite_drive/CODE_WIKI.md](../maaracing_master/plugins/infinite_drive/CODE_WIKI.md) | 感知 / 几何 / 观测 / 控制基建（操作流程施工中） |
 | MaaFW 协议 | [MAAFW_GUIDE.md](MAAFW_GUIDE.md) | 能力签名 / Pipeline 协议 / Custom 契约 / 真源组织 / 红线 |
 | 架构决策 | [adr/](adr/README.md) | 为什么这么定 + 状态（是否仍生效） |
 | 版本宪法 | [PIPELINE_V4.md](PIPELINE_V4.md) | §1 六条不变量（最高规则）+ 节点模型与迁移史 |
@@ -45,7 +45,7 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 |---|---|
 | 游戏分辨率 | `core/window_utils.py` `resize_game_window_720p`（连接时统一窗口）；各插件 ROI / 按钮按 720p 归一化 |
 | 截图通道 | WGC 中心缓存唯一、无回退通道，见 [ADR-0003](adr/0003-arch-core-运行时拓扑硬约束.md) |
-| 业务数值（ROI / 阈值 / 仲裁） | 各插件 `resources/policy/` 目录（文件名随插件自定，speedrush 为 `decision.json` / `hud_regions.json`） |
+| 业务数值（ROI / 阈值 / 仲裁） | 各插件 `resources/policy/` 目录（文件名随插件自定，如 infinite_drive 为 `hud_regions.json`） |
 | 版本号 | git tag 为唯一信源，规则见 [AGENTS.md](../AGENTS.md) 与 [skills/project-update/SKILL.md](../skills/project-update/SKILL.md) |
 
 ***

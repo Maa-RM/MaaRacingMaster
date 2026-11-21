@@ -161,6 +161,38 @@ def test_round_events_carry_run_identity_and_clocks():
         assert isinstance(d["ts_mono_ns"], int) and d["ts_mono_ns"] > 0
 
 
+def test_queue_run_carries_run_item_name():
+    """运行实况带运行项显示名：状态行在「没有阶段」时显示它（内置步骤没有阶段）。
+
+    名字取注册表里的 NAME，查不到回落 id——不能是空串，否则界面会掉进
+    「停止中...」，那正是「有活干却取不到标签」的误导分支。
+    """
+    controller = _FakeController({})
+    svc, sent = _svc(controller)
+    seen = []
+    orig_step, orig_module = controller.run_builtin_step, controller.start_module
+
+    def spy_step(step_id, step_config=None):
+        seen.append(dict(svc._queue_run))
+        return orig_step(step_id, step_config)
+
+    def spy_module(module_id, start_from=None, module_config=None):
+        seen.append(dict(svc._queue_run))
+        return orig_module(module_id, start_from, module_config)
+
+    controller.run_builtin_step = spy_step
+    controller.start_module = spy_module
+    t = _spawn(svc, [
+        {"kind": "builtin", "id": "launch_game", "start_from": None, "config": None},
+        {"kind": "module", "id": "nope", "start_from": None, "config": None},
+    ])
+    _wait(t)
+    assert seen == [
+        {"index": 0, "total": 2, "current_module": "launch_game", "current_name": "启动游戏"},
+        {"index": 1, "total": 2, "current_module": "nope", "current_name": "nope"},
+    ]
+
+
 def test_exception_aborts_round_and_marks_rest_skip():
     """模块抛异常 → 该模块 fail、剩余 skip、只有结束事件、不发 auto_exit。"""
     controller = _FakeController({"a": "raise"})

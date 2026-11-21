@@ -1,7 +1,7 @@
 # maafw_audit — MaaFw 生态审计工具
 
 升 MaaFw 版本前、或 pipeline 真源形态变更后，用这里的工具核对「本项目的真源在 MaaFw
-实装链路上是否仍保真」。样本是现役的 core 与 speedrush 真源，不依赖归档插件。
+实装链路上是否仍保真」。样本是 core 真源与归档 speedrush（v1）的 pipeline 真源。
 
 结论不在这里复制：官方行为口径与已知风险见 [`docs/MAAFW_GUIDE.md`](../../docs/MAAFW_GUIDE.md)。
 

@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-CONFIG_UI_CONTRACT_VERSION = 1
+CONFIG_UI_CONTRACT_VERSION = 2
 
-FIELD_TYPES = frozenset({"switch", "segmented", "select", "number", "text"})
+FIELD_TYPES = frozenset({"switch", "segmented", "select", "number", "stepper", "text"})
 COND_OPS = frozenset({"equals", "not_equals", "in"})
 STATUS_LEVELS = frozenset({"", "ok", "warn", "error"})
 
@@ -284,6 +284,40 @@ def _normalize_field(raw, allowed_keys: set[str], seen: set[str],
         if step is not None and step <= 0:
             warnings.append(f"{key}: step 必须为正数，约束已忽略")
             step = None
+        for name, value in (("min", lo), ("max", hi), ("step", step)):
+            if value is not None:
+                field[name] = value
+    elif ftype == "stepper":
+        if options_raw is not None or choices:
+            warnings.append(f"{key}: 滚轮控件不接受选项，已忽略")
+        lo = raw.get("min")
+        hi = raw.get("max")
+        step = raw.get("step")
+        # 滚轮按整数位滚动：约束必须是整数；max 必填（列数由它得出，缺失即丢字段）
+        for name, value in (("min", lo), ("max", hi), ("step", step)):
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                warnings.append(f"{key}: {name} 必须是整数，已忽略")
+                if name == "min":
+                    lo = None
+                elif name == "max":
+                    hi = None
+                else:
+                    step = None
+        if lo is not None and hi is not None and lo > hi:
+            warnings.append(f"{key}: min 大于 max，约束已忽略")
+            lo = hi = None
+        if step is not None and step <= 0:
+            warnings.append(f"{key}: step 必须为正数，约束已忽略")
+            step = None
+        unit = raw.get("unit_seconds")
+        if unit is not None:
+            if (not _is_scalar(unit) or isinstance(unit, (str, bool)) or unit <= 0):
+                warnings.append(f"{key}: unit_seconds 必须是正数，已忽略")
+            else:
+                field["unit_seconds"] = unit
+        if hi is None:
+            warnings.append(f"{key}: 滚轮控件缺少整数 max（列数无从得出），字段已丢弃")
+            return None
         for name, value in (("min", lo), ("max", hi), ("step", step)):
             if value is not None:
                 field[name] = value

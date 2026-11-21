@@ -1,0 +1,448 @@
+# -*- coding: utf-8 -*-
+"""跟踪层与世界观测契约的回归锁（设计稿 v2 §八 step 2 的"接线前必锁清单"）。
+
+裁决列出的八项逐条对应：
+  1 过旧帧 / 2 空目标 / 3 目标短暂遮挡 / 4 目标重识别 / 5 远距 lane_side /
+  6 帧间跳变 / 7 弯道·几何无效 / 8 阶段切换清空。
+另锁：帧号单调（fail-loud）、外推纪律（横向保持、纵向匀速）、id 不复用、
+排序与 JSON 序列化（回放落盘的前提）、参数校验、rel_approach 口径、x_sigma 量级。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+from maaracing_master.plugins.infinite_drive.tracking import (
+    SCHEMA_VERSION, DecisionOutput, DecisionState, FarTarget, LaneSide,
+    PerceptionHealth, Tracker, TrackerParams, TrackedTarget, to_jsonable)
+from maaracing_master.plugins.infinite_drive.world_model import (
+    KIND_CAR, KIND_COIN, load_calib, x_lane_of)
+
+
+CAL = load_calib()
+
+
+def _per(fid: int, *, cars=(), coins=(), bonuses=()) -> PerceptionResult:
+    return PerceptionResult(frame_id=fid, ts_ns=fid * 33_000_000,
+                            cars=list(cars), coins=list(coins), bonuses=list(bonuses))
+
+
+def _near_car(cx=800, cy=500, h=40):
+    """cy=500 在域内（denom≈176），x_lane≈正值（cx>vpx）。"""
+    return Detection(cx, cy, 60, h, 0.9)
+
+
+# ---------- 1 过旧帧 ----------
+
+def test_stale_frame_flagged_but_observation_produced():
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=500.0, stage=1)
+    assert obs.health.frame_fresh is False      # 过旧如实上报，供校验层合取
+    assert len(obs.targets) == 1                # 本层不拦截——判定权在校验层
+
+
+def test_fresh_frame_flag_ok():
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=12.0, stage=1)
+    assert obs.health.frame_fresh is True
+
+
+# ---------- 2 空目标 ----------
+
+def test_empty_frame_presence_false_and_no_targets():
+    trk = Tracker()
+    obs = trk.update(_per(1), frame_age_ms=10.0, stage=1)
+    assert obs.targets == () and obs.far_targets == ()
+    assert obs.health.target_presence is False
+
+
+def test_above_horizon_dropped():
+    """整框在地平线上方（框底都不接地）几何无效，直接丢（归一发散口径）。
+    路内判据=框底接地（2026-11-03 改）：只压线的中心不再蒸发整框。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 45)]),
+                     frame_age_ms=10.0, stage=1)
+    assert obs.targets == () and obs.far_targets == ()
+    assert obs.health.target_presence is False
+
+
+def test_tall_box_center_on_horizon_kept_with_bottom_anchor():
+    """高架物（限宽门/警示架）框中心压在地平线上、框底接地：不得蒸发，
+    横向尺子退框底锚出读数（20261103_213728 fid3569 路障追尾实锤：
+    yolo_cars=1 而 obs 无目标，躲避层整段无物可躲）。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car(cy=int(CAL.y_h) - 5, h=200)]),
+                     frame_age_ms=10.0, stage=1)
+    assert len(obs.targets) == 1, "框底接地的高架物不得被中心闸丢弃"
+    assert obs.targets[0].x_lane is not None, "框底锚应产出横向读数"
+
+
+# ---------- 3 目标短暂遮挡 ----------
+
+def test_occlusion_holds_id_and_lateral():
+    trk = Tracker()
+    first = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    held_x = first.targets[0].x_lane
+    gone = trk.update(_per(2), frame_age_ms=10.0, stage=1)   # 该帧检不到
+    assert len(gone.targets) == 1                            # 宽限窗内保持
+    t = gone.targets[0]
+    assert t.id == first.targets[0].id
+    assert t.x_lane == held_x                    # 横向不外推：保持最后读数
+    assert t.last_seen_fid == 1
+    assert t.cy == first.targets[0].cy           # 静止目标：外推量 = rel_approach = 0
+    back = trk.update(_per(3, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert back.targets[0].id == t.id            # 重现续旧身份
+    assert back.targets[0].first_seen_fid == 1   # 首见时刻不被重写
+
+
+def test_occlusion_extrapolates_cy_by_velocity():
+    """遮挡期的纵向保持是"匀速外推"，不是冻住——否则宽限窗内距离序会骗人。"""
+    trk = Tracker()
+    trk.update(_per(1, cars=[_near_car(cy=480)]), frame_age_ms=10.0, stage=1)
+    trk.update(_per(2, cars=[_near_car(cy=520)]), frame_age_ms=10.0, stage=1)  # rel=20
+    obs = trk.update(_per(3), frame_age_ms=10.0, stage=1)
+    assert obs.targets[0].cy == 540          # 520 + 20×1
+    assert obs.targets[0].x_lane == x_lane_of(800, 520, CAL)  # 横向仍是最后读数（520 那帧）
+
+
+# ---------- 4 目标重识别（退役后新 id） ----------
+
+def test_expired_track_retires_and_id_never_reused():
+    p = TrackerParams(grace_ticks=2)
+    trk = Tracker(params=p)
+    first = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    old_id = first.targets[0].id
+    trk.update(_per(2), frame_age_ms=10.0, stage=1)   # 失联 1
+    trk.update(_per(3), frame_age_ms=10.0, stage=1)   # 失联 2：宽限边界
+    gone = trk.update(_per(4), frame_age_ms=10.0, stage=1)   # 失联 3：退役
+    assert gone.targets == ()
+    again = trk.update(_per(5, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert again.targets[0].id != old_id             # 不复用旧 id
+    assert again.targets[0].first_seen_fid == 5
+
+
+def test_validity_window_on_output():
+    p = TrackerParams(grace_ticks=3)
+    trk = Tracker(params=p)
+    obs = trk.update(_per(10, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert obs.targets[0].validity_until_fid == 13
+
+
+# ---------- 5 远距目标：x_lane 不可用但 lane_side 可用 ----------
+
+def test_far_targets_carry_side_not_xlane():
+    trk = Tracker()
+    far = int(CAL.y_h) + 10                       # 域外：denom 10 < MIN_DENOM
+    obs = trk.update(_per(1, coins=[
+        Detection(900, far, 20, 20, 0.8),         # 右侧
+        Detection(400, far, 20, 20, 0.8),         # 左侧
+        Detection(int(CAL.vpx), far, 20, 20, 0.8),  # 中列
+    ]), frame_age_ms=10.0, stage=1)
+    assert obs.targets == ()                      # 域外不进近场
+    sides = sorted(f.lane_side for f in obs.far_targets)
+    assert sides == [int(LaneSide.LEFT), int(LaneSide.MID), int(LaneSide.RIGHT)]
+    assert all(isinstance(f, FarTarget) for f in obs.far_targets)
+    assert obs.health.target_presence is True     # 远场也算 presence
+
+
+def test_far_to_near_promotion_keeps_id():
+    """远→近按物理速度渐进时同一 id、last_x_lane 从此有值——金币组提前规划的通道。"""
+    trk = Tracker()
+    far = int(CAL.y_h) + 10
+    o1 = trk.update(_per(1, coins=[Detection(700, far, 20, 20, 0.8)]),
+                    frame_age_ms=10.0, stage=1)
+    assert len(o1.far_targets) == 1 and o1.far_targets[0].last_x_lane is None
+    o2 = trk.update(_per(2, coins=[Detection(720, far + 40, 24, 24, 0.85)]),
+                    frame_age_ms=10.0, stage=1)
+    assert o2.far_targets == ()
+    t = o2.targets[0]
+    assert isinstance(t, TrackedTarget)
+    assert t.id == o1.far_targets[0].id           # 同一目标同一 id
+    assert t.x_lane == pytest.approx(x_lane_of(720, far + 40, CAL))
+
+
+# ---------- 6 帧间目标跳变 ----------
+
+def test_cy_jump_beyond_gate_is_new_track():
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[_near_car(cx=700, cy=500)]), frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[_near_car(cx=700, cy=500 + 400)]), frame_age_ms=10.0, stage=1)
+    assert b.targets[0].id != a.targets[0].id     # 跳变超门限：不按同一目标
+    assert len(b.targets) == 2                    # 旧目标进宽限、新目标在册
+
+
+def test_lateral_jump_beyond_gate_is_new_track():
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[_near_car(cx=700, cy=500)]), frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[_near_car(cx=1100, cy=500)]), frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 2                    # 旧目标进宽限，新目标另立
+    new = [t for t in b.targets if t.id != a.targets[0].id][0]
+    assert new.x_lane == pytest.approx(x_lane_of(1100, 500, CAL))
+
+
+def test_large_box_growth_keeps_id_when_cy_jump_exceeds_old_gate():
+    """逼近的大车：纵向跳变会超旧 cy 门（80px），但框本身连续——身份必须
+    跟框走，不能因为变大/变快就新建轨道（2026-10-19 局 204308_p1 根因）。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 450, 100, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(800, 550, 120, 150, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+    assert b.targets[0].first_seen_fid == 1
+
+
+def test_box_growth_across_lateral_shift_keeps_id():
+    """横向位移叠加扩框：2D 框仍连续，不得换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(800, 500, 200, 100, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, cars=[Detection(700, 560, 220, 120, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 1
+    assert b.targets[0].id == a.targets[0].id
+
+
+def test_adjacent_cars_do_not_swap_identities():
+    """2D 匹配按框位置 1:1，左右两车不得因为 cy 相近而互换身份。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[Detection(500, 500, 100, 80, 0.9),
+                                 Detection(800, 500, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    by_cx_a = {round(t.x_lane, 3): t.id for t in a.targets}
+    b = trk.update(_per(2, cars=[Detection(510, 505, 100, 80, 0.9),
+                                 Detection(790, 505, 100, 80, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert len(b.targets) == 2
+    by_cx_b = {round(t.x_lane, 3): t.id for t in b.targets}
+    assert set(by_cx_b.values()) == set(by_cx_a.values())
+    # 左车 id 与左车 id 对、右车对右车（不交叉）
+    left_a = next(t.id for t in a.targets if t.x_lane < 0)
+    left_b = next(t.id for t in b.targets if t.x_lane < 0)
+    assert left_a == left_b
+
+
+# ---------- 7 弯道 / 几何无效输入 ----------
+
+def test_stage_transition_passthrough():
+    trk = Tracker()
+    obs = trk.update(_per(1), frame_age_ms=10.0, stage=1, stage_transition=True)
+    assert obs.health.stage_transition is True
+
+
+# ---------- 8 阶段切换清空 ----------
+
+def test_stage_change_clears_all_tracks():
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    old_id = a.targets[0].id
+    b = trk.update(_per(2, cars=[_near_car()]), frame_age_ms=10.0, stage=2)
+    assert b.targets[0].id != old_id              # 清空后全新检出
+    assert b.targets[0].first_seen_fid == 2
+    assert b.stage == 2
+
+
+# ---------- 契约杂项 ----------
+
+def test_duplicate_frame_id_resends_cached_observation():
+    """WGC 中心缓存的合法重复（step 5 回放置证）：同帧号第二次输入不得重关联、
+    不得老化、不得把 rel_approach 抹零——原样重发上一份观测。"""
+    trk = Tracker()
+    trk.update(_per(5, cars=[_near_car(cy=480)]), frame_age_ms=10.0, stage=1)
+    o6 = trk.update(_per(6, cars=[_near_car(cy=520)]), frame_age_ms=10.0, stage=1)
+    dup = trk.update(_per(6, cars=[Detection(700, 60, 20, 20, 0.9)]),
+                     frame_age_ms=10.0, stage=1)   # 同帧号、不同像素
+    assert dup is o6                                # 缓存重发，像素差异被忽略
+
+
+def test_frame_id_regression_rejected():
+    trk = Tracker()
+    trk.update(_per(5), frame_age_ms=10.0, stage=1)
+    with pytest.raises(ValueError):
+        trk.update(_per(3), frame_age_ms=10.0, stage=1)   # 倒退=真乱序
+
+
+def test_targets_sorted_near_to_far():
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car(cy=450), _near_car(cx=480, cy=650)]),
+                     frame_age_ms=10.0, stage=1)
+    assert [t.cy for t in obs.targets] == [650, 450]
+
+
+def test_rel_approach_positive_when_closing():
+    trk = Tracker()
+    trk.update(_per(1, cars=[_near_car(cy=480)]), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(2, cars=[_near_car(cy=520)]), frame_age_ms=10.0, stage=1)
+    t = obs.targets[0]
+    assert t.rel_approach == pytest.approx(0.5 * 0 + 0.5 * 40)  # EMA(0, 40)
+    assert t.id == 1                               # 匀速接近不误建新轨迹
+
+
+def test_x_sigma_matches_error_note_order():
+    """§6 注记：分母 20–50 区间误差 ±0.2–0.5 车道——σ 模型必须同量级。"""
+    trk = Tracker()
+    cy = int(CAL.y_h) + 30                      # 分母 30，落在注记区间
+    obs = trk.update(_per(1, cars=[_near_car(cy=cy)]), frame_age_ms=10.0, stage=1)
+    t = obs.targets[0]
+    assert t.x_lane is not None                 # 分母 30 ≥ MIN_DENOM：域内
+    assert 0.1 <= t.x_sigma <= 0.3              # 15×0.305/30 ≈ 0.15（保险杠尺子）
+    assert t.kind == KIND_CAR
+
+
+def test_observation_is_json_serializable():
+    """回放落盘的前提：契约对象过 to_jsonable 后必须直接 json 可写。"""
+    trk = Tracker()
+    obs = trk.update(_per(1, cars=[_near_car()], coins=[
+        Detection(900, int(CAL.y_h) + 10, 20, 20, 0.8)]), frame_age_ms=10.0, stage=1)
+    data = to_jsonable(obs)
+    s = json.dumps(data, ensure_ascii=False)
+    back = json.loads(s)
+    assert back["schema_version"] == SCHEMA_VERSION
+    assert back["health"]["perception_alive"] is True
+    assert back["far_targets"][0]["lane_side"] == 1
+    assert back["targets"][0]["kind"] == KIND_CAR
+
+
+def test_decision_output_contract_shape():
+    """DecisionOutput 生产者属 step 4，但契约形状与枚举值现在锁死。"""
+    d = DecisionOutput(schema_version=SCHEMA_VERSION, state=DecisionState.CONSERVE,
+                       x_target=0.0,
+                       reason="validate_fail:frame_stale",
+                       emitted_fid=42, valid_until_fid=44)
+    j = to_jsonable(d)
+    assert j["state"] == "CONSERVE"          # Enum → value，回放侧读的是码串
+    assert set(DecisionState) == {DecisionState.CRUISE, DecisionState.ABORT,
+                                  DecisionState.CONSERVE, DecisionState.FAULT}
+
+
+def test_health_passthrough_fields():
+    trk = Tracker()
+    obs = trk.update(_per(1), frame_age_ms=10.0, stage=2)
+    h = obs.health
+    assert isinstance(h, PerceptionHealth)
+    assert (h.perception_alive, h.frame_fresh, h.stage_transition) == (True, True, False)
+    assert obs.stage == 2 and obs.frame_age_ms == 10.0 and obs.ts_ns == 33_000_000 * 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"grace_ticks": 0}, {"ema_alpha": 1.0}, {"max_cy_step": -1},
+    {"pos_err_px": 0}, {"fresh_max_ms": 0},
+])
+def test_params_fail_loud(kwargs):
+    with pytest.raises(ValueError):
+        TrackerParams(**kwargs)
+
+
+def test_different_kinds_never_associate():
+    """金币位置恰与消失的车同构——跨类不得继承 id。"""
+    trk = Tracker()
+    a = trk.update(_per(1, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    b = trk.update(_per(2, coins=[Detection(800, 500, 60, 40, 0.9)]),
+                   frame_age_ms=10.0, stage=1)
+    assert b.far_targets == ()
+    assert len(b.targets) == 2                    # 旧车进宽限 + 新金币
+    coin = [t for t in b.targets if t.kind == KIND_COIN][0]
+    assert coin.id != a.targets[0].id
+
+
+# ---------- 采集帧率估计（2026-10-11 车流 t_meet 换基的时基锚） ----------
+
+def test_fid_rate_estimator_warms_up_and_converges():
+    """_per 的 ts 节律 = 33ms/fid（30.3Hz）：预热未达样本数 obs 带 None，
+    达标后聚合比率收敛真值；重复 fid 拍（WGC 合法重发）不投毒。"""
+    trk = Tracker()
+    obs = None
+    for fid in range(1, 13):
+        obs = trk.update(_per(fid, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+        if fid < Tracker._FID_HZ_WARM_N:
+            assert obs.fid_rate_hz is None        # 预热期不外供半熟估计
+    assert obs.fid_rate_hz == pytest.approx(30.3, rel=0.01)
+    dup = trk.update(_per(12, cars=[_near_car()]), frame_age_ms=10.0, stage=1)
+    assert dup.fid_rate_hz == obs.fid_rate_hz     # 同 fid 重发：估计不动
+
+
+def test_fid_rate_survives_stage_reset():
+    """fid 率是采集流属性：阶段切换重卷轨迹不清估计。"""
+    trk = Tracker()
+    for fid in range(1, 13):
+        trk.update(_per(fid), frame_age_ms=10.0, stage=1)
+    obs = trk.update(_per(20), frame_age_ms=10.0, stage=2)   # 阶段切换
+    assert obs.targets == () and obs.fid_rate_hz == pytest.approx(30.3, rel=0.05)
+
+
+# ---------- 12 并号拆分（闸 demerge.enabled，默认关） ----------
+
+def _mk_track(idx_id, x_lane, last_seen=10, kind=KIND_CAR):
+    """直造轨道判据单测用（_demerge 操作内部结构，走 update 拼不出干净
+    的并存+跳变场景：1:1 贪心会先让并存号拿走检测）。"""
+    from maaracing_master.plugins.infinite_drive.tracking import _Track
+    return _Track(id=idx_id, kind=kind, cy=500, cx=800.0, w=60, h=40,
+                  conf=0.9, x_lane=x_lane, x_known=x_lane, x_sigma=0.1,
+                  lane_side=1, rel_approach=0.0, first_seen=1,
+                  last_seen=last_seen)
+
+
+def _mk_obs(x_lane, kind=KIND_CAR):
+    from maaracing_master.plugins.infinite_drive.tracking import _Obs
+    return _Obs(kind=kind, cy=500, cx=800.0, w=60, h=40, conf=0.9,
+                x_lane=x_lane, x_sigma=0.1, lane_side=1)
+
+
+def test_demerge_vetoes_jumped_match_and_defers_to_coexisting_track():
+    """并号拆分：横位跳 >0.8 道且新位置上有另一活跃轨道（与旧位置可分）
+    的匹配即拒绝，检测让位并存号——旧轨道不跟过去（一号先后挂两辆车
+    =真值小集 same 链内横跳的主机理）。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0}                     # 旧轨道挂上了跳变检测（x_lane 2.0）
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert 0 not in matches              # 旧轨道被拒绝
+    assert matches == {1: 0}             # 检测让位并存号（轨道 id2）
+
+
+def test_demerge_off_keeps_old_behavior():
+    trk = Tracker()                      # 缺省关
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_artifact_jump_without_coexistence_not_touched():
+    """纯读数伪跳（自车横移/出画/远场小位移）无并存证据：门不触发，
+    归横位未知态——拆号不治读数跳。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_normal_lateral_motion_not_vetoed():
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 1.3)]
+    matches = {0: 0}                     # 跳 0.3 道 ≤0.8 门：正常横移
+    trk._demerge(matches, [_mk_obs(1.3)], fid=11)
+    assert matches == {0: 0}
+
+
+def test_demerge_gap_beyond_window_not_vetoed():
+    """拍距 > gap_ticks 是断号重挂的领域：门不比跳。"""
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0, last_seen=4), _mk_track(2, 2.0, last_seen=4)]
+    matches = {0: 0}
+    trk._demerge(matches, [_mk_obs(2.0)], fid=11)   # 拍距 7 > 4
+    assert matches == {0: 0}
+
+
+def test_demerge_reassign_skipped_when_coexisting_track_already_matched():
+    trk = Tracker(demerge_enabled=True)
+    trk._tracks = [_mk_track(1, 1.0), _mk_track(2, 2.0)]
+    matches = {0: 0, 1: 1}               # 并存号已有自己的检测
+    trk._demerge(matches, [_mk_obs(2.0), _mk_obs(1.2)], fid=11)
+    assert 0 not in matches              # 旧轨道仍被拒绝
+    assert matches == {1: 1}             # 检测不重复给并存号

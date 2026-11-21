@@ -35,7 +35,7 @@ FRAMES = [
 ]
 
 MODELS = [
-    ("plus_small(现役)", HERE.parents[2] / "maaracing_master/plugins/speedrush/resources/models/lane/plus_small_384x640.onnx", True),
+    ("plus_small(现役)", HERE.parents[2] / "maaracing_master/plugins/_archive/speedrush/resources/models/lane/plus_small_384x640.onnx", True),
     ("twinlitenet(原版)", HERE / "weights/twinlitenet_orig_360x640.onnx", False),
 ]
 

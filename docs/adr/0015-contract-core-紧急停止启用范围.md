@@ -19,6 +19,6 @@
 
 ## 证据
 
-- 实现：`maaracing_master/core/base.py`（`manual_input_active`）、`maaracing_master/core/controller.py`（`_emergency_stop_loop` / `_manual_input_active`）、`maaracing_master/plugins/speedrush/module.py`（录制阶段置位）。
-- 回归：`tests/test_controller_emergency_scope.py`（人工阶段跳过、程序阶段保留、无模块/异常回落检测）；`tests/test_speedrush_macro.py` 的录制链路用例。
+- 实现：`maaracing_master/core/base.py`（`manual_input_active`）、`maaracing_master/core/controller.py`（`_emergency_stop_loop` / `_manual_input_active`）、`maaracing_master/plugins/_archive/speedrush/module.py`（录制阶段置位）。
+- 回归：`tests/test_controller_emergency_scope.py`（人工阶段跳过、程序阶段保留、无模块/异常回落检测）；`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_macro.py` 的录制链路用例。
 - 需求口径：维护者 2026-11-03 明确「紧急停止只对程序操作时启用」，起因是宏录制的键盘映射（W+A 两键）。

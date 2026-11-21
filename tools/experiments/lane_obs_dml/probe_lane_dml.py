@@ -47,13 +47,13 @@ import numpy as np
 import onnxruntime as ort
 
 REPO = Path(__file__).resolve().parents[3]
-LANE_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/lane"
+LANE_ONNX = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/models/lane"
              / "plus_small_384x640.onnx")
-PERCEPTION_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models"
+PERCEPTION_ONNX = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/models"
                    / "perception/model.onnx")
-DEPTH_ONNX = (REPO / "maaracing_master/plugins/speedrush/resources/models/depth"
+DEPTH_ONNX = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/models/depth"
               / "relative_mnv4m_slim_spf_448_default.onnx")
-BADGE_TPL = (REPO / "maaracing_master/plugins/speedrush/resources/policy"
+BADGE_TPL = (REPO / "maaracing_master/plugins/_archive/speedrush/resources/policy"
              / "hud_badge_mi.png")
 FRAMES_DIR = (REPO / "tools/experiments/speedrush_depthart_prod/frames"
               / "20261111_104222_p2_stable41")

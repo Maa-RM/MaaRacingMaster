@@ -1,0 +1,1470 @@
+# -*- coding: utf-8 -*-
+"""实机闭环接线锁（planner 设计稿 §九 step 3）：_drive_loop 的控制链装配与下发。
+
+锁的是**接线**（感知结果→跟踪→聚合→深度供数→决策→规划→手柄这条管道通不通、
+V0/V1 开关在不在位、异常降级停不亦），不重测各层内部（那些有各自的单测）。
+桩手柄记录调用；深度几何经 take() 桩同步供数（不碰 GPU/线程）。
+"""
+import json
+import math
+from dataclasses import replace
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+try:
+    import maaracing_master.plugins._archive.speedrush.module as smod
+    _OK, _ERR = True, ""
+except Exception as exc:  # noqa: BLE001 —— CI 轻依赖环境缺 maa/… 时整文件跳过
+    _OK, _ERR = False, str(exc)
+
+pytestmark = [pytest.mark.retired, pytest.mark.skipif(not _OK, reason=f"需要完整运行时依赖（maa/…）：{_ERR}")]
+
+from maaracing_master.plugins._archive.speedrush.config import load_decision  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.depth_geo import DepthRoadReading  # noqa: E402
+from maaracing_master.plugins._archive.speedrush.perception import (  # noqa: E402
+    Detection, PerceptionResult)
+
+
+class StubPad:
+    def __init__(self):
+        self.joy = None
+        self.trig = None
+        self.updates = 0
+
+    def left_joystick(self, x_value=0, y_value=0):
+        self.joy = (x_value, y_value)
+
+    def right_trigger(self, value=0):
+        self.trig = value
+
+    def update(self):
+        self.updates += 1
+
+
+def _perc(fid, coins=(), cars=()):
+    return PerceptionResult(frame_id=fid, ts_ns=fid * 50_000_000,
+                            cars=list(cars), coins=list(coins), bonuses=[], infer_ms=1.0)
+
+
+def _module():
+    return smod.SpeedRushModule(None)
+
+
+@pytest.fixture(autouse=True)
+def _stub_depth(monkeypatch):
+    """深度几何桩：session 加载置 None（不碰 GPU/权重），take() 同步回放
+    cur['r']（供数测试显式赋值；默认 None=无供数，退纯模型积分）。"""
+    cur = {"r": None}
+    monkeypatch.setattr(smod, "load_session", lambda w: None)
+
+    def _take(self):
+        return cur["r"], None, cur["r"] is not None
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    yield cur
+
+
+@pytest.fixture(autouse=True)
+def _pin_gate_off(monkeypatch):
+    """决策闸自钉关：本文件锁的是接线管道语义，不随部署 decision.json 的
+    运行态漂。grid_xcheck 钉 off（供数主人语义回归 legacy 找边对，master
+    语义有专属测试）。"""
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="off")))
+
+
+# ---------- 无走廊：保持横位、油门恒满 ----------
+
+def test_no_corridor_holds_straight():
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    for fid in range(1, 12):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
+        assert pad.joy[0] == 0                 # 无路=保持横位
+        assert pad.trig == load_decision().planner.throttle_raw   # 油门恒值
+    assert pad.updates == 11
+    assert chain["disabled"] is False
+    assert m._control_last["state"] == "CRUISE"
+
+
+@pytest.mark.parametrize("with_depth", [False, True])
+def test_control_records_three_source_ages_at_same_instant(monkeypatch, _stub_depth,
+                                                         with_depth):
+    m = _module()
+    chain = m._build_control_chain()
+    latest_calls = []
+    tracker_update = chain["tracker"].update
+
+    def track(*args, **kwargs):
+        assert kwargs["frame_age_ms"] == pytest.approx(20)
+        return tracker_update(*args, **kwargs)
+
+    monkeypatch.setattr(chain["tracker"], "update", track)
+    lane = {"fid": 8, "det_fid": 8, "det_ts_ns": 900_000_000,
+            "det_age_ms": 100, "state": "RELOCK", "usable": False,
+            "lines": [], "n_locked": 0, "x": None}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: (latest_calls.append(1), lane)[1],
+        push=lambda *a, **k: pytest.fail("tick 内不得再提交线帧——拍首提交已前移"))
+    chain["depth_geo"].last_frame_ts_ns = 850_000_000
+    chain["depth_geo"].last_fid = 6
+    if with_depth:
+        _stub_depth["r"] = _dgeo_lanes(-2, 2)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+    per = PerceptionResult(10, 980_000_000)
+    m._control_tick(chain, StubPad(), None, per, 10, 980_000_000, 10, 1,
+                    cap_ts={"pick": 0.990, "det": 1.0})
+    assert chain["disabled"] is False
+    # 两段式读取（2026-11-16）：早读供深度 y_v/视角守卫，晚读供控制链。
+    assert len(latest_calls) == 2
+    ages = chain["trace"][-1]["obs_age"]
+    assert ages["t_observe_ns"] == 1_000_000_000
+    assert ages["yolo"] == {"fid": 10, "ts_ns": 980_000_000, "age_ms": 20.0}
+    assert ages["lane"] == {"fid": 8, "ts_ns": 900_000_000, "age_ms": 100.0}
+    # 深度此拍没有供数，不能拿槽中上次的元数据冒充在消费。
+    assert ages["depth"]["age_ms"] == (150 if with_depth else None)
+
+
+def test_lane_anchor_ctx_gated_and_overwritten():
+    """锚缓存只出「过全部门后真正会提交」的值：无新证据/闸冻结显式写空，
+    复用拍的原始候选不透传（否则旧证据冒充新锚）。"""
+    ego = SimpleNamespace(depth_anchor_ego=-1.5, anchor_strict=True)
+
+    # 新证据 + 共识放行 → 过门值连同严格资格一起缓存
+    assert smod._lane_anchor_ctx(ego, True, True) == (-1.5, True)
+    # 无新证据（复用拍）：depth_anchor_ego 即使非空也不透传
+    assert smod._lane_anchor_ctx(ego, False, True) == (None, False)
+    # 共识闸冻结：不给锚
+    assert smod._lane_anchor_ctx(ego, True, False) == (None, False)
+    # 候选本身为空：显式 (None, False)
+    ego2 = SimpleNamespace(depth_anchor_ego=None, anchor_strict=False)
+    assert smod._lane_anchor_ctx(ego2, True, True) == (None, False)
+    # 严格资格随锚走：候选非空但严格=False → (值, False)
+    ego3 = SimpleNamespace(depth_anchor_ego=-0.8, anchor_strict=False)
+    assert smod._lane_anchor_ctx(ego3, True, True) == (-0.8, False)
+
+
+def test_first_beat_push_kwargs_from_cache(monkeypatch, _stub_depth):
+    """拍首提交（_lane_first_push）：pre_note=True、锚取过门缓存、dt/fid_jump
+    按 chain 状态复算且不改状态。"""
+    m = _module()
+    chain = m._build_control_chain()
+    pushed = []
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: None,
+        push=lambda *a, **k: pushed.append((a, k)))
+    chain["lane_anchor_ctx"] = (-1.5, True)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+
+    # 首拍：prev_ts/last_fid 均无 → dt=拍长、fid_jump=False
+    # （位置参数序：rgb, fid, cam_h, v_lat, dt, fid_jump）
+    m._lane_first_push(chain, object(), 100, 5_000_000_000)
+    a, kw = pushed[-1]
+    assert kw["pre_note"] is True
+    assert kw["anchor"] == -1.5 and kw["anchor_strict"] is True
+    assert kw["frame_ts_ns"] == 5_000_000_000
+    assert a[4] == pytest.approx(smod.DRIVE_TICK_S)
+    assert a[5] is False
+
+    # 40ms 帧间隔 + 帧号跳 3：dt=0.04、fid_jump=True（与 tick 内口径一致）
+    chain["prev_ts"] = 4_960_000_000
+    chain["last_fid"] = 97
+    m._lane_first_push(chain, object(), 100, 5_000_000_000)
+    a, kw = pushed[-1]
+    assert a[4] == pytest.approx(0.04)
+    assert a[5] is True
+    # 复算不改状态：prev_ts/last_fid 原样（tick 前奏随后自行更新）
+    assert chain["prev_ts"] == 4_960_000_000 and chain["last_fid"] == 97
+
+    # 无缓存（首拍）→ anchor=None：线冷启与历史一致
+    chain["lane_anchor_ctx"] = (None, False)
+    m._lane_first_push(chain, object(), 101, 5_050_000_000)
+    assert pushed[-1][1]["anchor"] is None
+
+
+def test_lane_read_wait_compensates_object_age(monkeypatch, _stub_depth):
+    """线读取等待段必须计入物体帧龄：等待发生在控制入口之后，沿用入口
+    时刻会低估帧龄（线更新鲜、物体被当得比实际更新鲜）。"""
+    m = _module()
+    chain = m._build_control_chain()
+    clock = [0.970]
+
+    def fake_sleep(s):
+        clock[0] += s               # 睡眠推进假时钟（等待段可观测）
+
+    tracker_update = chain["tracker"].update
+    seen = []
+
+    def track(*args, **kwargs):
+        seen.append(kwargs["frame_age_ms"])
+        return tracker_update(*args, **kwargs)
+
+    monkeypatch.setattr(chain["tracker"], "update", track)
+    lane = {"fid": 8, "det_fid": 8, "det_ts_ns": 900_000_000,
+            "det_age_ms": 100, "state": "RELOCK", "usable": False,
+            "lines": [], "n_locked": 0, "x": None}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: lane, push=lambda *a, **k: None)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(smod.time, "sleep", fake_sleep)
+    monkeypatch.setattr(smod, "LANE_READ_AT_S", 0.05)
+    per = PerceptionResult(10, 950_000_000)
+    # 拍首 0.95、拾帧 0.955：读取截止 0.05 → 睡到 1.0（等待 30ms）
+    m._control_tick(chain, StubPad(), None, per, 10, 950_000_000, 10, 1,
+                    cap_ts={"t0": 0.95, "pick": 0.955, "det": 0.965})
+    # 物体帧龄 = 入参 10ms + 拾帧到**等待后**的 45ms（含等待段）
+    assert seen[-1] == pytest.approx(55.0)
+    assert chain["trace"][-1]["obs_age"]["t_observe_ns"] == 1_000_000_000
+
+
+# ---------- 阶段 2 端到端：场目标一道，1 秒内动起来（DecisionEngine+Planner）----------
+
+def _plant_step(x: float, psi: float, u: float, v: float = 45.0,
+                dt: float = 0.05, tau: float = 0.25,
+                k_yaw: float = 0.25) -> tuple[float, float]:
+    """接线测试用的合成车：杆 → 车头角（一阶）→ 横移 v·tanψ。
+
+    接线层只喂深度路心，不喂线角；没有朝向证据时控制律按位置比例段工作，
+    这里只负责让「车真的会动」，位置闭环才有东西可锁。"""
+    psi += (1.0 - math.exp(-dt / tau)) * (k_yaw * u - psi)
+    x += v * math.tan(psi) / 3.38 * dt
+    return x, psi
+
+
+def test_field_goal_half_lane_moves_with_realistic_time():
+    """居中目标差 0.5 道：带外全权，2 秒内真的往带边动（不再假设 1 秒一道）。"""
+    from maaracing_master.plugins._archive.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    from maaracing_master.plugins._archive.speedrush.decision import DecisionEngine
+    from maaracing_master.plugins._archive.speedrush.planner import LateralPlanner
+    from maaracing_master.plugins._archive.speedrush.tracking import (
+        PerceptionHealth, WorldObservation)
+
+    cfg = load_decision()
+    # 本台架只锁横向控制时序；承诺道跟随实测道是路线层的独立开关，固定关，
+    # 避免策略文件里的实验开关改变这里的承诺道。
+    cfg = replace(cfg, route=replace(cfg.route, anchor_follow=False))
+    lw = 3.38
+    eng = DecisionEngine(cfg)
+    pl = LateralPlanner(cfg.planner)
+    def corridor(ex):
+        c = -ex * lw                         # 路心在自车系的位置
+        bands = tuple(CorridorBand(
+            z0=3.0 + i * 3.0, z1=6.0 + i * 3.0,
+            left=BandBoundary(c - 4.2, "measured"),
+            right=BandBoundary(c + 4.2, "measured")) for i in range(2))
+        return Corridor(bands, -ex, 8.4 / lw, "pair", "ok")
+
+    def obs(fid):
+        return WorldObservation(
+            schema_version=1, frame_id=fid, ts_ns=fid * 50_000_000,
+            frame_age_ms=10.0, stage=1,
+            health=PerceptionHealth(True, True, True, True, False),
+            targets=(), far_targets=(), coin_groups=())
+
+    x, psi = 1.6, 0.0
+    pl.state.executed_lane = x
+    max_stick = 0
+    first = True
+    for fid in range(3, 43):                   # 2 秒
+        out = eng.update(obs(fid), 0.05,
+                         executed_lane=pl.state.executed_lane,
+                         corridor=corridor(pl.state.executed_lane))
+        if first:
+            assert out.maneuver is True
+            first = False
+        assert out.phase == "keep"
+        if out.maneuver:
+            assert out.authority == "COMMIT"
+        assert out.intent_lane is not None
+        cmd = pl.update(out, 0.05, current_fid=fid,
+                        road_offset=pl.state.executed_lane)
+        max_stick = max(max_stick, abs(cmd.steer_x))
+        x, psi = _plant_step(x, psi, cmd.steer_x / 32767.0)
+        pl.state.executed_lane = x
+    assert pl.state.executed_lane < 1.2       # 朝带边 0.5 真的动了
+    assert max_stick > int(0.45 * 32767)      # 越过维护杆幅上限
+
+
+# ---------- V1：横向通道在位（自车偏置 → 反向收力回中）----------
+
+def test_v1_lateral_channel_live(_stub_depth):
+    v1 = load_decision()
+    m = _module()
+    chain = m._build_control_chain()
+    x, psi = 1.0, 0.0                            # 自上拍遗留横位
+    chain["planner"].state.executed_lane = x
+    # 路心在自车左侧 1 道 → 场目标 0，应向左修正；深度供数随车移动
+    _stub_depth["r"] = _dgeo_lanes(-1.5, -0.5)
+    pad = StubPad()
+    saw_negative = False
+    for fid in range(1, 46):
+        center = -x                               # 路心在自车系的位置（道）
+        _stub_depth["r"] = _dgeo_lanes(center - 0.5, center + 0.5)
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
+        assert pad.trig == v1.planner.throttle_raw
+        if pad.joy[0] < 0:
+            saw_negative = True
+        x, psi = _plant_step(x, psi, pad.joy[0] / 32767.0)
+    assert saw_negative                          # 横向控制确实活了
+    assert abs(x) < 0.5                          # 回中：向 0 收敛
+
+
+# ---------- 闭环供数：pair 与单侧合成都喂（80e9a1c 供数门撤销锁） ----------
+
+def _dgeo_lanes(el, er):
+    return DepthRoadReading(left_edge_lane=el, right_edge_lane=er,
+                            left_x=None, right_x=None,
+                            sides=int(el is not None) + int(er is not None),
+                            latency_ms=1.0, rejects=())
+
+
+def _seed_scale(chain, v_mps: float = 45.0) -> None:
+    """给定在线比例（≈车速）。
+
+    接线测试不跑线观测线程，没有朝向证据；比例缺失时计划如实判 ``no_speed``
+    （不拿常数兜底）。这些用例锁的是**接线**，比例作为既定条件给定。"""
+    h = chain["planner"].head
+    h._spd_den = 0.2
+    h._spd_num = 0.2 * v_mps / 3.5
+
+
+def test_shadow_plan_records_but_steer_identical_to_off(_stub_depth,
+                                                        monkeypatch):
+    """motion.mode=shadow：计划照算/照记，杆值流与 off 逐拍一致。"""
+    from maaracing_master.plugins._archive.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    base = load_decision()
+    def cor(fid):
+        return Corridor(tuple(
+            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                         BandBoundary(-4.2, "measured", 1.0, fid),
+                         BandBoundary(4.2, "measured", 1.0, fid))
+            for i in range(3)), 0.0, 8.4 / 3.38, "pair", "ok")
+
+    def run(mode):
+        monkeypatch.setattr(
+            smod, "load_decision",
+            lambda: replace(base, motion=replace(base.motion, mode=mode)))
+        m = _module()
+        chain = m._build_control_chain()
+        _seed_scale(chain)
+        monkeypatch.setattr(chain["ego_road"], "update",
+                            lambda *a, **k: cor(k.get("fid", 1)))
+        pad = StubPad()
+        for fid in range(1, 16):
+            m._control_tick(chain, pad, None, _perc(fid), fid,
+                            fid * 50_000_000, 10.0, 1)
+        return chain, pad.joy
+
+    off_chain, off_joy = run("off")
+    shadow_chain, shadow_joy = run("shadow")
+    assert off_chain["trace"][-1]["plan"] is None
+    assert shadow_chain["trace"][-1]["plan"] is not None
+    assert shadow_joy == off_joy
+    t = shadow_chain["trace"][-1]
+    assert t["authority"] in ("GENTLE", "COMMIT", "HOLD")
+    assert "intent_lane" in t and "intent_deadline_s" in t
+    assert t["intent_owner"] in ("route", "decision")
+    # 计划只算不执行：真实执行者必须是 planner，计划角色标 shadow
+    assert t["steer_owner"] == "planner" and t["plan_role"] == "shadow"
+    assert t["veto_reason"] is None
+
+
+def test_live_plan_takes_over_steering(_stub_depth, monkeypatch):
+    """motion.mode=live：有效计划传入 planner；shadow/off 不传。"""
+    from maaracing_master.plugins._archive.speedrush.corridor import (
+        BandBoundary, Corridor, CorridorBand)
+    base = load_decision()
+
+    def cor(fid):
+        return Corridor(tuple(
+            CorridorBand(-2.0 + i * 3.0, -2.0 + (i + 1) * 3.0,
+                         BandBoundary(-4.2, "measured", 1.0, fid),
+                         BandBoundary(4.2, "measured", 1.0, fid))
+            for i in range(3)), 0.0, 8.4 / 3.38, "pair", "ok")
+
+    def run(mode):
+        monkeypatch.setattr(
+            smod, "load_decision",
+            lambda: replace(base, motion=replace(
+                base.motion, mode=mode, calibrated=(mode == "live"))))
+        m = _module()
+        chain = m._build_control_chain()
+        _seed_scale(chain)
+        monkeypatch.setattr(chain["ego_road"], "update",
+                            lambda *a, **k: cor(k.get("fid", 1)))
+        seen = []
+        orig = chain["planner"].update
+
+        def wrap(*a, **kw):
+            seen.append(kw.get("plan"))
+            return orig(*a, **kw)
+
+        monkeypatch.setattr(chain["planner"], "update", wrap)
+        pad = StubPad()
+        for fid in range(1, 16):
+            m._control_tick(chain, pad, None, _perc(fid), fid,
+                            fid * 50_000_000, 10.0, 1)
+        return chain, seen
+
+    _, off_seen = run("off")
+    _, shadow_seen = run("shadow")
+    chain, live_seen = run("live")
+    assert chain["trace"][-1]["plan"] is not None
+    assert all(p is None for p in off_seen)
+    assert all(p is None for p in shadow_seen)
+    assert any(p is not None and p.valid for p in live_seen)
+
+
+def test_road_offset_all_sources_feed_loop(_stub_depth):
+    """单侧合成也进闭环（13:29 局证伪 pair-only：挡单侧=制造供数黑视，
+    死亡螺旋段 87/118 拍被挡、陈旧重基与跳变门同时失效——黑视比噪声致命）。
+    噪声由 0.8 新息门 + 1.0s 陈旧重基消化，不由接线层挡。"""
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)                        # 双侧路缘,对称
+    t1 = tick()
+    assert t1["ro_source"] == "pair"
+    assert t1["road_offset"] == pytest.approx(0.0)           # 车在路心
+    assert t1["ro_hold"] is False                            # 新鲜对=可采信
+    cur["r"] = _dgeo_lanes(-2.0, None)                       # 单侧:有效对兜底
+    t2 = tick()
+    assert t2["ro_source"] == "pair_slot"
+    assert t2["road_offset"] == pytest.approx(0.0)           # 槽照喂(不黑视)
+    assert t2["ro_hold"] is True                             # 槽=历史保持，不进滤波
+
+
+def test_selection_shadow_mirrors_production(_stub_depth):
+    """选择层影子：路线未分叉时与生产逐位一致（预分歧可信度门）。"""
+    from maaracing_master.plugins._archive.speedrush.decision import _sel_report_key
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    eng = chain["engine"]
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    seen = 0
+    for fid in range(1, 31):
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        row = chain["trace"][-1]
+        assert row["sel_shadow"] is None
+        if eng.selection_report is not None \
+                and eng.selection_shadow_report is not None:
+            assert _sel_report_key(eng.selection_shadow_report) == \
+                _sel_report_key(eng.selection_report)
+            seen += 1
+    assert seen > 0
+    assert eng.selection_shadow_first_mismatch is None
+
+
+def test_selection_shadow_diverges_when_shadow_route_stays_merging(
+        _stub_depth, monkeypatch):
+    """影子路线被 C 留在并线：选择层必须按承诺态分叉并留现场。"""
+    from dataclasses import replace as _replace
+    from maaracing_master.plugins._archive.speedrush.decision import DecisionEngine
+    from maaracing_master.plugins._archive.speedrush.route import PHASE_MERGING
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    orig = DecisionEngine._tick_route
+
+    def _forced(self, c0=None, executed=None, request=None,
+                request_live=True, request_action=None, request_oid=None):
+        orig(self, c0, executed, request,
+             request_live=request_live, request_oid=request_oid)
+        if self._route is not None and self._route_verdict is not None:
+            self._route_shadow = _replace(
+                self._route, phase=PHASE_MERGING,
+                lane_target=self._route.lane_ref)
+            self._shadow_verdict = _replace(
+                self._route_verdict, phase=PHASE_MERGING,
+                lane_target=self._route.lane_ref, verdict="keep",
+                why="merging")
+
+    monkeypatch.setattr(DecisionEngine, "_tick_route", _forced)
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    rows = []
+    for fid in range(1, 26):
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        rows.append(chain["trace"][-1])
+    div = [r for r in rows if r["sel_shadow"] and r["sel_shadow"].get("div")]
+    assert div, "影子承诺态不同应产生选择分歧行"
+    first = div[0]["sel_shadow"]["first"]
+    assert first["in"]["prod"]["commit"] is False
+    assert first["in"]["shadow"]["commit"] is True
+    assert first["route"]["shadow"]["ph"] == "merging"
+    assert first["prod"]["why"] != first["shadow"]["why"]
+
+
+def test_attribution_wiring_reads_hop_scalar(_stub_depth, monkeypatch):
+    """归因接线锁：lineage 吃的是 ro_hop 的 hop 标量（0/1/2），不是整包字典。
+
+    喂错时新鲜拍全落 bad_hop、保持拍落 last_hop_missing——影子到达门一次
+    也不会触发，而控制侧毫无异样（2026-10-28 首局影子跑就是这样：两列都在，
+    影子与生产逐拍一致，实际什么都没验证到）。"""
+    cur = _stub_depth
+    monkeypatch.setattr(smod, "classify_ro_hop", lambda *a, **k: {
+        "gap": 0.05, "d": 1.9, "v": 38.0, "hop": 1, "src_chg": 0})
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)                        # 首份新鲜读数
+    t1 = tick()
+    assert t1["attribution"]["k"] == "UNKNOWN"
+    assert t1["attribution"]["why"] == "first_fresh"
+    t2 = tick()                                              # 第二份新鲜=换档标
+    assert t2["ro_hop"] == 1
+    assert t2["attribution"]["k"] == "SHIFT_HELD", t2["attribution"]
+    assert t2["attribution"]["hop"] == 1
+
+
+def test_trace_row_carries_dgeo_seg(_stub_depth):
+    """dgeo_seg 列直通观察器分段计时：新证据拍把 last_segments 引用写进行，
+    弃权拍列 None。分段包本体由真实 worker/take 打点（depth_geo 侧自锁），
+    本测试只锁行拼装管道——防「分段落了地 trace 却看不见」回归。"""
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    chain["depth_geo"].last_segments = {"cap_ms": 1.0, "queue_ms": 2.0,
+                                        "pub_ms": 3.0, "stages": {}}
+    pad = StubPad()
+    cur["r"] = _dgeo_lanes(-1.5, 1.5)
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    seg = chain["trace"][-1]["dgeo_seg"]
+    assert seg is not None and seg["queue_ms"] == 2.0, "新证据拍应带分段包"
+    cur["r"] = None                                          # 弃权拍
+    m._control_tick(chain, pad, None, _perc(2), 2, 100_000_000, 10.0, 1)
+    assert chain["trace"][-1]["dgeo_seg"] is None
+
+
+def test_cross_layer_polarity_and_mirror(_stub_depth):
+    """跨层极性契约（2026-09-30 复核裁决 P0：v3 三轮事故的总缺口——两侧各自
+    测符号、端到端只断言过 0.0，0 是符号不变量）。
+
+    场景：车在路心**右边** 1 道（3D 找边左缘 -2.9、右缘 -0.9，间隙中心 -1.9）。
+    planner 契约：road_offset = 自车相对路心的位置（右正）→ 必须 **+1.9**，
+    且闭环必须出**负杆**（向左修正）。镜像场景（车在路心左边）必须出正杆。
+    任何一侧单独改符号、或观测/消费语义换牌，此测试必须红。"""
+    cur = _stub_depth
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    cur["r"] = _dgeo_lanes(-2.9, -0.9)   # 车在路心右 1.9 道
+    for _ in range(25):                  # 锚定形成门(|1.9|>1.0)→ stale 重基后闭环启动
+        t = tick()
+    assert t["road_offset"] == pytest.approx(+1.9), "极性:车在路心右→off 必须正"
+    assert t["steer_norm"] < 0, "车在路心右→必须向左修(负杆)"
+    cur["r"] = _dgeo_lanes(+0.9, +2.9)   # 镜像:路心左 1.9 道
+    for _ in range(25):
+        t2 = tick()
+    assert t2["road_offset"] == pytest.approx(-1.9)
+    assert t2["steer_norm"] > 0, "镜像:车在路心左→必须向右修(正杆)"
+
+
+# ---------- 控制链异常 → 停控转观测，不崩主循环、不 strand 油门 ----------
+
+def test_chain_exception_disables_control():
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    m._control_tick(chain, pad, None, _perc(10), 10, 10 * 50_000_000, 10.0, 1)
+    assert pad.updates == 1
+    # frame_id 倒退：tracker.update fail-loud → _control_tick 捕获、停控
+    m._control_tick(chain, pad, None, _perc(5), 5, 5 * 50_000_000, 10.0, 1)
+    assert chain["disabled"] is True
+    assert pad.updates == 1                      # 停控后不再下发
+    # 停控是终态（本阶段）：再喂正常帧也不再动
+    m._control_tick(chain, pad, None, _perc(20), 20, 20 * 50_000_000, 10.0, 1)
+    assert pad.updates == 1
+
+
+# ---------- 配置面：control_mode 读写 + 默认关 ----------
+
+def test_control_mode_config_roundtrip():
+    m = _module()
+    assert m._control_mode is False              # 默认不接管（实机安全边界）
+    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["control_mode"] is False
+    out = m.set_module_config({"control_mode": True})
+    assert out["control_mode"] is True and m._control_mode is True
+    assert m.set_module_config({"control_mode": False})["control_mode"] is False
+
+
+# ---------- 直行基线档：配置读写 + 直行拍下发（V0 语义，不碰感知/深度） ----------
+
+def test_straight_mode_config_roundtrip():
+    m = _module()
+    assert m._drive_mode == "straight"           # 默认直行：发布包不带深度权重
+    assert smod.SpeedRushModule.DEFAULT_MODULE_CONFIG["drive_mode"] == "straight"
+    out = m.set_module_config({"drive_mode": "straight"})
+    assert out["drive_mode"] == "straight" and m._drive_mode == "straight"
+    assert m.set_module_config({"drive_mode": "depth"})["drive_mode"] == "depth"
+
+
+def test_straight_tick_zero_steer_full_throttle():
+    """直行拍：方向恒零、油门恒踩（throttle_raw 读 decision.json 单一真源）；
+    trace 只记时间轴（fid/ts_ns）+ 常量列，供事后对齐 HUD 分数事件。"""
+    m = _module()
+    pad = StubPad()
+    chain = {"trace": [], "trace_sink": None}
+    throttle = load_decision().planner.throttle_raw
+    assert 0 < throttle < 255
+    for fid in range(1, 6):
+        m._straight_tick(pad, fid, fid * 50_000_000, chain,
+                         throttle_raw=throttle)
+        assert pad.joy == (0, 0)                 # 横向恒零
+        assert pad.trig == throttle              # 油门恒值（decision.json 单一真源）
+    assert pad.updates == 5
+    assert [r["fid"] for r in chain["trace"]] == [1, 2, 3, 4, 5]
+    for r in chain["trace"]:
+        assert r["state"] == "STRAIGHT"
+        assert r["x_target"] == 0.0 and r["steer_x"] == 0
+        assert "ts_ns" in r
+
+
+# ---------- 性能卡领域项 ----------
+
+def test_read_perf_snapshot_reports_values_only():
+    """性能卡领域项：模块只给值，等级由 core 按声明阈值算（判级权单一）。
+
+    覆盖契约 §3.1/§3.2：缺失即缺失（不给键，不拿 0 冒充）、模块不自判等级、
+    状态文本面向玩家（状态码与原因码翻中文，未知码回退原码）。
+    """
+    from maaracing_master.core.perf_contract import normalize, validate_rows
+
+    m = _module()
+    rows, rejected = validate_rows(type(m).PERF_ROWS)
+    assert not rejected and [r["key"] for r in rows] == ["tick_rate", "decision"]
+
+    snap = m.read_perf_snapshot()
+    assert "tick_rate" not in snap                    # 无数据 → 不给键
+    assert snap["decision"] == {"level": "idle", "text": "等待驾驶"}
+    assert normalize(rows, snap)[0][0]["reason"] == "not_reported"
+
+    m._tick_gaps.extend([50.0] * 100)                 # 20Hz
+    snap = m.read_perf_snapshot()
+    assert snap["tick_rate"] == 20.0
+    assert "level" not in snap                        # 模块不再自判
+    out, _ = normalize(rows, snap)
+    assert out[0]["level"] == "ok" and out[0]["display"] == "20.0 次/秒"
+
+    m._tick_gaps.clear()
+    m._tick_gaps.extend([70.0] * 100)                 # ~14.3Hz → warn
+    assert normalize(rows, m.read_perf_snapshot())[0][0]["level"] == "warn"
+
+    m._tick_gaps.clear()
+    m._tick_gaps.extend([120.0] * 100)                # ~8.3Hz → error
+    assert normalize(rows, m.read_perf_snapshot())[0][0]["level"] == "error"
+
+    m._control_last = {"state": "CRUISE", "reason": "sel:coin"}
+    d = m.read_perf_snapshot()["decision"]
+    assert d["level"] == "ok"
+    assert d["text"] == "巡航 · sel:coin"             # 状态码翻中文，未知原因码回退
+
+    m._control_last = {"state": "ABORT", "reason": "plan:infeasible_corridor"}
+    assert m.read_perf_snapshot()["decision"]["text"] == "回稳 · 走廊不可行"
+
+
+# ---------- 控制 trace：行进流水汇 + 阶段收尾局汇总 ----------
+
+def test_control_trace_rows_flow_to_sink(tmp_path, monkeypatch):
+    """逐拍行进流水汇：旧列名语义不动，行头新增协议字段（v/seq/ts_*/run_id）。"""
+    from maaracing_master.core.trace_sink import TraceSink, validate_trace_file
+    monkeypatch.setattr(smod, "_run_dir", lambda *a, **k: tmp_path)
+    m = _module()
+    sink = TraceSink("speedrush")
+    sink.bind_session(tmp_path, "t_1")
+    m._trace = sink
+    chain = m._build_control_chain()
+    assert chain["trace_sink"] is sink
+    pad = StubPad()
+    for fid in range(1, 6):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000, 10.0, 1)
+    assert len(chain["trace"]) == 5
+    row = chain["trace"][-1]
+    # C1/§七.1 标定要的关键列都在
+    for k in ("fid", "dt", "state", "x_target", "steer_norm", "steer_pre_lpf",
+              "steer_x",
+              "executed_lane", "v_lat", "heading", "road_offset", "scene",
+              "dgeo_sides", "dgeo_left", "dgeo_right", "lat_ctrl",
+              "attribution", "route_shadow", "sel_shadow"):
+        assert k in row, k
+    # 选择层影子（trace-only）：两路承诺输入一致时没有差异行
+    assert row["sel_shadow"] is None
+    # 横向状态可见面：线观测线程未启动时 ψ/线斜率诚实报 None；
+    # 车速按固定参考车速（2026-11-01 裁决，不再兜底在线估计），与顶层同源
+    assert row["lat_ctrl"]["v_line"] is None
+    assert row["lat_ctrl"]["psi"] is None
+    assert row["v_ego"] == 41.0
+    assert row["v_lat"] == 0.0
+    assert row["lat_ctrl"]["rebase"] is None
+    # 朝向截面（只读）：列必须齐；无线观测时全部诚实为 None
+    for k in ("psi", "r", "psi_age", "vsp", "scf", "spa"):
+        assert k in row["lat_ctrl"], k
+    assert row["lat_ctrl"]["psi"] is None
+    assert row["lat_ctrl"]["vsp"] is None
+    sink.flush(2.0)
+    p = tmp_path / "trace" / "speedrush.jsonl"
+    lines = [json.loads(x) for x in
+             p.read_text(encoding="utf-8").splitlines() if x.strip()]
+    data = [r for r in lines if "type" not in r]
+    assert [r["fid"] for r in data] == [1, 2, 3, 4, 5]
+    assert all("yolo_run_ms" in r and "pace_body" in r for r in data)  # 旧列原样
+    assert all(r["mod"] == "speedrush" and r["seq"] > 0 for r in data)  # 行头新增
+    assert sink.close_session(2.0).ok
+    assert validate_trace_file(p) == []
+
+
+def test_trace_carries_lane_theta_provenance(monkeypatch):
+    """P0-A：trace 的 lane_theta 列给出角度自己的龄/是否重算/保持标记。
+
+    检测帧龄很新、角度却很旧（保持拍沿用旧值）是 P0 的根因形态——两格必须
+    分开看，才能逐段标出角度冻结区间。"""
+    m = _module()
+    chain = m._build_control_chain()
+    lane = {"fid": 9, "det_fid": 9, "det_ts_ns": 990_000_000,
+            "det_age_ms": 10, "state": "TRACK", "usable": True,
+            "lines": [], "n_locked": 2, "x": 0.1, "theta": 0.02,
+            "hold": True, "theta_updated": False,
+            "theta_src_fid": 7, "theta_src_ts_ns": 900_000_000,
+            "theta_n_sources": 2}
+    chain["lane_obs"] = SimpleNamespace(
+        latest=lambda: lane, push=lambda *a, **k: None)
+    monkeypatch.setattr(smod.time, "perf_counter", lambda: 1.0)
+    m._control_tick(chain, StubPad(), None, _perc(10), 10, 1_000_000_000, 10.0, 1)
+    row = chain["trace"][-1]["lane_theta"]
+    assert row["th_ms"] == pytest.approx(100.0)     # 角度自己的龄
+    # 检测帧龄只在三路源龄里落盘一次（角度龄与它分叉=旧角度被当新证据）
+    assert chain["trace"][-1]["obs_age"]["lane"]["age_ms"] == pytest.approx(10.0)
+    assert row["upd"] is False and row["hold"] is True
+    assert row["nsrc"] == 2 and row["src_fid"] == 7
+    # 角度龄 100ms 未越 250ms 门：本拍不算"陈旧角度被接收"
+    assert row["stale_acc"] == 0
+
+
+def _stub_logger(session_dir):
+    return SimpleNamespace(session_dir=session_dir,
+                           log=lambda *a, **k: None)
+
+
+def test_game_summary_lands_in_session_trace(tmp_path, monkeypatch):
+    """局汇总随日志会话落 trace/speedrush_summary.jsonl（与流水同家同闸）。"""
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
+    m = _module()
+    m._flush_control_trace(
+        {"trace": [{"ts_ns": 0, "state": "GO"},
+                   {"ts_ns": 5_000_000_000, "state": "GO"}],
+         "t_start": 0.0}, 1)
+    p = tmp_path / "trace" / "speedrush_summary.jsonl"
+    assert p.is_file()
+    rec = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["phase"] == 1 and rec["ticks"] == 2 and rec["dur_s"] == 5.0
+
+
+def test_flush_writes_round_record_only_for_program(tmp_path, monkeypatch):
+    """给程序控制局（含宏回放）落战绩库；无名前缀的链不写。"""
+    from maaracing_master.plugins._archive.speedrush import dashboard_store
+
+    monkeypatch.setattr(dashboard_store, "db_path",
+                        lambda: tmp_path / "speedrush.db")
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
+    m = _module()
+    chain = {
+        "trace": [{"ts_ns": 0, "state": "GO", "hud_score": 100, "hud_rate": 40},
+                  {"ts_ns": 5_000_000_000, "state": "GO",
+                   "hud_score": 5693, "hud_rate": 42}],
+        "t_start": 0.0, "record_round": True,
+        "round_stamp": "20261105_195502", "round_no": 1,
+        "drive_mode": "depth",
+        "hud_pairs": [(5000, 7800), (5693, 7858)],
+    }
+    m._flush_control_trace(chain, 2, completed=True)
+    rows = dashboard_store.read_rows()
+    assert len(rows) == 1
+    assert rows[0]["phase2_score"] == 5693
+    assert rows[0]["phase2_opponent"] == 7858
+    assert rows[0]["phase2_ok"] == 1
+
+    macro_chain = {
+        "trace": [{"ts_ns": 0, "state": "MACRO", "hud_score": 3900, "hud_rate": 40},
+                  {"ts_ns": 5_000_000_000, "state": "MACRO",
+                   "hud_score": 4000, "hud_rate": 42}],
+        "t_start": 0.0, "record_round": True,
+        "round_stamp": "macro1", "round_no": 2, "drive_mode": "macro",
+        "hud_pairs": [(3900, 4100), (4000, 4200)],
+    }
+    m._flush_control_trace(macro_chain, 2, completed=True)
+    rows = dashboard_store.read_rows()
+    assert len(rows) == 2
+    macro = next(row for row in rows if row["drive_mode"] == "macro")
+    assert macro["phase2_score"] == 4000
+    assert macro["phase2_opponent"] == 4200
+
+    chain["record_round"] = False
+    chain["round_stamp"] = "other"
+    m._flush_control_trace(chain, 2, completed=True)
+    assert len(dashboard_store.read_rows()) == 2
+
+
+def test_control_trace_empty_writes_nothing(tmp_path, monkeypatch):
+    """空 trace 或无会话目录：不落任何文件（开关关=受控三流零新增落盘）。"""
+    monkeypatch.setattr(smod, "logger", _stub_logger(tmp_path))
+    m = _module()
+    m._flush_control_trace({"trace": [], "t_start": 0.0}, 1)
+    assert not (tmp_path / "trace").exists()      # 空 trace 不建目录
+    monkeypatch.setattr(smod, "logger", _stub_logger(None))
+    m._flush_control_trace(
+        {"trace": [{"ts_ns": 0, "state": "GO"}], "t_start": 0.0}, 1)
+    assert not (tmp_path / "trace").exists()      # 无会话（日志闸关）不落
+
+
+# ---------- 控制实况字段形状（GUI 消费契约）----------
+
+def test_control_last_shape():
+    m = _module()
+    chain = m._build_control_chain()
+    m._control_tick(chain, StubPad(), None, _perc(3), 3, 3 * 50_000_000, 10.0, 1)
+    assert set(m._control_last) == {"state", "reason", "steer", "frame_id",
+                                    "executed_lane", "x_target", "road_offset",
+                                    "dgeo_age", "dgeo_new", "goal",
+                                    "exec_branch", "sel_layer", "sel_why",
+                                        "sel_nwp", "maneuver", "obs_age"}
+    assert m._control_last["frame_id"] == 3
+    assert isinstance(m._control_last["executed_lane"], float)
+
+
+# ---------- _EgoRoadObserver：路心合成 + 保鲜槽（供数源=深度几何 v4 读数） ----------
+
+
+def _bnd_clusters(*clusters, sides=2):
+    """update() 的鸭子消费面：sides + 两侧 edge_lane（DepthRoadReading 形状）。"""
+    left, right = (clusters[0], clusters[-1]) if len(clusters) >= 2 else (None, None)
+    return SimpleNamespace(sides=sides, left_edge_lane=left, right_edge_lane=right)
+
+
+def _off(c):
+    """corridor → off（planner 契约：−center_lane，右正；None 直通）。
+    第 6 步 update 吐分带走廊，数值断言经此换算（极性与旧 off 同式）。"""
+    return None if c is None else -c.center_lane
+
+
+def test_ego_road_pair_off_polarity():
+    """观测层极性（v3.2 契约沿用，供数源换 3D 找边）：off=自车相对路心
+    （右正,planner 契约）——双侧路缘,off=−(左缘+右缘)/2。车在路心右 1.9 道
+    必须出 +1.9。"""
+    o = smod._EgoRoadObserver()
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair"
+    o2 = smod._EgoRoadObserver()
+    assert _off(o2.update(_bnd_clusters(0.9, 2.9), now=1000.0)) == pytest.approx(-1.9)
+    assert _off(o2.update(_bnd_clusters(1.0, 3.0), now=1000.05)) == pytest.approx(-2.0)
+
+
+def test_ego_road_gate_sides2_and_slot_ttl():
+    """读数契约门：消费方须 sides==2 且两侧在场——单侧/无效不吃当帧值,
+    0.4s 内最近有效对保鲜兜底（pair_slot）,过期退 none（13:29 黑视教训:
+    兜底优先,单侧安全包线是 P1）。"""
+    o = smod._EgoRoadObserver()
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
+    assert _off(o.update(_bnd_clusters((5.0,), sides=1), now=1000.05)) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair_slot"       # 单侧→兜底
+    assert _off(o.update(None, now=1000.30)) == pytest.approx(+1.9)
+    assert o.update(None, now=1000.60) is None   # TTL 过期
+    assert o.last["source"] == "none"
+
+
+def test_ego_road_off_max_garbage_not_fed_nor_cached():
+    """|off|>OFF_MAX 的垃圾对不喂、不入槽（宁弃不喂假路心,也不留毒槽）。"""
+    o = smod._EgoRoadObserver()
+    assert _off(o.update(_bnd_clusters(-6.0, -2.0), now=1000.0)) is None  # off=+4.0
+    assert o.last["source"] == "pair"
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.05)) == pytest.approx(+1.9)
+    assert o.last["source"] == "pair"            # 垃圾对未入槽,干净对直接生效
+
+
+def test_ego_road_median_filter_kills_outlier_pair():
+    """第七轮抽风转向供数面修正：ro 单对野值（一侧找边偶发锁错结构，实机
+    相邻拍 |Δro|>0.8 有 8~14 次）直注规划层 α/β 修正=抽风根因。近 3 对中值
+    杀单对野值；窗口未满（前两拍）直喂最新对、与旧版逐值同形；垃圾对不入窗。"""
+    o = smod._EgoRoadObserver()
+    # p1: 干净对（窗口 1，直喂）
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == pytest.approx(+1.9)
+    # p2: 右缘野值（窗口 2 不足，直喂当拍——单发噪声由规划层新息门兜底）
+    assert _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.05)) == pytest.approx(+1.1)
+    # p3: 干净对（窗口满 3，中值右缘 = median(-0.9, +0.7, -0.9) = -0.9）→ 野值被杀
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10)) == pytest.approx(+1.9)
+    # 垃圾对不毒化窗口：随后一对仍按干净窗口中值出数
+    assert _off(o.update(_bnd_clusters(-6.0, -2.0), now=1000.15)) is None
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.20)) == pytest.approx(+1.9)
+
+
+def test_ego_road_reuse_tick_consumes_no_new_evidence():
+    """驻留复用拍（take() 的 is_new=False）不重复入中值窗、不喂 W、不刷新槽龄
+    ——窗只认新证据（使用次数≠学习次数）。实机 10-04 两局取证：读数有效到达
+    ~4.5Hz，同一读数 age 闸内被逐拍重复计入窗，窗内独立读数退化为 1~2 个
+    （79 次 >0.3 道 ro 台阶 0 次在新读数拍、67 次旧值停滞≥2 拍后跳）——真变化
+    滞后 ~0.3s 台阶跳变，单对野值凭重复入窗赢得中值。复用拍输出=槽值，
+    source 记 pair_slot。"""
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_clusters(-2.9, -0.9), now=1000.00)
+    o.update(_bnd_clusters(-2.9, -0.9), now=1000.05)
+    base = _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10))   # 窗满
+    n_win, n_w = len(o._win), len(o._w_samples)
+    for k in range(1, 5):                                     # 驻留重投 4 拍
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10 + 0.05 * k,
+                        new=False)) == pytest.approx(base)
+        assert o.last["source"] == "pair_slot"
+    assert len(o._win) == n_win and len(o._w_samples) == n_w
+    # 右缘野值（新对）：满窗中值杀掉；随后野值重投不能再凭重复入窗翻面
+    killed = _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.35))
+    assert killed == pytest.approx(1.9)   # median(-0.9,-0.9,+0.7)=-0.9
+    for k in range(1, 4):
+        assert _off(o.update(_bnd_clusters(-2.9, +0.7), now=1000.40 + 0.05 * k,
+                        new=False)) == pytest.approx(killed)
+    assert len(o._win) == 3
+
+
+def _far_ext(mid_m, half_m=2.0):
+    return ((16.0, 31.0, mid_m - half_m, mid_m + half_m, 1000),)
+
+
+def test_far_hint_shared_filter_updates_only_on_new_evidence():
+    """中远场方向只过滤一次：新远带证据拍更新 EMA，其余拍共享同一结果
+    （消费端不再各自去抖）。深度 ~10Hz，α=0.5 延迟约一个证据间隔。"""
+    o = smod._EgoRoadObserver(lane_w_m=3.0)
+    bnd = _bnd_clusters(-2.9, -0.9)          # 路心 -1.9 道 = -5.7m
+    c1 = o.update(bnd, now=1000.0, far_extents=_far_ext(-3.9))
+    assert c1.far_hint_lane == pytest.approx(0.6)
+    assert c1.far_hint_age_ms == pytest.approx(0.0)
+    # 复用拍给另一组远带：不是新证据，共享结果必须保持
+    c2 = o.update(bnd, now=1000.05, new=False, far_extents=_far_ext(-5.7))
+    assert c2.far_hint_lane == pytest.approx(0.6)
+    assert c2.far_hint_age_ms == pytest.approx(50.0)
+    # 新证据：EMA α=0.5 → 0.6 + 0.5*(0 − 0.6) = 0.3
+    c3 = o.update(bnd, now=1000.10, far_extents=_far_ext(-5.7))
+    assert c3.far_hint_lane == pytest.approx(0.3)
+    assert c3.far_hint_age_ms == pytest.approx(0.0)
+
+
+def test_control_chain_ego_road_gap_semantics():
+    """chain 的 ego_road 即 pair 语义（无分档、无目标锁定机器）；物理横位
+    上限只认 policy.validate.x_lane_abs_max 一处，线观测与走廊同一条尺。"""
+    m = _module()
+    chain = m._build_control_chain()
+    o = chain["ego_road"]
+    lim = load_decision().validate.x_lane_abs_max
+    assert o.OFF_MAX == pytest.approx(lim) and not hasattr(o, "retarget")
+    assert chain["lane_obs"]._tracker.OFF_MAX == pytest.approx(lim)
+
+
+def test_ego_road_physical_limit_allows_edge_rejects_beyond():
+    """上限是物理路缘而不是旧 3.0：车心 2.1 道（帧 0112 目检压右黄线）必须
+    供数；抛到路缘外 0.1 道以上（2.7）当垃圾拒，且不进槽。"""
+    o = smod._EgoRoadObserver()
+    assert _off(o.update(_bnd_clusters(-4.15, -0.05), now=1000.0)) == \
+        pytest.approx(2.1)
+    assert _off(o.update(_bnd_clusters(-4.75, -0.65), now=1000.05)) is None
+
+
+def test_lane_anchor_uses_pre_override_depth_center(_stub_depth, monkeypatch):
+    """线作原点时喂给线观测的是覆盖前的独立深度读数，而不是线自身输出，
+    也不是干脆不给。
+
+    线原点拍走廊中心被 center_override 写成 −exec，road_offset 就是线的
+    输出；拿它取整道号会让线用自己的估计自洽锁住。覆盖前的深度候选仍在
+    depth_anchor_ego 里。
+
+    口径：线观测的锚点是**自车横位（右正，与 x=k−L 同号）**，深度读数的
+    center 是路心相对自车，必须取反。非对称对才能看出符号：(-2.0, +1.0)
+    表示自车在路心右侧 0.5 道 → 锚 +0.5；(-1.0, +2.0) 表示自车在左侧
+    0.5 道 → 锚 −0.5（若误喂 center 或覆盖后的 road_offset 会得到 +0.5）。
+    """
+    class _Lane:
+        def __init__(self):
+            self.anchors = []
+
+        def latest(self):
+            return {"state": "TRACK", "x": 0.0, "theta": 0.0,
+                    "n_locked": 2, "usable": True,
+                    "det_age_ms": 5.0, "det_fid": 1, "lines": []}
+
+        def push(self, *args, **kwargs):
+            self.anchors.append(kwargs.get("anchor"))
+
+    def run(depth):
+        _stub_depth["r"] = depth
+        m = _module()
+        chain = m._build_control_chain()
+        lane = _Lane()
+        chain["lane_obs"] = lane
+        # 线原点：走廊中心会被覆盖成 −0.5（执行位 +0.5），与深度读数无关。
+        chain["planner"].state.executed_lane = 0.5
+        m._control_tick(chain, StubPad(), None, _perc(1), 1,
+                        50_000_000, 10.0, 1)
+        # 锚不再随帧推送（拍首提交读缓存）：断言过门缓存的落值。
+        return chain["lane_anchor_ctx"][0]
+
+    assert run(_dgeo_lanes(-2.0, 1.0)) == pytest.approx(0.5)
+    assert run(_dgeo_lanes(-1.0, 2.0)) == pytest.approx(-0.5)
+    assert run(None) is None
+
+
+# ---------- 路宽 W 统计（阶段二 §一.3 兜底界）：找边对宽的中位数 + ±40% 门 ----------
+
+def test_ego_road_width_forms_from_clean_pairs():
+    """W=中值滤波后双侧对宽 (R−L) 的中位数；样本满 W_MIN_SAMPLES 才成形。
+    语义=碰撞边界到碰撞边界（RULES：黄线外台阶），车道单位。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    assert o.width == pytest.approx(4.46)
+    assert o.last["width"] == pytest.approx(4.46)   # debug 数据面同值
+
+
+def test_ego_road_width_none_before_enough_samples():
+    o = smod._EgoRoadObserver()
+    o.update(_bnd_clusters(-2.23, +2.23), now=1000.0)
+    o.update(_bnd_clusters(-2.23, +2.23), now=1000.05)
+    assert o.width is None and o.last["width"] is None
+
+
+def test_ego_road_width_guard_rejects_pollution():
+    """成形后 |对宽−W|>±40% 的污染对不进统计（找边锁错结构时 W 不被拽走）。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    for k in range(10):                              # 宽 8.9 道的污染对
+        o.update(_bnd_clusters(-4.45, +4.45), now=1100.0 + 0.05 * k)
+    assert o.width == pytest.approx(4.46)
+
+
+def test_ego_road_polluted_width_pair_not_fed():
+    """W 成形后对宽超 ±40% 的污染对**不供数**（实机 2026-10-05 案：车流走廊
+    对宽 1.7 道直喂 ro=中线漂移根因，W 门原先只挡统计不挡供数）——同垃圾对
+    路径：不喂、不入槽、不入窗，保鲜槽保持污染前好对。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES):
+        o.update(_bnd_clusters(-2.23, +2.23), now=1000.0 + 0.05 * k)
+    assert _off(o.update(_bnd_clusters(-2.23, +2.23), now=1100.0)) == pytest.approx(0.0)
+    # 对宽 1.7 道的车流走廊对：|1.7−4.46|=2.76 > 0.4·4.46 → 拒
+    assert _off(o.update(_bnd_clusters(-0.4, +1.3), now=1100.10)) is None
+    assert o.last["source"] == "pair"
+    # 槽未被污染对顶掉：单侧拍保鲜兜底仍是污染前好对的路心
+    assert _off(o.update(_bnd_clusters((1.0,), sides=1), now=1100.15)) == pytest.approx(0.0)
+    # 连续污染对耗不过门：窗/槽全程无污染（持续车流遮挡时 ro 诚实弃权）
+    for k in range(5):
+        assert _off(o.update(_bnd_clusters(-0.4, +1.3),
+                        now=1100.2 + 0.05 * k)) is None
+    assert o.width == pytest.approx(4.46)
+
+
+def test_ego_road_width_ignores_garbage_and_single_side():
+    """垃圾对（|off|>OFF_MAX）与单侧拍不进宽度统计（与供数门同一入口纪律）。"""
+    o = smod._EgoRoadObserver()
+    for k in range(smod._EgoRoadObserver.W_MIN_SAMPLES + 5):
+        o.update(_bnd_clusters(-6.0, -2.0), now=1000.0 + 0.05 * k)   # off=+4 垃圾
+    o.update(_bnd_clusters((5.0,), sides=1), now=1100.0)             # 单侧
+    assert o.width is None
+
+
+# ---------- YOLO 物体掩码：框入掩码（外扩+夹边）；无检测 None（深度路径零成本） ----------
+
+def test_yolo_object_mask_boxes_with_margin():
+    d = Detection(cx=100, cy=100, w=40, h=20, conf=0.9)
+    mask = smod._yolo_object_mask(_perc(1, cars=(d,)))
+    assert mask is not None and mask.shape == (720, 1280)
+    ys, xs = np.nonzero(mask)
+    m = smod.YOLO_MASK_MARGIN
+    assert (int(xs.min()), int(xs.max())) == (100 - 20 - m, 100 + 20 + m)
+    assert (int(ys.min()), int(ys.max())) == (100 - 10 - m, 100 + 10 + m)
+
+
+def test_yolo_object_mask_edge_clamped():
+    """框贴画面边缘：外扩后夹在画面内，不越界。"""
+    d = Detection(cx=2, cy=2, w=40, h=40, conf=0.9)
+    mask = smod._yolo_object_mask(_perc(1, cars=(d,)))
+    assert mask is not None
+    assert mask[0, 0] and not mask[:, 43 + smod.YOLO_MASK_MARGIN:].any()
+
+
+def test_yolo_object_mask_none_when_no_detections():
+    assert smod._yolo_object_mask(_perc(1)) is None
+
+
+# ---------- 路心互证（grid_xcheck 闸）：栅格 wmid 路心 × 找边新鲜对一致性 ----------
+
+def _xg_grid(col_lo: int, col_hi: int):
+    """单行绿区 DrivableGrid：列号→X 用真 GRID_NX 映射（−10.5+0.25·ix）。"""
+    from maaracing_master.plugins._archive.speedrush import depth_geo as dg
+    st = np.full((4, dg.GRID_NX), 0, np.int8)
+    st[1, col_lo:col_hi + 1] = dg.GRID_DRIVABLE
+    return dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=1.0)
+
+
+def test_ego_road_xcheck_off_is_bit_identical():
+    """闸关（缺省/显式 disabled）：grid 参数只进审计面（last.grid_off），
+    供数路径与无栅格版逐位同形——互证不开闸不得改变任何供数结果。"""
+    g_audit = _xg_grid(54, 57)         # 路心 0.0m → off=0.0，仅作审计值
+    from maaracing_master.plugins._archive.speedrush.config import GridXcheck
+    for ctor in (lambda: smod._EgoRoadObserver(),
+                 # 显式 off（第 6 步观察器自读 mode：master 语义有专属测试，
+                 # 本用例锁的是闸关=找边对当主人、栅格只进审计面的语义）
+                 lambda: smod._EgoRoadObserver(GridXcheck(mode="off"), 2.75)):
+        o = ctor()
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                        grid=g_audit)) == pytest.approx(+1.9)
+        assert o.last["source"] == "pair" and o.last["xcheck"] is None
+    o_audit = smod._EgoRoadObserver(lane_w_m=2.75)
+    o_plain = smod._EgoRoadObserver()
+    assert _off(o_audit.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                          grid=g_audit)) == pytest.approx(+1.9)
+    assert _off(o_plain.update(_bnd_clusters(-2.9, -0.9), now=1000.0)) == \
+        pytest.approx(+1.9)
+    assert o_audit.last["grid_off"] is not None   # 审计面在场
+    assert o_plain.last["grid_off"] is None       # 无栅格=弃权
+
+
+def test_ego_road_xcheck_agree_feeds_veto_rejects():
+    """闸开：一致（|off_raw−grid_off|≤tol）照喂记 agree；分歧超容限的新鲜对
+    同污染对路径——不喂、不入槽、不入窗，复用拍仍走旧槽值（黑视兜底不破）。"""
+    from maaracing_master.plugins._archive.speedrush.config import GridXcheck
+    # agree 栅格：绿区列 20~22 → X∈[−5.5,−4.75]，路心 −5.125m → off=+1.864
+    g_agree = _xg_grid(34, 36)
+    # veto 栅格：绿区列 48~51 → X∈[1.5,2.5]，路心 +2.0m → off=−0.727，
+    # 与对路心 +1.9 差 2.63 道远超容差
+    g_veto = _xg_grid(62, 65)
+    o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
+                       bypass_streak=8), 2.75)
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0,
+                    grid=g_agree)) == pytest.approx(+1.9, abs=0.01)
+    assert o.last["xcheck"] == "agree"
+    # 分歧新鲜对：None + veto 判定；槽里还是上一致对的值
+    assert _off(o.update(_bnd_clusters(-0.9, +0.9), now=1000.05,
+                    grid=g_veto)) is None
+    assert o.last["xcheck"] == "veto" and o.last["source"] == "pair"
+    assert len(o._win) == 1            # 野值对未入窗
+    assert _off(o.update(_bnd_clusters(-0.9, +0.9), now=1000.10,
+                    grid=g_veto, new=False)) == pytest.approx(+1.9, abs=0.01)
+    assert o.last["source"] == "pair_slot"   # 复用走槽值，槽未被毒化
+
+
+def test_ego_road_xcheck_bypass_after_streak():
+    """连续 veto 达 bypass_streak 放行本对并清零（13:29 黑视教训：闸不得制造
+    供数黑视）——放行后计数从头起，下一次分歧重新计。"""
+    from maaracing_master.plugins._archive.speedrush.config import GridXcheck
+    g_veto = _xg_grid(62, 65)          # off=−0.727，与对 +1.9 恒分歧
+    o = smod._EgoRoadObserver(GridXcheck(mode="veto", tol_lane=0.45,
+                       bypass_streak=3), 2.75)
+    for k in range(2):
+        assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.0 + 0.05 * k,
+                        grid=g_veto)) is None
+    assert o._xc_streak == 2
+    # 第 3 次连续分歧：streak 达预算 → 放行（bypass），清零
+    assert _off(o.update(_bnd_clusters(-2.9, -0.9), now=1000.10,
+                    grid=g_veto)) == pytest.approx(+1.9)
+    assert o.last["xcheck"] == "bypass" and o._xc_streak == 0
+    # 放行后的下一次分歧从 1 重新计
+    assert o.update(_bnd_clusters(-2.9, -0.9), now=1000.15,
+                    grid=g_veto) is None
+    assert o._xc_streak == 1
+
+
+# ---------- 供数主人=绿区边界（grid_xcheck.mode=master）全链 ----------
+
+def test_master_mode_region_feeds_and_edge_audited(monkeypatch):
+    """master 全链（第 6 步合并后）：供数 off=区读数（绿区 wmid 口径），找边对
+    不进供数——骑黄线自锁走廊（L=−1.32/R=+0.53 报"正中"）被区读数顶替；
+    trace 三列 ro_off（区主人）/ro_grid（区审计）/ro_edge（找边对审计）同场可对。"""
+    import numpy as np
+    from maaracing_master.plugins._archive.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    # 绿区整幅路宽 14m（X∈[−5.5,+8.5]m）→ 路心 +1.5m；区宽必须过规则宽门
+    # （4.0 道 ±0.7），近场裁切成 1.7 道的窄条会被诚实拒绝。
+    st[:, 34:90] = dg.GRID_DRIVABLE
+    grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=0.0)
+    reading = _dgeo_lanes(-1.32, 0.53)     # 找边自锁走廊：对心 ≈ −0.4 → off≈+0.4
+
+    def _take(self):
+        return reading, grid, True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    for fid in range(1, 6):
+        m._control_tick(chain, pad, None, _perc(fid), fid, fid * 50_000_000,
+                        10.0, 1)
+    assert chain["disabled"] is False
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "region" and row["ro_off"] is not None
+    exp_off = -1.5 / chain["lane_w_m"]     # 车在路心左 1.5m → off=−1.5m/道宽
+    assert row["ro_off"] == pytest.approx(exp_off, abs=0.01), \
+        "master 模式供数应为区路心，不是找边对"
+    assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
+        "找边对心降级进审计列（骑线自锁走廊的假'正中'在此显形）"
+    assert row["ro_grid"] == pytest.approx(row["ro_off"], abs=0.02), \
+        "区读数中心与 wmid 审计列同源同值"
+
+
+def test_master_mode_region_abstain_honest_none(monkeypatch):
+    """master 模式区弃权（无绿行、无墙证据）→ 供数 None，**不回退找边**；
+    记忆只在桥接窗口内接棒，过期诚实 None（13:29 黑视纪律）。"""
+    import numpy as np
+    from maaracing_master.plugins._archive.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    empty = dg.DrivableGrid(
+        state=np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int8), coef=(0.0, 0.0, 0.72),
+        counts=np.zeros((dg.GRID_NZ, dg.GRID_NX), np.int32),
+        dig_cells=0, latency_ms=0.0)
+    reading = _dgeo_lanes(-1.32, 0.53)
+
+    def _take(self):
+        return reading, empty, True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+    m = _module()
+    chain = m._build_control_chain()
+    pad = StubPad()
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "none" and row["ro_off"] is None
+    assert row["road_offset"] is None, "区弃权拍不供数，找边读数不得顶替"
+    assert row["ro_edge"] == pytest.approx(+0.4, abs=0.01), \
+        "找边对仍在审计列（降级可见），但不进供数"
+
+
+def test_ego_road_line_tail_updates_jump_baseline():
+    """line 兜底路径补跳变基线：line 路径原不更新 _last_center，跳变门拿
+    陈旧基线比对——8750 拍 wall 错值 −0.23 与陈旧基线差得小直接放行（真值
+    在线 −1.36）。基线随线走后，后续深度读数对着线的位置过门。"""
+    xc = SimpleNamespace(mode="master", tol_lane=1.0, bypass_streak=3)
+    o = smod._EgoRoadObserver(xc)
+    # 深度单侧（wall/region 皆无）→ line 兜底出走廊，中心=线（center_lane 系）
+    c = o.update(_bnd_clusters((1.0,), sides=1), now=1000.0,
+                 center_override=1.9)
+    assert c is not None and _off(c) == pytest.approx(-1.9)
+    assert o.last["source"] == "line"
+    assert o._last_center == pytest.approx(1.9)   # 基线随线走
+
+
+def test_lane_agree_gate_veto_after_sustained_disagreement():
+    """互证闸：持续 >1.0 道分歧 5 拍 → 暂停线位置权威（223948 货车段）。"""
+    g = smod._LaneAgreeGate()
+    for _ in range(4):
+        assert g.update(1.3), "未满持续拍数不拦"
+    assert not g.update(1.3), "第 5 拍持续超阈须拦"
+
+
+def test_lane_agree_gate_tolerance_and_freeze():
+    """0.65 道不拦（阈 0.7）；分歧间断清零；无可比证据（None）冻结状态。"""
+    g = smod._LaneAgreeGate()
+    assert g.update(0.65)
+    for _ in range(10):
+        assert g.update(0.65), "阈内持续再多拍也不拦"
+    g.update(0.8)
+    assert g.update(0.1), "未满持续拍数，回到阈内清零"
+    assert g.update(None) and g.update(None), "无可比证据保持放行"
+
+
+def test_lane_agree_gate_hysteresis_recovery():
+    """恢复须滞回：≤0.5 道连续 3 拍才放行，单拍贴回不恢复。"""
+    g = smod._LaneAgreeGate()
+    for _ in range(5):
+        g.update(1.3)
+    assert not g.update(0.2), "单拍贴回不恢复"
+    assert not g.update(1.2), "贴回被打断重新计"
+    assert not g.update(0.2)
+    assert not g.update(0.2), "第 2 拍贴回仍不放行"
+    assert g.update(0.2), "第 3 拍连续贴回放行"
+    assert g.update(1.3), "放行后回到正常计数（不立即再拦）"
+
+
+def test_control_tick_carries_lane_agree_gate():
+    """接线：互证闸随控制链走，trace 落 ldis 列，lpok 并入闸结果。"""
+    m = _module()
+    chain = m._build_control_chain()
+    assert isinstance(chain["lane_agree"], smod._LaneAgreeGate)
+    pad = StubPad()
+    m._control_tick(chain, pad, None, _perc(1), 1, 50_000_000, 10.0, 1)
+    assert "ldis" in chain["trace"][-1]
+
+
+# ---------- 线道号锚共识闸（2026-11-13：绿区 vs 找边对分歧时冻结编号） ----------
+
+def test_anchor_consensus_gate_freezes_on_definition_gap():
+    """两定义差 >0.5 道立即冻结；缺证据保持；一致证据累计 3 拍才恢复。"""
+    g = smod._AnchorConsensusGate()
+    assert g.update(0.3)
+    assert not g.update(0.73), "差超阈值：本拍不许喂锚"
+    assert not g.update(None), "无可比证据保持冻结（不拿缺证据当一致）"
+    assert not g.update(0.2)
+    assert not g.update(None), "证据稀疏时按累计计次，不要求连续"
+    assert not g.update(0.2)
+    assert g.update(0.2), "累计 3 个一致证据拍即恢复"
+    assert g.update(0.0)
+    assert not g.update(0.6), "再次超阈立即冻结"
+
+
+def test_anchor_consensus_gate_releases_after_timeout():
+    """冻结超时后，下一次一致证据即恢复——证据稀疏不得长期剥夺深度纠偏。"""
+    g = smod._AnchorConsensusGate()
+    assert g.update(1.2, now=0.0) is False
+    assert g.update(None, now=1.0) is False
+    assert g.update(None, now=2.9) is False, "未超时：缺证据保持冻结"
+    assert g.update(0.1, now=3.1) is True, "超过 MAX_FROZEN_S 后一个一致证据即恢复"
+    assert g.update(0.1, now=3.2)
+    assert not g.update(0.9, now=3.3), "恢复后再次分歧仍立即冻结"
+
+
+def _master_take(monkeypatch, cur):
+    """master 模式的深度桩：cur['r']=找边读数、cur['g']=绿区栅格，
+    每次 take 都当新证据返回。"""
+    from maaracing_master.plugins._archive.speedrush import depth_geo as dg
+    d = load_decision()
+    monkeypatch.setattr(
+        smod, "load_decision",
+        lambda: replace(d, grid_xcheck=replace(d.grid_xcheck, mode="master")))
+    st = np.full((dg.GRID_NZ, dg.GRID_NX), dg.GRID_UNKNOWN, np.int8)
+    st[:, 34:90] = dg.GRID_DRIVABLE          # 绿区整幅路宽 14m，中心 +1.5m
+    grid = dg.DrivableGrid(state=st, coef=(0.0, 0.0, 0.72),
+                           counts=np.full(st.shape, 9, np.int32),
+                           dig_cells=0, latency_ms=0.0)
+    cur["g"] = grid
+
+    def _take(self):
+        return cur["r"], cur["g"], True
+
+    monkeypatch.setattr(smod.AsyncDepthRoadObserver, "take", _take)
+
+
+class _LaneStub:
+    def __init__(self, x: float):
+        self.x = x
+        self.anchors = []
+
+    def latest(self):
+        return {"state": "TRACK", "x": self.x, "theta": 0.0,
+                "n_locked": 2, "usable": True, "det_age_ms": 5.0,
+                "det_fid": 1, "lines": []}
+
+    def push(self, *args, **kwargs):
+        self.anchors.append(kwargs.get("anchor"))
+
+
+def test_interlock_uses_depth_family_not_edge_pair(monkeypatch):
+    """互证闸必须拿线对**深度路心家族**（region/memory）比，不是对单帧
+    找边对：`road_snap` 的键是 source，曾误写成 src，导致从引入起一直
+    走找边对分支（2026-11-13 帧证：ldis 逐位等于 线−找边对）。
+
+    本台架：绿区中心 +0.444 道（off=−0.444）、找边对中心 −0.395 道
+    （ro_edge=+0.395）、线横位 −1.0 → ldis 必须 ≈ −0.556，不是 −1.395。"""
+    cur = {"r": _dgeo_lanes(-1.32, 0.53)}
+    _master_take(monkeypatch, cur)
+    m = _module()
+    chain = m._build_control_chain()
+    lane = _LaneStub(-1.0)
+    chain["lane_obs"] = lane
+    m._control_tick(chain, StubPad(), None, _perc(1), 1, 50_000_000, 10.0, 1)
+    row = chain["trace"][-1]
+    assert row["ro_source"] == "region"
+    assert row["ldis"] == pytest.approx(-1.0 - (-1.5 / chain["lane_w_m"]),
+                                       abs=0.01)
+    assert row["ro_edge"] == pytest.approx(+0.395, abs=0.01)
+    assert row["ldis"] != pytest.approx(-1.0 - row["ro_edge"], abs=0.1), \
+        "若仍走找边对分支，ldis 会等于 线−ro_edge"
+
+
+def test_anchor_gate_blocks_renumbering_until_definitions_agree(monkeypatch):
+    """两定义分歧超阈 → 本拍不给线喂锚（保持现有网格）；一致连续 3 拍后恢复。
+
+    分歧台架：找边对 (−2.35,+1.65)（宽 4.0、中心 −0.35）vs 绿区中心 +0.43，
+    差 0.78。一致台架：找边对 (−1.57,+2.43)（宽 4.0、中心 +0.43），差 ≈0。
+    两种定义都过整幅路宽门才进共识——3.0 道的残段不是另一种路心定义。"""
+    cur = {"r": _dgeo_lanes(-2.35, 1.65)}
+    _master_take(monkeypatch, cur)
+    m = _module()
+    chain = m._build_control_chain()
+    lane = _LaneStub(-1.0)
+    chain["lane_obs"] = lane
+    # 互证闸的喂入记录：闸关期间必须喂 None（深度见证不可用，不得否决线）
+    agree_in = []
+    _orig_agree = chain["lane_agree"].update
+
+    def _rec(d):
+        agree_in.append(d)
+        return _orig_agree(d)
+
+    chain["lane_agree"].update = _rec
+    pad = StubPad()
+    fid = 0
+
+    def tick():
+        nonlocal fid
+        fid += 1
+        m._control_tick(chain, pad, None, _perc(fid), fid,
+                        fid * 50_000_000, 10.0, 1)
+        return chain["trace"][-1]
+
+    t1 = tick()
+    assert t1["ro_anchor_gap"] == pytest.approx(0.78, abs=0.03)
+    assert t1["ro_anchor_ok"] is False
+    assert chain["lane_anchor_ctx"][0] is None, "分歧期不得喂锚（不许改号）"
+    assert agree_in[-1] is None, "分歧期深度见证不可用，不得喂互证闸"
+
+    cur["r"] = _dgeo_lanes(-1.57, 2.43)      # 两定义一致
+    t2, t3, t4 = tick(), tick(), tick()
+    assert t2["ro_anchor_ok"] is False and t2["ro_anchor_gap"] == \
+        pytest.approx(0.0, abs=0.03)
+    assert t3["ro_anchor_ok"] is False
+    assert t4["ro_anchor_ok"] is True, "连续 3 拍一致才恢复喂锚"
+    assert chain["lane_anchor_ctx"][0] == pytest.approx(
+        -1.5 / chain["lane_w_m"], abs=0.01)
+    assert agree_in[-1] is not None, "恢复后互证闸重新吃线−深度分歧"

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -23,6 +25,11 @@ public sealed class RpcErrorException : Exception
 {
     public RpcErrorException(string message) : base(message) { }
 }
+
+/// <summary>侧车关停结果：ExitCode=退出码（未知为 null）；ConfirmedExit=关停流程结束时
+/// 已确认进程真正退出。更新协调以 ConfirmedExit 判断能否进入提交，不允许把
+/// 「流程走完」误当「进程已退」。</summary>
+public sealed record SidecarShutdownResult(int? ExitCode, bool ConfirmedExit);
 
 /// <summary>
 /// PythonSidecar —— 进程生命周期 + JSONL transport（契约测试 11/11 验证通过后复用）。
@@ -193,9 +200,10 @@ public sealed class PythonSidecar : IDisposable
     {
         // GUI 无控制台：sidecar stderr 落盘便于排查。固定落用户数据目录
         // （%APPDATA%/MaaRacingMaster/logs，开发/发行一致、不受日志开关控制——框架诊断日志）；
-        // APPDATA 不可用时回退工作目录，保证跨机器可移植。
+        // APPDATA 取环境变量（与 core/paths.py 同口径，已知目录 API 不认重定向），
+        // 不可用时回退工作目录，保证跨机器可移植。
         // 体积有界：超过上限轮转一份备份后重开，长跑不再无界追加。
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var appData = Environment.GetEnvironmentVariable("APPDATA");
         var baseDir = string.IsNullOrEmpty(appData)
             ? (_workDir ?? Environment.CurrentDirectory)
             : Path.Combine(appData, "MaaRacingMaster");
@@ -292,8 +300,12 @@ public sealed class PythonSidecar : IDisposable
         }
     }
 
-    /// <summary>graceful shutdown：发 shutdown → 等进程自退（grace 内）→ 超时 Kill 整个进程树。不 Dispose。</summary>
-    public async Task<int?> ShutdownAsync(TimeSpan grace, CancellationToken ct = default)
+    /// <summary>
+    /// graceful shutdown：发 shutdown → 等进程自退（grace 内）→ 超时 Kill 整个进程树 →
+    /// 强杀后有界等待确认真实退出。不 Dispose。返回结果区分「流程走完」与「确认已退」：
+    /// 强杀后仍未退出时 ConfirmedExit=false 并记 shell.log，不吞掉残留事实。
+    /// </summary>
+    public async Task<SidecarShutdownResult> ShutdownAsync(TimeSpan grace, CancellationToken ct = default)
     {
         _closing = true; // 本壳主动关停：随后的 EOF 不再报后端异常退出
         if (!_process.HasExited)
@@ -316,10 +328,18 @@ public sealed class PythonSidecar : IDisposable
             }
             catch (TimeoutException)
             {
-                KillTree(); // grace 超时，强制终止
+                // grace 超时，强制终止；终止后必须有界等待确认（壳带 requireAdministrator，
+                // 子进程残留会让升级提交因文件占用失败，必须让上层知道真实退出状态）
+                KillTree();
+                bool confirmed;
+                try { confirmed = _process.WaitForExit(ShutdownConfirmTimeoutMs); }
+                catch { confirmed = false; }
+                if (!confirmed)
+                    ShellLog.Append($"[sidecar] 强制终止后 {ShutdownConfirmTimeoutMs}ms 仍未退出（pid={SafePid()}），存在残留进程");
+                return new SidecarShutdownResult(ExitCode, confirmed);
             }
         }
-        return ExitCode;
+        return new SidecarShutdownResult(ExitCode, ConfirmedExit: true);
     }
 
     private void KillTree()
@@ -344,7 +364,271 @@ public sealed class PythonSidecar : IDisposable
         try { _stdout.Dispose(); } catch { }
         try { _writeLock.Dispose(); } catch { }
         if (!_process.HasExited)
-            KillTree();
+        {
+            // 关流后先给一个短的 stdin EOF 自退窗口（侧车主循环读 stdin，父关即自退），
+            // 窗口过了才强杀；强杀后同样有界等待，不吞掉「仍有残留」的事实。
+            bool selfExited;
+            try { selfExited = _process.WaitForExit(DisposeSelfExitGraceMs); }
+            catch { selfExited = false; }
+            if (!selfExited)
+            {
+                KillTree();
+                bool confirmed;
+                try { confirmed = _process.WaitForExit(ShutdownConfirmTimeoutMs); }
+                catch { confirmed = false; }
+                if (!confirmed)
+                    ShellLog.Append($"[sidecar] Dispose 强杀后 {ShutdownConfirmTimeoutMs}ms 仍未退出（pid={SafePid()}），存在残留进程");
+            }
+        }
         _process.Dispose();
     }
+
+    /// <summary>强杀后确认退出的有界等待上限（毫秒）。</summary>
+    private const int ShutdownConfirmTimeoutMs = 5_000;
+
+    /// <summary>Dispose 关流后给子进程的 stdin EOF 自退窗口（毫秒）。</summary>
+    private const int DisposeSelfExitGraceMs = 1_500;
+
+    private int SafePid()
+    {
+        try { return _process.Id; }
+        catch { return -1; }
+    }
+
+    /// <summary>
+    /// 启动期清场：上一会话异常退出可能遗留侧车（父壳死了但侧车正忙、尚未走到 stdin EOF 自退）。
+    /// 只清理本应用根内的**孤儿**侧车：python 进程路径在本应用根内、命令行在跑本侧车模块、
+    /// 且父进程已不存在——解释器路径与命令行特征不足以区分「遗留」与「仍被使用的调试后端」
+    /// （借用解释器的活跃后端同在这两个特征上，独立调试后端是贡献指南明确入口），父进程
+    /// 存活 = 使用中，绝不清理。其它检出 / 其它安装 / 父存活的进程一律不动；父信息读不出
+    /// 或父进程 ID 被复用时保守不清理，遗留由输入管道 EOF 自退兜底。扫描失败只记日志并
+    /// 返回 -1，不阻断启动。返回清理掉的进程数。
+    /// </summary>
+    public static int CleanupLeftovers(string appRoot)
+    {
+        try
+        {
+            var candidates = ListLeftoverSidecarPids(appRoot);
+            var killed = 0;
+            foreach (var pid in candidates)
+            {
+                try
+                {
+                    using var k = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "taskkill.exe",
+                        Arguments = $"/PID {pid} /T /F",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                    });
+                    k?.WaitForExit(3000);
+                    ShellLog.Append($"[sidecar] 启动清场：终止遗留侧车进程 pid={pid}");
+                    killed++;
+                }
+                catch (Exception ex)
+                {
+                    ShellLog.Append($"[sidecar] 启动清场：终止遗留侧车 pid={pid} 失败: {ex.Message}");
+                }
+            }
+            return killed;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[sidecar] 启动清场：扫描失败（不影响启动）: {ex.Message}");
+            return -1;
+        }
+    }
+
+    /// <summary>枚举「python 进程 + 解释器路径在本应用根内 + 命令行在跑本侧车模块 +
+    /// 父进程已不存在（孤儿）」的 pid。命令行与父进程 ID 经 NtQueryInformationProcess
+    /// 读目标进程 PEB（毫秒级，不依赖 PowerShell/WMI——提权环境下 CIM 查询实测超时）；
+    /// 读取失败的进程跳过（保守不清理）。</summary>
+    private static IEnumerable<int> ListLeftoverSidecarPids(string appRoot)
+    {
+        var rootNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(appRoot));
+        var result = new List<int>();
+        foreach (var proc in Process.GetProcessesByName("python"))
+        {
+            try
+            {
+                string? exe;
+                string? cmd;
+                try
+                {
+                    exe = proc.MainModule?.FileName;
+                }
+                catch
+                {
+                    continue; // 权限不足/已退出：跳过该进程
+                }
+                if (string.IsNullOrEmpty(exe))
+                    continue;
+                cmd = ReadProcessCommandLine(proc.Id);
+                if (string.IsNullOrEmpty(cmd) ||
+                    !cmd.Contains(SidecarModuleMarker, StringComparison.Ordinal))
+                    continue; // 命令行读不出/不是本侧车：跳过
+                var exeNorm = Path.TrimEndingDirectorySeparator(Path.GetFullPath(exe));
+                if (exeNorm.StartsWith(rootNorm + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Path.GetDirectoryName(exeNorm), rootNorm, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 孤儿判定（评审回归：解释器路径+命令行特征不足以证明是遗留——
+                    // 借用解释器的活跃调试后端同在这两个特征上）。父进程存活 = 仍被
+                    // 使用（调试后端/另一壳的活跃会话），不清理；父已死 = 遗留，清理。
+                    if (!IsOrphaned(proc.Id))
+                        continue;
+                    result.Add(proc.Id);
+                }
+            }
+            catch
+            {
+                // 单个进程读取失败：跳过，不影响其余
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+        return result;
+    }
+
+    // ---- 进程命令行读取（ntdll PEB 直读，x64） ----
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(
+        IntPtr hProcess, int infoClass,
+        ref PROCESS_BASIC_INFORMATION pbi, int cb, out int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(int access, bool inherit, int pid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadProcessMemory(
+        IntPtr h, IntPtr baseAddr, byte[] buffer, IntPtr size, out IntPtr read);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr h);
+
+    private const int ProcessQueryInformation = 0x0400;
+    private const int ProcessVmRead = 0x0010;
+
+    /// <summary>读目标进程的父进程 ID（进程基础信息，与命令行读取共用同一次结构布局）；
+    /// 失败返回 false。</summary>
+    private static bool TryReadParentProcessId(int pid, out int parentPid)
+    {
+        parentPid = 0;
+        IntPtr h = OpenProcess(ProcessQueryInformation, false, pid);
+        if (h == IntPtr.Zero)
+            return false;
+        try
+        {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            var status = NtQueryInformationProcess(h, 0, ref pbi,
+                Marshal.SizeOf<PROCESS_BASIC_INFORMATION>(), out _);
+            if (status != 0)
+                return false;
+            parentPid = (int)pbi.InheritedFromUniqueProcessId;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    /// <summary>孤儿判定：父进程已不存在 = 遗留进程（壳异常退出后的残留）。
+    /// 父信息读不出或访问失败时按「不判定为孤儿」处理——保守不清理，遗留进程由
+    /// 输入管道 EOF 自退兜底（评审回归：解释器路径+命令行特征不能区分「遗留」与
+    /// 「仍在被使用的调试后端」，父进程存活才是使用中的判据）；父进程 ID 被复用
+    /// 时误判为父存活，同向安全（漏杀由 EOF 兜底），不会误杀活跃进程。</summary>
+    private static bool IsOrphaned(int pid)
+    {
+        if (!TryReadParentProcessId(pid, out var ppid) || ppid <= 0)
+            return false;
+        try
+        {
+            using var parent = Process.GetProcessById(ppid);
+            return parent.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true; // 父进程不存在：孤儿
+        }
+        catch
+        {
+            return false; // 访问失败：保守不清理
+        }
+    }
+
+    /// <summary>读目标进程的完整命令行（UTF-16）；失败返回 null。仅本进程与目标同完整性级别时可用。</summary>
+    private static string? ReadProcessCommandLine(int pid)
+    {
+        IntPtr h = OpenProcess(ProcessQueryInformation | ProcessVmRead, false, pid);
+        if (h == IntPtr.Zero)
+            return null;
+        try
+        {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            var status = NtQueryInformationProcess(h, 0, ref pbi,
+                Marshal.SizeOf<PROCESS_BASIC_INFORMATION>(), out _);
+            if (status != 0 || pbi.PebBaseAddress == IntPtr.Zero)
+                return null;
+
+            // x64：PEB+0x20 = ProcessParameters 指针（一次间接）；
+            // CommandLine UNICODE_STRING 结构体直接位于 ProcessParameters+0x70（无二次间接）。
+            if (!TryReadIntPtr(h, pbi.PebBaseAddress + 0x20, out var paramsPtr) ||
+                paramsPtr == IntPtr.Zero)
+                return null;
+            var cmdStruct = paramsPtr + 0x70;
+
+            // UNICODE_STRING 手工解析（全部来自已读回的本地字节）：Length 在前 2 字节，
+            // Buffer 指针在第 8~16 字节（远端地址，不可用本地指针 API 解引用）
+            var header = new byte[16];
+            if (!ReadProcessMemory(h, cmdStruct, header, (IntPtr)header.Length, out _))
+                return null;
+            ushort length = (ushort)(header[0] | (header[1] << 8));
+            var buffer = (IntPtr)BitConverter.ToInt64(header, 8);
+            if (length == 0 || buffer == IntPtr.Zero)
+                return string.Empty;
+            var textBytes = new byte[length];
+            if (!ReadProcessMemory(h, buffer, textBytes, (IntPtr)length, out _))
+                return null;
+            return Encoding.Unicode.GetString(textBytes);
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            CloseHandle(h);
+        }
+    }
+
+    private static bool TryReadIntPtr(IntPtr h, IntPtr addr, out IntPtr value)
+    {
+        value = IntPtr.Zero;
+        var buf = new byte[8];
+        if (!ReadProcessMemory(h, addr, buf, (IntPtr)8, out _))
+            return false;
+        value = (IntPtr)BitConverter.ToInt64(buf, 0);
+        return true;
+    }
+
+    /// <summary>侧车模块启动命令行标记（与 MainWindow 启动侧车的 -m 参数一致）。</summary>
+    private const string SidecarModuleMarker = "maaracing_master.core.sidecar";
 }
