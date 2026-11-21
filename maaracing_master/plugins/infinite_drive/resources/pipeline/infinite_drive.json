@@ -1128,23 +1128,11 @@
             "_module_driven": true
         },
         "recognition": {
-            "type": "Custom",
+            "type": "Or",
             "param": {
-                "custom_recognition": "MaaRM_Template",
-                "custom_recognition_param": {
-                    "mode": "template",
-                    "colorspace": "rgb",
-                    "rect": [
-                        0.4488,
-                        0.8153,
-                        0.5504,
-                        0.8472
-                    ],
-                    "templates": [
-                        "inf_event_hint.png"
-                    ],
-                    "threshold": 0.8
-                }
+                "any_of": [
+                    "infinite_drive.__confirm.事件介绍"
+                ]
             }
         },
         "action": {
