@@ -684,3 +684,249 @@ def test_debug_drive_off_saves_nothing(monkeypatch, tmp_path) -> None:
     assert not (tmp_path / "sess_dbg").exists()             # 两种局都不落 debug 面
 
 
+# ---------- 提前结算（分数达标中途退出；机制见 RULES.md §0.5） ----------
+
+class _FakeOcr:
+    """单框 OCR 假引擎：recognize 返回带 text 的自身，供 parse_int 消费。"""
+
+    def __init__(self, texts):
+        self._texts = iter(texts) if isinstance(texts, list) else None
+        self.text = texts if not isinstance(texts, list) else None
+
+    def recognize(self, frame, roi):
+        if self._texts is not None:
+            self.text = next(self._texts)
+        return self
+
+
+def test_score_above_target_parses_and_compares() -> None:
+    """触发判据：OCR 文本取整后与本关目标比较；读不出 / 解析失败一律 False。"""
+    from types import SimpleNamespace
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    mod._ocr = _FakeOcr("6,895")
+    assert mod._score_above_target(object()) is True
+    mod._ocr = _FakeOcr("5,999")
+    assert mod._score_above_target(object()) is False
+    mod._ocr = _FakeOcr("")            # 读不出：False，不抛
+    assert mod._score_above_target(object()) is False
+    mod._ocr = _FakeOcr("目标得分")     # 无数字：False
+    assert mod._score_above_target(object()) is False
+
+
+def test_score_ocr_failure_disables_trigger() -> None:
+    """OCR 不可用：停用触发且只告警一次，后续读数不再碰引擎。"""
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    class _BoomOcr:
+        calls = 0
+
+        def recognize(self, frame, roi):
+            self.calls += 1
+            raise RuntimeError("boom")
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    mod._ocr = _BoomOcr()
+    assert mod._score_above_target(object()) is False
+    assert mod._score_above_target(object()) is False
+    assert mod._ocr.calls == 1          # 停用后不再碰 OCR
+
+
+class _EarlyExitGraph:
+    """提前结算序列的页面状态机：第 N 步点击后第 N 个落地页才在位。"""
+
+    def __init__(self) -> None:
+        self.done = 0
+        self.clicks = []
+
+    def run(self, entry, _reached=None):
+        from maaracing_master.plugins.infinite_drive import module as m
+
+        if entry in (m._EXIT_GEAR, m._EXIT_LEAVE, m._EXIT_CONFIRM):
+            self.clicks.append(entry)
+            self.last_click_sent = True
+            self.last_click_landed = True
+            self.done = min(self.done + 1, 3)
+            return True
+        if entry == m.STEP_CONFIRM["提前结算·退出"]:     # 退出落地 = 确认框或结算页
+            return self.done >= 2
+        if entry == m._SETTINGS_ANCHOR:
+            return self.done >= 1
+        if entry == m._EXIT_DIALOG_ANCHOR:
+            return self.done >= 2
+        if entry == m._SETTLE_ANCHOR:
+            return self.done >= 3
+        if entry in (m._EXIT_CANCEL, m._EXIT_RESUME):   # 回赶点击
+            self.clicks.append(entry)
+            return True
+        return False
+
+
+def _early_exit_module(graph, monkeypatch):
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    return _step_module(graph)
+
+
+def test_early_exit_sequence_lands_settlement(monkeypatch) -> None:
+    """三步序列全部落地：齿轮 → 退出 → 确认，结算页在位即成功。"""
+    graph = _EarlyExitGraph()
+    mod = _early_exit_module(graph, monkeypatch)
+
+    assert mod._run_early_exit() is True
+    assert graph.clicks == [mod.__class__ and "infinite_drive.提前退出.点齿轮",
+                            "infinite_drive.提前退出.点退出",
+                            "infinite_drive.提前退出.点确认退出"]
+
+
+def test_early_exit_skips_confirm_when_settlement_direct(monkeypatch) -> None:
+    """「今日不再提示」生效日：点完退出直达结算页，确认步免点。"""
+
+    class _NoDialogGraph(_EarlyExitGraph):
+        def run(self, entry, _reached=None):
+            from maaracing_master.plugins.infinite_drive import module as m
+
+            if entry == m._EXIT_LEAVE:
+                self.clicks.append(entry)
+                self.last_click_sent = True
+                self.last_click_landed = True
+                self.done = 3      # 确认框被跳过，结算页直接在位
+                return True
+            return super().run(entry, _reached)
+
+    graph = _NoDialogGraph()
+    mod = _early_exit_module(graph, monkeypatch)
+
+    assert mod._run_early_exit() is True
+    assert "infinite_drive.提前退出.点确认退出" not in graph.clicks
+
+
+def test_early_exit_failure_dismisses_back_to_driving(monkeypatch) -> None:
+    """退出点击被吞：重发耗尽后回赶（设置页在位点继续），序列报失败。"""
+
+    class _SwallowLeaveGraph(_EarlyExitGraph):
+        def run(self, entry, _reached=None):
+            from maaracing_master.plugins.infinite_drive import module as m
+
+            if entry == m._EXIT_LEAVE:
+                self.clicks.append(entry)
+                self.last_click_sent = True
+                self.last_click_landed = False   # 点击发出但页面不切
+                return True
+            return super().run(entry, _reached)
+
+    graph = _SwallowLeaveGraph()
+    mod = _early_exit_module(graph, monkeypatch)
+
+    assert mod._run_early_exit() is False
+    assert "infinite_drive.提前退出.点确认退出" not in graph.clicks
+    assert "infinite_drive.提前退出.点继续" in graph.clicks   # 回赶续驾
+
+
+def _drive_frames_with_ocr(mod, monkeypatch, texts, count):
+    """给 _drive 连续 count 个驾驶帧（HUD 在位）+ 1 个菜单帧收尾（结束信号命中）。"""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "_SCORE_CHECK_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "_DRIVE_HUD_GAP_S", 0.0)
+    drive_frame = object()
+    menu_frame = object()
+    frames = iter([(drive_frame, i, i, 0) for i in range(1, count + 1)]
+                  + [(menu_frame, count + 1, count + 1, 0)])
+    monkeypatch.setattr(m, "drive_hud_visible",
+                        lambda _f: _f is drive_frame, raising=False)
+    mod.ctx.capture = SimpleNamespace(frame_with_age=lambda: next(frames))
+    released = []
+
+    @contextmanager
+    def acquire():
+        yield SimpleNamespace(left_joystick=lambda **_: None,
+                              right_trigger=lambda **_: None, update=lambda: None)
+        released.append(True)
+
+    mod.ctx.gamepad = SimpleNamespace(acquire=acquire)
+    mod._ocr = _FakeOcr(texts)
+    return released
+
+
+def test_drive_p1_early_exit_sets_jump_flag(monkeypatch) -> None:
+    """连续 3 拍超目标：松杆走退出序列，阶段1落点标记置位，阶段就地结束。"""
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    exits = []
+    monkeypatch.setattr(mod, "_run_early_exit", lambda: exits.append(True) or True)
+    released = _drive_frames_with_ocr(mod, monkeypatch, "6,895", 5)
+
+    assert mod._drive("p1") is True
+    assert exits == [True]
+    assert mod._p1_settled_early is True
+    assert released == [True]           # 先松杆再走退出序列
+
+
+def test_drive_p2_early_exit_no_jump_flag(monkeypatch) -> None:
+    """阶段2提前结算：同样触发，但不置阶段1跳转标记。"""
+    from types import SimpleNamespace
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    exits = []
+    monkeypatch.setattr(mod, "_run_early_exit", lambda: exits.append(True) or True)
+    _drive_frames_with_ocr(mod, monkeypatch, "12,345", 5)
+
+    assert mod._drive("p2") is True
+    assert exits == [True]
+    assert mod._p1_settled_early is False
+
+
+def test_drive_streak_reset_blocks_premature_exit(monkeypatch) -> None:
+    """达标读数被中间读数打断：计数归零，不触发提前结算。"""
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _step_module(SimpleNamespace(
+        run=lambda entry, _reached=None: entry == m._DRIVE_END["p1"]))
+    exits = []
+    monkeypatch.setattr(mod, "_run_early_exit", lambda: exits.append(True) or True)
+    _drive_frames_with_ocr(mod, monkeypatch,
+                           ["6,100", "93", "6,200", "93", "6,300"], 5)
+
+    assert mod._drive("p1") is True     # 菜单帧走结束信号收步
+    assert exits == []
+
+
+
+def test_p1_early_settle_skips_card2_and_p2_in_flow(monkeypatch) -> None:
+    """阶段1提前结算：流程跳过选卡2与阶段2，直达结算步并读结算。"""
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    visited = []
+    monkeypatch.setattr(mod, "_drive", lambda phase: visited.append(phase) or True)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: visited.append(phase) or True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: visited.append("结算读数"))
+
+    def stop_at_settle(node, stage):
+        visited.append(stage)
+        if stage == "结算·下一关":
+            mod._running = False        # 结算步跑完即收，避免整轮循环
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", stop_at_settle)
+    mod._p1_settled_early = True
+    start = next(i for i, (s, _, _) in enumerate(m.FLOW) if s == "驾驶·阶段1")
+
+    assert mod._run_flow(start) is True
+    assert visited == ["p1", "结算读数", "结算·下一关"]   # card2 / p2 未被访问
+    assert mod._p1_settled_early is False               # 标记即取即清

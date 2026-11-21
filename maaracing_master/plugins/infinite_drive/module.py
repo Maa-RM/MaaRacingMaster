@@ -11,6 +11,12 @@ OCR 文案白名单做限频兜底（等待循环与步级重发前各挂一处�
 
 程序驾驶在驾驶 HUD 在位时接管虚拟手柄：直行保持零方向，深度档用车头角闭环保持车道。
 
+**提前结算**（分数达标中途退出，省时路径）：一关两阶段整关累计计分，驾驶中低频
+OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页中途退出按当前分数结算
+（机制见 RULES.md §0.5）。阶段2退出落地结算页即现有结束信号，流程照常；阶段1退出
+跳过选卡2与阶段2直达结算步。退出序列中途失败自动回赶（取消/继续）续驾，触发自然
+重试；读数不可用只停用触发，不拖垮驾驶循环。
+
 **录制模式**（配置开关，默认关）：开启后整个流程会话落盘取证（画面 + 物理手柄
 → ``debug/infinite_drive/``），供真机验证流程与识别框落地。录制是旁路：取帧
 走独立线程读 WGC 中心缓存，队列满丢帧不阻塞流程；录制失败只告警不中止流程。
@@ -42,6 +48,7 @@ from maaracing_master.plugins.infinite_drive import IMAGE_DIR, PIPELINE_DIR
 from maaracing_master.plugins.infinite_drive import dashboard_store
 from maaracing_master.plugins.infinite_drive import flow_data
 from maaracing_master.plugins.infinite_drive.driving import LaneDrive, drive_hud_visible
+from maaracing_master.plugins.infinite_drive.hud import load_hud_regions, parse_int
 from maaracing_master.plugins.infinite_drive.debugview import DebugPairWriter
 from maaracing_master.plugins.infinite_drive.recorder import DriveRecorder, make_session_dir
 from maaracing_master.plugins.infinite_drive.session_layout import (
@@ -76,7 +83,8 @@ LOOP_START_INDEX = 3
 OPTIONAL_STAGES = {"选车·首车", "选车·确定"}
 _CAR_SELECT_ANCHOR = "infinite_drive.__confirm.选车页"
 
-# 每步的落地确认锚点（画面确实切到落地页的判据）
+# 每步的落地确认锚点（画面确实切到落地页的判据）。提前结算三个子步不在 FLOW 表
+# （驾驶中条件触发），但走同一套步级重发，锚点同表登记。
 STEP_CONFIRM: dict[str, str] = {
     "入口·比赛": "infinite_drive.__confirm.比赛页",
     "入口·娱乐玩法": "infinite_drive.__confirm.娱乐玩法页",
@@ -87,6 +95,9 @@ STEP_CONFIRM: dict[str, str] = {
     "结算·下一关": "infinite_drive.__confirm.准备页",
     "准备·放弃": "infinite_drive.__confirm.放弃确认框",
     "放弃·确认": "infinite_drive.__confirm.模式页",
+    "提前结算·齿轮": "infinite_drive.__confirm.设置页",
+    "提前结算·退出": "infinite_drive.__confirm.退出落地",
+    "提前结算·确认": "infinite_drive.__confirm.结算页",
 }
 
 # 步级重试剂量（不含首点的重发上限 / 观察窗 / 窗内轮询）
@@ -120,6 +131,28 @@ _DRIVE_THROTTLE = 220  # 直行油门与自动驾驶的油门上限
 _CAMERA_SETTLE_S = 0.25
 # 已保存的 depth 档继续指向自动转向模式。
 _DRIVE_MODES = {"straight": "全程直行", "depth": "自动驾驶"}
+
+# 提前结算（分数达标中途退出，省时路径）：一关 = 阶段1+阶段2，目标分整关累计
+# （真源 flow_data.PVE_STAGE_TARGETS），驾驶中任一阶段超分即可退出立即结算。
+# 触发判据 = 低频 OCR 比分连续 N 拍超目标：分数只增不减，多等两拍没有损失，
+# 连续拍数挡的是单帧误读（漏读只会晚触发，方向安全）。读数间隔取 0.7s：OCR
+# 单框 10~30ms 发生在出杆之后的热路径上，逐拍读会拖垮 20Hz 控制循环。
+_ROUND_TARGET = flow_data.PVE_STAGE_TARGETS[1]
+_SCORE_CHECK_INTERVAL_S = 0.7
+_EARLY_EXIT_CONFIRM_READS = 3
+# 提前结算的页面锚点与回赶动作（序列中途失败时点取消/继续回到驾驶）
+_SETTINGS_ANCHOR = "infinite_drive.__confirm.设置页"
+_EXIT_DIALOG_ANCHOR = "infinite_drive.__confirm.退出确认框"
+_SETTLE_ANCHOR = "infinite_drive.__confirm.结算页"
+_EXIT_GEAR = "infinite_drive.提前退出.点齿轮"
+_EXIT_LEAVE = "infinite_drive.提前退出.点退出"
+_EXIT_CONFIRM = "infinite_drive.提前退出.点确认退出"
+_EXIT_CANCEL = "infinite_drive.提前退出.点取消"
+_EXIT_RESUME = "infinite_drive.提前退出.点继续"
+# 阶段1提前结算后的流程落点：第1关已整关结算，跳过选卡2与阶段2直达结算步
+# （结算页点下一关 → 下一关准备页，与阶段2自然结束后的链路共用同一批步骤）
+_SETTLE_STAGE_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
+                           if stage == "结算·下一关")
 
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
 # 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
@@ -280,6 +313,16 @@ class InfiniteDriveModule(ActivityModule):
         self._record_thread: threading.Thread | None = None
         # 偶发弹窗 OCR 兜底的限频时刻（单调钟；0 = 立即可扫）
         self._next_sweep_at = 0.0
+        # 提前结算触发框（区域真源 pve_score，右缘收在头像之前防 OCR 并读虚增）；
+        # 缺键是插件资产残缺，启动即报错不静默降级
+        regions = load_hud_regions()
+        if "pve_score" not in regions:
+            raise KeyError("hud_regions.json 缺 pve_score（提前结算触发框）")
+        self._score_roi: list[float] = regions["pve_score"]
+        # 触发读数引擎初始化/识别失败后停用提前结算（只告警一次，驾驶循环不再碰 OCR）
+        self._score_trigger_disabled = False
+        # 阶段1提前结算落点标记：_run_flow 据此跳过选卡2与阶段2直达结算步
+        self._p1_settled_early = False
         # 本次运行的结算计数（看板记录的局内序号）
         self._settlement_round = 0
         # 当前轮次与局前缀（控制局调试图的段目录名真源；_run_flow 每轮刷新）
@@ -583,8 +626,15 @@ class InfiniteDriveModule(ActivityModule):
                     if not ok:
                         self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return self._stop_received()
+                    if phase == "p1" and self._p1_settled_early:
+                        # 第1关已提前整关结算：跳过选卡2与阶段2直达结算步——
+                        # 结算页已在位，与阶段2自然结束共用同一批后续步骤。
+                        self._p1_settled_early = False
+                        index = _SETTLE_STAGE_INDEX
+                        continue
                 else:
                     if not self._run_step(node, stage):
+                        self._tlog(f"[无限驾驶] 步骤「{stage}」未落地，本轮中止", "WARNING")
                         return self._stop_received()
                 index += 1
             index = LOOP_START_INDEX
@@ -650,7 +700,9 @@ class InfiniteDriveModule(ActivityModule):
                     break
                 continue
             if cmd is Command.FAIL:
-                self._tlog(f"[无限驾驶] 步骤「{stage}」重发 {STEP_MAX_RETRIES} 次仍未落地，本轮中止",
+                # 只报步骤事实，后果由调用方按各自语境说明（流程步=本轮中止，
+                # 提前结算子步=回赶续驾）。
+                self._tlog(f"[无限驾驶] 步骤「{stage}」重发 {STEP_MAX_RETRIES} 次仍未落地",
                            "WARNING")
                 return False
             return False
@@ -807,6 +859,61 @@ class InfiniteDriveModule(ActivityModule):
         self._next_sweep_at = now + ADVANCE_SWEEP_INTERVAL_S
         self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS)
 
+    def _score_above_target(self, frame) -> bool:
+        """OCR 驾驶页比分，判「已超本关目标分」（提前结算触发判据）。
+
+        目标分真源是 flow_data.PVE_STAGE_TARGETS（一关两阶段整关累计，阶段1/2 共用
+        同一目标）。读不出 / 解析失败一律 False：分数只增不减，晚一拍触发没有损失；
+        读数区域右缘收在头像之前，目标分框（在区域外）与头像都不进读数。OCR 异常
+        只告警一次并停用触发——判据是省时旁路，绝不拖垮驾驶循环。
+        """
+        if self._score_trigger_disabled:
+            return False
+        try:
+            if self._ocr is None:
+                self._ocr = RapidOcrEngine()
+            result = self._ocr.recognize(frame, self._score_roi)
+        except Exception as exc:  # noqa: BLE001 —— 读数不可用即停用触发，不终止驾驶
+            self._score_trigger_disabled = True
+            self._tlog(f"[无限驾驶] 比分读数不可用，本次运行停用提前结算: {exc!r}", "WARNING")
+            return False
+        value = parse_int(getattr(result, "text", "") or "")
+        return value is not None and value > _ROUND_TARGET
+
+    def _run_early_exit(self) -> bool:
+        """提前结算序列：齿轮 → 设置页退出 → 确认框确认，落地过关结算页。
+
+        分数超目标后的省时路径：中途退出按当前分数立即结算本关（游戏机制见
+        RULES.md §0.5）。各步走 _run_step 的落地确认与重发；「今日不再提示」
+        生效日确认框会被跳过、点完退出直达结算页，故确认步先查结算页在位即免点。
+        任一步没落地先回赶（确认框点取消 / 设置页点继续）回到驾驶——分数只增
+        不减，触发稍后自然再次成立；结算页之后的链路由流程表照常接手。
+        """
+        assert self._graph is not None
+        for stage, node in (("提前结算·齿轮", _EXIT_GEAR),
+                            ("提前结算·退出", _EXIT_LEAVE),
+                            ("提前结算·确认", _EXIT_CONFIRM)):
+            if stage == "提前结算·确认" and self._graph.run(_SETTLE_ANCHOR, _SETTLE_ANCHOR):
+                break   # 确认框被跳过，结算页已直接在位：确认步免点
+            if self._run_step(node, stage):
+                continue
+            self._dismiss_exit_pages()
+            return False
+        self._tlog(f"[无限驾驶] 分数超目标（{_ROUND_TARGET}），提前结算", "INFO")
+        return True
+
+    def _dismiss_exit_pages(self) -> None:
+        """提前结算中途失败的回赶：确认框在位点取消、设置页在位点继续，回驾驶。
+
+        回赶后无论落回驾驶页还是停在别页，驾驶循环都按 HUD 在位与否走既有分支；
+        两处锚点都不在位（转场中间帧）就不点击，等下一拍状态落定。
+        """
+        assert self._graph is not None
+        if self._graph.run(_EXIT_DIALOG_ANCHOR, _EXIT_DIALOG_ANCHOR):
+            self._graph.run(_EXIT_CANCEL, _EXIT_CANCEL)
+        if self._graph.run(_SETTINGS_ANCHOR, _SETTINGS_ANCHOR):
+            self._graph.run(_EXIT_RESUME, _EXIT_RESUME)
+
     def _drive(self, phase: str) -> bool:
         """程序驾驶只在新鲜的驾驶画面上出杆；转场先归还手柄，再处理页面。"""
         assert self._graph is not None
@@ -821,6 +928,9 @@ class InfiniteDriveModule(ActivityModule):
         hud_fid = None
         hud_visible = False
         pad = None
+        # 提前结算触发状态：0 起算 = 首个驾驶拍即读一次；连续达标计数
+        last_score_check = 0.0
+        score_streak = 0
         dbg = None if self._record_mode else self._begin_debug_view(phase)
         try:
             with ExitStack() as lease:
@@ -854,6 +964,24 @@ class InfiniteDriveModule(ActivityModule):
                             throttle_scale = 1.0 if driver is None else driver.throttle_scale
                             pad.right_trigger(value=round(_DRIVE_THROTTLE * throttle_scale))
                             pad.update()
+                            if tick - last_score_check >= _SCORE_CHECK_INTERVAL_S:
+                                last_score_check = tick
+                                if self._score_above_target(frame):
+                                    score_streak += 1
+                                else:
+                                    score_streak = 0
+                                if score_streak >= _EARLY_EXIT_CONFIRM_READS:
+                                    # 连续达标：松杆走退出序列；成了就地交棒，
+                                    # 没成回赶续驾（分数只增，触发会再次成立）。
+                                    lease.close()
+                                    pad = None
+                                    if driver is not None:
+                                        driver.release()
+                                    if self._run_early_exit():
+                                        if phase == "p1":
+                                            self._p1_settled_early = True
+                                        return True
+                                    score_streak = 0
                             if not self.ctx.lifecycle.sleep(max(0.0, _DRIVE_TICK_S - (time.monotonic() - tick))):
                                 return False
                             continue
