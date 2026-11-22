@@ -46,9 +46,20 @@ public static class WebView2Runtime
             }
             var udf = Path.Combine(userData, "webview2");
             Directory.CreateDirectory(udf);
+            // 诊断探针通道（实验区 page_slide_first_visit）：本机实证 WinRT 加载器在
+            // options=null 路径不吃 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS（变量在直接
+            // 父进程、浏览器进程全新仍无参数落地），需注入浏览器参数的探针经本变量走
+            // 显式 options 通道（官方文档确认的 WinUI3 可靠口径）；未设变量时 options
+            // 传 null，行为与原先完全一致。
+            var probeArgs = Environment.GetEnvironmentVariable("MAARM_APP_WEBVIEW_ARGS");
+            CoreWebView2EnvironmentOptions? options = null;
+            if (!string.IsNullOrWhiteSpace(probeArgs))
+            {
+                options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = probeArgs };
+            }
             // WinUI3 投影：数据目录走 CreateWithOptionsAsync（CreateAsync 只收选项对象，
             // 选项类不暴露数据目录——固定版本 winmd 核验过成员）
-            _environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, udf, null).AsTask().ConfigureAwait(false);
+            _environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, udf, options).AsTask().ConfigureAwait(false);
             ShellLog.Append($"[webview2] 用户数据目录: {udf}");
             return _environment;
         }
