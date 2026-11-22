@@ -70,28 +70,35 @@
   }
 
   // ---------- 字段构建 ----------
+  // 宿主统一行结构：标签 / 控件 / 说明。说明独占一行，跨满字段栏；
+  // 插件只声明字段语义，行布局与控件尺寸由 style.css 的 .cfg-row 系列决定。
+
+  function rowShell(labelNode, controlNode) {
+    var wrap = el('div', 'cfg-row');
+    var desc = el('p', 'cfg-row-desc');
+    wrap.appendChild(labelNode);
+    wrap.appendChild(controlNode);
+    wrap.appendChild(desc);
+    return { wrap: wrap, desc: desc };
+  }
 
   function buildSwitch(entry, field) {
-    var wrap = el('div', 'option-row');
+    var label = el('div', 'cfg-row-label', field.label);
+    label.id = domId(entry, field, 'label');
+    var control = el('div', 'cfg-row-control');
     var sw = el('button', 'maarm-toggle');
     sw.type = 'button';
     sw.id = domId(entry, field, 'switch');
     sw.setAttribute('role', 'switch');
     sw.setAttribute('aria-checked', 'false');
-    var main = el('div', 'option-main');
-    var title = el('div', 'option-title', field.label);
-    title.id = domId(entry, field, 'label');
-    sw.setAttribute('aria-labelledby', title.id);
-    main.appendChild(title);
-    var desc = null;
+    sw.setAttribute('aria-labelledby', label.id);
+    control.appendChild(sw);
+    var shell = rowShell(label, control);
+    shell.wrap.classList.add('cfg-row--switch');
     if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      desc.id = domId(entry, field, 'desc');
-      sw.setAttribute('aria-describedby', desc.id);
-      main.appendChild(desc);
+      shell.desc.id = domId(entry, field, 'desc');
+      sw.setAttribute('aria-describedby', shell.desc.id);
     }
-    wrap.appendChild(sw);
-    wrap.appendChild(main);
     sw.addEventListener('click', function () {
       if (locked || entry.locked) return;
       var patch = {};
@@ -99,19 +106,17 @@
       savePatch(entry.mid, patch);
     });
     return {
-      field: field, wrap: wrap, sw: sw, title: title, desc: desc,
+      field: field, wrap: shell.wrap, sw: sw, title: label, desc: shell.desc,
     };
   }
 
   function buildSegmented(entry, field) {
-    var wrap = el('div', 'module-options-row');
-    var box = el('div', 'maarm-field');
-    var label = el('label', 'maarm-field-label');
-    label.textContent = field.label;
-    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
+    var label = el('div', 'cfg-row-label', field.label);
+    label.id = domId(entry, field, 'label');
+    var control = el('div', 'cfg-row-control');
     var seg = el('div', 'maarm-segmented');
     seg.setAttribute('role', 'group');
-    seg.setAttribute('aria-label', field.label);
+    seg.setAttribute('aria-labelledby', label.id);
     var buttons = (field.options || []).map(function (option, index) {
       var btn = el('button', 'seg-btn');
       btn.appendChild(el('span', 'seg-label', option.label));
@@ -131,38 +136,23 @@
       seg.appendChild(btn);
       return btn;
     });
-    box.appendChild(label);
-    box.appendChild(seg);
-    var desc = null;
-    if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      box.appendChild(desc);
-    }
-    wrap.appendChild(box);
+    control.appendChild(seg);
+    var shell = rowShell(label, control);
     return {
-      field: field, wrap: wrap, seg: seg, buttons: buttons, title: label, desc: desc,
+      field: field, wrap: shell.wrap, seg: seg, buttons: buttons,
+      title: label, desc: shell.desc,
     };
   }
 
   function buildSelect(entry, field) {
-    var wrap = el('div', 'module-options-row');
-    var box = el('div', 'maarm-field');
-    var label = el('label', 'maarm-field-label');
+    var label = el('label', 'cfg-row-label');
     label.textContent = field.label;
-    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'maarm-field-control');
+    var control = el('div', 'cfg-row-control');
     var select = el('select');
     select.id = domId(entry, field, 'select');
     label.setAttribute('for', select.id);
     control.appendChild(select);
-    box.appendChild(label);
-    box.appendChild(control);
-    var desc = null;
-    if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      box.appendChild(desc);
-    }
-    wrap.appendChild(box);
+    var shell = rowShell(label, control);
     select.addEventListener('change', function () {
       if (locked || entry.locked) return;
       var option = select.options[select.selectedIndex];
@@ -172,52 +162,98 @@
       savePatch(entry.mid, patch);
     });
     return {
-      field: field, wrap: wrap, select: select, title: label, desc: desc,
+      field: field, wrap: shell.wrap, select: select, title: label, desc: shell.desc,
       optSig: '',
     };
   }
 
+  // number：与滚轮同一副外观的常驻输入胶囊；不滚动、不做列动画。
   function buildNumber(entry, field) {
-    var wrap = el('div', 'module-options-row');
-    var box = el('div', 'maarm-field');
-    var label = el('label', 'maarm-field-label');
+    var min = field.min != null ? Number(field.min) : 0;
+    var max = field.max != null ? Number(field.max) : null;
+    var step = field.step != null ? Number(field.step) : 1;
+
+    var label = el('label', 'cfg-row-label');
     label.textContent = field.label;
-    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'maarm-field-control');
-    var input = el('input');
-    input.type = 'number';
+    var control = el('div', 'cfg-row-control');
+    var pill = el('div', 'maarm-stepper maarm-stepper--plain');
+    var dec = el('button', 'stepper-btn', '\u2212');
+    dec.type = 'button';
+    dec.tabIndex = -1;
+    dec.setAttribute('aria-label', '减少');
+    var inc = el('button', 'stepper-btn', '+');
+    inc.type = 'button';
+    inc.tabIndex = -1;
+    inc.setAttribute('aria-label', '增加');
+    var win = el('div', 'stepper-window stepper-window--plain');
+    var input = el('input', 'stepper-edit');
+    input.type = 'text';
+    input.inputMode = 'numeric';
     input.id = domId(entry, field, 'number');
+    input.setAttribute('aria-label', field.label);
     label.setAttribute('for', input.id);
-    if (field.min != null) input.min = String(field.min);
-    if (field.max != null) input.max = String(field.max);
-    if (field.step != null) input.step = String(field.step);
-    control.appendChild(input);
-    if (field.suffix) control.appendChild(el('span', 'field-suffix', field.suffix));
-    box.appendChild(label);
-    box.appendChild(control);
-    var desc = null;
-    if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      box.appendChild(desc);
+    win.appendChild(input);
+    if (field.suffix) win.appendChild(el('span', 'stepper-suffix', field.suffix));
+    pill.appendChild(dec);
+    pill.appendChild(win);
+    pill.appendChild(inc);
+    control.appendChild(pill);
+    var shell = rowShell(label, control);
+
+    var shown = null;
+    function clamp(v) {
+      if (!Number.isFinite(v)) v = min;
+      if (v < min) v = min;
+      if (max != null && v > max) v = max;
+      return v;
     }
-    wrap.appendChild(box);
-    function commit() {
+    function fitWidth() {
+      var len = Math.max(1, String(input.value == null ? '' : input.value).length);
+      input.style.width = 'calc(' + len + ' * 0.62em + 8px)';
+    }
+    function sync(value) {
+      var next = value == null || Number.isNaN(Number(value)) ? min : Number(value);
+      shown = next;
+      if (document.activeElement !== input) input.value = String(next);
+      fitWidth();
+    }
+    function commit(nextValue) {
       if (locked || entry.locked) return;
-      var value = parseFloat(input.value);
-      if (Number.isNaN(value)) value = 0;
-      if (Number.isFinite(field.min) && value < field.min) value = field.min;
-      if (Number.isFinite(field.max) && value > field.max) value = field.max;
-      input.value = String(value);
+      var next = clamp(Number(nextValue));
+      input.value = String(next);
+      fitWidth();
+      if (next === shown) return;
+      shown = next;
       var patch = {};
-      patch[field.key] = value;
+      patch[field.key] = next;
       savePatch(entry.mid, patch);
     }
-    input.addEventListener('change', commit);
+    function bump(dir) {
+      commit(clamp(shown + dir * step));
+    }
+    input.addEventListener('change', function () { commit(input.value); });
+    input.addEventListener('input', fitWidth);
+    input.addEventListener('focus', function () { input.select(); });
     input.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') commit();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commit(input.value);
+      } else if (event.key === 'Escape') {
+        input.value = String(shown);
+        fitWidth();
+        input.blur();
+      }
     });
+    dec.addEventListener('click', function () { bump(-1); });
+    inc.addEventListener('click', function () { bump(1); });
+    function setLockedState(isLocked) {
+      dec.disabled = isLocked;
+      inc.disabled = isLocked;
+      input.disabled = isLocked;
+    }
     return {
-      field: field, wrap: wrap, input: input, title: label, desc: desc,
+      field: field, wrap: shell.wrap, input: input, title: label, desc: shell.desc,
+      syncNumber: sync, setLocked: setLockedState,
     };
   }
 
@@ -230,7 +266,7 @@
   // unit_seconds 是模块下发的「每 1 单位配置值的预计秒数」，预计用时按当前值
   // 即时重算；值为 0 表示不限，不出估计。
 
-  var CELL_H = 36;          // 数字窗高 = 单格高（滚动一行 = 一格）
+  var CELL_H = 30;          // 数字窗高 = 单格高（滚动一行 = 一格）
   var STAGGER_MS = 32;      // 列间错峰：高位晚这么久起步，滚出层次感
   var BOUNCE = 40;          // 弹簧弹性（0~100，原控件默认）
   var BLUR = 24;            // 速度模糊强度（0~100，原控件默认）
@@ -263,16 +299,8 @@
     var unitSeconds = field.unit_seconds != null ? Number(field.unit_seconds) : null;
     var places = String(max).length;
 
-    var wrap = el('div', 'module-options-row');
-    var box = el('div', 'maarm-field');
-    var label = el('label', 'maarm-field-label');
-    label.textContent = field.label;
-    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var estimate = null;
-    if (unitSeconds) {
-      estimate = el('span', 'field-hint');
-      label.appendChild(estimate);
-    }
+    var label = el('div', 'cfg-row-label', field.label);
+    var control = el('div', 'cfg-row-control');
 
     var stepper = el('div', 'maarm-stepper');
     var dec = el('button', 'stepper-btn', '\u2212');
@@ -290,6 +318,13 @@
     win.setAttribute('aria-label', field.label);
     win.setAttribute('aria-valuemin', String(min));
     win.setAttribute('aria-valuemax', String(max));
+
+    var edit = el('input', 'stepper-edit');
+    edit.type = 'text';
+    edit.inputMode = 'numeric';
+    edit.id = domId(entry, field, 'edit');
+    edit.setAttribute('aria-label', field.label);
+    win.appendChild(edit);
 
     var columns = [];
     for (var i = 0; i < places; i += 1) {
@@ -309,14 +344,22 @@
     stepper.appendChild(dec);
     stepper.appendChild(win);
     stepper.appendChild(inc);
-    box.appendChild(label);
-    box.appendChild(stepper);
-    var desc = null;
-    if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      box.appendChild(desc);
+    control.appendChild(stepper);
+    var shell = rowShell(label, control);
+
+    var node = {
+      field: field, wrap: shell.wrap, stepper: stepper,
+      title: label, desc: shell.desc,
+    };
+    function hintFor(v) {
+      if (!unitSeconds) return field.hint || '';
+      if (!v) return '不限轮数';
+      return '预计用时' + formatEstimateSeconds(v * unitSeconds);
     }
-    wrap.appendChild(box);
+    node.hintFn = function (cfg) {
+      var raw = cfg ? cfg[field.key] : null;
+      return hintFor(raw == null ? min : Number(raw));
+    };
 
     var shown = null;        // 本地显示值；弹簧收敛前可与服务端配置暂时不同
     var rafId = 0;
@@ -336,9 +379,7 @@
     }
 
     function updateEstimate(v) {
-      if (!estimate) return;
-      estimate.textContent = v <= 0 ? '（不限）'
-        : '（预计用时' + formatEstimateSeconds(v * unitSeconds) + '）';
+      if (node.descHint && unitSeconds) node.descHint.textContent = hintFor(v);
     }
 
     function paint() {
@@ -466,6 +507,49 @@
       else updateEstimate(shown);   // _ui 重建带来新 unit_seconds 时重算估时
     }
 
+    // 原地编辑：点数字把滚动的列换成输入框；输入宽度随位数增长。
+    // 编辑期间不参与拖拽/滚轮/方向键，避免两套输入同时改值。
+    var editing = false;
+    function fitEditWidth() {
+      var len = Math.max(1, String(edit.value || '').length);
+      edit.style.width = 'calc(' + len + ' * 0.62em + 8px)';
+    }
+    function startEdit() {
+      if (editing || locked || entry.locked || shown == null) return;
+      editing = true;
+      win.classList.add('stepper-window--editing');
+      edit.value = String(shown);
+      fitEditWidth();
+      edit.focus();
+      edit.select();
+    }
+    function stopEdit(apply) {
+      if (!editing) return;
+      editing = false;
+      win.classList.remove('stepper-window--editing');
+      var value = parseInt(edit.value, 10);
+      if (apply && !Number.isNaN(value)) {
+        var next = clamp(value);
+        if (next !== shown) applyValue(next);
+      } else if (shown != null) {
+        edit.value = String(shown);
+      }
+      fitEditWidth();
+      syncVisibility();
+    }
+    edit.addEventListener('input', fitEditWidth);
+    edit.addEventListener('keydown', function (event) {
+      event.stopPropagation();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        stopEdit(true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        stopEdit(false);
+      }
+    });
+    edit.addEventListener('blur', function () { stopEdit(true); });
+
     function bindHold(btn, dir) {
       var holdTimer = 0;
       var holdStart = 0;
@@ -502,6 +586,12 @@
 
     win.addEventListener('keydown', function (event) {
       if (locked || entry.locked) return;
+      if (editing) return;
+      if (event.key === 'Enter' || event.key === 'F2') {
+        event.preventDefault();
+        startEdit();
+        return;
+      }
       var handled = true;
       switch (event.key) {
         case 'ArrowUp': case 'ArrowRight': bump(1); break;
@@ -516,28 +606,32 @@
     });
 
     win.addEventListener('wheel', function (event) {
-      if (locked || entry.locked) return;
+      if (locked || entry.locked || editing) return;
       event.preventDefault();
       bump(event.deltaY < 0 ? 1 : -1);
     }, { passive: false });
 
-    // 竖向拖拽 + 惯性甩动（原控件同款：12px 一格，松手按速度衰减续滚）
+    // 竖向拖拽 + 惯性甩动（原控件同款：12px 一格，松手按速度衰减续滚）；
+    // 位移不足 4px 视为点击，进入原地编辑。
     var drag = null;
     function offsetTicks(acc) {
       var ticks = acc > 0 ? Math.floor(acc / DRAG_PX) : Math.ceil(acc / DRAG_PX);
       return { ticks: ticks, rest: acc - ticks * DRAG_PX };
     }
     win.addEventListener('pointerdown', function (event) {
-      if (locked || entry.locked) return;
+      if (locked || entry.locked || editing) return;
       cancelAnimationFrame(flingRaf);
       try { win.setPointerCapture(event.pointerId); } catch (e) { /* 无碍 */ }
-      drag = { y: event.clientY, acc: 0, vel: 0, time: performance.now() };
+      drag = { y: event.clientY, acc: 0, vel: 0, time: performance.now(),
+               moved: false, dist: 0 };
     });
     win.addEventListener('pointermove', function (event) {
       if (!drag) return;
       var now = performance.now();
       var dy = drag.y - event.clientY;
       drag.y = event.clientY;
+      drag.dist += Math.abs(dy);
+      if (drag.dist > 4) drag.moved = true;
       var dt = Math.max(1, now - drag.time);
       drag.time = now;
       drag.vel = drag.vel * 0.6 + (dy / dt) * 0.4;
@@ -550,6 +644,10 @@
       try { win.releasePointerCapture(event.pointerId); } catch (e) { /* 已释放 */ }
       var track = drag;
       drag = null;
+      if (!track.moved) {
+        startEdit();
+        return;
+      }
       if (prefersReducedMotion()) return;
       var v = (performance.now() - track.time > 80) ? 0 : track.vel * 16.67;
       if (Math.abs(v) < 1.5) return;
@@ -566,38 +664,29 @@
     win.addEventListener('pointercancel', endDrag);
 
     function setLockedState(isLocked) {
+      if (isLocked) stopEdit(false);
       dec.disabled = isLocked;
       inc.disabled = isLocked;
+      edit.disabled = isLocked;
       stepper.classList.toggle('maarm-stepper--locked', isLocked);
     }
 
-    return {
-      field: field, wrap: wrap, stepper: stepper, title: label, desc: desc,
-      sync: sync, setLocked: setLockedState,
-    };
+    node.sync = sync;
+    node.setLocked = setLockedState;
+    return node;
   }
 
   function buildText(entry, field) {
-    var wrap = el('div', 'module-options-row');
-    var box = el('div', 'maarm-field');
-    var label = el('label', 'maarm-field-label');
+    var label = el('label', 'cfg-row-label');
     label.textContent = field.label;
-    if (field.hint) label.appendChild(el('span', 'field-hint', '（' + field.hint + '）'));
-    var control = el('div', 'maarm-field-control');
+    var control = el('div', 'cfg-row-control');
     var input = el('input');
     input.type = 'text';
     input.id = domId(entry, field, 'text');
     if (field.placeholder) input.placeholder = field.placeholder;
     label.setAttribute('for', input.id);
     control.appendChild(input);
-    box.appendChild(label);
-    box.appendChild(control);
-    var desc = null;
-    if (field.description) {
-      desc = el('p', 'option-desc', field.description);
-      box.appendChild(desc);
-    }
-    wrap.appendChild(box);
+    var shell = rowShell(label, control);
     input.addEventListener('change', function () {
       if (locked || entry.locked) return;
       var patch = {};
@@ -605,7 +694,7 @@
       savePatch(entry.mid, patch);
     });
     return {
-      field: field, wrap: wrap, input: input, title: label, desc: desc,
+      field: field, wrap: shell.wrap, input: input, title: label, desc: shell.desc,
     };
   }
 
@@ -748,24 +837,19 @@
     var label = (variant && variant.label) || field.label;
     var desc = variant && variant.description !== undefined
       ? variant.description : field.description;
-    // 标题只换文本；挂在标题上的元素子节点（field-hint / 滚轮估时 span）原样保留
-    // ——textContent 整体赋值会连子节点一起抹掉，同步一跑提示就消失。
-    var title = node.title;
-    var spans = [];
-    for (var child = title.firstChild; child; child = child.nextSibling) {
-      if (child.nodeType === 1) spans.push(child);
+    node.title.textContent = label;
+    if (!node.desc) return;
+    // 提示（含滚轮预计用时）与说明共处一行；提示只占前缀，说明是正文。
+    var hint = node.hintFn ? node.hintFn(cfg) : (field.hint || '');
+    node.desc.textContent = '';
+    node.descHint = null;
+    if (hint) {
+      node.descHint = el('span', 'cfg-desc-hint', hint);
+      node.desc.appendChild(node.descHint);
     }
-    title.textContent = '';
-    title.appendChild(document.createTextNode(label));
-    spans.forEach(function (s) { title.appendChild(s); });
-    if (node.desc) {
-      if (desc) {
-        node.desc.textContent = desc;
-        node.desc.style.display = '';
-      } else {
-        node.desc.style.display = 'none';
-      }
-    }
+    if (hint && desc) node.desc.appendChild(document.createTextNode(' · '));
+    if (desc) node.desc.appendChild(document.createTextNode(desc));
+    node.desc.style.display = (hint || desc) ? '' : 'none';
   }
 
   function syncSelect(node, cfg) {
@@ -817,10 +901,8 @@
     } else if (node.stepper) {
       var raw = value == null ? null : Number(value);
       node.sync(raw);
-    } else if (node.input && node.input.type === 'number') {
-      if (document.activeElement !== node.input) {
-        node.input.value = value == null ? '' : String(value);
-      }
+    } else if (node.syncNumber) {
+      node.syncNumber(value);
     } else if (node.input) {
       if (document.activeElement !== node.input) {
         node.input.value = value == null ? '' : String(value);
@@ -833,7 +915,7 @@
     applyGroups(entry);
   }
 
-  // 分组标题与字段显隐联动：组内没有任何可见字段时标题一并藏起。
+  // 分组显隐联动：组内没有任何可见字段时整组（标题、分隔线与字段）一并藏起。
   // 不认模块字段，只认「组里还有没有看得见的控件」这一条通用规则。
   function applyGroups(entry) {
     if (!Array.isArray(entry.nodes.groups)) return;
@@ -842,7 +924,7 @@
         var node = entry.nodes.fields.get(key);
         return !!(node && node.visible);
       });
-      group.titleEl.style.display = visible ? '' : 'none';
+      group.el.style.display = visible ? '' : 'none';
     });
   }
 
@@ -861,7 +943,7 @@
       if (node.buttons) node.buttons.forEach(function (b) { b.disabled = locked; });
       if (node.select) node.select.disabled = locked;
       if (node.input) node.input.disabled = locked;
-      if (node.stepper) node.setLocked(locked);
+      if (node.setLocked) node.setLocked(locked);
     });
   }
 
@@ -909,22 +991,22 @@
     if (ui && Array.isArray(ui.groups)) {
       ui.groups.forEach(function (group) {
         if (!group || !Array.isArray(group.fields)) return;
-        var titleEl = null;
-        if (group.title) {
-          titleEl = el('div', 'task-panel-label', group.title);
-          root.appendChild(titleEl);
-        }
+        var groupEl = el('section', 'cfg-group');
+        if (group.title) groupEl.appendChild(el('div', 'cfg-group-title', group.title));
+        var body = el('div', 'cfg-group-body');
         var keys = [];
         group.fields.forEach(function (field) {
           var node = buildField(entry, field);
           if (!node) return;
-          root.appendChild(node.wrap);
+          body.appendChild(node.wrap);
           node.noticeEl = field.notice ? buildNotice(entry, field.notice) : null;
-          if (node.noticeEl) root.appendChild(node.noticeEl);
+          if (node.noticeEl) body.appendChild(node.noticeEl);
           nodes.fields.set(field.key, node);
           keys.push(field.key);
         });
-        if (titleEl) nodes.groups.push({ titleEl: titleEl, keys: keys });
+        groupEl.appendChild(body);
+        root.appendChild(groupEl);
+        nodes.groups.push({ el: groupEl, keys: keys });
       });
     }
     var status = el('p', 'module-options-status');
