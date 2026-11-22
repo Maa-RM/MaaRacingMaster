@@ -1,5 +1,5 @@
 # =============================================================================
-# CI 自动化单测 — push 与 PR 时运行
+# CI 自动化单测 — PR 时运行；master 与 release/** 的直接推送也触发，普通分支推送不触发
 # 两个 job，分别覆盖两侧语言：
 #   test（ubuntu）         Python 侧：真源机检 / ruff / pyright / pytest。
 #                          只装测试必要依赖（pytest 等轻量集），不拉重量级依赖
@@ -104,7 +104,10 @@ jobs:
           pyright maaracing_master
 
       - name: 运行单元测试
-        run: python -m pytest tests maaracing_master/plugins/infinite_drive/tests -v
+        # 不在命令行点名目录：用例发现统一走项目测试配置的 testpaths（根测试 +
+        # 无限驾驶插件测试），与发布 gate 同一口径——点名根目录会静默漏掉
+        # 配置里的另一处。
+        run: python -m pytest -v
 
   # ---------------------------------------------------------------------------
   # Shell 编译：Python 侧门禁覆盖不到 C#。漏 using、类型名拼错、改了签名没改调用，

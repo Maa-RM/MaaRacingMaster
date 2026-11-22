@@ -38,7 +38,9 @@ jobs:
           pip install "pytest>=7.0" numpy opencv-python-headless "onnxruntime==1.24.4" "MaaFw==5.12.3"
 
       - name: 运行单元测试
-        run: python -m pytest tests -v
+        # 不在命令行点名目录：与常规 CI 同一口径，走项目测试配置的 testpaths
+        # （根测试 + 无限驾驶插件测试），发布门禁不缺插件用例。
+        run: python -m pytest -v
 
   release:
     name: 创建 Release
