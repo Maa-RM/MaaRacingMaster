@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-"""启动步骤的启动器检查闸门：分流、缓存、代点更新与干净收停
+"""启动步骤的启动器检查闸门：分流、代点更新与干净收停
 （闸门事实来自 2026-11-22 实测，证据以 commit 46727db 为指针）。
 
 判定表：
   闸门关（环境开关）→ 不查，沿用直启；
   无启动器 / 拉起失败 → unavailable，直启照旧；
-  缓存新鲜 → 不拉启动器，直启照旧；
-  无需更新 → 关启动器、写缓存、直启；
+  无需更新 → 关启动器、直启；
   需要更新 + 开关关 → 不拉游戏、留启动器页面，结局 needs_update；
   需要更新 + 开关开 → 出窗后代点、等装好、关启动器、直启；
   启动器自行拉起游戏（updated_game）→ 接管现有窗口，不起第二份。
@@ -63,9 +62,8 @@ class _Session:
 
 @pytest.fixture()
 def gate_on(monkeypatch, tmp_path):
-    """闸门打开 + 启动器交互全部打桩 + 缓存目录隔离到 tmp。"""
+    """闸门打开 + 启动器交互全部打桩。"""
     monkeypatch.setenv("MAARM_APP_LAUNCHER_CHECK", "1")
-    monkeypatch.setattr(bs, "data_dir", lambda: tmp_path)
     launcher = tmp_path / "Launcher.exe"
     game = tmp_path / "g112-Win64-Shipping.exe"
     launcher.write_bytes(b"L")
@@ -118,39 +116,13 @@ def test_gate_env_off_skips_check_and_launches_directly(monkeypatch, gate_on):
     assert gate_on["game_pids"] == ["g112-Win64-Shipping.exe"]
 
 
-def test_no_update_closes_launcher_writes_cache_and_launches(gate_on, tmp_path):
+def test_no_update_closes_launcher_and_launches(gate_on):
     ok, _step, logs, _app = _run()
     assert ok is True
     assert gate_on["launcher_pids"] == ["Launcher.exe"]
     assert gate_on["closed"] == 1
     assert gate_on["game_pids"] == ["g112-Win64-Shipping.exe"]
-    assert (tmp_path / "launcher_check.json").is_file()
     assert any("无需更新" in m for _lv, m in logs)
-
-
-def test_cache_fresh_skips_launcher_entirely(gate_on, tmp_path):
-    # 先跑一遍写入缓存，再跑第二遍：启动器不得被再次拉起
-    _run()
-    state = gate_on
-    state["launcher_pids"].clear()
-    state["game_pids"].clear()
-    ok, _step, logs, _app = _run()
-    assert ok is True
-    assert state["launcher_pids"] == []
-    assert state["game_pids"] == ["g112-Win64-Shipping.exe"]
-    assert any("缓存仍新鲜" in m for _lv, m in logs)
-
-
-def test_cache_invalid_when_game_changes(gate_on, tmp_path, monkeypatch):
-    _run()
-    # 游戏文件被改动（模拟手动更新过）→ 指纹失配 → 重新检查
-    game = tmp_path / "g112-Win64-Shipping.exe"
-    game.write_bytes(b"G2")
-    state = gate_on
-    state["launcher_pids"].clear()
-    ok, _step, _logs, _app = _run()
-    assert ok is True
-    assert state["launcher_pids"] == ["Launcher.exe"]
 
 
 def test_update_without_toggle_stops_cleanly_leaving_launcher(gate_on):
