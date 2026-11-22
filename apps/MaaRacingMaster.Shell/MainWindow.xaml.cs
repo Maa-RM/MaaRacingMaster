@@ -71,6 +71,33 @@ public sealed partial class MainWindow : Window
         ShellLog.Append("[update] 提交已进入替换相位，壳计划内关闭");
     }
 
+    /// <summary>计划内重启：留一帧让前端显示「正在重启」，再走正常关窗收尾；
+    /// 等待进程在我们退出后才拉起新实例，互斥体与 WebView2 目录都不会撞。</summary>
+    private void ScheduleRestartShutdown()
+    {
+        if (_roundState == RoundState.Closing) return;
+        EnterClosing();
+        if (_closeScheduled) return;
+        _closeScheduled = true;
+        var dispatcher = DispatcherQueue;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+            dispatcher.TryEnqueue(() =>
+            {
+                try
+                {
+                    if (!_windowClosed) Close();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[shell] 重启关窗失败: {ex.Message}");
+                }
+            });
+        });
+        ShellLog.Append("[restart] 壳计划内关闭，等待新实例接管");
+    }
+
     /// <summary>提交闸门：后端原子冻结 → 有界退出确认。
     /// 任一步失败负责解冻并返回原因（协调器据此放弃提交、状态回 ready）；
     /// 全部通过返回 null（可交更新器）。解冻失败只留日志：后端已断开时冻结随进程消亡。</summary>
@@ -303,6 +330,7 @@ public sealed partial class MainWindow : Window
             initialAwaitingStable: prefFromPreview,
             savePreferences: UpdatePreferences.Save);
         coordinator.ApplyingStarted += ScheduleApplyShutdown;
+        AppRestarter.Scheduled += ScheduleRestartShutdown;
         RpcBridge.AttachCoordinator(coordinator);
 
         // 仓库根（含 pyproject.toml 的目录）作为所有相对路径的锚：venv、前端 HTML 一律以其为基准。

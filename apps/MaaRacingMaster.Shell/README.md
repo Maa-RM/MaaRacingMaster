@@ -17,6 +17,8 @@
 | `PeepWindow.xaml(.cs)` | PEEP 悬浮窗（工具窗 + 置顶 + 无系统边框，标题栏 HTML 自绘） |
 | `RpcBridge.cs` | HTML ↔ C# ↔ sidecar 的 RPC 转发（主窗口与 PEEP 窗**共用**：回发按 `sender.CoreWebView2` 定位，不依赖窗口实例字段，故各窗互不串台） |
 | `PythonSidecar.cs` | JSONL transport（见下） |
+| `WebView2RuntimeUpdater.cs` | 运行时版本查询与按需更新：固定微软官方跳转、验签后静默安装；装完重启本程序才换用新版本 |
+| `AppRestarter.cs` | 计划内重启：拉起等待进程，等本进程退出后按同一路径拉起新实例（源码/打包共用） |
 | `TaskbarProgress.cs` | 任务栏进度（`ITaskbarList3`）：运行期不确定进度，结束/关窗熄灭；失败只降级本能力 |
 | `AppNotifications.cs` | 系统通知：Windows 老版 Toast 通道，只显示、不注册点击激活 |
 | `app.manifest` | UAC 提权声明（一次提权，child 继承） |

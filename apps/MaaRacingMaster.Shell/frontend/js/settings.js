@@ -232,21 +232,73 @@
     });
   }
 
+  // ---------- 环境中心：运行环境 tab ----------
+  // WebView2 是渲染硬前置（缺失即界面不可用），不放进「可选依赖」；这里只做版本展示
+  // 与用户主动触发的更新。下载源与验签都在宿主侧，前端不持有地址。
+  function runtimeItemHtml(st, msg) {
+    const installed = st && st.installed ? String(st.installed) : '';
+    const running = st && st.running ? String(st.running) : '';
+    const ready = !!installed;
+    const restart = ready && running && running !== installed;
+    const state = !ready ? 'na' : (restart ? 'todo' : 'done');
+    const pill = !ready ? '读取失败' : (restart ? '待重启' : '已就绪');
+    const line = !ready
+      ? '无法读取运行时版本。'
+      : '已安装 ' + installed
+        + (running && running !== installed ? ' · 当前界面仍在用 ' + running : '');
+    const note = msg ? '<p class="opt-item-note">' + escHtml(msg) + '</p>' : '';
+    const official = '<button type="button" class="opt-btn opt-btn--ghost dep-guide" '
+      + 'data-target="webview2">打开官方页</button>';
+    // 三种状态给三种动作：待重启只该重启，已就绪只留轻量检查入口，不再常驻红色主按钮
+    let actions;
+    if (!ready) {
+      actions = '<button type="button" class="opt-btn opt-btn--primary" data-wv2="update">'
+        + '尝试修复</button>' + official;
+    } else if (restart) {
+      actions = '<button type="button" class="opt-btn opt-btn--primary" data-wv2="restart">'
+        + '重启本程序</button>' + official;
+    } else {
+      actions = '<span class="opt-item-note" style="margin-top:0">当前界面正在使用该版本</span>'
+        + '<button type="button" class="opt-btn opt-btn--ghost" data-wv2="update" '
+        + 'title="下载微软官方安装包并安装（约 1.7MB）">更新运行时</button>'
+        + official;
+    }
+    return '<div class="opt-item opt-item--' + state + '">'
+      + '<div class="opt-item-title">Edge WebView2 运行时</div>'
+      + '<div class="opt-item-effect">本程序界面的渲染引擎。版本过旧会影响新特性与安全修复；'
+      + '更新只在你点击后进行，不在后台改动系统。</div>'
+      + '<p class="opt-item-note">' + escHtml(line) + '</p>'
+      + note
+      + '<details class="opt-details"><summary>技术细节</summary><div class="opt-details-body">'
+      + '<p>安装器：微软官方 WebView2 引导程序（约 1.7MB）。下载后先校验微软签名，通过才执行。</p>'
+      + '<p>来源：固定为微软官方跳转；最终地址必须落在 microsoft.com 域，否则中止。</p>'
+      + '<p>没有单独的轻量版本查询：微软只提供这个安装器，每次都会下载约 1.7MB 并幂等安装；'
+      + '已是最新时安装器不会改动系统。</p>'
+      + '<p>生效方式：安装完成需重启本程序，当前界面才会换用新版本。</p>'
+      + '</div></details>'
+      + '<div class="opt-item-foot"><span class="opt-pill opt-pill--' + state + '">' + pill + '</span>'
+      + '<span class="opt-actions">' + actions + '</span></div>'
+      + '</div>';
+  }
+
+  async function renderRuntimeList(el, msg) {
+    const head = '<div class="dep-note">这是运行本程序所必需的浏览器内核。'
+      + '更新动作只在你点击后执行，不会在后台改动系统。</div>';
+    el.innerHTML = head + '<p class="opt-item-note">正在读取…</p>';
+    try {
+      const st = await maarm.call('webview2_status');
+      el.innerHTML = head + runtimeItemHtml(st, msg);
+    } catch (e) {
+      el.innerHTML = head
+        + '<p class="maarm-modal-error">读取 WebView2 状态失败：'
+        + escHtml(e && e.message ? e.message : e) + '</p>';
+    }
+  }
+
   // 环境中心（设置页入口）：tab「权限优化」（注册表优化，三档汇总 + 一键全部）
   // + tab「可选依赖」（ViGEmBus 驱动 / 界面字体，检测 + 引导）
-  async function openOptimizerCenter() {
-    let items;
-    try {
-      const d = await maarm.call('get_registry_optimizations');
-      items = d.items || [];
-    } catch (e) {
-      showError('读取优化项失败: ' + e.message);
-      return;
-    }
-    if (!items.length) {
-      showError('当前系统没有可用的注册表优化项');
-      return;
-    }
+  // + tab「运行环境」（WebView2 硬前置：版本展示 + 用户主动触发的更新）。
+  function openOptimizerCenter() {
     const modal = openModal({
       title: '环境中心',
       maxWidth: 540,
@@ -254,14 +306,17 @@
         '<div class="env-tabs">'
         + '<button type="button" class="env-tab env-tab--on" data-pane="pane-perm">权限优化</button>'
         + '<button type="button" class="env-tab" data-pane="pane-dep">可选依赖</button>'
+        + '<button type="button" class="env-tab" data-pane="pane-runtime">运行环境</button>'
         + '</div>'
         + '<div class="env-pane env-pane--on" id="pane-perm"><div id="opt-summary"></div><div id="opt-center-list"></div></div>'
-        + '<div class="env-pane" id="pane-dep"><div id="dep-center-list"></div></div>',
+        + '<div class="env-pane" id="pane-dep"><div id="dep-center-list"></div></div>'
+        + '<div class="env-pane" id="pane-runtime"><div id="runtime-center-list"></div></div>',
       buttons: [{ text: '关闭', primary: true, onClick: (m) => m.close() }],
     });
     const summaryEl = modal.card.querySelector('#opt-summary');
     const listEl = modal.card.querySelector('#opt-center-list');
     const depEl = modal.card.querySelector('#dep-center-list');
+    const runtimeEl = modal.card.querySelector('#runtime-center-list');
     // 汇总三档：待优化 / 已优化 / 无需处理。available===false 计入"无需处理"，不混入"已优化"
     function renderSummary(list) {
       const todo = list.filter((it) => it.available !== false && !it.optimized);
@@ -281,6 +336,11 @@
       try {
         const d = await maarm.call('get_registry_optimizations');
         const its = d.items || [];
+        if (!its.length) {
+          summaryEl.innerHTML = '';
+          listEl.innerHTML = '<p class="maarm-modal-error">当前系统没有可用的注册表优化项</p>';
+          return;
+        }
         renderSummary(its);
         listEl.innerHTML = its.map(optimizerItemHtml).join('');
       } catch (e) {
@@ -302,6 +362,36 @@
           await maarm.call('open_external_url', { target: guideBtn.dataset.target });
         } catch (e) {
           showError('打开链接失败: ' + e.message);
+        }
+        return;
+      }
+      const wv2Btn = ev.target.closest('[data-wv2]');
+      if (wv2Btn) {
+        if (wv2Btn.disabled) return;
+        const mode = wv2Btn.dataset.wv2;
+        wv2Btn.disabled = true;
+        if (mode === 'restart') {
+          wv2Btn.textContent = '正在重启…';
+          try {
+            await maarm.call('app_restart', {});
+          } catch (e) {
+            showError('重启失败：' + (e && e.message ? e.message : e));
+            await renderRuntimeList(runtimeEl, '重启未成功，可手动关闭后重新打开本程序。');
+          }
+          return;
+        }
+        wv2Btn.textContent = '下载安装中…';
+        wv2Btn.title = '正在下载并安装微软官方安装包（约 1.7MB）';
+        try {
+          const res = await maarm.call('webview2_update', {});
+          const after = res && res.after ? String(res.after) : '';
+          const msg = res && res.changed
+            ? '已更新到 ' + after + '，重启本程序后生效。'
+            : '安装程序已完成；版本未变化，说明当前已是最新版本。';
+          await renderRuntimeList(runtimeEl, msg);
+        } catch (e) {
+          showError('更新 WebView2 失败：' + (e && e.message ? e.message : e));
+          await renderRuntimeList(runtimeEl, '更新未完成，可稍后重试，或打开官方页面手动安装。');
         }
         return;
       }
@@ -335,6 +425,7 @@
     });
     refresh();
     renderDepList(depEl);
+    renderRuntimeList(runtimeEl);
   }
 
   // 启动体检：存在未优化且未忽略的项则弹一键优化引导（按项忽略，新增优化项不受影响）

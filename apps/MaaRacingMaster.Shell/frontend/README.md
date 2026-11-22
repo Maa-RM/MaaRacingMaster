@@ -359,7 +359,7 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
 ## 环境中心（设置页）
 
 设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.maarm-tool-btn--block` 不另设视觉）
-打开 `js/settings.js` `openOptimizerCenter()`：双 tab 弹层，tab 视觉对齐顶部导航
+打开 `js/settings.js` `openOptimizerCenter()`：三 tab 弹层，tab 视觉对齐顶部导航
 （文字 + 主色下划线，`.env-tabs` / `.env-pane`）。
 
 - **「权限优化」tab**：注册表优化项（`get_registry_optimizations`），三态卡片
@@ -373,9 +373,21 @@ C 不能拉太高：超出色域的颜色会被浏览器裁回 sRGB，而裁剪�
   （`get_optional_dependencies`，ViGEmBus 状态与启动拦截 `VIGEM_BUS_MISSING`
   同源，复用 `gamepad_available()`）。动作 = 引导，外链走逻辑目标名白名单
   （`open_external_url` + `remote_meta.py` `EXTERNAL_TARGETS`：`vigembus` /
-  `noto_font`），**驱动类只引导不代装**（内核驱动自动安装越权）。
+  `noto_font` / `webview2`），**驱动类只引导不代装**（内核驱动自动安装越权）。
+- **「运行环境」tab**：硬前置的维护页，当前只有 WebView2。显示已安装版本与当前界面
+  实际使用的版本；两者不一致时提示重启。**不参与启动体检**（不进注册表优化项，
+  因此不需要“以后不再提示”，也没有额外弹窗）。动作按状态分流：待重启 → 「重启本程序」；
+  已就绪 → 轻量「更新运行时」，不再常驻红色主按钮；读取失败 → 「尝试修复」。更新动作由
+  宿主执行：固定微软官方跳转 → 下载约 1.7MB 引导程序到系统临时目录 → 校验微软签名 →
+  静默安装；安装结束立即删除临时文件，下一次更新前再清一遍残留。前端只表达意图，不持有
+  地址。微软没有单独的轻量版本查询，点一次「更新运行时」就会下载并幂等安装，不是纯检查；
+  界面对此如实标注。重启同样由宿主排程：等待进程等旧进程退出后按同一路径拉起新实例
+  （源码与打包共用；dotnet 启动时补回 dll），侧车在关窗收尾里优雅退出。装完未重启时版本
+  行会同时显示“已安装”和“当前界面仍在用”。
 - 行为锁：`tests/test_sidecar_optional_deps.py`（条目形状 / 状态枚举 / 白名单目标 /
-  字体项不经后端返回）；RPC 白名单三方一致性由 `tests/test_rpc_allowlist.py` 锁。
+  字体项不经后端返回）；`tests/test_shell_webview2_runtime_update.py`（运行环境页签、
+  固定下载源、验签先于执行、启动体检不纳入）；RPC 白名单三方一致性由
+  `tests/test_rpc_allowlist.py` 锁。
 
 ## 关于页彩蛋（版本号掉落 + 员工守则）
 

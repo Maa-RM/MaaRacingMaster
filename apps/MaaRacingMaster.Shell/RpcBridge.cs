@@ -45,6 +45,11 @@ internal static class RpcBridge
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
         "update_set_channel", "update_set_source",
+        // 宿主运行环境维护（WebView2RuntimeUpdater）：下载源固定为微软官方跳转，
+        // 前端只表达「查状态 / 更新」两个意图，不携带任何 URL 或路径。
+        "webview2_status", "webview2_update",
+        // 计划内重启（AppRestarter）：等本进程退出后由同构等待进程拉起新实例。
+        "app_restart",
     };
 
     /// <summary>宿主更新动作集（壳自有，处理不经 sidecar；后端不可用不影响它们）。
@@ -54,6 +59,8 @@ internal static class RpcBridge
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
         "update_set_channel", "update_set_source",
+        "webview2_status", "webview2_update",
+        "app_restart",
     };
 
     /// <summary>
@@ -111,6 +118,21 @@ internal static class RpcBridge
     private static async Task HandleHostCallAsync(WebView2 sender, long callId, string method,
                                                   JsonElement? paramsEl)
     {
+        // 运行环境维护不依赖更新协调器：后端/协调器不可用时仍能查版本与修复运行时。
+        if (method is "webview2_status" or "webview2_update")
+        {
+            await HandleWebView2CallAsync(sender, callId, method).ConfigureAwait(false);
+            return;
+        }
+
+        // 计划内重启：先回复再由窗口延迟关窗，等待进程负责在退出后拉起新实例。
+        if (method == "app_restart")
+        {
+            var (restartOk, restartError) = AppRestarter.Schedule();
+            await ReplyAsync(sender, callId, restartOk, null, restartError);
+            return;
+        }
+
         UpdateSnapshot data;
         string? error = null;
         var ok = true;
@@ -145,6 +167,41 @@ internal static class RpcBridge
             return;
         }
         await ReplyAsync(sender, callId, ok, null, error);
+    }
+
+    /// <summary>WebView2 运行环境：查已安装版本 vs 当前界面实际使用的版本，或下载安装最新版。
+    /// 正在运行的界面不会因安装而切换版本，前端据此提示重启。</summary>
+    private static async Task HandleWebView2CallAsync(WebView2 sender, long callId, string method)
+    {
+        string? running = null;
+        try
+        {
+            running = sender.CoreWebView2?.Environment.BrowserVersionString;
+        }
+        catch
+        {
+            // 窗口关闭边缘读取失败只影响「待重启」判断，不阻断状态查询
+        }
+
+        if (method == "webview2_status")
+        {
+            var installed = WebView2RuntimeUpdater.InstalledVersion();
+            if (installed is null)
+            {
+                await ReplyAsync(sender, callId, false, null, "无法读取 WebView2 运行时版本");
+                return;
+            }
+            var data = new
+            {
+                installed,
+                running,
+            };
+            await ReplyAsync(sender, callId, true, data, null);
+            return;
+        }
+
+        var result = await WebView2RuntimeUpdater.UpdateAsync();
+        await ReplyAsync(sender, callId, result.Ok, result.Data, result.Error);
     }
 
     private static async Task HandleCallAsync(WebView2 sender, long callId, string method, JsonElement? paramsEl)
