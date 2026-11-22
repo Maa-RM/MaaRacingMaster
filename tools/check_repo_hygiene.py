@@ -66,7 +66,8 @@
 
 用法：
     python tools/check_repo_hygiene.py                 # 检查（CI 用）
-    python tools/check_repo_hygiene.py --update-baseline   # 重写基线（仅立法/收缩时用）
+    python tools/check_repo_hygiene.py --update-baseline   # 收缩基线：只保留仍在命中的存量；有未登记的新违规时拒绝
+    python tools/check_repo_hygiene.py --update-baseline --admit-new   # 立法显式登记：把当前全部命中写入基线（人工评审后用）
 """
 from __future__ import annotations
 
@@ -641,25 +642,43 @@ class Checker:
 def main(argv: list[str] | None = None, root: Path | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--update-baseline", action="store_true")
+    ap.add_argument("--admit-new", action="store_true")
     args = ap.parse_args(argv)
+    if args.admit_new and not args.update_baseline:
+        ap.error("--admit-new 只与 --update-baseline 同用（登记即收缩的例外）")
     ck = Checker(root or ROOT)
     viol, baseline = ck.scan()
 
     if args.update_baseline:
-        # 立法/收缩时用：保留基线里已有的注释（各条存量的分诊来历），只重写键行。
-        # 丢掉这些注释等于丢掉「为什么这一行可以豁免」，下一次分诊只能重猜。
+        # 收缩语义（棘轮「只减不增」的机检保障）：默认只写「旧基线 ∩ 当前命中」，
+        # 已消失的存量随本次收缩移除；出现未登记的新违规时拒绝执行——误用更新
+        # 命令不得把新增问题转成已知例外。立法场景（新规则的存量首次豁免）由
+        # 人评审后加 --admit-new 显式登记，这是唯一能把键行加进基线的入口。
+        # 保留基线里已有的注释（各条存量的分诊来历），只重写键行——丢掉这些注释
+        # 等于丢掉「为什么这一行可以豁免」，下一次分诊只能重猜。
         old_comments: list[str] = []
         if ck.baseline_path.exists():
             old_comments = [ln for ln in ck.baseline_path.read_text(encoding="utf-8").splitlines()
                             if ln.startswith("#")]
+        fresh = viol - baseline
+        if fresh and not args.admit_new:
+            print(f"存在 {len(fresh)} 条不在基线内的新违规，拒绝收缩（基线只减不增）：")
+            for v in sorted(fresh):
+                print(f"  [未登记] {v}")
+            print("确属新规则立法需要豁免的存量，加 --admit-new 显式登记；否则先修复违规。")
+            return 1
+        keep = viol if args.admit_new else viol & baseline
         header = ["# 仓库卫生基线（棘轮：只减不增）。立规 2026-09-18 的存量违规在此豁免，",
                   "# 按触碰面分诊后删除对应行；新增违规不在本文件 = CI 红。",
                   "# 键格式：规则|文件/主题|标识。语义见 tools/check_repo_hygiene.py 与 tools/experiments/README.md。"]
-        body = "\n".join(sorted(viol))
         extra = [c for c in old_comments if c not in header]
-        text = "\n".join(header + extra) + ("\n" + body if body else "") + "\n"
+        text = "\n".join(header + extra) + ("\n" + "\n".join(sorted(keep)) if keep else "") + "\n"
         ck.baseline_path.write_text(text, encoding="utf-8")
-        print(f"基线已重写：{len(viol)} 条存量违规（保留注释 {len(extra)} 行）")
+        if args.admit_new:
+            print(f"基线已显式登记：{len(keep)} 条（含新增 {len(fresh)} 条；保留注释 {len(extra)} 行）")
+        else:
+            print(f"基线已收缩：保留 {len(keep)} 条仍在命中的存量"
+                  f"（移除 {len(baseline - viol)} 条已消失；保留注释 {len(extra)} 行）")
         return 0
 
     fresh = viol - baseline
