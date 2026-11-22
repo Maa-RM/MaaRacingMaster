@@ -28,8 +28,8 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 
 **debug 存图**（ctx.debug 开关，v1 口径）：程序驾驶局按阶段落 raw 原帧
 （10fps 节流，``debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/``），与录制
-语料同一套 session_layout 布局；录制语料不受此门。控制链还没有策略快照可叠，
-先只存 raw 不画叠加（索引 hud=null），后续接上叠加零迁移。
+语料同一套 session_layout 布局；录制语料不受此门。控制局取证只存 raw 不画
+叠加（索引 hud=null 表达缺席），决策取证走驾驶 trace。
 """
 
 from __future__ import annotations
@@ -615,10 +615,10 @@ class InfiniteDriveModule(ActivityModule):
     def _begin_debug_view(self, phase: str) -> DebugPairWriter | None:
         """起控制局 raw 调试图落盘器并登记行为清单段；失败只告警返回 None。
 
-        控制链还没有策略快照可叠，先只存 raw（索引 hud=null 表达缺席）；
-        布局与索引字段与叠加局同一套（session_layout 唯一口径），后续接上
-        叠加零迁移。局前缀按**局**生成（_run_flow 每轮刷新），同一局的两个
-        驾驶阶段共用——不能用会话编号代替：同一次启动连跑多局会互相覆盖。"""
+        控制局取证只存 raw（索引 hud=null 表达叠加图缺席）；布局与索引字段
+        与录制局同一套（session_layout 唯一口径）。局前缀按**局**生成
+        （_run_flow 每轮刷新），同一局的两个驾驶阶段共用——不能用会话编号
+        代替：同一次启动连跑多局会互相覆盖。"""
         if not self._debug_enabled():
             return None
         try:
@@ -629,8 +629,7 @@ class InfiniteDriveModule(ActivityModule):
             upsert_drive_segment(behavior, round_no=self._round_no,
                                  phase=phase_no, stamp=stamp)
             return DebugPairWriter(behavior / f"{stamp}_p{phase_no}",
-                                   phase=phase_no, round_no=self._round_no,
-                                   render_hud=False)
+                                   phase=phase_no, round_no=self._round_no)
         except Exception as exc:  # noqa: BLE001 —— 取证是旁路，不阻断驾驶
             self._tlog(f"[无限驾驶] 调试图落盘器启动失败（本轮不存图）: {exc!r}", "WARNING")
             return None

@@ -85,13 +85,13 @@ def test_select_skips_corrupt_user_pack_and_uses_packaged(monkeypatch, tmp_path)
     assert err is None and path == good
 
 
-def test_lane_drive_pack_requires_the_lane_model_and_excludes_depth():
-    from maaracing_master.plugins.infinite_drive import DEPTH_MODEL_REL
-
+def test_lane_drive_pack_requires_the_lane_model():
     assert set(model_assets.DRIVE_MANIFEST) == {model_assets.LANE_MODEL_REL}
-    assert DEPTH_MODEL_REL not in model_assets.MODEL_MANIFEST
-    assert model_assets.PERCEPTION_MODEL_REL in model_assets.MODEL_MANIFEST
-    assert model_assets.LANE_FP16_MODEL_REL in model_assets.MODEL_MANIFEST
+    assert set(model_assets.MODEL_MANIFEST) == {
+        model_assets.PERCEPTION_MODEL_REL,
+        model_assets.LANE_MODEL_REL,
+        model_assets.LANE_FP16_MODEL_REL,
+    }
 
 
 def test_unchanged_model_is_reused_from_previous_managed_pack(monkeypatch, tmp_path):

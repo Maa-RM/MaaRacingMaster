@@ -1,41 +1,29 @@
 # -*- coding: utf-8 -*-
-"""阶段 B 世界模型层：感知框流 → 候选横向目标列表。
+"""几何标定真源与地面投影常数。
 
-**职责边界**（control-route §一 分层表「世界模型」行）：只做两件事——
-框**按 y 排距离**（设计决定 6：相机固定时 y 与距离单调对应，不做单目深度）、
-框**按 x 排横向**（A1 透视归一尺子，CODE_WIKI §6 定档口径）。
-收益/风险/迟滞属决策层，金币组聚合属 §7#3 `[需实测]` 结掉之后——本层不做、不预置。
+**几何真源**：标定常数全部住 `resources/calibration/gate0.json`（三源分立：
+游戏事实 RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()`
+fail-loud 读取，本模块不写标定字面量——写了就是第二份真相。口径与升级路径
+注记随文件 `_notes` 走。
 
-**归一口径**（保险杠机位；标定样本见 gate0 `_source`/`_notes`）：
+**归一纪律**：未经按行归一的像素横向差**禁止**当距离用——远处框分母过小，
+像素差与车道量之间没有线性关系；横向读数一律来自车道线拟合（lane_obs）或
+经 gate0 尺子归一，距离用框底行对地平线行的落差按地面投影换算。
 
-    x_lane = (cx − vpx)/(cy − y_h) × a_x
-
-即"目标相对道路消失点方向、按行归一、换算成车道单位"。相机装在车头且钉在
-自车中心，自车横向原点就是消失点列，式内不需要自车行项。未经本式归一的
-像素横向差**禁止**当距离用（§6 锁的纪律，trick 首轮撤回的直接教训）。
-
-**几何真源**：常数全部住 `resources/calibration/gate0.json`（三源分立：游戏事实
-RULES / 几何标定 gate0 / 行为参数 decision），经 `load_calib()` fail-loud 读取，
-本模块不写字面量默认值——写了就是第二份真相。口径与升级路径注记随文件 `_notes` 走。
-
-**适用域**（随输出如实携带，消费方必须处理）：
-- 远处框（分母 (cy − y_h) < cal.min_denom）：`x_lane=None`——归一发散不可信，
-  距离序仍有效（回放实测：不设此闸远处车框读出 +3 车道，超出路面半宽）；
-- 弯道帧：直道口径失效（§6），归一量有系统偏差——本层不判弯道（判据属
-  校验层，设计决定 10），决策层接保守态。
+**捕获几何**（WGC 固定 1280×720）见 gate0 与各消费模块的口径注记。
 """
 
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from functools import lru_cache
 
 from maaracing_master.plugins.infinite_drive import GATE0_FILE
 
-# 保险杠视角的地面纵深投影尺。线角的全幅焦距独立从标定文件读取。
-# 焦距取横向视场口径的实测值，相机高见 RULES §8.1。
+# 保险杠视角的地面纵深投影尺（距离 = GROUND_FOCAL_PX × 相机高 ÷ 框底行落差）。
+# 线角的全幅焦距独立从标定文件读取。焦距取横向视场口径的实测值，
+# 相机高见 RULES §8.1。
 GROUND_FOCAL_PX = 470.0
 BUMPER_CAM_H_M = 1.25
 
@@ -50,12 +38,11 @@ class Calib:
     """
 
     vpx: float        # 消失点 x
-    y_h: float        # 地平线行（2D 尺子口径；合成点图的地平线逐帧取车道线灭点，
-                      # 缺值时回退此值）
-    focal_px: float   # 线角几何的全幅相机焦距（≠ 合成点图的固定投影焦距 FOCAL_PX）
+    y_h: float        # 地平线行（2D 尺子口径）
+    focal_px: float   # 线角几何的全幅相机焦距（≠ 地面投影焦距 GROUND_FOCAL_PX）
     a_x: float        # 横向尺子：归一量 → 车道单位（保险杠机位重标）
-    min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → x_lane=None
-    lane_w_m: float   # 一条车道的米制宽（3D 找边的车道量换算锚；出处见 _notes）
+    min_denom: float  # 归一适用域下限：分母 (cy − y_h) 低于此 → 横向置空
+    lane_w_m: float   # 一条车道的米制宽（车道量 ↔ 米制换算锚；出处见 _notes）
 
 
 def _require(d: dict, key: str) -> float:
@@ -85,61 +72,3 @@ def _read_gate0(path) -> Calib:
 @lru_cache(maxsize=1)
 def load_calib() -> Calib:
     return _read_gate0(GATE0_FILE)
-
-
-# 类别名唯一真源在此（感知层 Detection 类别 ↔ 域内 kind 字符串），
-# tracking/plan/coin_group 一律从这里取，不再各自写字面量。
-KIND_COIN = "coin"
-KIND_CAR = "car"
-KIND_BONUS = "bonus"
-
-# 捕获几何（WGC 固定 1280×720）。行率到站仪器的终点改用**画面下缘**而不是
-# 追车机位的自车接地点行：保险杠相机在车头，自车不在画面里，自车行不是可
-# 观测几何；下缘是相机无关的边界（该行地面约在相机前 3m，像素粗仪器的固有
-# 偏置，只作无深度锚目标的粗回退）。
-IMAGE_H = 720
-IMAGE_W = 1280
-
-
-def x_lane_of(cx: float, cy: float, cal: Calib) -> float:
-    """A1 归一尺子（保险杠机位，无自车项；公式见本模块 docstring）。公开供
-    tracking 层复用——同一公式只许有一份，禁止复制第二份（禁止建立第二份真相）。"""
-    return (cx - cal.vpx) / (cy - cal.y_h) * cal.a_x
-
-
-def metric_x_of(cx: float, z_m: float, focal_px: float, vpx: float) -> float:
-    """米制横位（右正）：侧别只看框心相对消失点，纵深只取量级。
-
-    车头系 z 过零（并排/刚超过）时 z 会变负；带符号相乘会把同一辆车翻到
-    另一侧（20261115_131153 实测：z>0 的 318 帧横位与像素同侧 318/318，
-    z<0 的 7 帧 7/7 反向）。纵深取绝对值保住侧别，量级仍是该框对应的距离。"""
-    return (cx - vpx) * abs(z_m) / focal_px
-
-
-def t_meet_car_s(rel_px_per_fid: float, cy: float, cal: Calib,
-                 fid_rate_hz: float) -> float:
-    """车流到画面下缘的秒数（地面流积分式，2026-10-11 V0 归因后 cars 换基；
-    2026-10-23 保险杠机位终点从自车行改为画面下缘——自车不在画面里）。
-
-    线性行率式 (D−cy)/(rel·hz) 有两处契约错误：① rel 单位是 px/fid
-    不是 px/tick（fid 率 ≠ 控制拍率，消费偏差恒定高估 TTC）；② 行速率随
-    行号二次增长（针孔投影下恒定相对纵向速度的必然形状 r ∝ (cy−y_h)²），
-    线性式把剩余行程当匀速，远车到站时间虚高一个量级。本式对 1/r 沿行
-    积分：k = rel/(cy−y_h)²（**per-car**——rel 本就是相对接近率，他车非
-    静止的修正天然在内，他车加减速经 EMA 在数拍内进入 k），
-
-        t = ∫ dy/(k(y−y_h)²) = (1/d − 1/D)/k = d(D−d)/(D·rel·f_fid)
-
-    其中 d=cy−y_h、D=IMAGE_H−y_h、f_fid=采集帧率（px/fid→秒的换算锚，
-    由 Tracker 逐拍在线估计随 obs 下发）。不接近（rel≤0）或已到下缘
-    （cy≥IMAGE_H 积分为负）→ 0/inf 语义与旧式一致；fid_rate_hz 必须>0
-    （供数缺位时调用方自决退路，本函数不代作主张）。"""
-    if fid_rate_hz <= 0:
-        raise ValueError(f"fid_rate_hz={fid_rate_hz} 非正（px/fid→秒无换算锚）")
-    d = cy - cal.y_h
-    if rel_px_per_fid <= 0 or d <= 0:
-        return math.inf if rel_px_per_fid <= 0 else 0.0
-    D = IMAGE_H - cal.y_h
-    t_fid = d * (D - d) / (D * rel_px_per_fid)
-    return max(0.0, t_fid) / fid_rate_hz
-
