@@ -125,6 +125,36 @@ const INSTRUMENT = () => `
     process.exit(2);
   }
 
+  if (MODE === 'autoclick') {
+    await page.evaluate(INSTRUMENT());
+    // 自动点击时序：三个首访分散在 +2s / +15s / +45s（量化首访停顿随启动时长的梯度），
+    // +60s 起再访对照。点击走真实 handler 路径（el.click()），记录器时间线自带点击时刻。
+    await page.evaluate(() => {
+      const schedule = [
+        [2000, 'data'], [15000, 'settings'], [45000, 'about'],
+        [60000, 'control'], [70000, 'data'], [75000, 'settings'], [80000, 'about'],
+      ];
+      window.__autoclickSchedule = schedule.map(([t, tab]) => t);
+      schedule.forEach(([t, tab]) => setTimeout(() => {
+        const btn = document.querySelector('.maarm-tab[data-tab="' + tab + '"]');
+        if (btn) btn.click();
+      }, t));
+    });
+    console.log(JSON.stringify({ autoclick: 'scheduled', waitMs: 92000 }));
+    // 等 92s 再退出（node 进程保持到日程跑完），由调用方随后 dump
+    await new Promise((r) => setTimeout(r, 92000));
+    const r = await page.evaluate(() => ({
+      anim: window.__anim.splice(0),
+      longtasks: window.__longtasks.splice(0),
+      events: window.__events.splice(0),
+    }));
+    fs.mkdirSync(OUT_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const file = path.join(OUT_DIR, 'autoclick-' + stamp + '.json');
+    fs.writeFileSync(file, JSON.stringify(r, null, 1));
+    console.log(JSON.stringify({ dump: file }, null, 1));
+    process.exit(0);
+  }
   if (MODE === 'install') {
     const inst = await page.evaluate(INSTRUMENT());
     const fp = await fingerprint(page);
