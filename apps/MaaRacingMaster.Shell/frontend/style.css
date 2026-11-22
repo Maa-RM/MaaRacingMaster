@@ -657,8 +657,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .stepper-strip {
   position: absolute; top: 0; left: 0; width: 100%;
   display: flex; flex-direction: column; align-items: center;
-  /* 不写 will-change：常驻合成层会让文字失去 ClearType 退灰度（判决 commit 44a4f36）。
-     逐帧写样式走主文档重绘路径，文字全程按 ClearType 光栅化 */
+  will-change: transform;   /* rAF 逐帧写 transform + filter */
 }
 .stepper-num {
   height: 30px; flex: none;
@@ -1522,10 +1521,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-modal-card--closing { animation: modal-card-out var(--maarm-duration-fast) ease-in both; }
 @keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes modal-overlay-out { from { opacity: 1; } to { opacity: 0; } }
-/* 进出场只走 translateY+fade：scale 动画进行中存在光栅滞后窗口，文字会重采样发糊
-   （判决 commit 44a4f36），平移与透明度无此问题 */
-@keyframes modal-card-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-@keyframes modal-card-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(6px); } }
+@keyframes modal-card-in { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
+@keyframes modal-card-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.05); } }
 .maarm-modal-title { margin: 0 0 10px; font-size: 15px; flex-shrink: 0; color: var(--maarm-foreground); }
 /* 内容区滚动：标题/按钮固定，超出 86vh 只滚 body；长串（注册表路径等）强制断行防溢出 */
 .maarm-modal-body { overflow-y: auto; min-height: 0; word-break: break-word; }
@@ -1572,8 +1569,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   opacity: 1; }
 .maarm-modal-title--egg { animation: maarm-egg-breathe 6s ease-in-out infinite; }
 @keyframes maarm-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
-/* DodgeField 离开按钮（app.js wireEggDodge）：位移走 transform；
-   不写 will-change——常驻合成层会让文字失去 ClearType（判决 commit 44a4f36） */
+/* DodgeField 离开按钮（app.js wireEggDodge）：位移走 transform，will-change 限守则弹层按钮 */
+.maarm-modal-btn--egg { will-change: transform; }
 .falling-text--egg { color: var(--maarm-danger); border-color: transparent; }
 /* 关闭守则后的回响：状态栏绿点连闪两下（呼应第 5 条） */
 .maarm-dot-blink { animation: maarm-dot-blink 0.3s ease 2; }

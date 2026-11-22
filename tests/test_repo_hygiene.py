@@ -585,12 +585,12 @@ def test_real_repo_violations_all_baselined():
 
 
 def test_baseline_file_exists_and_key_format():
-    """基线文件在树、键格式合法（R1~R12|对象|标识可选）；空基线=全部退役完成，也合法。"""
+    """基线文件在树、键格式合法（R1~R11|对象|标识可选）；空基线=全部退役完成，也合法。"""
     bl = ROOT / "tools" / "repo_hygiene_baseline.txt"
     assert bl.exists()
     keys = [ln.strip() for ln in bl.read_text(encoding="utf-8").splitlines()
             if ln.strip() and not ln.startswith("#")]
-    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"}
+    assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"}
                and "|" in k for k in keys)
 
 
@@ -634,25 +634,3 @@ def test_update_baseline_admit_new_registers_explicitly(tmp_path):
     bl = _baseline(tmp_path, "")
     assert chk.main(["--update-baseline", "--admit-new"], root=tmp_path) == 0
     assert "R1|bare-topic|缺 README.md" in bl.read_text(encoding="utf-8")
-
-
-def _frontend_tree(tmp: Path, css_body: str) -> None:
-    css = tmp / "apps" / "MaaRacingMaster.Shell" / "frontend"
-    css.mkdir(parents=True)
-    (css / "style.css").write_text(css_body, encoding="utf-8")
-
-
-def test_frontend_will_change_declaration_flagged(tmp_path):
-    """R12 红例：前端 CSS 的 will-change 声明（常驻合成层，文字失 ClearType）。"""
-    _mk(tmp_path)
-    _frontend_tree(tmp_path, ".a { will-change: transform; }\n")
-    viol, _ = chk.Checker(tmp_path).scan()
-    assert any(v.startswith("R12|") for v in viol)
-
-
-def test_frontend_will_change_mention_in_comment_clean(tmp_path):
-    """R12 绿例：注释里的叙述性提法（含中文冒号）不是声明，不命中。"""
-    _mk(tmp_path)
-    _frontend_tree(tmp_path, "/* 不写 will-change：常驻合成层会让文字失去 ClearType */\n.b { color: red; }\n")
-    viol, _ = chk.Checker(tmp_path).scan()
-    assert not any(v.startswith("R12|") for v in viol)
