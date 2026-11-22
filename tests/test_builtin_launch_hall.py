@@ -150,6 +150,9 @@ def test_window_timeout_falls_back_to_launcher(monkeypatch):
     monkeypatch.setattr(bs.game_process, "spawn",
                         lambda exe, args: launched.append(exe.name) or types.SimpleNamespace(pid=1))
     monkeypatch.setattr(bs.game_process, "detect_launcher_exe", lambda: Path("Launcher.exe"))
+    # 启动器要求管理员权限，回退走 spawn_launcher 的提权路径（裸 Popen 会 740）
+    monkeypatch.setattr(bs.game_process, "spawn_launcher",
+                        lambda exe: launched.append(exe.name) or 4321)
     remaining = [0, 4321]  # 第一轮超时，回退后第二轮拿到窗口
     monkeypatch.setattr(bs.game_process, "wait_for_window",
                         lambda name, timeout, stop: remaining.pop(0))

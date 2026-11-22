@@ -35,6 +35,7 @@
     launch_game: [
       { key: 'path', kind: 'path', label: '程序路径', hint: '（游戏主程序；留空则从启动器配置自动探测）' },
       { key: 'args', kind: 'args', label: '启动参数', hint: '（与启动器实测命令行一致）' },
+      { key: 'auto_update', kind: 'switch', title: '发现更新时自动完成更新', desc: '启动前经官方启动器检查版本；发现更新时代点「更新游戏」并等装好再继续。关闭时发现更新会停下并保留启动器页面，等你手动更新', note: '默认关闭' },
       { key: 'timeout_s', kind: 'number', label: '等待游戏窗口', hint: '（超时则中止本轮）', suffix: '秒', min: 10, max: 600, step: 10 },
       { key: 'hall_timeout_s', kind: 'number', label: '等待进入大厅', hint: '（超时则中止本轮；游戏停在对局中时也会超时）', suffix: '秒', min: 30, max: 900, step: 30 },
     ],
@@ -64,6 +65,7 @@
     if (mid === 'launch_game') {
       const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's'),
                    chipHtml('进入大厅 ≤' + (cfgValue(mid, 'hall_timeout_s') || 300) + 's')];
+      if (cfgValue(mid, 'auto_update')) out.push(chipHtml('自动更新'));
       return out.join('');
     }
     if (mid === 'close_game' && cfgValue(mid, 'exit_app')) return chipHtml('关闭后退出');

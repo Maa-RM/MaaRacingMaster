@@ -1542,6 +1542,14 @@ class SidecarService:
                     results[step_id] = "stopped"
                     all_natural = False
                     break
+                # 步骤按自己的判据主动收停（启动游戏发现需要更新且未开自动更新，
+                # 留下启动器页面）：检查按设计工作，不是失败，也不是手动停止。
+                # 同样要先于 last_run_natural 判定，否则会被显示成「失败」。
+                if (item["kind"] == "builtin"
+                        and self._controller.last_step_outcome == "needs_update"):
+                    results[step_id] = "stopped"
+                    all_natural = False
+                    break
                 if not self._controller.last_run_natural:
                     # 内部吞掉的执行异常（已记 ERROR 日志）：自然完成不成立
                     results[step_id] = "fail"

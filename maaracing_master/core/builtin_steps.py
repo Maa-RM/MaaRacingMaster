@@ -23,11 +23,14 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shlex
 import time
 from pathlib import Path
 
 from maaracing_master.core import game_process
+from maaracing_master.core.paths import data_dir
 
 _CORE_RES_DIR = Path(__file__).resolve().parent / "resources"
 STARTUP_PIPELINE = _CORE_RES_DIR / "startup" / "pipeline.json"
@@ -90,6 +93,9 @@ class LaunchGameStep(BuiltinStep):
         "args": " ".join(game_process.DEFAULT_ARGS),  # 与官方启动器实测命令行一致
         "timeout_s": 120,                             # 等游戏窗口的上限
         "hall_timeout_s": 300,                        # 进入大厅的总时限
+        # 发现更新时自动通过官方启动器完成补丁（代点「更新游戏」并等装好）；
+        # 关闭时发现更新则留下启动器页面、本轮干净收停（结局 needs_update）。
+        "auto_update": False,
     }
 
     def _resolve_exe(self, cfg: dict, log) -> Path | None:
@@ -126,7 +132,9 @@ class LaunchGameStep(BuiltinStep):
         timeout_s = float(cfg.get("timeout_s") or 120)
 
         if not self._ensure_window(cfg, exe, timeout_s, stop_event, log):
-            self.last_outcome = "failed"
+            # 结局已被具体路径写明（needs_update / stopped）时不再兜底改写
+            if self.last_outcome not in ("needs_update", "stopped"):
+                self.last_outcome = "failed"
             return False
 
         if not self._hall_enabled():
@@ -142,6 +150,7 @@ class LaunchGameStep(BuiltinStep):
         """把游戏窗口准备好并交给连接层。返回 False = 窗口没拿到。"""
         t0 = time.monotonic()
         if game_process.game_running(exe.name):
+            # 检查无从谈起：在跑的这版就是玩家此刻的版本，动它反而添乱
             log("游戏已在运行，跳过启动")
             hwnd = game_process.find_window_by_exe(exe.name)
             if not hwnd:
@@ -149,7 +158,18 @@ class LaunchGameStep(BuiltinStep):
                 # 否则下一步只报「链路建立失败」，看不出真因是没有窗口。
                 hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
         else:
-            hwnd = self._launch_and_wait(cfg, exe, timeout_s, stop_event, log)
+            verdict = self._launcher_gate(cfg, exe, stop_event, log)
+            if verdict == "needs_manual":
+                self.last_outcome = "needs_update"
+                return False
+            if verdict == "stopped":
+                self.last_outcome = "stopped"
+                return False
+            if verdict == "updated_game":
+                # 启动器已经把游戏拉起来了：不直启第二份，等窗口出现直接接管
+                hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
+            else:
+                hwnd = self._launch_and_wait(cfg, exe, timeout_s, stop_event, log)
 
         if stop_event is not None and stop_event.is_set():
             log("已停止，放弃等待游戏窗口", "WARNING")
@@ -161,6 +181,125 @@ class LaunchGameStep(BuiltinStep):
         self.app.adopt_window(hwnd)
         log(f"已找到游戏窗口 (hWnd={hwnd})，用时 {time.monotonic() - t0:.0f}s")
         return True
+
+    # ------------------------------------------------------------------
+    # 启动器版本检查闸门（事实与判据来自 2026-11-22 实测，证据以 commit
+    # 46727db 为指针；本程序不碰更新服务器，联网的只有启动器自己）
+    # ------------------------------------------------------------------
+
+    _CHECK_TTL_S = 6 * 3600          # 检查缓存时限：游戏与启动器都没动才认
+    _CHECK_CACHE_NAME = "launcher_check.json"
+    _CHECK_WAIT_S = 20.0             # 比对结论落地时限（实测 5-6.4s，留余量）
+    _LAUNCHER_WINDOW_WAIT_S = 25.0   # 代点前等启动器主窗口（实测 ~9s 出窗）
+    _PATCH_TIMEOUT_S = 1800.0        # 补丁下载+安装的总时限
+
+    def _launcher_gate(self, cfg: dict, exe: Path, stop_event, log) -> str:
+        """启动前置：拉官方启动器做版本检查，按结论分流。
+
+        返回 fresh=可直启 / updated=补丁刚装好 / updated_game=启动器已代拉游戏 /
+        needs_manual=留启动器页面待人工（结局 needs_update，本轮干净收停）/
+        unavailable=检查不可用（跳过，不影响直启）/ stopped=被停止。
+        """
+        if os.environ.get("MAARM_APP_LAUNCHER_CHECK", "").strip().lower() in (
+                "0", "off", "false"):
+            return "unavailable"
+        launcher = game_process.detect_launcher_exe()
+        if launcher is None:
+            log("未找到官方启动器，跳过版本检查，沿用直启", "WARNING")
+            return "unavailable"
+        if self._check_cache_fresh(launcher, exe):
+            log("版本检查缓存仍新鲜（游戏与启动器都没变），跳过本次检查")
+            return "fresh"
+        log("拉起官方启动器做版本检查（无更新时会在它出窗前静默关闭）…")
+        if not game_process.spawn_launcher(launcher):
+            log("启动器拉起失败（管理员授权被拒？），跳过检查沿用直启", "WARNING")
+            return "unavailable"
+        result = game_process.wait_launcher_check(stop_event, timeout_s=self._CHECK_WAIT_S)
+        if stop_event is not None and stop_event.is_set():
+            game_process.close_launcher()
+            return "stopped"
+        if result is None:
+            # 结论没按期落地：窗口可能已经在路上，不硬关，留给人处理
+            log("版本检查未按期出结果，保留启动器页面交人工处理", "WARNING")
+            return "needs_manual"
+        if not result["update_needed"]:
+            if game_process.close_launcher() == "left_running":
+                log("启动器无法由本程序关闭（权限不足），窗口留给你手动关闭", "WARNING")
+            self._store_check_cache(launcher, exe)
+            log(f"版本比对一致（{result['files']} 个文件），无需更新，继续直启")
+            return "fresh"
+        size_mb = result["size"] / 1e6
+        if not bool(cfg.get("auto_update")):
+            log(f"游戏需要更新（约 {size_mb:.0f} MB）：已保留启动器页面，请手动点"
+                "「更新游戏」，本轮到此为止；更新完成后重新运行任务即可", "WARNING")
+            return "needs_manual"
+        log(f"游戏需要更新（约 {size_mb:.0f} MB），已开启自动更新：等启动器出窗后"
+            "代点「更新游戏」…")
+        hwnd = game_process.wait_for_window(game_process.LAUNCHER_EXE_NAME,
+                                            self._LAUNCHER_WINDOW_WAIT_S, stop_event)
+        if stop_event is not None and stop_event.is_set():
+            return "stopped"
+        if not hwnd:
+            log("启动器主窗口未出现，无法代点更新；请手动操作", "WARNING")
+            return "needs_manual"
+        if not game_process.click_launcher_update_button(hwnd):
+            log("更新按钮点击投递失败，请手动点击「更新游戏」", "WARNING")
+            return "needs_manual"
+        log("已投递「更新游戏」点击；若启动器迟迟未开始下载，请手动补点一次")
+        outcome = game_process.wait_launcher_ready(stop_event, self._PATCH_TIMEOUT_S, log)
+        if stop_event is not None and stop_event.is_set():
+            log("已停止：补丁流程交给启动器自行收尾", "WARNING")
+            return "stopped"
+        if outcome == "ready":
+            if game_process.close_launcher() == "left_running":
+                log("补丁已装好，但启动器无法由本程序关闭（权限不足），"
+                    "窗口留给你手动关闭", "WARNING")
+            else:
+                log("补丁安装完成，已关闭启动器")
+            return "updated"
+        if outcome == "game_started":
+            log("启动器自行拉起了游戏，改走接管现有窗口")
+            return "updated_game"
+        log(f"{self._PATCH_TIMEOUT_S:.0f}s 内补丁未完成，保留启动器页面交人工处理",
+            "ERROR")
+        return "needs_manual"
+
+    def _cache_stamp(self, launcher: Path, exe: Path) -> str:
+        """缓存指纹：两边 exe 的路径+改动时间，任一变化即视为需要重新检查。"""
+        try:
+            return (f"{launcher}|{launcher.stat().st_mtime_ns}"
+                    f"|{exe}|{exe.stat().st_mtime_ns}")
+        except OSError:
+            return ""
+
+    def _check_cache_fresh(self, launcher: Path, exe: Path) -> bool:
+        try:
+            data = json.loads((data_dir() / self._CHECK_CACHE_NAME).read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        stamp = self._cache_stamp(launcher, exe)
+        if not stamp or data.get("stamp") != stamp:
+            return False
+        checked_at = data.get("checked_at")
+        return (isinstance(checked_at, (int, float))
+                and time.time() - checked_at <= self._CHECK_TTL_S)
+
+    def _store_check_cache(self, launcher: Path, exe: Path) -> None:
+        """只缓存「无需更新」的结论（需要更新是当场行动的信号，不缓存）。
+
+        写失败静默放弃：缓存只是省一次检查，缺了下次多查一遍而已。
+        """
+        stamp = self._cache_stamp(launcher, exe)
+        if not stamp:
+            return
+        try:
+            cache = data_dir() / self._CHECK_CACHE_NAME
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps({"stamp": stamp, "checked_at": time.time()},
+                                        ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
 
     def _launch_and_wait(self, cfg: dict, exe: Path, timeout_s: float,
                          stop_event, log) -> int:
@@ -175,16 +314,15 @@ class LaunchGameStep(BuiltinStep):
 
         hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
         if not hwnd:
-            # 直启跳过了版本校验：游戏更新后首次可能起不来，这一跳由官方启动器补上
+            # 直启失败重试一跳：启动器要求管理员权限，裸 Popen 会 740（实测），
+            # 走 spawn_launcher 的提权路径；闸门已经查过更新时这里多半只是兜底
             launcher = game_process.detect_launcher_exe()
             if launcher is None:
                 log("未找到官方启动器，无法回退", "WARNING")
             else:
                 log(f"等窗口超时，改走官方启动器（会先做版本校验与更新）: {launcher}")
-                try:
-                    game_process.spawn(launcher, [])
-                except OSError as exc:
-                    log(f"启动器拉起失败: {exc}", "ERROR")
+                if not game_process.spawn_launcher(launcher):
+                    log("启动器拉起失败（管理员授权被拒？）", "ERROR")
                 hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
         return hwnd
 
