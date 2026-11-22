@@ -20,6 +20,7 @@
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
 | 远程元数据信任边界（公告/版本标记校验、外链目标白名单） | [`core/remote_meta.py`](./remote_meta.py)（§1.12） |
+| 安全传输（主机白名单、跳转校验、进度/取消/残片清理） | [`core/download.py`](./download.py)（纯搬字节，不含安装/解压语义） |
 | MaaFW 对象签名与红线 | [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md) |
 
 ***

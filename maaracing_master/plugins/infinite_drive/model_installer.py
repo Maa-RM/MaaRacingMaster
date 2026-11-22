@@ -16,15 +16,12 @@ import os
 import shutil
 import stat
 import threading
-import time
-import urllib.error
-import urllib.request
 import uuid
 import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import urlsplit
 
+from maaracing_master.core.download import download_file, is_allowed_url
 from maaracing_master.core.paths import module_data_dir
 from maaracing_master.plugins.infinite_drive import model_assets
 
@@ -53,20 +50,8 @@ class InstallStatus:
 
 
 def _url_allowed(url: object) -> bool:
-    """只接受 https 与已核验主机；本地 http 仅供受控测试服务使用。"""
-    parts = urlsplit(str(url))
-    if parts.scheme == "http" and parts.hostname in {"127.0.0.1", "localhost"}:
-        return True
-    return parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS
-
-
-class _RedirectGuard(urllib.request.HTTPRedirectHandler):
-    """只接受 https 与已核验主机；拒绝跨到未知 CDN 或任意代理。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not _url_allowed(newurl):
-            raise urllib.error.URLError(f"拒绝下载重定向到未知地址: {newurl}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+    """下载源必须落在本插件声明的官方主机内（传输层只搬字节，策略留在这里）。"""
+    return is_allowed_url(url, ALLOWED_HOSTS)
 
 
 def _sha256_file(path: Path) -> str:
@@ -183,7 +168,7 @@ class ModelInstaller:
                     if _sha256_file(archive) != descriptor["sha256"]:
                         raise ValueError("下载文件 SHA256 与下载描述不符")
                     break
-                except (OSError, ValueError, urllib.error.URLError) as exc:
+                except (OSError, ValueError) as exc:
                     if self._cancelled():
                         self._set(task_id, phase="cancelled", error="用户取消")
                         return
@@ -228,26 +213,20 @@ class ModelInstaller:
                         path.unlink(missing_ok=True)
 
     def _download(self, task_id: str, url: str, dest: Path, size: int, source: str) -> None:
-        request = urllib.request.Request(url, headers={"User-Agent": "MaaRacingMaster/model-install"})
-        opener = urllib.request.build_opener(_RedirectGuard())
-        deadline = time.monotonic() + DOWNLOAD_DEADLINE_S
-        with opener.open(request, timeout=DOWNLOAD_TIMEOUT_S) as response, dest.open("wb") as out:
-            total = int(response.headers.get("Content-Length") or size)
-            self._set(task_id, source=source, total=total, downloaded=0, phase="downloading")
-            done = 0
-            while True:
-                if self._cancelled() or time.monotonic() > deadline:
-                    raise OSError("下载被取消或超时")
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                done += len(chunk)
-                if done > size:
-                    raise ValueError("下载字节数超过下载描述声明的大小")
-                out.write(chunk)
-                self._set(task_id, downloaded=done)
-            if done != size:
-                raise ValueError("下载字节数与下载描述不符")
+        """策略与落点在本插件，传输（白名单/跳转/取消/进度）交给 core.download。"""
+        self._set(task_id, source=source, total=size, downloaded=0, phase="downloading")
+        download_file(
+            url,
+            dest,
+            allowed_hosts=ALLOWED_HOSTS,
+            expected_size=size,
+            on_progress=lambda done, total: self._set(
+                task_id, downloaded=done, total=total),
+            cancelled=self._cancelled,
+            timeout_s=DOWNLOAD_TIMEOUT_S,
+            deadline_s=DOWNLOAD_DEADLINE_S,
+            user_agent="MaaRacingMaster/model-install",
+        )
 
     @staticmethod
     def _extract(archive: Path, target: Path, descriptor: dict) -> None:
