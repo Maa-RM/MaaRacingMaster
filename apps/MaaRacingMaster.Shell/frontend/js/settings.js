@@ -246,6 +246,18 @@
       ? '无法读取运行时版本。'
       : '已安装 ' + installed
         + (running && running !== installed ? ' · 当前界面仍在用 ' + running : '');
+    const lastCheck = st && st.lastCheck ? String(st.lastCheck) : '';
+    const ageDays = Number(st && st.checkAgeDays);
+    const stale = !!(st && st.channelStale);
+    const healthLine = lastCheck
+      ? '自动更新上次成功检查：' + lastCheck
+        + (Number.isFinite(ageDays) && ageDays >= 0 ? '（' + ageDays + ' 天前）' : '')
+      : '自动更新检查时间未知';
+    const healthNote = stale
+      ? '<p class="opt-item-note" style="color:var(--maarm-warning,#f59e0b)">'
+        + '超过 90 天未成功检查，自动更新通道可能已失效；建议在系统设置里修复 Edge。'
+        + '</p>'
+      : '';
     const note = msg ? '<p class="opt-item-note">' + escHtml(msg) + '</p>' : '';
     const official = '<button type="button" class="opt-btn opt-btn--ghost dep-guide" '
       + 'data-target="webview2">打开官方页</button>';
@@ -268,6 +280,8 @@
       + '<div class="opt-item-effect">本程序界面的渲染引擎。版本过旧会影响新特性与安全修复；'
       + '更新只在你点击后进行，不在后台改动系统。</div>'
       + '<p class="opt-item-note">' + escHtml(line) + '</p>'
+      + '<p class="opt-item-note">' + escHtml(healthLine) + '</p>'
+      + healthNote
       + note
       + '<details class="opt-details"><summary>技术细节</summary><div class="opt-details-body">'
       + '<p>安装器：微软官方 WebView2 引导程序（约 1.7MB）。下载后先校验微软签名，通过才执行。</p>'

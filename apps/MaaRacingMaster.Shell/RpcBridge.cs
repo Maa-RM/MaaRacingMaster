@@ -191,10 +191,14 @@ internal static class RpcBridge
                 await ReplyAsync(sender, callId, false, null, "无法读取 WebView2 运行时版本");
                 return;
             }
+            var health = WebView2RuntimeUpdater.UpdateChannelHealth();
             var data = new
             {
                 installed,
                 running,
+                lastCheck = health.LastCheck?.ToString("yyyy-MM-dd"),
+                checkAgeDays = health.AgeDays,
+                channelStale = health.Stale,
             };
             await ReplyAsync(sender, callId, true, data, null);
             return;

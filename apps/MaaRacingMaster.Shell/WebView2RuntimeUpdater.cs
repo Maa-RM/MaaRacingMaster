@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -69,6 +70,41 @@ internal static class WebView2RuntimeUpdater
             if (string.IsNullOrWhiteSpace(pv) || pv == "0.0.0.0")
                 return null;
             return pv;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>EdgeUpdate 自动更新通道健康：上次成功检查的时间与距今天数。
+    /// 只看运行时自己的 ClientState；缺失按未知处理，不冒充「已失效」。</summary>
+    public static (DateTimeOffset? LastCheck, int AgeDays, bool Stale) UpdateChannelHealth()
+    {
+        var last = ReadLastCheck(Registry.LocalMachine,
+                       @"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\ClientState\" + RuntimeClientId)
+                   ?? ReadLastCheck(Registry.LocalMachine,
+                       @"SOFTWARE\Microsoft\EdgeUpdate\ClientState\" + RuntimeClientId)
+                   ?? ReadLastCheck(Registry.CurrentUser,
+                       @"Software\Microsoft\EdgeUpdate\ClientState\" + RuntimeClientId);
+        if (last is null)
+            return (null, 0, false);
+        var age = Math.Max(0, (int)(DateTimeOffset.Now - last.Value).TotalDays);
+        return (last, age, age >= 90);
+    }
+
+    private static DateTimeOffset? ReadLastCheck(RegistryKey root, string path)
+    {
+        try
+        {
+            using var key = root.OpenSubKey(path);
+            var raw = key?.GetValue("LastCheckSuccess");
+            if (raw is null)
+                return null;
+            var seconds = Convert.ToInt64(raw, CultureInfo.InvariantCulture);
+            if (seconds <= 0)
+                return null;
+            return DateTimeOffset.FromUnixTimeSeconds(seconds).ToLocalTime();
         }
         catch
         {

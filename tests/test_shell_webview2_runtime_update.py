@@ -102,6 +102,16 @@ def test_update_button_does_not_pretend_to_be_a_check():
     assert "约 1.7MB" in src
 
 
+def test_update_channel_health_is_surfaced():
+    # 运行时版本不旧但自动更新通道停摆，是这次最隐蔽的故障；必须把上次成功检查摆出来
+    src = UPDATER.read_text(encoding="utf-8")
+    assert "LastCheckSuccess" in src
+    assert "UpdateChannelHealth" in src
+    settings = SETTINGS.read_text(encoding="utf-8")
+    assert "自动更新上次成功检查" in settings
+    assert "90 天" in settings
+
+
 def test_restart_is_launch_mode_agnostic():
     # 重启统一走「等待旧进程退出 → 用同一进程路径拉起新实例」，源码与打包共用；
     # dotnet 启动时补回 dll 参数由 CreateSelfStartInfo 统一处理。
