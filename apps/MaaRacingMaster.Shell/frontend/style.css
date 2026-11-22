@@ -2787,9 +2787,8 @@ footer .spacer { flex: 1; }
   content: ""; width: 6px; height: 6px; border-radius: 50%;
   background: var(--maarm-success);
 }
-/* 隐藏档已解锁：彩虹标题（复用页首扫光）。色相流转是逐帧重绘的动画，长驻卡片上持续
-   重绘会把渲染拖进合成层退化路径，真机实测越挂越糊——限一个周期，扫完定格静态彩虹 */
-.maarm-ach-card__title.is-rainbow { --maarm-scan-cycle: 6s; animation-iteration-count: 1; }
+/* 隐藏档已解锁：彩虹标题（复用页首扫光） */
+.maarm-ach-card__title.is-rainbow { --maarm-scan-cycle: 6s; }
 
 /* 冻结态：进度区压暗，界面上以「不可用」占位，不谎报 0/1 */
 .maarm-ach-sheet.is-frozen .maarm-ach-card__foot,
