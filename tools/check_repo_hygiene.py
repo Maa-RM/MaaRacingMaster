@@ -59,6 +59,10 @@
      「写作当时有意义、日后变噪音」的过程残留，历史证据应指向 commit。模式刻意收窄防误报：
      commit SHA、配置阈值、P50/P95 分位、游戏阶段数字（阶段 1/2）都不命中。ADR 日期字段、
      update_log 与宪法历史章不在本条面内（合法历史叙述）。走棘轮：存量入基线、新增即红。
+  R12 前端常驻合成层（2026-11-22 立规）：前端 CSS 不得声明 will-change——元素被钉在
+     合成层上的期间文字失去 ClearType 退灰度（判决 commit 44a4f36）。随动画类出现且
+     animationend 摘除（page-slide）、或元素即抛（falling-text）的瞬态用法走棘轮基线
+     登记存量；新增声明一律红。只匹配「will-change:」声明形态，叙述性注释不命中。
 
 棘手机制：`tools/repo_hygiene_baseline.txt` 记录立规之日的存量违规（legacy，按触碰面
 逐个分诊，见 tools/experiments/README.md）。基线**只减不增**——新违规直接红；
@@ -167,6 +171,12 @@ TEMPLATE_PLUGIN_GLOBS = ["templates/plugin/**/*.md", "templates/plugin/**/*.py"]
 # 阶段代号只认大写字母（阶段 B 命中、游戏阶段 1/2 不命中）；可选空白用 [ \t] 不用 \s，
 # 避免跨行匹配把换行带进基线键。
 R11_GLOBS = ["docs/CODE_WIKI.md", "maaracing_master/**/CODE_WIKI.md"]
+
+# R12 前端常驻合成层（判决 commit 44a4f36）：前端 CSS 的 will-change 声明让元素常驻
+# 合成层，其上的文字全程失去 ClearType。只匹配声明形态（will-change 后跟冒号），
+# 注释里的叙述性提法不命中；瞬态用法（随动画类挂载/摘除、元素即抛）走基线存量。
+R12_GLOBS = ["apps/MaaRacingMaster.Shell/frontend/**/*.css"]
+R12_PATTERN = re.compile(r"\bwill-change[ \t]*:")
 R11_PATTERNS = [
     ("日期", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),
     ("会话戳", re.compile(r"\b\d{8}_\d{6}\b")),
@@ -596,6 +606,15 @@ class Checker:
                 for name, rx in R11_PATTERNS:
                     for m in rx.finditer(text):
                         viol.add(f"R11|{r}|{name}|{m.group(0)}")
+
+        for g in R12_GLOBS:                                       # R12 前端常驻合成层
+            for p in self.root.glob(g):
+                if not p.is_file():
+                    continue
+                r = self.rel(p)
+                for ln in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if R12_PATTERN.search(ln):
+                        viol.add(f"R12|{r}|{ln.strip()[:60]}")
 
         if self.exper.is_dir():                                     # R5
             area = self.topics() | self.intra_dirs()

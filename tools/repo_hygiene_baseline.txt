@@ -7,3 +7,8 @@ R11|maaracing_master/core/CODE_WIKI.md|会话戳|20260917_141507
 R11|maaracing_master/core/CODE_WIKI.md|日期|2026-09-01
 R11|maaracing_master/core/CODE_WIKI.md|日期|2026-09-14
 R11|maaracing_master/core/CODE_WIKI.md|日期|2026-09-17
+
+# R12 前端常驻合成层（2026-11-22 立规）瞬态用法存量：随动画类挂载/摘除（page-slide-in）、
+# 元素即抛（falling-text）
+R12|apps/MaaRacingMaster.Shell/frontend/style.css|will-change: transform, opacity;
+R12|apps/MaaRacingMaster.Shell/frontend/style.css|will-change: transform, opacity; transition: opacity 0.5s ea
