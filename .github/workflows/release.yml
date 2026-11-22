@@ -129,6 +129,8 @@ jobs:
 
       - name: 构建分发包
         run: |
+          # 产物不再上传（Release 只挂 win 包与模型包，见 win-build / cnb-release）；
+          # 本步保留作打包配置的发布前验证：sdist/wheel 能否从 tag 正确构建。
           # python -m build 默认在隔离 venv 中构建：setuptools-scm 在隔离环境 git 探测失败（listing git files failed）
           # 且 SETUPTOOLS_SCM_PRETEND_VERSION 实测未生效，sdist/wheel 版本号仍回退 0.0.0。
           # 改用 --no-isolation 在当前环境构建：setuptools-scm 直接读 git tag（「验证包构建」步骤已证明可行），
@@ -149,11 +151,8 @@ jobs:
             ${{ steps.changelog.outputs.log }}
 
             ---
-            > **深度几何与线观测需要额外下载模型包**：`MaaRacingMaster-infinite_drive-models-${{ steps.version.outputs.version }}.zip`（同页资产）；其余功能不需要下载。
+            > **下载哪个文件**：普通用户只需下载 `MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip`，解压即用；深度几何与线观测的模型在程序模块面板点「一键安装模型」自动下载，无需手动下载本页其他文件。
             > 版本号遵循 [SemVer 2.0.0](https://semver.org/lang/zh-CN/) 规范
-          files: |
-            dist/*.tar.gz
-            dist/*.whl
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
 
@@ -268,17 +267,14 @@ jobs:
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
             -OutRoot "${{ github.workspace }}\build\release" `
-            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json" `
-            -SevenZ
+            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json"
 
-      - name: 校验产物存在（zip 保底 + 7z 主推）
+      - name: 校验产物存在
         shell: pwsh
         run: |
           $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
-          $sevenz = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.7z"
-          if (-not (Test-Path $zip))    { throw "zip 未生成: $zip" }
-          if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
-          Get-Item $zip, $sevenz | Select-Object Name, Length
+          if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
+          Get-Item $zip | Select-Object Name, Length
 
       - name: 同 tag 资产不可变检查（GitHub）
         shell: pwsh
@@ -288,20 +284,12 @@ jobs:
           $rel = gh api "repos/${{ github.repository }}/releases/tags/$env:TAGNAME" | ConvertFrom-Json
           $names = @(
             "MaaRacingMaster-$env:VER-win-x64.zip",
-            "MaaRacingMaster-$env:VER-win-x64.zip.sha256",
-            "MaaRacingMaster-$env:VER-win-x64.7z",
-            "MaaRacingMaster-$env:VER-win-x64.7z.sha256",
-            "MaaRacingMaster-infinite_drive-models-$env:VER.zip",
-            "MaaRacingMaster-infinite_drive-models-$env:VER.zip.sha256"
+            "MaaRacingMaster-infinite_drive-models-$env:VER.zip"
           )
           foreach ($name in $names) {
             $asset = $rel.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
             if (-not $asset -or -not $asset.digest) { continue }
-            $sumFile = if ($name.EndsWith('.sha256')) {
-              "${{ github.workspace }}\build\release\$name"
-            } else {
-              "${{ github.workspace }}\build\release\$name.sha256"
-            }
+            $sumFile = "${{ github.workspace }}\build\release\$name.sha256"
             $local = (Get-Content $sumFile -Raw).Split(' ')[0]
             if ($asset.digest -ne "sha256:$local") {
               throw "同 tag 资产 $name 已存在且内容不同，拒绝覆盖（旧程序内置哈希会失效）"
@@ -309,33 +297,55 @@ jobs:
             Write-Host "同 tag 资产 $name 已存在且哈希一致，复用"
           }
 
-      - name: 补传 zip + 7z + 模型包到 Release
+      - name: 补传 zip + 模型包到 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAGNAME }}
           overwrite: false
           files: |
             ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip.sha256
-            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z
-            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.7z.sha256
             ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip.sha256
 
-  # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip/sha256 推到 CNB 仓库的
-  # 同名 Release。CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
+      # 独立 .sha256 文件不再上传；校验码写进 Release 正文随页分发。
+      # 重跑幂等：正文已有校验码小节时先摘除旧段（含其前面的分隔线）再追加。
+      - name: Release 正文追加 SHA256 校验码
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = gh api "repos/${{ github.repository }}/releases/tags/$env:TAGNAME" | ConvertFrom-Json
+          $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
+          $models = "${{ github.workspace }}\build\release\MaaRacingMaster-infinite_drive-models-$env:VER.zip"
+          $sumZip = (Get-Content "$zip.sha256" -Raw).Trim()
+          $sumModels = (Get-Content "$models.sha256" -Raw).Trim()
+          $body = if ($rel.body) { $rel.body } else { '' }
+          $idx = $body.IndexOf('### SHA256')
+          if ($idx -ge 0) {
+            $body = $body.Substring(0, $idx).TrimEnd()
+            if ($body.EndsWith('---')) { $body = $body.Substring(0, $body.Length - 3).TrimEnd() }
+          }
+          $fence = '```'
+          $body = "$body`n`n---`n`n### SHA256 校验码`n`n$fence`n$sumZip`n$sumModels`n$fence"
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$($rel.id)" -f body="$body" > $null
+          Write-Host "Release 正文已更新（下载指引 + SHA256 校验码）"
+
+  # CNB（cnb.cool）Release 资产同步：把 GitHub Release 的 zip 与模型包推到 CNB 仓库的
+  # 同名 Release，并同步 Release 正文（下载指引 + SHA256 校验码，CNB 页面不再空白）。
+  # CNB 构建节点只有 Linux 容器（无 Windows），无法自行构建本项目发布包，
   # 故由 GitHub（唯一信源）构建后经 CNB OpenAPI 分发——国内用户从 CNB 下载（快），
   # 开发流程完全不受影响（CNB 无 .cnb.yml，零流水线零污染）。
+  # 独立 .sha256 文件不再分发：校验码本地现算、写进正文（模型包一键安装的校验
+  # 走主包内置 download.json，不依赖正文）。
   # 下载直链形如 https://cnb.cool/<org>/<repo>/-/releases/download/<tag>/<file>
   cnb-release:
     name: 同步 Release 资产到 CNB
     runs-on: ubuntu-latest
-    needs: win-build  # 等 zip 补传到 GitHub Release 完成后再同步
+    needs: win-build  # 等 zip 补传到 GitHub Release（含正文校验码）完成后再同步
     # 纯脚本任务：下载走公开 URL、上传走 CNB OpenAPI（CNB_TOKEN secret），
     # 全程不使用 GITHUB_TOKEN，权限收到零。
     permissions: {}
     steps:
-      - name: 上传 zip 与 sha256 到 CNB Release
+      - name: 同步 zip、模型包与正文到 CNB Release
         # CNB 仓库路径与 mirror-to-cnb.yml 同源读 secrets，避免同一事实两处硬编码
         # （改名时只改 secrets 会漏掉本 job，资产同步静默失效）。
         env:
@@ -349,17 +359,28 @@ jobs:
           AUTH="Authorization: Bearer ${CNB_TOKEN}"
           VER="${TAG#v}"
           ZIP="MaaRacingMaster-${VER}-win-x64.zip"
-          SZ7="MaaRacingMaster-${VER}-win-x64.7z"
           MODELS="MaaRacingMaster-infinite_drive-models-${VER}.zip"
 
-          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成）：zip 保底 + 7z 主推 + 深度模型包，各带 sha256
-          for f in "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"; do
+          # 1) 从 GitHub Release 下载本 tag 的资产（win-build 已补传完成），校验码本地现算
+          for f in "$ZIP" "$MODELS"; do
             curl -fsSL --retry 3 -o "$f" \
               "https://github.com/${GH_REPO}/releases/download/${TAG}/${f}"
           done
-          ls -lh "$ZIP" "${ZIP}.sha256" "$SZ7" "${SZ7}.sha256" "$MODELS" "${MODELS}.sha256"
+          ls -lh "$ZIP" "$MODELS"
+          SHA256SUMS=$(sha256sum "$ZIP" "$MODELS")
 
-          # 2) 确保 CNB 上存在同名 Release（镜像只同步 git refs，不同步 Release 元数据）
+          # 2) 正文取 GitHub Release（win-build 已追加下载指引与校验码小节）；
+          #    GitHub 匿名 API 拉不到时回退本地生成的最小指引。
+          GUIDANCE="> **下载哪个文件**：普通用户只需下载 \`${ZIP}\`，解压即用；深度几何与线观测的模型在程序模块面板点「一键安装模型」自动下载，无需手动下载本页其他文件。"
+          GH_BODY=$(curl -fsSL --retry 2 \
+            "https://api.github.com/repos/${GH_REPO}/releases/tags/${TAG}" \
+            | jq -r '.body // empty') || GH_BODY=""
+          if [ -z "${GH_BODY}" ]; then
+            GH_BODY=$(printf '%s\n\n### SHA256 校验码\n\n```\n%s\n```\n' \
+              "${GUIDANCE}" "${SHA256SUMS}")
+          fi
+
+          # 3) 确保 CNB 上存在同名 Release（镜像只同步 git refs，不同步 Release 元数据）
           # CNB API 的 GET 必须带 Accept: application/json，缺失返回 406（实测）
           code=$(curl -s -o /tmp/rel.json -w '%{http_code}' -H "$AUTH" \
             -H 'Accept: application/json' \
@@ -367,20 +388,31 @@ jobs:
           if [ "$code" = "404" ]; then
             if echo "$TAG" | grep -q -- '-'; then PRE=true; else PRE=false; fi
             body=$(jq -n --arg tag "$TAG" --arg name "$TAG" --argjson pre "$PRE" \
-              '{tag_name:$tag, name:$name, prerelease:$pre, draft:false, make_latest:"true"}')
+              --arg body "${GH_BODY}" \
+              '{tag_name:$tag, name:$name, prerelease:$pre, draft:false, make_latest:"true", body:$body}')
             code=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X POST -H "$AUTH" \
               -H 'Accept: application/json' \
               -H 'Content-Type: application/json' -d "$body" "${API}/-/releases")
             if [ "$code" != "201" ]; then
               echo "创建 CNB Release 失败 HTTP=$code"; cat /tmp/rel.json; exit 1
             fi
-          elif [ "$code" != "200" ]; then
+          elif [ "$code" = "200" ]; then
+            # 已有 Release：把正文刷成与 GitHub 一致（幂等，重跑结果相同）
+            patch_body=$(jq -n --arg body "${GH_BODY}" '{body:$body}')
+            code=$(curl -s -o /tmp/rel.json -w '%{http_code}' -X PATCH -H "$AUTH" \
+              -H 'Accept: application/json' \
+              -H 'Content-Type: application/json' -d "$patch_body" \
+              "${API}/-/releases/$(jq -r '.id' /tmp/rel.json)")
+            if [ "$code" != "200" ]; then
+              echo "更新 CNB Release 正文失败 HTTP=$code"; cat /tmp/rel.json; exit 1
+            fi
+          else
             echo "查询 CNB Release 失败 HTTP=$code"; cat /tmp/rel.json; exit 1
           fi
           RID=$(jq -r '.id' /tmp/rel.json)
           echo "CNB release id=$RID (tag=$TAG)"
 
-          # 3) 三步上传资产：申请预签名 URL → PUT 文件 → POST 确认。
+          # 4) 三步上传资产：申请预签名 URL → PUT 文件 → POST 确认。
           # 同 tag 同名资产若已存在：哈希一致则复用，哈希不同则阻断——旧程序内置的
           # ZIP 哈希必须与线上资产一一对应，重跑发布不得悄悄换字节。
           upload_asset() {
@@ -415,9 +447,5 @@ jobs:
             echo "已上传 $(basename "$f") ($size bytes)"
           }
           upload_asset "$ZIP"
-          upload_asset "${ZIP}.sha256"
-          upload_asset "$SZ7"
-          upload_asset "${SZ7}.sha256"
           upload_asset "$MODELS"
-          upload_asset "${MODELS}.sha256"
           echo "CNB Release 同步完成: https://cnb.cool/${CNB_PATH}/-/releases"

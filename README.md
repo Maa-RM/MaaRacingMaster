@@ -122,7 +122,7 @@
 
 ### 下载即用包（普通用户，无需编译）
 
-1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**（或 `.7z`）。
+1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。

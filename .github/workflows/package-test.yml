@@ -1,5 +1,5 @@
 # =============================================================================
-# 手动打包验证 — 只产出 zip/7z/模型包 artifact，不创建 Release、不打 tag、不推 CNB
+# 手动打包验证 — 只产出 zip/模型包 artifact，不创建 Release、不打 tag、不推 CNB
 # 触发：push 到 dev/**-pkgtest 分支（或手动 workflow_dispatch）
 # 用途：在没有本机 MSVC 的环境里，用云端 Windows runner 验证 assemble.ps1 全链路
 # =============================================================================
@@ -81,17 +81,14 @@ jobs:
           & "${{ github.workspace }}\scripts\release\assemble.ps1" `
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
-            -OutRoot "${{ github.workspace }}\build\release" `
-            -SevenZ
+            -OutRoot "${{ github.workspace }}\build\release"
 
       - name: 校验产物
         shell: pwsh
         run: |
           $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
-          $sevenz = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.7z"
-          if (-not (Test-Path $zip))    { throw "zip 未生成: $zip" }
-          if (-not (Test-Path $sevenz)) { throw "7z 未生成: $sevenz" }
-          Get-Item $zip, $sevenz | Select-Object Name, Length
+          if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
+          Get-Item $zip | Select-Object Name, Length
 
       - name: 生成可选模型包
         shell: pwsh
@@ -112,7 +109,5 @@ jobs:
           path: |
             build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip
             build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.zip.sha256
-            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z
-            build/release/MaaRacingMaster-${{ steps.version.outputs.version }}-win-x64.7z.sha256
             build/release/MaaRacingMaster-infinite_drive-models-${{ steps.version.outputs.version }}.zip
             build/release/MaaRacingMaster-infinite_drive-models-${{ steps.version.outputs.version }}.zip.sha256
