@@ -37,7 +37,14 @@ ALL_VARIANTS = [
     'center_t50', 'center_auto', 'center_t50_nowc',
     'anim_pause_frac', 'anim_pause_scale', 'anim_mid_scale',
     'js_mid_wc', 'js_mid_nowc',
+    'card_static', 'card_rave', 'card_rave_20s', 'rave_only', 'rave_only_20s',
+    'card_rave_t1', 'card_rave_t2', 'card_rave_t3',
+    'card_rave_flip', 'card_rave_flip_6k',
 ]
+# 提层退化判决需要长时间虚拟时间预算（帧数驱动重绘计数启发式）
+BUDGET_OVERRIDES = {'card_rave_20s': 20000, 'rave_only_20s': 20000,
+                    'card_rave_t1': 6400, 'card_rave_t2': 12400, 'card_rave_t3': 18400,
+                    'card_rave_flip_6k': 6400}
 MOTION_BUDGET_MS = 600   # rAF 变体的虚拟时间预算：> 动画时长 500ms，停在确定终值
 STATIC_BUDGET_MS = 400
 
@@ -63,6 +70,10 @@ def intent_css(variant, dsf):
         'anim_pause_frac': 47.5, 'anim_pause_scale': 40.0, 'anim_mid_scale': 40.0,
         'rept_scale': 40.0, 'comp_scale': 40.0, 'comp_opacity': 40.0,
         'js_mid_wc': 55.2, 'js_mid_nowc': 55.2,
+        'card_static': 40.0, 'card_rave': 40.0, 'card_rave_20s': 40.0,
+        'card_rave_t1': 40.0, 'card_rave_t2': 40.0, 'card_rave_t3': 40.0,
+        'card_rave_flip': 40.0, 'card_rave_flip_6k': 40.0,
+        'rave_only': 40.0, 'rave_only_20s': 40.0,
     }
     return table[variant]
 
@@ -103,28 +114,30 @@ def capture_headless(edge, url, png, dsf, budget, sw_raster):
 
 
 def _enum_windows():
+    u32 = ctypes.windll.user32
     result = []
 
     @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
     def cb(hwnd, _lparam):
-        if wt.IsWindowVisible(hwnd):
+        if u32.IsWindowVisible(hwnd):
             buf = ctypes.create_unicode_buffer(256)
-            wt.GetClassNameW(hwnd, buf, 256)
+            u32.GetClassNameW(hwnd, buf, 256)
             pid = wt.DWORD(0)
-            wt.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             result.append((hwnd, buf.value, pid.value))
         return True
 
-    wt.EnumWindows(cb, 0)
+    u32.EnumWindows(cb, 0)
     return result
 
 
 def _window_by_title():
+    u32 = ctypes.windll.user32
     for hwnd, cls, _pid in _enum_windows():
         if cls != 'Chrome_WidgetWin_1':
             continue
         buf = ctypes.create_unicode_buffer(512)
-        wt.GetWindowTextW(hwnd, buf, 512)
+        u32.GetWindowTextW(hwnd, buf, 512)
         if buf.value == WINDOW_TITLE:
             return hwnd
     return None
@@ -145,16 +158,17 @@ def wait_window(pid, timeout=10.0):
 
 def client_rect_physical(hwnd):
     """客户区左上角与尺寸，物理像素（进程须先设 Per-Monitor V2 感知）。"""
+    u32 = ctypes.windll.user32
     rect = wt.RECT()
-    if not wt.GetClientRect(hwnd, ctypes.byref(rect)):
+    if not u32.GetClientRect(hwnd, ctypes.byref(rect)):
         raise SystemExit('GetClientRect 失败')
     pt = wt.POINT(0, 0)
-    if not wt.ClientToScreen(hwnd, ctypes.byref(pt)):
+    if not u32.ClientToScreen(hwnd, ctypes.byref(pt)):
         raise SystemExit('ClientToScreen 失败')
     return (pt.x, pt.y, pt.x + rect.right, pt.y + rect.bottom)
 
 
-def capture_headed(edge, url, png, dsf):
+def capture_headed(edge, url, png, dsf, settle=3.0):
     # 截图坐标按物理像素计算：不设感知时按 96 DPI 虚拟化，坐标错位
     try:
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
@@ -169,7 +183,7 @@ def capture_headed(edge, url, png, dsf):
     proc = subprocess.Popen(cmd)
     try:
         hwnd = wait_window(proc.pid)
-        time.sleep(3.0)  # 首帧渲染与合成稳定
+        time.sleep(settle)  # 首帧渲染与合成稳定；退化判决用长静置
         rect = client_rect_physical(hwnd)
         img = ImageGrab.grab(bbox=rect, all_screens=True)
         img.save(png)
@@ -191,6 +205,8 @@ def main():
     ap.add_argument('--lcd', action='store_true',
                     help='追加 &lcd=1（纯灰文字，用于 LCD 亚像素渲染探测）')
     ap.add_argument('--edge', default=None)
+    ap.add_argument('--settle', type=float, default=3.0,
+                    help='有头模式的静置秒数（真实帧时钟下提层退化判决用）')
     ap.add_argument('--sw-raster', action='store_true',
                     help='无头模式追加 --disable-gpu（软件栅格对照）')
     args = ap.parse_args()
@@ -224,9 +240,10 @@ def main():
                     'lcd': args.lcd, 'png': png.name, 'css_w': CSS_W,
                     'intent_css': intent_css(v, dsf)}
             if args.mode == 'headless':
-                capture_headless(edge, url, png, dsf, STATIC_BUDGET_MS, args.sw_raster)
+                budget = BUDGET_OVERRIDES.get(v, STATIC_BUDGET_MS)
+                capture_headless(edge, url, png, dsf, budget, args.sw_raster)
             else:
-                info.update(capture_headed(edge, url, png, dsf))
+                info.update(capture_headed(edge, url, png, dsf, args.settle))
             info['sw_raster'] = args.sw_raster
             manifest = [m for m in manifest
                         if not (m['tag'] == tag and m.get('sw_raster') == args.sw_raster)]
