@@ -316,6 +316,7 @@ public sealed partial class MainWindow : Window
         // 放弃提交（见 PrepareForUpdateAsync）；交接失败由壳重启后端（闸门通过 = 后端已
         // 确认退出，见 RestartSidecarAfterHandoffFailureAsync）；提交进入替换相位后由壳做计划内关窗。
         var (prefChannel, prefSource, prefFromPreview) = UpdatePreferences.Load();
+        var prefDismissed = UpdatePreferences.LoadDismissedVersion();
         var coordinator = new UpdateCoordinator(
             feedSource: ReadUpdateSourceFile(),
             managed: AppRootResolver.Resolve(
@@ -328,7 +329,9 @@ public sealed partial class MainWindow : Window
             initialChannel: prefChannel,
             initialSource: prefSource,
             initialAwaitingStable: prefFromPreview,
-            savePreferences: UpdatePreferences.Save);
+            initialDismissedVersion: prefDismissed,
+            savePreferences: UpdatePreferences.Save,
+            saveDismissedVersion: UpdatePreferences.SaveDismissedVersion);
         coordinator.ApplyingStarted += ScheduleApplyShutdown;
         AppRestarter.Scheduled += ScheduleRestartShutdown;
         RpcBridge.AttachCoordinator(coordinator);

@@ -32,6 +32,8 @@
   --maarm-success-bg: rgba(16, 185, 129, 0.1);
   --maarm-warning: #F59E0B;
   --maarm-warning-bg: rgba(245, 158, 11, 0.1);
+  /* 更新提醒点：比 warning 更偏红，避免和“警告”语义混淆 */
+  --maarm-update-alert: #F97316;
   --maarm-danger: #EF4444;
   --maarm-danger-bg: rgba(239, 68, 68, 0.1);
   --maarm-info: #3B82F6;
@@ -125,6 +127,36 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
   background: var(--maarm-primary); border-radius: 1px 1px 0 0;
   transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
+}
+/* 关于标签的更新提醒点：锚在文字外框（不是整个按钮）的右上角；
+   外圈两圈错开半个周期向外扩散，与底栏状态球同款节奏。 */
+.maarm-tab-label { position: relative; display: inline-block; line-height: 1; }
+.maarm-tab-dot {
+  position: absolute; top: -2px; right: -5px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--maarm-update-alert);
+  box-shadow: 0 0 0 2px var(--maarm-surface);
+  opacity: 0; transform: scale(0.4); pointer-events: none;
+  transition: opacity var(--maarm-duration-fast) ease, transform var(--maarm-duration-fast) ease;
+}
+.maarm-tab-dot.is-on { opacity: 1; transform: scale(1); }
+.maarm-tab-dot::before,
+.maarm-tab-dot::after {
+  content: ''; position: absolute; inset: 0;
+  border: 1px solid var(--maarm-update-alert); border-radius: 50%;
+  opacity: 0; pointer-events: none;
+}
+.maarm-tab-dot.is-on::before,
+.maarm-tab-dot.is-on::after {
+  animation: maarm-tab-dot-echo 2.4s cubic-bezier(0.17, 0.67, 0.4, 1) infinite; /* 周期与底栏状态球一致 */
+}
+.maarm-tab-dot.is-on::after { animation-delay: -1.2s; }
+@keyframes maarm-tab-dot-echo {
+  0%        { transform: scale(1.03); opacity: 0.55; }
+  70%, 100% { transform: scale(2.6);  opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maarm-tab-dot.is-on::before, .maarm-tab-dot.is-on::after { animation: none; }
 }
 /* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
 .win-controls { display: flex; height: 100%; margin-left: auto; flex: 0 0 auto; }
@@ -1584,6 +1616,22 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .ver-status--new { color: var(--maarm-primary); font-weight: 500; }
 .ver-status--checking { color: var(--maarm-foreground-muted); }
 .ver-status--err { color: var(--maarm-danger); }
+/* 本次更新不再提示：只控制关于标签上的提醒点，不改变更新入口 */
+.upd-remind-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--maarm-border-light);
+}
+.upd-remind-row[hidden] { display: none; }
+.upd-remind-opt {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-remind-opt input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--maarm-primary);
+}
+.upd-remind-hint { font-size: 11px; color: var(--maarm-foreground-dim); }
 .new-release {
   background: color-mix(in srgb, var(--maarm-primary) 6%, transparent); border: 1px solid color-mix(in srgb, var(--maarm-primary) 20%, transparent);
   border-radius: var(--maarm-radius-md); padding: 12px 14px; margin-top: 12px;
@@ -1602,9 +1650,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   background: var(--maarm-primary);
   transition: width 0.3s ease;
 }
-.maarm-btn--primary { background: var(--maarm-primary); color: var(--maarm-primary-foreground); border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent); }
-.maarm-btn--primary:hover { background: var(--maarm-primary-hover); }
-.maarm-btn--primary:active { background: var(--maarm-primary-active); }
 .spinner {
   width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
   border: 2px solid var(--maarm-border-strong); border-top-color: var(--maarm-info);
@@ -1870,6 +1915,15 @@ footer .spacer { flex: 1; }
 }
 .maarm-btn:hover:not(:disabled) { background: var(--maarm-surface-hover); border-color: var(--maarm-border-strong); }
 .maarm-btn:active:not(:disabled) { background: var(--maarm-surface-active); }
+/* 主按钮必须排在 .maarm-btn 之后：同权重后写者胜，提前定义会被基础按钮的
+   背景 / 文字 / 边框覆盖，只剩一层红阴影。hover/active 补齐 :not(:disabled)
+   以匹配基础规则的权重。 */
+.maarm-btn--primary {
+  background: var(--maarm-primary); color: var(--maarm-primary-foreground);
+  border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent);
+}
+.maarm-btn--primary:hover:not(:disabled) { background: var(--maarm-primary-hover); }
+.maarm-btn--primary:active:not(:disabled) { background: var(--maarm-primary-active); }
 .maarm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .maarm-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 #btn-stop {

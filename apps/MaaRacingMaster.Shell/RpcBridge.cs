@@ -44,7 +44,7 @@ internal static class RpcBridge
         // 枚举值（stable/preview、cnb/github），由协调器校验，前端不传地址。
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
-        "update_set_channel", "update_set_source",
+        "update_set_channel", "update_set_source", "update_set_dismissed",
         // 宿主运行环境维护（WebView2RuntimeUpdater）：下载源固定为微软官方跳转，
         // 前端只表达「查状态 / 更新」两个意图，不携带任何 URL 或路径。
         "webview2_status", "webview2_update",
@@ -58,7 +58,7 @@ internal static class RpcBridge
     {
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
-        "update_set_channel", "update_set_source",
+        "update_set_channel", "update_set_source", "update_set_dismissed",
         "webview2_status", "webview2_update",
         "app_restart",
     };
@@ -154,6 +154,8 @@ internal static class RpcBridge
                     "update_apply" => await coordinator.ApplyAsync(),
                     "update_set_channel" => await coordinator.SetChannelAsync(ReadParam(paramsEl, "value")),
                     "update_set_source" => await coordinator.SetSourceAsync(ReadParam(paramsEl, "value")),
+                    "update_set_dismissed" => coordinator.SetDismissed(
+                        ReadBoolParam(paramsEl, "value") ?? throw new ArgumentException("缺少布尔参数 value")),
                     _ => coordinator.GetStatus(), // update_status 与未知宿主名兜底
                 };
             }
@@ -237,6 +239,18 @@ internal static class RpcBridge
         return paramsEl.Value.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString()
             : null;
+    }
+
+    private static bool? ReadBoolParam(JsonElement? paramsEl, string name)
+    {
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object) return null;
+        if (!paramsEl.Value.TryGetProperty(name, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        };
     }
 
     private static Task ReplyAsync(WebView2 sender, long callId, bool ok, object? data, string? error)

@@ -426,6 +426,29 @@ internal static class Program
               final.TargetVersion == "4.0.0" && final.Channel == UpdateSnapshot.ChannelStable
               && !final.AwaitingStable,
               $"late={late.TargetVersion} final={final.TargetVersion}/{final.Channel}/{final.AwaitingStable}");
+
+        // ⑦ 本次更新不再提示：按目标版本记住并落盘；取消后清除。
+        var dismissFeed = MakeFeed("dismiss", ("stable", "6.0.0"));
+        string? savedDismissed = null;
+        var dm = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
+            saveDismissedVersion: v => savedDismissed = v);
+        var dmUp = await dm.CheckAsync();
+        var dmSet = dm.SetDismissed(true);
+        Check("标记本次更新不再提示 → 记住目标版本并落盘",
+              dmUp.Phase == UpdateSnapshot.Available
+              && dmSet.DismissedVersion == dmUp.TargetVersion
+              && savedDismissed == dmUp.TargetVersion,
+              $"phase={dmUp.Phase} target={dmUp.TargetVersion} dismissed={dmSet.DismissedVersion} saved={savedDismissed}");
+        var dmClear = dm.SetDismissed(false);
+        Check("取消不再提示 → 清除标记并落盘",
+              dmClear.DismissedVersion is null && savedDismissed is null,
+              $"dismissed={dmClear.DismissedVersion} saved={savedDismissed}");
+        var dmRestart = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
+            initialDismissedVersion: "6.0.0");
+        var dmRestartUp = await dmRestart.CheckAsync();
+        Check("重启后同一目标仍保持不再提示",
+              dmRestartUp.DismissedVersion == "6.0.0",
+              $"dismissed={dmRestartUp.DismissedVersion} target={dmRestartUp.TargetVersion}");
     }
 
     /// <summary>最小可用渠道索引：检查阶段只解析 JSON，不需要真实 nupkg（探针既有

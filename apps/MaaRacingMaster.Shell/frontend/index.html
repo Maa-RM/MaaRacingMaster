@@ -18,7 +18,9 @@
       <button class="maarm-tab maarm-tab--active" data-tab="control">主控</button>
       <button class="maarm-tab" data-tab="data">数据</button>
       <button class="maarm-tab" data-tab="settings">设置</button>
-      <button class="maarm-tab" data-tab="about">关于</button>
+      <button class="maarm-tab" data-tab="about">
+        <span class="maarm-tab-label">关于<span class="maarm-tab-dot" id="about-tab-dot" aria-hidden="true"></span></span>
+      </button>
     </nav>
     <div class="win-controls" id="win-controls">
       <button class="win-btn" id="btn-win-min" type="button" aria-label="最小化" title="最小化">
@@ -112,7 +114,7 @@
                       title="更新设置">
                 <i data-icon="settings"></i>
               </button>
-              <button class="maarm-btn maarm-btn--primary" id="btn-update-action" type="button">
+              <button class="maarm-btn" id="btn-update-action" type="button">
                 <i data-icon="rotate-cw"></i>
                 <span id="btn-update-action-label">检查更新</span>
               </button>
@@ -121,6 +123,13 @@
           <div class="card-body">
             <div class="ver-row"><span class="ver-label">当前版本</span><span class="ver-value" id="about-ver-current">--</span></div>
             <div class="ver-status" id="about-update-status"></div>
+            <div class="upd-remind-row" id="upd-remind-row" hidden>
+              <label class="upd-remind-opt">
+                <input type="checkbox" id="upd-remind-check">
+                <span>本次更新不再提示</span>
+              </label>
+              <span class="upd-remind-hint" id="upd-remind-hint"></span>
+            </div>
             <div class="new-release" id="about-new-release" style="display:none;"></div>
           </div>
         </div>

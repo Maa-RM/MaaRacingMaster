@@ -240,6 +240,10 @@
       actionLabel: $('btn-update-action-label'),
       statusEl: $('about-update-status'),
       releaseEl: $('about-new-release'),
+      remindRow: $('upd-remind-row'),
+      remindCheck: $('upd-remind-check'),
+      remindHint: $('upd-remind-hint'),
+      tabDot: $('about-tab-dot'),
     };
   }
 
@@ -293,6 +297,40 @@
     releaseEl.style.display = 'none';
   }
 
+  // 关于标签上的更新提醒点：只在「发现可更新目标且本次未选择不再提示」时亮起。
+  // 位置锚在文字外框（.maarm-tab-label）上，不随按钮内边距漂移。
+  function renderUpdateDot(snapshot) {
+    const { tabDot } = updateElements();
+    const tab = document.querySelector('.maarm-tab[data-tab="about"]');
+    if (!tabDot || !tab) return;
+    const target = snapshot ? snapshot.target_version : null;
+    const on = !!(snapshot && snapshot.phase === 'available'
+      && target && snapshot.dismissed_version !== target);
+    tabDot.classList.toggle('is-on', on);
+    if (on) {
+      tab.title = '发现新版本 v' + target;
+      tab.setAttribute('aria-label', '关于，发现新版本 v' + target);
+    } else {
+      tab.removeAttribute('title');
+      tab.removeAttribute('aria-label');
+    }
+  }
+
+  // 「本次更新不再提示」只在发现可更新目标时出现；勾选状态回显自快照。
+  function renderRemindRow(snapshot) {
+    const { remindRow, remindCheck, remindHint } = updateElements();
+    if (!remindRow || !remindCheck || !remindHint) return;
+    const target = snapshot ? snapshot.target_version : null;
+    const active = !!(snapshot && snapshot.phase === 'available' && target);
+    remindRow.hidden = !active;
+    if (!active) return;
+    const dismissed = snapshot.dismissed_version === target;
+    remindCheck.checked = dismissed;
+    remindHint.textContent = dismissed
+      ? '「关于」上的提醒点已隐藏，下个版本会重新提示'
+      : '仅对 v' + target + ' 生效';
+  }
+
   // 快照 → 状态行 + 卡头主按钮 + 卡体次动作区。主按钮吸收检查/下载/重启升级，
   // 卡体只留进度条与取消/稍后这类辅助动作。error 如实显示且保留恢复入口。
   function renderSnapshot(snapshot) {
@@ -308,6 +346,8 @@
     if (phase !== 'downloading') stopUpdatePolling();
 
     clearReleaseArea();
+    renderUpdateDot(snapshot);
+    renderRemindRow(null); // 默认收起，available 分支再按快照展开
     switch (phase) {
       case 'unavailable':
         renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '自动升级不可用');
@@ -315,7 +355,7 @@
         break;
       case 'idle':
         renderUpdateStatus(statusEl, 'ver-status--ok', snapshot.error || '');
-        setMainAction('检查更新', checkUpdate, 'rotate-cw');
+        setMainAction('检查更新', checkUpdate, 'rotate-cw', false);
         break;
       case 'checking':
         renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
@@ -330,6 +370,7 @@
       case 'available':
         renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本' + target);
         setMainAction('下载更新', downloadUpdate, 'arrow-up-right');
+        renderRemindRow(snapshot);
         break;
       case 'downloading': {
         renderUpdateStatus(statusEl, 'ver-status--checking',
@@ -510,6 +551,19 @@
       window.addEventListener('scroll', closeUpdateSettings, true);
     }
     renderUpdateSettings();
+    const { remindCheck } = updateElements();
+    if (remindCheck) {
+      remindCheck.addEventListener('change', async () => {
+        const value = remindCheck.checked;
+        try {
+          const d = await maarm.call('update_set_dismissed', { value });
+          renderSnapshot(d);
+        } catch (e) {
+          remindCheck.checked = !value; // 失败回退到真实状态
+          showError('更新提醒设置失败：' + e.message);
+        }
+      });
+    }
     refreshUpdateStatus(); // 恢复壳内协调器快照（下载任务跨页面持续，重开关于页不丢状态）
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }

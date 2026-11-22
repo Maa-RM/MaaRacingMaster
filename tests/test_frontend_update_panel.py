@@ -24,9 +24,11 @@ COORDINATOR = REPO / "apps" / "MaaRacingMaster.Shell" / "UpdateCoordinator.cs"
 HOST_ACTIONS = (
     "update_check", "update_start_download", "update_cancel_download",
     "update_status", "update_apply", "update_set_channel", "update_set_source",
+    "update_set_dismissed",
 )
 
 INDEX_HTML = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "index.html"
+STYLE_CSS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "style.css"
 
 
 @pytest.fixture(scope="module")
@@ -135,6 +137,63 @@ def test_head_button_absorbs_check_download_and_apply(app_src: str):
     m = re.search(r"case 'up_to_date':.*?(?=case |default:)", body, re.S)
     assert m and "setMainAction('检查更新', checkUpdate, 'rotate-cw', false)" in m.group(0), (
         "已是最新相位的检查更新按钮应保持白色"
+    )
+
+
+def test_about_tab_dot_is_anchored_to_label_text():
+    """提醒点锚在「关于」文字外框上（不是整个按钮），并带两圈错峰扩散的圆环。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'class="maarm-tab-label"' in html and 'id="about-tab-dot"' in html, (
+        "关于标签缺少文字外框或提醒点挂点"
+    )
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    assert ".maarm-tab-label { position: relative" in css, "提醒点未锚定到文字外框"
+    assert "maarm-tab-dot-echo" in css and "animation-delay: -1.2s" in css, (
+        "提醒点缺少与底栏状态球同款的两圈错峰扩散"
+    )
+
+
+def test_available_phase_shows_dismiss_control_and_updates_dot(app_src: str):
+    """available 相位展示「本次更新不再提示」；勾选状态回显自快照，
+    提醒点按「目标版本 != 已忽略版本」决定是否亮起。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="upd-remind-row"' in html and 'id="upd-remind-check"' in html
+    assert "本次更新不再提示" in html, "缺少不再提示选项"
+
+    dot = _js_function_body(app_src, "function renderUpdateDot(snapshot)")
+    assert "snapshot.phase === 'available'" in dot, "提醒点未限定在发现更新相位"
+    assert "snapshot.dismissed_version !== target" in dot, "提醒点未按已忽略版本判断"
+    assert "classList.toggle('is-on', on)" in dot, "提醒点缺少显隐切换"
+
+    row = _js_function_body(app_src, "function renderRemindRow(snapshot)")
+    assert "snapshot.dismissed_version === target" in row, "勾选状态未回显快照"
+    assert "下个版本会重新提示" in row, "缺少按版本生效的说明"
+
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "update_set_dismissed" in init, "不再提示未接宿主动作"
+
+
+def test_no_update_states_use_flat_button(app_src: str):
+    """空闲与已是最新时主按钮保持扁平（与齿轮按钮同款），不带主色阴影；
+    只有发现更新/下载/重启升级才用主按钮。"""
+    body = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    for phase in ("idle", "up_to_date"):
+        m = re.search(rf"case '{phase}':.*?(?=case |default:)", body, re.S)
+        assert m, f"renderSnapshot 缺 {phase} 分支"
+        assert "setMainAction('检查更新', checkUpdate, 'rotate-cw', false)" in m.group(0), (
+            f"{phase} 相位的检查更新按钮应为扁平样式"
+        )
+
+
+def test_primary_button_rules_override_base_button():
+    """主按钮规则必须排在基础按钮之后：同权重下提前定义会被背景/文字/边框覆盖，
+    只剩一层红阴影（历史 bug）。"""
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    base = css.index("\n.maarm-btn {")
+    primary = css.index("\n.maarm-btn--primary {")
+    assert primary > base, "主按钮规则被基础按钮覆盖，只剩红阴影"
+    assert ".maarm-btn--primary:hover:not(:disabled)" in css, (
+        "主按钮 hover 权重不足，会被基础按钮的 hover 背景盖掉"
     )
 
 

@@ -20,7 +20,8 @@ public sealed record UpdateSnapshot(
     [property: JsonPropertyName("managed")] bool Managed,
     [property: JsonPropertyName("channel")] string Channel,
     [property: JsonPropertyName("source")] string Source,
-    [property: JsonPropertyName("awaiting_stable")] bool AwaitingStable)
+    [property: JsonPropertyName("awaiting_stable")] bool AwaitingStable,
+    [property: JsonPropertyName("dismissed_version")] string? DismissedVersion)
 {
     public const string ChannelStable = "stable";
     public const string ChannelPreview = "preview";
@@ -141,11 +142,13 @@ public sealed class UpdateCoordinator
     private readonly HandoffRecoveryAsync? _handoffRecovery;
     private readonly bool _managed;
     private readonly Action<string, string, bool> _savePreferences; // 偏好落盘（channel, source, awaitingStable）
+    private readonly Action<string?> _saveDismissedVersion;         // 「本次更新不再提示」落盘
     private readonly object _gate = new();
 
     private string _channel = UpdateSnapshot.ChannelStable;   // 渠道是用户设置，默认显式稳定轨
     private string _source = UpdateSnapshot.SourceCnb;        // 当前首选下载地址
     private bool _awaitingStable;                             // 从测试轨切回且稳定版尚未追上
+    private string? _dismissedVersion;                        // 已标记「本次更新不再提示」的目标版本
 
     private long _revision;
     private long _epoch;                           // 渠道切换开启新世代：作废此前所有在途异步回写
@@ -167,7 +170,9 @@ public sealed class UpdateCoordinator
                              string? initialChannel = null,
                              string? initialSource = null,
                              bool initialAwaitingStable = false,
-                             Action<string, string, bool>? savePreferences = null)
+                             string? initialDismissedVersion = null,
+                             Action<string, string, bool>? savePreferences = null,
+                             Action<string?>? saveDismissedVersion = null)
     {
         _catalog = new SourceCatalog(feedSource);
         _managed = managed;
@@ -175,9 +180,12 @@ public sealed class UpdateCoordinator
         _prepareGate = prepareGate;
         _handoffRecovery = handoffRecovery;
         _savePreferences = savePreferences ?? ((_, _, _) => { });
+        _saveDismissedVersion = saveDismissedVersion ?? (_ => { });
         if (initialChannel == UpdateSnapshot.ChannelPreview) _channel = UpdateSnapshot.ChannelPreview;
         if (initialSource == UpdateSnapshot.SourceGithub) _source = UpdateSnapshot.SourceGithub;
         _awaitingStable = initialAwaitingStable && _channel == UpdateSnapshot.ChannelStable;
+        _dismissedVersion = string.IsNullOrWhiteSpace(initialDismissedVersion)
+            ? null : initialDismissedVersion.Trim();
         if (!managed)
         {
             _phase = UpdateSnapshot.Unavailable;
@@ -505,6 +513,25 @@ public sealed class UpdateCoordinator
         return isChannel ? await CheckAsync().ConfigureAwait(false) : GetStatus();
     }
 
+    /// <summary>更新提醒：记住「本次更新不再提示」的目标版本。只影响关于标签上的
+    /// 提醒点，不改变更新本身的可下载状态；目标版本变化后自然恢复提醒。
+    /// 没有可安装目标时拒绝，避免写入空标记。</summary>
+    public UpdateSnapshot SetDismissed(bool dismissed)
+    {
+        string? value;
+        lock (_gate)
+        {
+            if (dismissed && string.IsNullOrEmpty(_targetVersion))
+                return Snapshot("没有可忽略的更新目标");
+            value = dismissed ? _targetVersion : null;
+            if (value == _dismissedVersion) return Snapshot(); // 幂等：不产生无意义修订
+            _dismissedVersion = value;
+            _revision++;
+        }
+        _saveDismissedVersion(value); // 锁外落盘：文件 IO 不占状态锁
+        return GetStatus();
+    }
+
     /// <summary>开启新世代并清空一切在途状态。持锁调用；这是唯一绕过 SetState 的状态
     /// 翻转——因为它主动作废旧世代，而不是在旧世代内推进相位。</summary>
     private void ResetForNewEpoch()
@@ -644,6 +671,6 @@ public sealed class UpdateCoordinator
     {
         var effError = error ?? _error;
         return new UpdateSnapshot(_phase, _progress, _targetVersion, effError, _revision,
-            _managed, _channel, _source, _awaitingStable);
+            _managed, _channel, _source, _awaitingStable, _dismissedVersion);
     }
 }

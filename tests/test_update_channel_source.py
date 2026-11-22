@@ -36,9 +36,9 @@ PROBE_PROJ = SHELL / "tools" / "ShellContractProbe" / "ShellContractProbe.csproj
 
 
 def test_snapshot_carries_channel_source_and_awaiting():
-    """快照带 channel/source 与等待标记；被否决的「分组可切换」伪状态不得回潮。"""
+    """快照带 channel/source、等待标记与提醒标记；被否决的「分组可切换」伪状态不得回潮。"""
     src = COORD.read_text(encoding="utf-8")
-    for field in ("channel", "source", "awaiting_stable"):
+    for field in ("channel", "source", "awaiting_stable", "dismissed_version"):
         assert re.search(rf'JsonPropertyName\("{field}"\)\]', src), f"快照缺 {field} 字段"
     assert "source_switchable" not in src, "「分组 switchable」伪状态应已删除"
     assert "ChannelStable = \"stable\"" in src and "ChannelPreview = \"preview\"" in src
@@ -126,6 +126,29 @@ def test_awaiting_marker_persists_and_clears():
     assert "(string Channel, string Source, bool FromPreview) Load()" in prefs, (
         "偏好不再区分「未选过渠道」——渠道与源都有显式默认值"
     )
+
+
+def test_dismissed_version_is_per_target_and_preserved_on_save():
+    """「本次更新不再提示」按目标版本记忆：切换渠道/源落盘时不得覆盖它，
+    单独保存提醒标记时也不得丢渠道/源；没有目标时拒绝写入空标记。"""
+    prefs = PREFS.read_text(encoding="utf-8")
+    assert 'JsonPropertyName("dismissed_version")' in prefs, "偏好文件未携带提醒标记"
+    assert "LoadDismissedVersion" in prefs and "SaveDismissedVersion" in prefs
+    assert "DismissedVersion = existing?.DismissedVersion" in prefs, (
+        "保存渠道/源时覆盖了提醒标记"
+    )
+    for field in ("Channel = channel", "Source = source"):
+        assert field in prefs, "单独保存提醒标记时丢失了渠道/源"
+
+    coord = COORD.read_text(encoding="utf-8")
+    setter = _cs_method(coord, "public UpdateSnapshot SetDismissed(bool dismissed)")
+    assert "value = dismissed ? _targetVersion : null" in setter, "提醒标记未绑定当前目标版本"
+    assert "string.IsNullOrEmpty(_targetVersion)" in setter, "无目标时未拒绝写入空标记"
+    assert "_saveDismissedVersion(value)" in setter, "提醒标记未落盘"
+    assert "value == _dismissedVersion" in setter, "重复设置未走幂等分支"
+
+    rpc = RPC.read_text(encoding="utf-8")
+    assert '"update_set_dismissed"' in rpc, "RPC 白名单缺提醒标记动作"
 
 
 def test_publisher_requires_both_named_addresses():
