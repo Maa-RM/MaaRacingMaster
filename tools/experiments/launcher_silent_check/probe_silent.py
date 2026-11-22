@@ -278,7 +278,7 @@ def run_case(mode: str, exe: Path, log) -> str:
         close_launcher(log)
         time.sleep(1.0)
 
-    ini_touched = mode in ("b_hide", "b_background")
+    ini_touched = mode in ("b_hide", "b_background", "b_silent")
     if ini_touched:
         _set_ini_flag(mode, "True", log)
 
