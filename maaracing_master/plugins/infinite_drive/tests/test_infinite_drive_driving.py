@@ -187,9 +187,10 @@ def test_lane_center_requires_two_adjacent_boundaries() -> None:
     assert _lane_center(0.49, lines) == 0.5
 
 
-def test_yolo_uses_matching_lane_frame_to_exclude_roadside_parking() -> None:
+def test_road_projection_uses_box_bottom_and_excludes_roadside_parking() -> None:
     from maaracing_master.plugins.infinite_drive.driving import _road_cars
     from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+    from maaracing_master.plugins.infinite_drive.world_model import GROUND_FOCAL_PX
 
     def line(k, pixel):
         return {"accepted": True, "L": k - 0.5, "fits": [
@@ -201,8 +202,9 @@ def test_yolo_uses_matching_lane_frame_to_exclude_roadside_parking() -> None:
             "x": 0.5, "y_v": 365., "cam_h": 1.25, "det_fid": 12, "det_ts_ns": 100,
             "traffic": result}
     cars = _road_cars(lane, 0.5, 1.25)
-    assert len(cars) == 1 and cars[0][0] == pytest.approx(1.5)
+    assert cars == [pytest.approx((1.5, GROUND_FOCAL_PX * 1.25 / 65.0))]
     assert _road_cars(dict(lane, det_fid=13), 0.5, 1.25) is None
+    assert _road_cars(dict(lane, det_ts_ns=101), 0.5, 1.25) is None
     assert _road_cars(dict(lane, lines=[]), 0.5, 1.25) is None
 
 

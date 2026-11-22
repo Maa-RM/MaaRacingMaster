@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""深度模型包（可选 DLC）的解析与校验回归锁。"""
+"""无限驾驶模型包的定位、校验与清单契约。"""
 
 from __future__ import annotations
 

@@ -17,6 +17,9 @@ import pytest
 from maaracing_master.plugins._archive.treasure.core.roi_config import NormalizedROI, ROIConfig, SCHEMA_VER
 
 
+pytestmark = pytest.mark.retired
+
+
 # ---------------- 坐标契约：NormalizedROI ----------------
 
 class TestNormalizedROI:
