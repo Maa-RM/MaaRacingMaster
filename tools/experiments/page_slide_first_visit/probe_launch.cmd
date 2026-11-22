@@ -23,7 +23,8 @@ taskkill /F /IM MaaRacingMaster.Shell.exe >> "%LOG%" 2>&1
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'MaaRacingMaster' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >> "%LOG%" 2>&1
 timeout /t 3 /nobreak >nul
 
-echo [2/3] setting debug-port env (CDP 9223) ...
+echo [2/3] setting debug-port env (CDP 9223, via shell hook MAARM_APP_WEBVIEW_ARGS) ...
+set "MAARM_APP_WEBVIEW_ARGS=--remote-debugging-port=9223 --remote-allow-origins=*"
 set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223 --remote-allow-origins=*"
 set "EXE=%~dp0..\..\..\apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe"
 if not exist "%EXE%" (
