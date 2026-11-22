@@ -2730,11 +2730,6 @@ footer .spacer { flex: 1; }
   text-align: center;
   color: var(--maarm-foreground);
 }
-/* 翻转状态下卡带非恒等 3D 变换（preserve-3d + rotateY(180°)），面内逐帧重绘的动画会让
-   渲染反复经过变换采样、糊度累积——真机实测：翻过去逐渐变糊，每次翻面重置一次光栅。
-   翻转期间暂停文字动效（正面此刻本就被背面剔除，零视觉影响）；翻回正面（恒等变换）
-   自动恢复运转。 */
-.maarm-ach-card.is-flipped .maarm-text-scan { animation-play-state: paused; }
 .maarm-ach-card__cond-tag {
   font-size: 9.5px; letter-spacing: 0.12em;
   color: var(--maarm-foreground-muted);
