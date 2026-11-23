@@ -1,10 +1,16 @@
 # =============================================================================
-# CI 自动化单测 — PR 时运行；master 与 release/** 的直接推送也触发，普通分支推送不触发
+# CI 自动化单测 — PR 时运行；master 与 release/** 的直接推送也触发，普通分支推送不触发。
+# 同一个文件以 workflow_call 被 release.yml 复用为发布前门禁：发布与 PR 跑同一套守卫。
+# （历史缺口：发布前那份 test job 只跑 truth + pytest，缺 ruff / pyright / 卫生检查 /
+#   体积守卫 / Shell 编译，依赖版本还各写一遍。）
 # 两个 job，分别覆盖两侧语言：
-#   test（ubuntu）         Python 侧：真源机检 / ruff / pyright / pytest。
-#                          只装测试必要依赖（pytest 等轻量集），不拉重量级依赖
-#                          （maa/opencv/onnxruntime 等）以免拖慢 CI。
+#   test（ubuntu）         Python 侧：体积守卫 / 真源机检 / 卫生检查 / ruff / pyright / pytest。
 #   shell-build（windows） C# 侧：dotnet build。Python 门禁覆盖不到 C# 编译错误。
+#
+# 【改名警告】job id、test 的 name 与 matrix 值共同决定 master 的必需状态检查
+#   "单元测试 (pytest) (3.11)"（protected=true，enforcement_level=non_admins，
+#   ruleset stable-master-pr-only）。改任一项都会换掉上报的检查名，
+#   非管理员随即无法合并——要改先同步远端规则集，别在本地单方面改。
 # =============================================================================
 name: Test
 
@@ -14,6 +20,9 @@ on:
       - master
       - 'release/**'
   pull_request:
+  # 供 release.yml 复用（发布门禁）。调用方 job 的 name 会带前缀，但那只影响 tag 流水线，
+  # PR 上的检查名仍由下面的 pull_request 触发直接上报，保持不变。
+  workflow_call:
 
 jobs:
   test:
@@ -27,7 +36,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: 仓库体积守卫（跟踪文件不得超过 5 MB）
         # 机制：git 历史只增不减——误提交的大文件永久留在 pack 里，并随每一次
@@ -60,38 +69,36 @@ jobs:
           echo "✓ ${COUNT} 个跟踪文件均在体积上限内"
 
       - name: 设置 Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: 校验节点真源自洽（图闭合 + 几何 + 分层红线）
-        # truth 为纯标准库工具，本步骤零依赖直接运行；
-        # 运行时读取路径由归档鉴宝的金标测试看护。
+        # truth 为纯标准库工具，本步骤零依赖直接运行。
+        # 资源读取路径由 truth 自身扫 plugins/ 顶层插件承担：路径断裂即本步红。
+        # 归档区（plugins/_archive）不注册、不列出；其鉴宝套件自声明 retired，本门禁不跑
+        # （需要时显式执行：pytest <归档目录> -m retired）。
         run: python tools/pipeline/truth.py
 
       - name: 仓库卫生检查（实验/计划生命周期契约，AGENTS 红线 6）
         # 棘轮语义：存量违规在基线豁免，新增违规即红；基线只减不增。纯标准库，零依赖。
         run: python tools/check_repo_hygiene.py
 
-      - name: 安装 pytest 与轻量测试依赖
-        # 注：不采用 `pip install -e .[test]`——会连带安装主依赖（onnxruntime-directml /
-        # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装测试实际
-        # 需要、且 Linux 有 wheel 的跨平台依赖：
-        #   numpy / opencv-headless：生产模块顶层 import；
-        #   onnxruntime（CPU）：infinite_drive 车道线观测与 YOLO 检测器顶层 import，
-        #     Linux 用 CPU 版即可，测试不跑 DirectML；
-        #   MaaFw：core.controller / nav_graph 顶层 import，官方提供 manylinux wheel。
+      - name: 安装测试与静态检查依赖
+        # 版本不在本文件出现：测试依赖在 requirements-ci.txt（其 -c 再引发布锁文件），
+        # ruff / pyright 在 pyproject.toml 的 dev-lint extra。任何一处再抄版本号
+        # 都会变成第二份真相，改版本只改那两处。
+        # 不 `--upgrade pip`：那也是每次重新解析的漂移面，runner 自带 pip 足够新。
         run: |
-          python -m pip install --upgrade pip
-          pip install "pytest>=7.0" numpy opencv-python-headless "onnxruntime==1.24.4" "MaaFw==5.12.3"
+          pip install -r requirements-ci.txt
+          python -c "import pathlib,tomllib;d=tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'));print(chr(10).join(d['project']['optional-dependencies']['dev-lint']))" > /tmp/lint-req.txt
+          pip install -r /tmp/lint-req.txt
 
       - name: 静态检查（ruff：错误级 + Pyflakes）
         # 规则集与存量清零口径见 pyproject.toml [tool.ruff]——E4/E7/E9/F 全仓 0 违规，
         # 新增违规即 CI 红。格式类规则（ruff format）不在门禁内：存量代码无统一格式
         # 约定，一次性重排会淹没 review 信号；要引入时单独决策。
-        run: |
-          pip install "ruff==0.16.7"
-          ruff check .
+        run: ruff check .
 
       - name: 类型检查（pyright basic，主包）
         # pyrightconfig.json 为唯一配置源（含 pythonPlatform=Windows：本项目的
@@ -99,9 +106,7 @@ jobs:
         # 凭空报 51 个 reportAttributeAccessIssue）。依赖只装轻量集，maa /
         # windows-capture 等 Windows-only 包缺失时按 reportMissingImports=warning
         # 降级，不阻塞。treasure 域冻结豁免声明在 module.py/detector.py 文件头。
-        run: |
-          pip install "pyright==1.1.411"
-          pyright maaracing_master
+        run: pyright maaracing_master
 
       - name: 运行单元测试
         # 不在命令行点名目录：用例发现统一走项目测试配置的 testpaths（根测试 +
@@ -123,16 +128,16 @@ jobs:
       contents: read
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: 设置 .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v4.3.1
         with:
           dotnet-version: '8.0.x'
 
       - name: 缓存 NuGet 包
         # Windows App SDK 等包较大，冷启动还原占这一步的大头
-        uses: actions/cache@v4
+        uses: actions/cache@v4.3.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('apps/**/*.csproj', 'apps/**/NuGet.Config') }}
