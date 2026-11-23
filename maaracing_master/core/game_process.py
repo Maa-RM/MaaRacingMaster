@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
 import os
 import subprocess
 import time
@@ -293,7 +294,7 @@ _FINAL_CONFIG_MARK = "Final download config"
 
 
 def launcher_log_path() -> Path:
-    """官方启动器的会话日志路径（每场运行轮转一个 Log.txt，不保证存在）。"""
+    """官方启动器的日志路径（拉起前可能不存在；存在时也可能被续写）。"""
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     return Path(base) / _LAUNCHER_LOG_REL
 
@@ -421,35 +422,48 @@ def click_launcher_update_button(hwnd: int) -> bool:
 class _LauncherLogTail:
     """启动器会话日志的增量读取。
 
-    每场运行轮转一个 Log.txt（新会话重开文件），「文件变短」即轮转信号；
-    轮转前的旧行一律不采，防上一场会话的状态行污染判定。
+    只采「本次拉起之后」写下的行：初始化时记住已读过哪些行（按内容摘要），
+    此后已读部分被改写或文件被换成另一份，就判定为新一轮会话、从头读；否则
+    只读尾部新增。初始化前的旧行一律不采，防上一场会话的状态行污染判定。
+
+    判据是「已读的那些行还在原位吗」，不是行长：行长会漏掉两类真实情形——
+    日志初始不存在（拉起后才新建，行长从 0 起算），以及同一进程续写同一份
+    日志（自动更新与 Ready 落在同一个文件里，行长只增不减）。
     """
 
     def __init__(self):
-        self._offset = 0
-        self._rotated = False
-        self._pre_lines = self._line_count()
+        lines = self._read()
+        self._offset = len(lines)
+        self._seen = self._digest_of(lines)
 
-    def _line_count(self) -> int:
+    @staticmethod
+    def _read() -> list[str]:
+        """读回完整行；文件不存在时返回空表。"""
         try:
-            return len(launcher_log_path().read_text(
-                encoding="utf-8", errors="replace").splitlines())
-        except OSError:
-            return 0
-
-    def poll(self) -> list[str]:
-        try:
-            lines = launcher_log_path().read_text(
-                encoding="utf-8", errors="replace").splitlines()
+            text = launcher_log_path().read_text(encoding="utf-8", errors="replace")
         except OSError:
             return []
-        if not self._rotated:
-            if len(lines) >= self._pre_lines:
-                return []  # 还是旧会话文件（或旧文件被追加），不采
-            self._rotated = True
-            self._offset = 0
+        lines = text.splitlines()
+        # 末尾没有换行说明最后一行还在写：留到下次再读，免得半行被拆成两条
+        if lines and not text.endswith(("\n", "\r")):
+            lines = lines[:-1]
+        return lines
+
+    @staticmethod
+    def _digest_of(lines: list[str]) -> bytes:
+        h = hashlib.sha1()
+        for line in lines:
+            h.update(line.encode("utf-8", "replace"))
+            h.update(b"\n")
+        return h.digest()
+
+    def poll(self) -> list[str]:
+        lines = self._read()
+        if self._offset > len(lines) or self._digest_of(lines[:self._offset]) != self._seen:
+            self._offset = 0  # 已读部分变了（新会话重开或截断重写）：从头读
         new = lines[self._offset:]
         self._offset = len(lines)
+        self._seen = self._digest_of(lines)
         return new
 
 

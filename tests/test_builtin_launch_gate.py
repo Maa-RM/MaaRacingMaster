@@ -15,10 +15,8 @@ conftest 的 autouse 夹具默认置 MAARM_APP_LAUNCHER_CHECK=0；本文件各�
 """
 from __future__ import annotations
 
-import json
 import threading
 import types
-from pathlib import Path
 
 import pytest
 
