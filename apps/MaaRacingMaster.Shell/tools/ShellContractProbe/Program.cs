@@ -656,11 +656,21 @@ internal static class Program
                 Check("锁被占用：回到可下载（不留在下载中）",
                       settled.Phase == UpdateSnapshot.Available,
                       $"phase={settled.Phase} error={settled.Error}");
-                Check("锁被占用：给出可重试提示",
-                      (settled.Error ?? "").Contains("稍后重试", StringComparison.Ordinal),
-                      $"error={settled.Error}");
-                Check("锁被占用：不进入镜像回退（镜像索引请求为 0）",
-                      mirror.IndexRequests == 0, $"requests={mirror.IndexRequests}");
+                if (OperatingSystem.IsWindows())
+                {
+                    Check("锁被占用：给出可重试提示",
+                          (settled.Error ?? "").Contains("稍后重试", StringComparison.Ordinal),
+                          $"error={settled.Error}");
+                    Check("锁被占用：不进入镜像回退（镜像索引请求为 0）",
+                          mirror.IndexRequests == 0, $"requests={mirror.IndexRequests}");
+                }
+                else
+                {
+                    // 这把包目录锁只在 Windows 上阻断下载：非 Windows 实测会照常发起下载
+                    // （本地 feed 只有索引、没有 nupkg，于是报「包缺失」并进镜像回退）。
+                    // 产品只发 Windows 包，这里不假装验过。
+                    Console.WriteLine("[SKIP] 锁被占用：可重试提示与镜像回退计数（锁语义仅 Windows 生效）");
+                }
             }
         }
 
