@@ -111,6 +111,37 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 | `Application.Start` 回调参数用 `_` 与丢弃赋值冲突（CS0029） | 参数命名 `p` |
 | 未打包应用入口样板 | `WinRT.ComWrappersSupport.InitializeComWrappers()` + `DispatcherQueueSynchronizationContext` |
 
+## 源码窗口的 GUI 调试
+
+在 Windows 仓库根运行，使用 Node.js 22 或更高版本。先退出已打开的 MaaRM，启动时按源码模式的正常流程确认 UAC。
+
+```powershell
+.\dev-shell.cmd --gui-debug
+```
+
+启动器给本次 Debug 窗口分配本机 WebView2 调试端口，验证主页面路径和已加载的 `app.js` 指纹后打印采集命令。调试窗口使用独立的 WebView2 数据目录，业务配置仍按源码模式读取。端口随窗口退出关闭。普通 `dev-shell.cmd` 使用常规 WebView2 目录。
+
+把下面的 `<端口>` 换成启动器显示的端口。保持 MaaRM 前台、退出已有弹窗并回到主控，采集期间保持窗口尺寸和 DPI 一致。
+
+```powershell
+# 附加并验证真实页面
+node .\apps\MaaRacingMaster.Shell\tools\gui-debug.cjs check <端口>
+# 看到「现在操作窗口」后，手动点齿轮，按 Esc 关闭，再打开
+node .\apps\MaaRacingMaster.Shell\tools\gui-debug.cjs record <端口> manage
+# 自动进入数据页、返回主控、再次进入数据页
+node .\apps\MaaRacingMaster.Shell\tools\gui-debug.cjs compare <端口> data
+```
+
+`manage` 与 `data` 都支持手动采集和自动对照。测某个入口的冷首访时，用新启动的诊断窗口直接采该入口。同进程中的第二次进入是再访；重新连接采集工具不会重置页面。测另一个入口的冷首访时再启动一个新窗口。
+
+要采集其他交互，把场景参数换成 JSON 文件路径。文件提供三个 CSS 选择器 `trigger`（点击入口）、`region`（采样区域）、`ready`（内容就绪标记）。`compare` 还需 `reset`（返回入口的选择器）或 `"escape": true`（按 Esc 返回），返回后 `region` 须退出布局。若进场动画由外层容器播放，用 `animationRoot` 指向其祖先容器。
+
+**读结果。** 命令打印本机临时目录里的 `timeline.json` 路径。摘要按点击列出后续采样窗口内的首次 rAF、就绪选择器第一次进入布局，以及相邻 rAF 最大间隔。就绪标记在管理模块是首张卡片，在数据页是看板面板。完整记录还包含动画事件、动画时钟、图片 `complete` 状态和浏览器提供的性能条目。DOM 就绪、图片 `complete`、实际可见画面分别衡量布局、加载状态、屏幕呈现。数据页没有可用看板或响应超过采样窗口时，就绪时间为 `null`。
+
+**核对窗口画面。** 已有支持 `gdigrab` 和 `libx264` 的 FFmpeg 时，给 `record` 或 `compare` 追加 `--desktop-video`。录制取桌面画面，请保持窗口无遮挡。画面与 JSON 写入同一临时目录，使用 `desktop.timestamps` 的采集时间与 `summary[].clickEpochMs` 对齐，在视频中确认首次可见变化和连续动画。录制失败时 JSON 会记录缺失原因。录屏和逐帧采样都有开销，可配合一组关闭录屏的采样复核。录制包含屏幕上其他可见内容，分享前请检查。
+
+**排查连接。** 调试开关只对 Debug 壳有效。连接不到、目标缺失或入口指纹不符时，关闭诊断窗口后重新运行源码启动命令，并检查 `shell.log` 中的 WebView2 初始化记录。若窗口能附加但交互不可用，先检查后端是否已连接和当前页面状态。
+
 ## sidecar transport 契约（`PythonSidecar.cs`）
 
 | 项 | 实现 |

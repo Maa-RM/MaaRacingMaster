@@ -45,13 +45,32 @@ public static class WebView2Runtime
                 return null;
             }
             var udf = Path.Combine(userData, "webview2");
+#if DEBUG
+            // 显式参数随启动命令跨过 UAC。本机诊断使用独立目录，避免复用常规 WebView2 进程。
+            const string debugPortPrefix = "--gui-debug-port=";
+            var debugPortArgument = Array.Find(Environment.GetCommandLineArgs(),
+                argument => argument.StartsWith(debugPortPrefix, StringComparison.Ordinal));
+            var debugPort = 0;
+            if (debugPortArgument is not null &&
+                int.TryParse(debugPortArgument[debugPortPrefix.Length..], out debugPort) &&
+                debugPort is > 0 and <= 65535)
+            {
+                udf = Path.Combine(userData, "webview2-gui-debug");
+            }
+            else
+            {
+                debugPort = 0;
+            }
+#endif
             Directory.CreateDirectory(udf);
-            // 诊断探针通道（实验区 page_slide_first_visit）：本机实证 WinRT 加载器在
-            // options=null 路径不吃 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS（变量在直接
-            // 父进程、浏览器进程全新仍无参数落地），需注入浏览器参数的探针经本变量走
-            // 显式 options 通道（官方文档确认的 WinUI3 可靠口径）；未设变量时 options
-            // 传 null，行为与原先完全一致。
+            // WebView2 浏览器参数经显式 options 传入 WinUI3 加载器。
             var probeArgs = Environment.GetEnvironmentVariable("MAARM_APP_WEBVIEW_ARGS");
+#if DEBUG
+            if (debugPort != 0)
+            {
+                probeArgs = $"--remote-debugging-port={debugPort} --remote-debugging-address=127.0.0.1";
+            }
+#endif
             CoreWebView2EnvironmentOptions? options = null;
             if (!string.IsNullOrWhiteSpace(probeArgs))
             {
