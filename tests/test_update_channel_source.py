@@ -51,8 +51,10 @@ def test_channel_is_always_explicit_and_never_downgrades():
     src = COORD.read_text(encoding="utf-8")
     assert "AllowVersionDowngrade" not in src, "降级开关应已整体删除"
     assert "_channelExplicit" not in src, "「未选过渠道」隐藏态应已删除"
-    manager = _cs_method(src, "public UpdateManager CreateManager(string source, IVelopackLocator? locator)")
-    assert "ExplicitChannel = Channel" in manager, "未向更新器显式传渠道"
+    manager = _cs_method(src, "private UpdateManager CreateManager(CheckIntent intent, string source, CancellationToken checkToken)")
+    assert "ExplicitChannel = intent.Channel" in manager, "未向更新器显式传渠道"
+    assert "new SimpleWebSource(uri, downloader" in manager, "http 源未注入索引下载器（短预算/可取消）"
+    assert "_locator is null" in manager, "本地源应沿用 SDK 默认行为"
     switch = _cs_method(src, "private async Task<UpdateSnapshot> SwitchSettingAsync(string? value, bool isChannel)")
     assert "_awaitingStable = value == UpdateSnapshot.ChannelStable" in switch, (
         "切回稳定轨时未如实设置等待标记"
@@ -73,19 +75,24 @@ def test_sources_are_named_addresses_not_shelves():
 
 
 def test_switch_semantics_differ_by_dimension():
-    """切渠道清空在途与就绪并当场重查（换的是目标发行）；切源保留在途与就绪、
-    只换首选（等价地址），不当场重查。"""
+    """切渠道清空在途与就绪、当场重查，且取消旧索引后等它真正退出再放行新检查；
+    切源保留在途与就绪、只换首选并前进修订号（旧界面点击据此失效），不当场重查。"""
     src = COORD.read_text(encoding="utf-8")
     switch = _cs_method(src, "private async Task<UpdateSnapshot> SwitchSettingAsync(string? value, bool isChannel)")
     assert "ResetForNewEpoch()" in switch, "渠道切换未重置在途状态"
-    assert "return isChannel ? await CheckAsync().ConfigureAwait(false) : GetStatus()" in switch, (
-        "渠道切换未当场重查，或源切换错误地触发了重查"
+    assert "if (!isChannel) return GetStatus()" in switch, "源切换不应触发重查"
+    assert "return await CheckAsync().ConfigureAwait(false)" in switch, "渠道切换未当场重查"
+    assert "draining is { IsCompleted: false }" in switch, "切渠道未等旧检查事务退出"
+    assert "if (_epoch != epoch || _channel != value) return Snapshot();" in switch, (
+        "排水后的续体未复查世代与最新意图（连点两次渠道切换会为旧意图启检查）"
     )
+    assert "if (changed) _revision++" in switch, "切下载源未前进修订号（旧界面点击不会失效）"
     assert "Preparing or" in switch and "Applying)" in switch, "提交临界区未禁止切换"
     assert "_savePreferences(_channel, _source, _awaitingStable)" in switch, "偏好未落盘"
     reset = _cs_method(src, "private void ResetForNewEpoch()")
     assert "_epoch++" in reset, "渠道切换未开启新世代"
     assert "_activeIntent = null" in reset and "_pending = null" in reset
+    assert "_checkCts?.Cancel()" in reset, "切入新世代未取消旧索引请求"
 
 
 def test_epoch_guards_every_async_write():
@@ -113,7 +120,10 @@ def test_awaiting_marker_persists_and_clears():
     """等待标记随偏好落盘；稳定轨追上（出现可安装目标）时清除并落盘，
     避免重启后旧标记让已升级的用户看到错误文案。"""
     src = COORD.read_text(encoding="utf-8")
-    checker = _cs_method(src, "public async Task<UpdateSnapshot> CheckAsync()")
+    checker = _cs_method(
+        src,
+        "private async Task<UpdateSnapshot> DoCheckAsync(CheckIntent intent, UpdateCheckTrigger trigger,",
+    )
     assert "_awaitingStable = false" in checker, "稳定轨追上时未清除等待标记"
     assert "_savePreferences(_channel, _source, false)" in checker, (
         "清除后未落盘，重启后旧标记会显示错误文案"
@@ -141,11 +151,12 @@ def test_dismissed_version_is_per_target_and_preserved_on_save():
         assert field in prefs, "单独保存提醒标记时丢失了渠道/源"
 
     coord = COORD.read_text(encoding="utf-8")
-    setter = _cs_method(coord, "public UpdateSnapshot SetDismissed(bool dismissed)")
+    setter = _cs_method(coord, "public UpdateSnapshot SetDismissed(bool dismissed, long? expectedRevision = null)")
     assert "value = dismissed ? _targetVersion : null" in setter, "提醒标记未绑定当前目标版本"
     assert "string.IsNullOrEmpty(_targetVersion)" in setter, "无目标时未拒绝写入空标记"
     assert "_saveDismissedVersion(value)" in setter, "提醒标记未落盘"
     assert "value == _dismissedVersion" in setter, "重复设置未走幂等分支"
+    assert "seen != _revision" in setter, "忽略操作未校验玩家看到的修订号"
 
     rpc = RPC.read_text(encoding="utf-8")
     assert '"update_set_dismissed"' in rpc, "RPC 白名单缺提醒标记动作"
@@ -167,12 +178,14 @@ def test_publisher_requires_both_named_addresses():
     assert "尚未接入 CI" in ci, "CI 需如实标注受管发行链未接线（脚本能力 != 发行事实）"
 
 
-def test_rpc_exposes_two_setting_actions():
-    """RPC 白名单含两个设置动作；只带枚举 value，前端不传 URL。"""
+def test_rpc_exposes_setting_and_auto_check_actions():
+    """RPC 白名单含两个设置动作与自动检查开关；设置动作只带枚举值/布尔值，前端不传 URL。"""
     src = RPC.read_text(encoding="utf-8")
-    for action in ("update_set_channel", "update_set_source"):
+    for action in ("update_set_channel", "update_set_source", "update_set_auto_check"):
         assert f'"{action}"' in src, f"RPC 白名单缺 {action}"
     assert 'ReadParam(paramsEl, "value")' in src, "设置动作未读取枚举参数"
+    assert 'ReadBoolParam(paramsEl, "value")' in src, "布尔开关未读取布尔参数"
+    assert 'ReadLongParam(paramsEl, "revision")' in src, "下载/忽略未读取修订号参数"
 
 
 def test_contract_probe_settings_mode_is_reachable():

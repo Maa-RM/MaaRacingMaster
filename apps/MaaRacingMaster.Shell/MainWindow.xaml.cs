@@ -250,6 +250,7 @@ public sealed partial class MainWindow : Window
     private bool _closeScheduled;
     private bool _windowClosed;
     private TaskbarProgress? _taskbar;
+    private UpdateAutoCheck? _autoCheck;
 
     // WM_GETMINMAXINFO 拦截（Win32 subclass，保证最小尺寸在系统级生效）
     private const int WM_GETMINMAXINFO = 0x0024;
@@ -317,6 +318,7 @@ public sealed partial class MainWindow : Window
         // 确认退出，见 RestartSidecarAfterHandoffFailureAsync）；提交进入替换相位后由壳做计划内关窗。
         var (prefChannel, prefSource, prefFromPreview) = UpdatePreferences.Load();
         var prefDismissed = UpdatePreferences.LoadDismissedVersion();
+        var prefAutoCheck = UpdatePreferences.LoadAutoCheck();
         var coordinator = new UpdateCoordinator(
             feedSource: ReadUpdateSourceFile(),
             managed: AppRootResolver.Resolve(
@@ -331,10 +333,19 @@ public sealed partial class MainWindow : Window
             initialAwaitingStable: prefFromPreview,
             initialDismissedVersion: prefDismissed,
             savePreferences: UpdatePreferences.Save,
-            saveDismissedVersion: UpdatePreferences.SaveDismissedVersion);
+            saveDismissedVersion: UpdatePreferences.SaveDismissedVersion,
+            initialAutoCheck: prefAutoCheck,
+            saveAutoCheck: UpdatePreferences.SaveAutoCheck);
         coordinator.ApplyingStarted += ScheduleApplyShutdown;
+        // 后台检查提交成功结果 → 页面（提醒点与版本卡自行出现，不要求用户先停在关于页）
+        coordinator.AutoCheckCommitted += PostUpdateSnapshot;
         AppRestarter.Scheduled += ScheduleRestartShutdown;
         RpcBridge.AttachCoordinator(coordinator);
+
+        // 进程内自动检查：首次立即、之后按间隔（锚点是最近一次检查收尾）。
+        // 关窗时 Stop 取消等待与在途索引，UI 收尾不同步等 I/O。
+        _autoCheck = new UpdateAutoCheck(coordinator);
+        _autoCheck.Start();
 
         // 仓库根（含 pyproject.toml 的目录）作为所有相对路径的锚：venv、前端 HTML 一律以其为基准。
         // 从 exe 基目录向上推导，彻底摆脱硬编码的本机绝对路径，仓库可 clone 到任意位置运行。
@@ -734,6 +745,30 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>后台检查提交成功结果 → 页面。回调可能来自检查任务的线程：
+    /// 封回 UI 线程后核对窗口生命周期与 WebView2 可用性，关窗边缘的迟到推送直接丢弃。
+    /// 页面初始化时的 update_status 查询可补回导航间错过的推送。</summary>
+    private void PostUpdateSnapshot(UpdateSnapshot snapshot)
+    {
+        var dispatcher = DispatcherQueue;
+        _ = Task.Run(() =>
+        {
+            dispatcher.TryEnqueue(() =>
+            {
+                if (_windowClosed) return;
+                try
+                {
+                    var json = JsonSerializer.Serialize(new { type = "update-status", data = snapshot });
+                    web.CoreWebView2?.PostWebMessageAsJson(json);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[shell] 推送更新快照失败: {ex.Message}");
+                }
+            });
+        });
+    }
+
     // ---------- PEEP 悬浮窗（脱离 GUI 的置顶播放器窗） ----------
 
     private PeepWindow? _peepWindow;
@@ -797,6 +832,17 @@ public sealed partial class MainWindow : Window
     {
         _windowClosed = true;
         EnterClosing();
+
+        // 0. 自动检查调度停止：取消等待与在途索引，不把网络 I/O 带进关窗收尾
+        try
+        {
+            _autoCheck?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[shell] 自动检查调度停止异常: {ex.Message}");
+        }
+        _autoCheck = null;
 
         // 0. 悬浮窗连带销毁：主窗口退出后它不再有可依附的后端，留下来只会是黑窗
         try

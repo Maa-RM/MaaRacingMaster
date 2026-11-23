@@ -24,7 +24,7 @@ COORDINATOR = REPO / "apps" / "MaaRacingMaster.Shell" / "UpdateCoordinator.cs"
 HOST_ACTIONS = (
     "update_check", "update_start_download", "update_cancel_download",
     "update_status", "update_apply", "update_set_channel", "update_set_source",
-    "update_set_dismissed",
+    "update_set_dismissed", "update_set_auto_check",
 )
 
 INDEX_HTML = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "index.html"
@@ -208,14 +208,51 @@ def test_settings_popover_wires_to_host_actions(app_src: str):
     src = _js_function_body(app_src, "async function setUpdateSource(source)")
     assert "maarm.call('update_set_channel', { value })" in ch, "渠道选择未发宿主动作"
     assert "maarm.call('update_set_source', { value })" in src, "下载源选择未发宿主动作"
-    assert "applySettingsSnapshot" in ch and "applySettingsSnapshot" in src, (
-        "切换后未用快照真源回显"
-    )
+    # 设置回包必须经同一渲染入口：切源前进修订号、切渠道换目标，版本卡与提醒点都要同步
+    assert "renderSnapshot(await maarm.call('update_set_channel'" in ch, "渠道回包未落到版本卡渲染入口"
+    assert "renderSnapshot(await maarm.call('update_set_source'" in src, "下载源回包未落到版本卡渲染入口"
+    render = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    assert "applySettingsSnapshot(snapshot)" in render, "统一渲染入口未回显渠道/源/开关"
     # 前端不持有 URL/路径：设置动作只带枚举值
     for body in (ch, src):
         assert "http" not in body and "localStorage" not in body, "设置动作不得拼 URL 或写本地偏好"
     check = _js_function_body(app_src, "async function checkUpdate()")
     assert "channel" not in check and "source" not in check, "检查主流程不得携带渠道/来源参数"
+
+
+def test_auto_check_switch_and_push_share_one_render_path(app_src: str):
+    """自动检查开关与后台推送：开关走宿主动作并经 renderSnapshot 回显；
+    推送订阅在页面初始化、经同一修订守卫落盘（初次 update_status 可补回错过推送）。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="upd-auto-check"' in html, "设置浮窗缺自动检查开关"
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "update_set_auto_check" in init, "自动检查开关未接宿主动作"
+    assert "renderSnapshot(await maarm.call('update_set_auto_check'" in init, (
+        "开关回包未经统一渲染入口"
+    )
+    listen = _js_function_body(app_src, "maarm.onNativeMessage((msg) =>")
+    assert "'update-status'" in listen, "未订阅后台更新快照推送"
+    assert "renderSnapshot(msg.data)" in listen, "推送未经统一渲染入口"
+    render = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    assert "snapshot.revision < lastUpdateRevision" in render, "推送路径缺修订守卫"
+
+
+def test_download_and_dismiss_carry_seen_revision(app_src: str):
+    """下载与忽略带渲染时的修订号：后台已换目标时由后端拒绝，不替旧界面操作新目标。"""
+    download = _js_function_body(app_src, "async function downloadUpdate()")
+    assert "maarm.call('update_start_download', { revision: lastUpdateRevision })" in download, (
+        "下载未带玩家看到的修订号"
+    )
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "revision: lastUpdateRevision" in init, "忽略操作未带玩家看到的修订号"
+
+
+def test_manual_check_failure_restores_main_button(app_src: str):
+    """检查失败不得把主按钮留在禁用的「检查中…」：catch 分支先按快照恢复按钮。"""
+    body = _js_function_body(app_src, "async function checkUpdate()")
+    catch = body[body.rindex("} catch (e) {"):]
+    assert "await refreshUpdateStatus()" in catch, "失败分支未恢复快照（主按钮会卡在检查中）"
+    assert "ver-status--err" in catch, "失败分支未显示错误"
 
 
 def test_shell_auto_closes_on_applying():

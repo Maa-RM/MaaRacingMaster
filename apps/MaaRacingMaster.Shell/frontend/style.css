@@ -1512,6 +1512,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .upd-set-opt img, .upd-set-opt svg { width: 14px; height: 14px; flex-shrink: 0; }
 .upd-set-check { margin-left: auto; visibility: hidden; }
 .upd-set-opt.is-active .upd-set-check { visibility: visible; }
+/* 后台自动检查：开关行与选项同高，勾选框用主色（不受「不再提示」那块的分隔线影响） */
+.upd-set-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: calc(var(--maarm-radius-sm) - 1px);
+  font-size: 12px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-set-toggle:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.upd-set-toggle input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--maarm-primary); flex-shrink: 0;
+}
 .upd-set-note {
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--maarm-border-light);
   font-size: 11px; line-height: 1.5; color: var(--maarm-foreground-muted);
