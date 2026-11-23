@@ -78,7 +78,7 @@ jobs:
         # windows-capture 等仅 Windows 有 wheel），Linux runner 装不上。故只装测试实际
         # 需要、且 Linux 有 wheel 的跨平台依赖：
         #   numpy / opencv-headless：生产模块顶层 import；
-        #   onnxruntime（CPU）：infinite_drive 深度几何与 YOLO 检测器顶层 import，
+        #   onnxruntime（CPU）：infinite_drive 车道线观测与 YOLO 检测器顶层 import，
         #     Linux 用 CPU 版即可，测试不跑 DirectML；
         #   MaaFw：core.controller / nav_graph 顶层 import，官方提供 manylinux wheel。
         run: |

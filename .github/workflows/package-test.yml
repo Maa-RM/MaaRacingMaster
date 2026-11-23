@@ -75,30 +75,41 @@ jobs:
           python -m pip install "pytest>=7.0"
           python -B -m pytest tests/test_release_assembly.py tests/test_release_ship_expiry.py -q
 
+      - name: 生成可选模型包与下载描述
+        # 与正式发布同序：先出模型 ZIP 与 download.json，再把描述注入主包。
+        # 主包缺描述时「一键安装模型」整条链路失效，演练必须覆盖这一步。
+        shell: pwsh
+        run: |
+          python scripts/release/make_model_pack.py `
+            --version "$env:VER" `
+            --out "${{ github.workspace }}\build\release" `
+            --github-repo "${{ github.repository }}"
+          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-infinite_drive-models-$env:VER.zip"
+          $desc = "${{ github.workspace }}\build\release\model-download.json"
+          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
+          if (-not (Test-Path $desc)) { throw "下载描述未生成: $desc" }
+          Get-Item $mp, "$mp.sha256", $desc | Select-Object Name, Length
+
       - name: 组装解压即用包
         shell: pwsh
         run: |
           & "${{ github.workspace }}\scripts\release\assemble.ps1" `
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
-            -OutRoot "${{ github.workspace }}\build\release"
+            -OutRoot "${{ github.workspace }}\build\release" `
+            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json"
 
-      - name: 校验产物
+      - name: 校验产物（含一键安装描述入包）
         shell: pwsh
         run: |
           $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
           if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
           Get-Item $zip | Select-Object Name, Length
-
-      - name: 生成可选模型包
-        shell: pwsh
-        run: |
-          python scripts/release/make_model_pack.py `
-            --version "$env:VER" `
-            --out "${{ github.workspace }}\build\release"
-          $mp = "${{ github.workspace }}\build\release\MaaRacingMaster-infinite_drive-models-$env:VER.zip"
-          if (-not (Test-Path $mp)) { throw "模型包未生成: $mp" }
-          Get-Item $mp, "$mp.sha256" | Select-Object Name, Length
+          $member = 'maaracing_master/plugins/infinite_drive/resources/models/download.json'
+          # tar 归档成员带 ./ 前缀（Windows bsdtar 实测），比较前先归一
+          python -c "import sys, zipfile; names = {n[2:] if n.startswith('./') else n for n in zipfile.ZipFile(sys.argv[1]).namelist()}; sys.exit(0 if sys.argv[2] in names else '缺少 ' + sys.argv[2])" $zip $member
+          if ($LASTEXITCODE -ne 0) { throw "主包缺少模型下载描述，一键安装不可用" }
+          Write-Host "已确认包内存在 $member"
 
       - name: 上传验证产物（不创建 Release）
         uses: actions/upload-artifact@v4

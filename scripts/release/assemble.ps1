@@ -157,7 +157,7 @@ $PruneExpects = @(
 )
 
 # ---------- 缓存源指纹（防跨分支 / 改代码后误用过期缓存） ----------
-$pubFinger = 'publish/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell') -Recurse -File |
+$pubFinger = 'publish/pathmap/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell') -Recurse -File |
     Where-Object { $_.Extension -in '.cs','.xaml','.csproj','.manifest' -and $_.FullName -notmatch '\\(bin|obj)\\' } |
     Sort-Object FullName |
     ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ';')
@@ -234,7 +234,12 @@ if ($SkipPublish -and (& $CacheFPMatch $publishDir $pubFinger)) {
 } else {
     if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
     New-Item -ItemType Directory -Path $publishDir | Out-Null
-    & dotnet publish $csproj -c Release -r win-x64 --self-contained true -p:Version=$Version -o $publishDir | Out-Null
+    # 产物随包分发，构建机路径一个字节都不能进包：文档名与 DLL 内的 PDB 路径由 PathMap
+    # 映射，SourceLink 的 documents 键由 ContinuousIntegrationBuild 的确定性源路径换成 /_/
+    # （两者缺一仍会漏；改构建参数时记得同步 $pubFinger，否则本地 -SkipPublish 会复用旧产物）。
+    $srcRoot = $RepoRoot.TrimEnd('\') + '\'
+    & dotnet publish $csproj -c Release -r win-x64 --self-contained true -p:Version=$Version `
+        -p:ContinuousIntegrationBuild=true "-p:PathMap=$srcRoot=/_/" -o $publishDir | Out-Null
     if ($LASTEXITCODE -ne 0) { $errors.Add('dotnet publish failed') }
     & $CacheFPWrite $publishDir $pubFinger
 }
