@@ -105,7 +105,6 @@ def _line_fits() -> list[dict]:
 
 
 def _car_x(p: float, ego_x: float, z_m: float = 9.96):
-    from maaracing_master.plugins.infinite_drive import driving as d
     from maaracing_master.plugins.infinite_drive.perception import Detection
     from maaracing_master.plugins.infinite_drive.world_model import GROUND_FOCAL_PX
 
@@ -149,7 +148,7 @@ def test_blocked_point_switches_once_and_holds_after_clearing(monkeypatch) -> No
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
 
     now = 1_100_000_000
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
@@ -197,7 +196,7 @@ def test_walled_road_cuts_throttle_until_any_point_clears(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
 
     now = 1_100_000_000
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
