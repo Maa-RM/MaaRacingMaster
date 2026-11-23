@@ -737,10 +737,10 @@ def _drive_frames_stub(mod, monkeypatch, frame):
 
 
 def test_debug_drive_saves_raw_frames(monkeypatch, tmp_path) -> None:
-    """debug 开 + 程序驾驶局：raw 原帧按阶段落盘并登记行为清单段（v1 口径）。
+    """debug 开 + 程序驾驶局：raw 与叠加图按阶段落盘并登记行为清单段。
 
     布局走 session_layout 控制面（debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/），
-    策略面未接先只存 raw（索引 hud=null），行为级索引在收尾重建。"""
+    索引 hud 指向实际叠加图，行为级索引在收尾重建。"""
     import json
 
     import numpy as np
@@ -763,7 +763,8 @@ def test_debug_drive_saves_raw_frames(monkeypatch, tmp_path) -> None:
     assert list((seg / "raw").glob("*.jpg"))                # raw 原帧落盘（10fps 节流）
     rows = [json.loads(line) for line
             in (seg / "frames.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    assert rows and all(row["hud"] is None for row in rows)  # 只存 raw 不画叠加
+    assert rows and all(row["hud"] and (seg / row["hud"]).is_file()
+                        for row in rows)                    # 叠加图落盘且索引可解析
     assert (behavior / "frames.jsonl").is_file()            # 行为级索引收尾重建
 
 

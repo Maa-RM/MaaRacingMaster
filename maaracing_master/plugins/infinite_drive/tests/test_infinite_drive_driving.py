@@ -112,6 +112,33 @@ def _car_x(p: float, ego_x: float, z_m: float = 9.96):
     return Detection(round(640 + 100 * (p - ego_x)), bottom - 20, 44, 40, .9)
 
 
+def test_debug_snapshot_reports_why_points_are_missing() -> None:
+    """调试图快照区分缺席原因：车道原点不可用 vs 同拍车账缺席 vs 有点位。"""
+    from maaracing_master.plugins.infinite_drive import driving as d
+
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    base = {"lane": {}, "ego_x": 0.0, "target": 0.2, "cars": None,
+            "walled": False, "steer": 0.0, "throttle_scale": 1.0,
+            "heading": 0.0, "target_heading": 0.0, "yaw_rate": 0.0,
+            "usable": False, "fresh": True, "half_lanes": 2}
+
+    driver._dbg_refs = dict(base, track_ready=False)
+    snap = driver.debug_snapshot()
+    assert snap["edge_states"] is None and snap["edge_reason"] == "lane"
+
+    driver._dbg_refs = dict(base, track_ready=True)
+    snap = driver.debug_snapshot()
+    assert snap["edge_states"] is None and snap["edge_reason"] == "traffic"
+
+    driver._dbg_refs = dict(base, track_ready=True, cars=[(0.2, 10.0)])
+    snap = driver.debug_snapshot()
+    assert snap["edge_reason"] is None
+    assert dict(snap["edge_states"])[0.2] is True
+
+    driver._dbg_refs = None
+    assert driver.debug_snapshot() is None
+
+
 def test_edge_points_hug_each_white_line_on_both_sides() -> None:
     from maaracing_master.plugins.infinite_drive.driving import _EDGE_OFFSET, _EDGE_POINTS
 

@@ -97,7 +97,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| [debugview.py](./debugview.py) | 控制局 raw 调试图落盘器：IO 线程节流落盘原帧与帧索引，写盘失败静默计数，绝不干扰控制链。由 [module.py](./module.py) 在 debug 开关（ctx.debug）闸下按驾驶阶段起停（录制局不建 writer，录制器已写同一套布局）；决策取证走驾驶 trace，索引 hud=null 表达叠加图缺席 |
+| [debugview.py](./debugview.py) | 控制局调试图落盘器：IO 线程按 10fps 落原帧 + 单图状态叠加（车道线拟合、同拍街车框、底部道坐标横位尺、顶部观测/决策读数带），索引 hud 指向实际叠加图、渲染失败才写 null；渲染只读驾驶拍快照，异常静默计数，绝不干扰控制链。由 [module.py](./module.py) 在 debug 开关（ctx.debug）闸下按驾驶阶段起停（录制局不建 writer，录制器已写同一套布局）；决策取证仍走驾驶 trace |
 
 ### GPU 探针
 

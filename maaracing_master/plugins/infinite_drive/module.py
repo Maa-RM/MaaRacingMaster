@@ -1003,12 +1003,15 @@ class InfiniteDriveModule(ActivityModule):
                         self._tlog(f"[无限驾驶] 驾驶{phase} 超时未见结束信号", "WARNING")
                         return False
                     fresh = False
+                    dbg_snap = None
                     if not self._record_mode:
                         frame, fid, ts_ns, age_ms = self.ctx.capture.frame_with_age()
                         fresh = frame is not None and age_ms <= _MAX_DRIVE_FRAME_AGE_MS
                         if dbg is not None and fresh:
-                            dbg.tick(frame, {"fid": fid, "ts_ns": ts_ns,
-                                             "age_ms": age_ms})
+                            # 驾驶侧观测/决策在 steer 之后补进快照再入队；不在
+                            # 驾驶画面上的帧只有帧信息，叠加图显式标「无决策」。
+                            dbg_snap = {"fid": fid, "ts_ns": ts_ns,
+                                        "age_ms": age_ms}
                         if fresh and fid != hud_fid:
                             hud_fid, hud_visible = fid, drive_hud_visible(frame)
                         if fresh and hud_visible:
@@ -1021,12 +1024,16 @@ class InfiniteDriveModule(ActivityModule):
                                     return False
                                 driver.begin(settle_s=_CAMERA_SETTLE_S if phase == "p1" else 0.0)
                             steer = 0.0 if driver is None else driver.steer(frame, fid, ts_ns)
+                            if dbg_snap is not None and driver is not None:
+                                dbg_snap["drive"] = driver.debug_snapshot()
                             if not self._running or not self.ctx.lifecycle.running:
                                 return False
                             pad.left_joystick(x_value=round(steer * 32767))
                             throttle_scale = 1.0 if driver is None else driver.throttle_scale
                             pad.right_trigger(value=round(_DRIVE_THROTTLE * throttle_scale))
                             pad.update()
+                            if dbg_snap is not None:
+                                dbg.tick(frame, dbg_snap)
                             if tick - last_score_check >= _SCORE_CHECK_INTERVAL_S:
                                 last_score_check = tick
                                 if self._score_above_target(frame):
@@ -1049,6 +1056,10 @@ class InfiniteDriveModule(ActivityModule):
                                 return False
                             continue
 
+                    if dbg_snap is not None:
+                        # 非驾驶画面（转场/遮挡/等结束信号）：仍然出图，
+                        # 叠加图按「本帧无决策快照」表达，不沿用上一拍。
+                        dbg.tick(frame, dbg_snap)
                     if pad is not None:
                         lease.close()
                         pad = None
