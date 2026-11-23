@@ -41,10 +41,16 @@ internal static class RpcBridge
         "get_achievements", "set_achievement_notify", "note_ui_event",
         "export_achievements", "import_achievements", "reset_achievements",
         // 宿主更新动作（UpdateCoordinator）：固定意图，不携带 URL/路径；设置类只带
-        // 枚举值（stable/preview、cnb/github），由协调器校验，前端不传地址。
+        // 枚举值（stable/preview、cnb/github）与布尔开关，由协调器校验，前端不传地址。
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
-        "update_set_channel", "update_set_source",
+        "update_set_channel", "update_set_source", "update_set_dismissed",
+        "update_set_auto_check",
+        // 宿主运行环境维护（WebView2RuntimeUpdater）：下载源固定为微软官方跳转，
+        // 前端只表达「查状态 / 更新」两个意图，不携带任何 URL 或路径。
+        "webview2_status", "webview2_update",
+        // 计划内重启（AppRestarter）：等本进程退出后由同构等待进程拉起新实例。
+        "app_restart",
     };
 
     /// <summary>宿主更新动作集（壳自有，处理不经 sidecar；后端不可用不影响它们）。
@@ -53,7 +59,10 @@ internal static class RpcBridge
     {
         "update_check", "update_start_download", "update_cancel_download",
         "update_status", "update_apply",
-        "update_set_channel", "update_set_source",
+        "update_set_channel", "update_set_source", "update_set_dismissed",
+        "update_set_auto_check",
+        "webview2_status", "webview2_update",
+        "app_restart",
     };
 
     /// <summary>
@@ -111,6 +120,21 @@ internal static class RpcBridge
     private static async Task HandleHostCallAsync(WebView2 sender, long callId, string method,
                                                   JsonElement? paramsEl)
     {
+        // 运行环境维护不依赖更新协调器：后端/协调器不可用时仍能查版本与修复运行时。
+        if (method is "webview2_status" or "webview2_update")
+        {
+            await HandleWebView2CallAsync(sender, callId, method).ConfigureAwait(false);
+            return;
+        }
+
+        // 计划内重启：先回复再由窗口延迟关窗，等待进程负责在退出后拉起新实例。
+        if (method == "app_restart")
+        {
+            var (restartOk, restartError) = AppRestarter.Schedule();
+            await ReplyAsync(sender, callId, restartOk, null, restartError);
+            return;
+        }
+
         UpdateSnapshot data;
         string? error = null;
         var ok = true;
@@ -127,11 +151,18 @@ internal static class RpcBridge
                 data = method switch
                 {
                     "update_check" => await coordinator.CheckAsync(),
-                    "update_start_download" => await coordinator.StartDownloadAsync(),
+                    // 下载与忽略带玩家看到的修订号：快照已过期就由协调器拒绝，不替旧界面操作新目标
+                    "update_start_download" => await coordinator.StartDownloadAsync(
+                        ReadLongParam(paramsEl, "revision")),
                     "update_cancel_download" => coordinator.CancelDownload(),
                     "update_apply" => await coordinator.ApplyAsync(),
                     "update_set_channel" => await coordinator.SetChannelAsync(ReadParam(paramsEl, "value")),
                     "update_set_source" => await coordinator.SetSourceAsync(ReadParam(paramsEl, "value")),
+                    "update_set_dismissed" => coordinator.SetDismissed(
+                        ReadBoolParam(paramsEl, "value") ?? throw new ArgumentException("缺少布尔参数 value"),
+                        ReadLongParam(paramsEl, "revision")),
+                    "update_set_auto_check" => coordinator.SetAutoCheck(
+                        ReadBoolParam(paramsEl, "value") ?? throw new ArgumentException("缺少布尔参数 value")),
                     _ => coordinator.GetStatus(), // update_status 与未知宿主名兜底
                 };
             }
@@ -145,6 +176,45 @@ internal static class RpcBridge
             return;
         }
         await ReplyAsync(sender, callId, ok, null, error);
+    }
+
+    /// <summary>WebView2 运行环境：查已安装版本 vs 当前界面实际使用的版本，或下载安装最新版。
+    /// 正在运行的界面不会因安装而切换版本，前端据此提示重启。</summary>
+    private static async Task HandleWebView2CallAsync(WebView2 sender, long callId, string method)
+    {
+        string? running = null;
+        try
+        {
+            running = sender.CoreWebView2?.Environment.BrowserVersionString;
+        }
+        catch
+        {
+            // 窗口关闭边缘读取失败只影响「待重启」判断，不阻断状态查询
+        }
+
+        if (method == "webview2_status")
+        {
+            var installed = WebView2RuntimeUpdater.InstalledVersion();
+            if (installed is null)
+            {
+                await ReplyAsync(sender, callId, false, null, "无法读取 WebView2 运行时版本");
+                return;
+            }
+            var health = WebView2RuntimeUpdater.UpdateChannelHealth();
+            var data = new
+            {
+                installed,
+                running,
+                lastCheck = health.LastCheck?.ToString("yyyy-MM-dd"),
+                checkAgeDays = health.AgeDays,
+                channelStale = health.Stale,
+            };
+            await ReplyAsync(sender, callId, true, data, null);
+            return;
+        }
+
+        var result = await WebView2RuntimeUpdater.UpdateAsync();
+        await ReplyAsync(sender, callId, result.Ok, result.Data, result.Error);
     }
 
     private static async Task HandleCallAsync(WebView2 sender, long callId, string method, JsonElement? paramsEl)
@@ -176,6 +246,27 @@ internal static class RpcBridge
         return paramsEl.Value.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? v.GetString()
             : null;
+    }
+
+    private static bool? ReadBoolParam(JsonElement? paramsEl, string name)
+    {
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object) return null;
+        if (!paramsEl.Value.TryGetProperty(name, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null,
+        };
+    }
+
+    /// <summary>修订号参数：缺失/非数字一律视为「未声明前提」（兼容旧前端与探针），
+    /// 只在明确带上时做过期校验。</summary>
+    private static long? ReadLongParam(JsonElement? paramsEl, string name)
+    {
+        if (paramsEl is null || paramsEl.Value.ValueKind != JsonValueKind.Object) return null;
+        if (!paramsEl.Value.TryGetProperty(name, out var v)) return null;
+        return v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
     }
 
     private static Task ReplyAsync(WebView2 sender, long callId, bool ok, object? data, string? error)

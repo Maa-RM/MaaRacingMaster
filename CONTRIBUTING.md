@@ -1,12 +1,16 @@
 # 贡献指南（Contributing Guide）
 
-> **本文是什么**：面向贡献者的流程指南——怎么找任务、开发约定、提交与 PR 流程、发布规则。
+> **本文是什么**：开发自定义插件、参与社区和向上游提交改动的指南。
 > **本文不是什么**：不是架构与实现说明（见 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)）；不是 AI 协作守则（见 [AGENTS.md](AGENTS.md)）。
 > **信源等级**：L3（导航与摘要）—— 可作「怎么参与」的依据；架构与规则细节一律回到其 home。
 
-欢迎来到 **MaaRacingMaster** 社区！本项目是一个**模块化游戏自动化平台**，当前提供 **极速狂飙**，采用可扩展插件框架，新活动以独立插件目录形式贡献。
+## 开发自己的插件
 
-在贡献之前，请先阅读 [README.md](README.md) 与 [docs/CODE_WIKI.md](docs/CODE_WIKI.md)（项目地图与导航）；协作守则与知识路由见 [AGENTS.md](AGENTS.md)。
+有想做的玩法？欢迎 [Fork MaaRacingMaster](https://github.com/Maa-RM/MaaRacingMaster/fork)，从自己最想实现的一小段流程开始。
+
+1. 按[开发环境搭建](#开发环境搭建)克隆自己的 fork、安装依赖，再按 [README 的编译说明](README.md#4-编译-gui-并启动)启动界面。
+2. 按 [活动插件样板](templates/plugin/README.md) 的启用步骤创建插件。先确认新插件能出现在模块列表里，再加入自己的玩法逻辑。
+3. 插件可以留在自己的 fork 里维护和分享。想把插件或改进带回本项目，也欢迎 [向上游提 PR](#向上游提交改动)。
 
 > **⚠️ 合规红线（必须遵守）**
 > 本项目为游戏自动化技术研究与学习项目，**严禁**用于代练、外挂、作弊、刷榜或任何影响游戏公平与服务器排名的用途。所有贡献必须服务于"技术学习与个人效率工具"这一定位。详见 [README 免责与合规声明](README.md)。
@@ -20,7 +24,7 @@
 | 🐛 报 Bug | 使用中遇到异常，先查 [已知问题](https://github.com/Maa-RM/MaaRacingMaster/issues) 是否已有报告 | 所有用户 |
 | 💡 提需求 | 描述你想要的活动 / 平台能力，说明使用场景 | 所有用户 |
 | 🧹 修 Bug | 认领 Issue，修复后提 PR | 初级贡献者 |
-| 🧩 新模块 | 复用能力接口（capability）开发新活动模块 | 进阶贡献者 |
+| 🧩 写插件 | [做一个自己想用的插件](#开发自己的插件) | 想尝试插件开发的人 |
 | 📝 文档 | 完善 README / CODE_WIKI / 快速开始指南 | 所有贡献者 |
 | 🎨 素材 | 优化模板匹配图片、UI 界面、调试工具 | 设计师 / 前端 |
 
@@ -39,8 +43,10 @@
 
 ### 开发环境搭建
 
+从自己的 fork 克隆。将 `YOUR_USERNAME` 替换成你的 GitHub 用户名，或从 fork 的 **Code** 菜单复制克隆地址。
+
 ```bash
-git clone https://github.com/Maa-RM/MaaRacingMaster.git
+git clone https://github.com/YOUR_USERNAME/MaaRacingMaster.git
 cd MaaRacingMaster
 py -3.11 -m venv .venv
 .venv\Scripts\activate
@@ -79,9 +85,11 @@ pip install -r requirements.txt
 
 ---
 
-## 贡献流程
+## 向上游提交改动
 
-### 1. 找任务 / 开 Issue
+上游指本项目的原始仓库。提交前可参考 [项目地图](docs/CODE_WIKI.md) 和 [协作守则](AGENTS.md)。
+
+### 1. 查找任务与讨论
 
 - 先在 [Issues](https://github.com/Maa-RM/MaaRacingMaster/issues) 搜索是否已有相关讨论，避免重复。
 - 报 Bug 请使用 **Bug 模板**，尽量包含：复现步骤、期望行为、实际行为、日志 / 截图、环境信息（Python 版本、系统版本、分辨率）。
@@ -91,8 +99,10 @@ pip install -r requirements.txt
 
 ### 2. 开发
 
+同步 fork 的 `master` 后，在本地从它创建分支。
+
 ```bash
-# 从最新 master 拉分支（功能分支 / 修复分支）
+git fetch origin
 git checkout -b feat/your-feature origin/master
 # 或 git checkout -b fix/your-bugfix origin/master
 ```
@@ -100,7 +110,7 @@ git checkout -b feat/your-feature origin/master
 **开发约定：**
 
 - 新增模块必须走 `core/registry.py` 的插件发现（扫 `plugins/*/manifest.py`）+ 能力接口，不直接引高权限宿主对象。
-- 涉及活动流程逻辑，先阅读对应域文档（无限驾驶见 [infinite_drive/CODE_WIKI.md](maaracing_master/plugins/infinite_drive/CODE_WIKI.md)，平台核心层见 [core/CODE_WIKI.md](maaracing_master/core/CODE_WIKI.md)）。
+- 修改已有插件的活动流程时，请先查看该插件目录下的 `RULES.md` 和 `CODE_WIKI.md`。
 - 遵守 [AGENTS.md](AGENTS.md) 的协作守则（面向用户的输出、代码注释与交付文档使用简体中文）；代码风格为 4 空格缩进。
 
 ### 3. 提交与推送
@@ -122,7 +132,11 @@ git push -u origin feat/your-feature
 - 改到**跨模块共享契约**（core 能力接口、RPC 白名单、分层边）时建议自愿加跑全仓——影响面跨模块，早发现比等 CI 划算。
 - 新增了抽象（core 目录、共用 pipeline、通用协议、新通路 / 新页面）时，先答一句「**第二个使用者是谁、今天是否真实存在**」——判据见 [AGENTS.md](AGENTS.md)「作业纪律与提交红线」中「抽公共层」那一条；答不出就不抽。
 
-全仓 `ruff` / `pyright` / 全量 `pytest` **不在提交路径上**：CI（`test.yml`，push 与 PR 触发）与发版（`release.yml` 发布前 gate）已经是全仓门禁，本地重跑一遍只是把等待时间翻倍。
+全仓 `ruff` / `pyright` / 全量 `pytest` **不在提交路径上**，完整反馈看 CI 与发版 gate，本地重跑一遍只是把等待时间翻倍。触发口径按场景分三种：
+
+- **推送**：master 与 `release/**` 的直接推送触发 CI；**普通分支推送不触发**，只有你本地跑过的检查；
+- **PR**：触发全量 CI（单测 + 静态检查 + 类型检查 + Shell 编译），这是拿到全仓反馈的入口；
+- **发布标签**：`release.yml` 的发布前单测与 CI 读取同一份测试配置，测试通过后才会发布。
 
 **跳过（skip）的口径**：CI 不按跳过数量设门槛，`pytest -ra` 会逐条打印原因。两类跳过是预期内的：
 
@@ -133,9 +147,10 @@ git push -u origin feat/your-feature
 
 ### 4. 提 PR
 
+- 从 fork 的开发分支向上游仓库的 `master` 提 PR。
 - 使用 **PR 模板**，说明改动内容、动机、验证方式。
 - 请在描述中**勾选自测项**（至少运行通过 / 无回归）。
-- 关联对应 Issue：`Closes #123`。
+- PR 解决了已有的 Issue 时，可以用 `Closes #123` 关联。
 
 ### 5. Review 与合并
 

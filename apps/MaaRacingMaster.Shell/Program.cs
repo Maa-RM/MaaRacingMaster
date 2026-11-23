@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -24,9 +26,20 @@ public static class Program
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
+    /// <summary>重启等待标记：由 <see cref="AppRestarter"/> 拉起，等旧进程退出后启动新实例。</summary>
+    internal const string RestartWaiterFlag = "--maarm-restart-waiter";
+
+    /// <summary>本次启动的应用参数（不含 exe/dll）：重启时原样透传。</summary>
+    internal static string[] StartupArgs { get; private set; } = Array.Empty<string>();
+
     [STAThread]
     private static void Main(string[] args)
     {
+        // 重启等待进程：不进入更新器钩子、单实例与 UI，只等旧进程退出后拉起新实例。
+        if (TryRunRestartWaiter(args))
+            return;
+        StartupArgs = args;
+
         // 更新器钩子必须最早处理（最小注入形态，壳只在入口调用库的钩子路由）：钩子进程（--veloapp-* 参数）
         // 在库内自退出，绝不进入单实例/窗口/侧车逻辑；普通启动无钩子参数时立即返回直通。
         // 只此一处接更新器运行时，下载/提交等更新动作不进壳（由树外助手驱动，P2 起接线）。
@@ -68,6 +81,78 @@ public static class Program
 
     // 持有互斥体引用直到进程退出（Application.Start 阻塞，Main 返回时进程才结束）
     private static Mutex? s_instanceMutex;
+
+    /// <summary>
+    /// 重启等待进程：等旧进程退出后再启动新实例，避开单实例互斥体与 WebView2 用户数据目录的占用竞争。
+    /// 返回 true 表示本次进程已完成等待职责，不应继续走正常启动链。
+    /// </summary>
+    private static bool TryRunRestartWaiter(string[] args)
+    {
+        if (args.Length < 2 || args[0] != RestartWaiterFlag)
+            return false;
+        if (!int.TryParse(args[1], out var pid))
+            return true;
+
+        try
+        {
+            using var old = Process.GetProcessById(pid);
+            if (!old.WaitForExit(30000))
+            {
+                ShellLog.Append("[restart] 旧实例 30s 内未退出，取消本次重启");
+                MessageBoxW(IntPtr.Zero,
+                    "旧实例尚未退出，重启已取消。请手动关闭本程序后再打开。",
+                    "MaaMR", MB_ICONERROR);
+                return true;
+            }
+        }
+        catch (ArgumentException)
+        {
+            // 旧进程已退出：直接继续启动
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[restart] 等待旧进程失败: {ex.Message}");
+        }
+
+        Thread.Sleep(400); // 给 WebView2 子进程留收尾时间，避开用户数据目录占用
+        try
+        {
+            Process.Start(CreateSelfStartInfo(args.Skip(2), createNoWindow: true));
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[restart] 新实例启动失败: {ex.Message}");
+            MessageBoxW(IntPtr.Zero,
+                "重启失败，请手动启动 MaaMR。\n\n" + ex.Message,
+                "MaaMR", MB_ICONERROR);
+        }
+        return true;
+    }
+
+    /// <summary>构造「启动自己」的参数：apphost 直接用 exe；dotnet 启动时补回 dll。</summary>
+    internal static ProcessStartInfo CreateSelfStartInfo(IEnumerable<string> appArgs, bool createNoWindow)
+    {
+        var processPath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("无法解析当前进程路径");
+        var psi = new ProcessStartInfo
+        {
+            FileName = processPath,
+            UseShellExecute = false,
+            CreateNoWindow = createNoWindow,
+            // 保留原工作目录：相对参数（如 --root）在重启后仍按同一基准解析
+            WorkingDirectory = Environment.CurrentDirectory,
+        };
+        if (Path.GetFileNameWithoutExtension(processPath)
+            .Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+        {
+            var cmd = Environment.GetCommandLineArgs();
+            if (cmd.Length > 0)
+                psi.ArgumentList.Add(cmd[0]);
+        }
+        foreach (var arg in appArgs)
+            psi.ArgumentList.Add(arg);
+        return psi;
+    }
 
     /// <summary>
     /// 单实例互斥：持有命名 Mutex 直到进程退出。

@@ -8,7 +8,8 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from maaracing_master.core.dashboard_contract import normalize_dashboard
+from maaracing_master.core.base import declares_dashboard
+from maaracing_master.core.dashboard_contract import DASHBOARD_CONTRACT_VERSION, normalize_dashboard
 from maaracing_master.plugins._archive.speedrush import dashboard_store
 
 pytestmark = pytest.mark.retired
@@ -330,3 +331,13 @@ def test_pick_opponent_with_gated_pairs_ignores_spike_pair():
         ts += _NS
     assert (214_760, 7881) not in pairs
     assert dashboard_store.pick_opponent(pairs, 4709) == 7881
+
+
+def test_speedrush_declares_dashboard():
+    """极速狂飙 v1 声明并实现受支持的回合战绩看板。"""
+    try:
+        from maaracing_master.plugins._archive.speedrush.module import SpeedRushModule
+    except ImportError as exc:
+        pytest.skip(f"需要极速狂飙运行时依赖：{exc}")
+    assert SpeedRushModule.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
+    assert declares_dashboard(SpeedRushModule) is True

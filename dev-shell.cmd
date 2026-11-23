@@ -10,6 +10,7 @@ rem    dev-shell.cmd --rebuild            force dotnet build
 rem    dev-shell.cmd --stop-existing      kill running MaaRM instances first
 rem    dev-shell.cmd --check-deps         verify .venv imports before launch
 rem    dev-shell.cmd --no-launch          build / verify only, no window
+rem    dev-shell.cmd --gui-debug          launch with a local WebView2 debug port
 rem  NOTE: keep this file ASCII-only with CRLF line endings (batch parser).
 rem ==========================================================================
 setlocal EnableDelayedExpansion
@@ -20,6 +21,7 @@ if /i "%~1"=="--rebuild"       ( set "ARGS=%ARGS% -Rebuild"      & shift & goto 
 if /i "%~1"=="--stop-existing" ( set "ARGS=%ARGS% -StopExisting" & shift & goto parse )
 if /i "%~1"=="--check-deps"    ( set "ARGS=%ARGS% -CheckDeps"    & shift & goto parse )
 if /i "%~1"=="--no-launch"     ( set "ARGS=%ARGS% -NoLaunch"     & shift & goto parse )
+if /i "%~1"=="--gui-debug"     ( set "ARGS=%ARGS% -GuiDebug"     & shift & goto parse )
 if /i "%~1"=="--help"          goto usage
 echo [dev-shell] unknown option: %~1
 goto usage
@@ -27,5 +29,5 @@ goto usage
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\dev\run.ps1"%ARGS%
 exit /b %ERRORLEVEL%
 :usage
-echo Usage: dev-shell.cmd [--rebuild] [--stop-existing] [--check-deps] [--no-launch]
+echo Usage: dev-shell.cmd [--rebuild] [--stop-existing] [--check-deps] [--no-launch] [--gui-debug]
 exit /b 0

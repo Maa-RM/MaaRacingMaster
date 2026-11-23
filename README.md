@@ -32,7 +32,7 @@
 >
 > - 遇到问题请优先提交 [Issue](https://github.com/Maa-RM/MaaRacingMaster/issues)；修复取决于个人时间与精力，**不保证响应与修复时限（无 SLA）**。
 >
-> - 源码完全开源，**欢迎任何人 fork / 提 PR / 参与维护**——项目的延续依靠社区而非单一开发者。
+> - **欢迎 fork 项目、开发并分享你想用的插件**。从[插件开发指南](CONTRIBUTING.md#开发自己的插件)开始，也欢迎通过 PR 分享适合上游的改进。
 
 > \[!WARNING]
 > ⚠️ **免责与合规声明**
@@ -72,7 +72,7 @@
 
 基于画面识别与模拟输入，自动完成活动流程：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行。
 
-每个活动是一个独立插件，放入即用、删除即卸。现役插件是「无限驾驶」（极速狂飙 v2），操作流程施工中；感知、深度几何与车道线观测基建已就位，需要深度几何时，按提示下载可选的模型包即可。
+每个活动是一个独立插件，放入即用、删除即卸。现役插件是「无限驾驶」（极速狂飙 v2），操作流程施工中；感知与车道线观测基建已就位，模型权重不在主包内，按面板提示下载可选模型包即可。
 
 ## 演示
 
@@ -98,9 +98,9 @@
 ## 亮点功能
 
 - **活动全链路自动化**：启动游戏 → 匹配 → 驾驶 → 结算 → 关闭游戏，可循环执行
-- **驾驶能力基建**：全程直行、深度几何（识别赛道并自动选道、避车、超车）、宏录制（录制并回放手柄 / 键盘操作）的感知与控制基建；v2 操作流程施工中
-- **轻量主包 + 可选模型包**：安装包不含大体积权重；需要深度几何与线观测时在模块面板点「一键安装模型」，下载、校验、安装无需重启，也可手动从 Release 下载模型包放入数据目录
-- **多模态识别**：模板匹配 / OCR / 目标检测 / 单目深度 / 车道线观测，按活动需求组合
+- **驾驶能力基建**：全程直行、车道线驾驶（贴线保持、被堵换点与收油）的感知与控制基建；v2 操作流程施工中
+- **轻量主包 + 可选模型包**：安装包不含大体积权重；车道线驾驶需要权重时，在模块面板点「一键安装模型」，下载、校验、安装无需重启，也可手动从 Release 下载模型包放入数据目录
+- **多模态识别**：模板匹配 / OCR / 目标检测 / 车道线观测，按活动需求组合
 - **任务队列与断点**：多个任务顺序执行，可从任意阶段起步，卡片实时显示排队与进度
 - **PEEP 实时预览**：不打断运行，实时观察画面与决策
 - **可视化调试台**：会话回放 + ROI 调整（Studio）；图结构与模板编辑走 MPE
@@ -122,12 +122,12 @@
 
 ### 下载即用包（普通用户，无需编译）
 
-1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**（或 `.7z`）。
+1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
 3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
 
-> **深度几何与线观测需要额外安装模型包：** 主包默认不带大体积权重；模块配置面板出现「一键安装模型」时点击即可下载与当前程序匹配的模型包，完成后无需重启。也可从同一 Release 手动下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
+> **车道线驾驶需要额外安装模型包：** 主包默认不带大体积权重；模块配置面板出现「一键安装模型」时点击即可下载与当前程序匹配的模型包，完成后无需重启。也可从同一 Release 手动下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
 > 成功标志：GUI 窗口出现，主控页任务卡正常加载，底栏状态球显示「系统就绪」（后端已连接）。
 
@@ -273,7 +273,7 @@ MaaRacingMaster/
 | ---- | ---------------------------------------------------------------------- | ------------------ |
 | 流程编排 | [MAA Framework](https://github.com/MaaAssistantArknights/MaaFramework) | 窗口截图 + Pipeline 驱动 |
 | 视觉识别 | YOLO + ONNX Runtime (DirectML)                                         | 实时目标检测             |
-| 深度与车道 | DepthART / TwinLiteNet+（可选模型包）                                        | 单目相对深度与车道线观测       |
+| 深度与车道 | TwinLiteNet+（可选模型包）                                                   | 车道线观测            |
 | 文字识别 | RapidOCR                                                               | 游戏内数字/文本识别         |
 | 虚拟手柄 | vgamepad                                                               | Xbox 360 手柄模拟      |
 | 图像处理 | OpenCV 5.x                                                             | 模板匹配 / 可视化         |
@@ -308,7 +308,7 @@ MaaRacingMaster/
 
 本项目源码采用 [Apache-2.0](LICENSE) © ZRY。本项目为非营利开源项目，不提供商业授权。
 
-> 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，深度几何为 Apache-2.0，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
+> 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
 > 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
 ***

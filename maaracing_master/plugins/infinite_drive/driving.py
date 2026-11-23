@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""无限驾驶的道路定位、贴边超车与车头角闭环。"""
+"""无限驾驶的道路定位、擦边点位维持与车头角闭环。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,7 @@ from maaracing_master.core.template_match import load_template, match_template_c
 from maaracing_master.core.trace_sink import get_trace_sink
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR
 from maaracing_master.plugins.infinite_drive.lane_obs import lane_membership, lane_pos_nearest
-from maaracing_master.plugins.infinite_drive.ranges import FAR_MAX_M
-from maaracing_master.plugins.infinite_drive.road_path import LOOKAHEAD_M, RoadPath, plan_road_path
+from maaracing_master.plugins.infinite_drive.ranges import FAR_MAX_M, MID_MAX_M, NEAR_MAX_M
 from maaracing_master.plugins.infinite_drive.world_model import BUMPER_CAM_H_M, GROUND_FOCAL_PX, load_calib
 from maaracing_master.plugins.infinite_drive.yellow_line import ROAD_HALF_LANES
 
@@ -22,8 +21,16 @@ _DRIVE_HUD = (
 )
 _MAX_HEADING_AGE_S = 0.22
 _FRAME_GAP_S = 0.8
-_LANE_CENTERS = tuple(k + 0.5 for k in range(-ROAD_HALF_LANES, ROAD_HALF_LANES))
-_PATH_AGE_NS = 350_000_000
+# 擦边点位：三条白线两侧各偏 0.2 道共六个横向维持点。0.2 道偏置使本车与
+# 相邻车道居中车的横向中心距 ≈2.45m，落入极限超车判定阈（两车半宽和 +
+# 0.8m ≈ 2.6m，RULES §2.1）——贴线保持本身就是擦边超车姿态，点位只在
+# 被堵时更换，不在道心与擦边之间来回切换。
+_EDGE_OFFSET = 0.20
+_EDGE_POINTS = tuple(round(b + s * _EDGE_OFFSET, 2) for b in (-1, 0, 1) for s in (-1, 1))
+_CLEARANCE = 0.60                    # 车身净空（道）：点位与街车中心距小于此视为堵
+_DECISION_HORIZON_M = MID_MAX_M      # 换点判定视界：40m ≈ 一次变道来得及起手的下限
+_THROTTLE_HORIZON_M = 2 * NEAR_MAX_M  # 收油视界：30m 内六点全堵才收油
+LOOKAHEAD_M = 12.0                   # 前视转向预瞄（米）
 
 
 def drive_hud_visible(frame) -> bool:
@@ -41,16 +48,6 @@ def drive_hud_visible(frame) -> bool:
         if box is not None:
             return True
     return False
-
-
-def _lane_center(x: float, lines) -> float | None:
-    """从已锁的左右相邻线选当前车道中心。"""
-    left = math.floor(x)
-    center = left + 0.5
-    if center not in _LANE_CENTERS:
-        return None
-    boundaries = {(line.get("k"), line.get("side")) for line in lines if line.get("accepted")}
-    return center if {(left, -1), (left + 1, 1)} <= boundaries else None
 
 
 def _road_cars(lane: dict, ego_x: float, camera_height: float) -> list[tuple[float, float]] | None:
@@ -78,6 +75,20 @@ def _road_cars(lane: dict, ego_x: float, camera_height: float) -> list[tuple[flo
         if abs(ego_x + relative) < ROAD_HALF_LANES:
             cars.append((ego_x + relative, distance))
     return cars
+
+
+def _point_blocked(point: float, cars: list[tuple[float, float]], horizon_m: float) -> bool:
+    """点位净空判定：视界内任一街车与点位横向中心距小于净空即堵。"""
+    return any(0.0 < z <= horizon_m and abs(point - car_x) < _CLEARANCE
+               for car_x, z in cars)
+
+
+def _pick_edge_point(anchor: float, cars: list[tuple[float, float]]) -> float | None:
+    """选离锚点最近的净擦边点；六点全堵返回 None。并列时靠路中心优先。"""
+    clear = [p for p in _EDGE_POINTS if not _point_blocked(p, cars, _DECISION_HORIZON_M)]
+    if not clear:
+        return None
+    return min(clear, key=lambda p: (abs(p - anchor), abs(p)))
 
 
 class HeadingControl:
@@ -118,7 +129,7 @@ class HeadingControl:
 
 
 class LaneDrive:
-    """用黄线路缘给白线定位，顺着同帧街车间的可行路线转向。"""
+    """用黄线路缘给白线定位，维持六个擦边点位之一，被堵才换点。"""
 
     def __init__(self) -> None:
         from maaracing_master.plugins.infinite_drive import (
@@ -164,9 +175,27 @@ class LaneDrive:
 
     def release(self) -> None:
         self._control.reset()
-        self._road_path: RoadPath | None = None
-        self._road_path_ns = 0
         self.throttle_scale = 1.0
+
+    def _hold_edge_point(self, ego_x: float, cars: list[tuple[float, float]]) -> str | None:
+        """点位决策：无点先取离自车最近的净点；被堵才换最近的净点，净则保持。
+
+        保持中的点不重估，切换只由「被堵」这一件事触发——净空恢复不切回，
+        避免决策来回摆；换点锚=自车横位（就近换，横移最小）。
+        返回本拍点位事件（"pick"/"switch"），无变化返回 None。"""
+        if self._target is None or _point_blocked(self._target, cars, _DECISION_HORIZON_M):
+            picked = _pick_edge_point(ego_x, cars)
+            if picked is not None and picked != self._target:
+                if self._target is None:
+                    logger.log(f"[无限驾驶] 擦边点位锁定（{picked:+.1f}）", "DEBUG")
+                    event = "pick"
+                else:
+                    logger.log(f"[无限驾驶] 点位被堵，换点 "
+                               f"{self._target:+.1f} → {picked:+.1f}", "DEBUG")
+                    event = "switch"
+                self._target = picked
+                return event
+        return None
 
     def steer(self, frame, fid: int, ts_ns: int) -> float:
         """处理采集帧，返回方向杆。"""
@@ -199,39 +228,31 @@ class LaneDrive:
                   and heading_fid == lane.get("det_fid")
                   and heading_ns >= self._phase_start_ns
                   and 0 <= now_ns - heading_ns <= _MAX_HEADING_AGE_S * 1e9)
-        # 线已有绝对道号。稳定检测到当前车道的两边时，锁定其中心作为保持目标。
+        # 线已有绝对道号，点位用同一坐标系。道号锚重定（黄线复核/丢失）时
+        # 绝对坐标整体平移，旧点位作废重选。
         if fresh and self._gross_reanchor != lane.get("gross_reanchor", 0):
             self._gross_reanchor = lane["gross_reanchor"]
             self._target = None
             self.release()
-        if self._target is None and track_ready and x is not None:
-            self._target = _lane_center(x, lane.get("lines", ()))
-            if self._target is not None:
-                logger.log(f"[无限驾驶] 已锁定当前车道（中心 {self._target:+.1f}）", "DEBUG")
-        route = None
-        preview = None
         cars = None
-        target = self._target
-        if now_ns - self._road_path_ns > _PATH_AGE_NS:
-            self._road_path = None
-        self.throttle_scale = 1.0 if self._road_path is None else self._road_path.throttle
-        if usable and target is not None and x is not None and heading is not None:
+        edge_event = None
+        if track_ready and x is not None:
             cars = _road_cars(lane, x, self._camera_height)
-            if cars is not None and abs(x) < ROAD_HALF_LANES:
-                if heading_ns != self._road_path_ns:
-                    previous = None if self._road_path is None else self._road_path.x_at(LOOKAHEAD_M)
-                    self._road_path = plan_road_path(x, target, cars, previous) if cars else None
-                    self._road_path_ns = heading_ns
-                route = self._road_path
-                self.throttle_scale = 1.0 if route is None else route.throttle
-            if route is not None:
-                preview = route.x_at(LOOKAHEAD_M)
-                # 已进入下一道且近段仍在这条道里，之后以这条道作为无车时的保持目标。
-                if math.floor(preview) == math.floor(x):
-                    self._target = math.floor(x) + 0.5
-            goal = target if preview is None else preview
-            steer = self._control.update(goal - x, heading, heading_ns,
-                                         preview_m=LOOKAHEAD_M if route is not None else None)
+            # 同拍车账缺席（traffic 未跟上检测拍）按无证据处理：初选照常，
+            # 换点判定不做——拿旧车账换点会切进真实存在的车。
+            evidence: list[tuple[float, float]] = cars if cars is not None else []
+            if cars is None or abs(x) < ROAD_HALF_LANES:
+                edge_event = self._hold_edge_point(x, evidence)
+        walled = False
+        if cars is not None and x is not None and abs(x) < ROAD_HALF_LANES:
+            walled = all(_point_blocked(p, cars, _THROTTLE_HORIZON_M)
+                         for p in _EDGE_POINTS)
+        self.throttle_scale = 0.0 if walled else 1.0
+
+        target = self._target
+        if usable and target is not None and x is not None and heading is not None:
+            steer = self._control.update(target - x, heading, heading_ns,
+                                         preview_m=LOOKAHEAD_M)
             target_heading, yaw_rate = self._control.desired_heading, self._control.yaw_rate
         else:
             self._control.reset()
@@ -239,8 +260,8 @@ class LaneDrive:
             target_heading = yaw_rate = None
 
         self._trace.append({"fid": fid, "ts_ns": ts_ns,
-                            "ego_lane": x, "target_lane": self._target, "heading_rad": heading,
-                            "road_path": None if route is None else route.points, "path_preview_lane": preview,
+                            "ego_lane": x, "target_lane": target, "heading_rad": heading,
+                            "edge_event": edge_event, "walled": walled,
                             "road_cars": cars, "throttle_scale": self.throttle_scale,
                             "yellow_anchor_lane": lane.get("yellow_anchor"),
                             "traffic_error": lane.get("traffic_error"),

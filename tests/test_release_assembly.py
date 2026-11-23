@@ -18,7 +18,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 ASSEMBLE = REPO / "scripts" / "release" / "assemble.ps1"
-SEVEN_Z = REPO / "scripts" / "release" / "tools" / "7za.exe"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or POWERSHELL is None,
@@ -163,7 +162,7 @@ def test_zip_contains_no_build_cache_and_preserves_payload(tmp_path):
         _put(stage, rel)
     result = _run(
         f"$StageRoot={_ps(stage)}; $OutRoot={_ps(tmp_path)}; $Name='fixture'",
-        _section("# ---------- 7. zip", "# ---------- 7.5"),
+        _section("# ---------- 7. zip", "# ---------- 8."),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     with zipfile.ZipFile(tmp_path / "fixture.zip") as archive:
@@ -185,7 +184,7 @@ def test_size_gate_blocks_growth_and_accepts_smaller_packages(tmp_path, total_mi
             stream.truncate(size * 1024 * 1024)
     result = _run(
         f"$StageRoot={_ps(stage)}; $OutRoot={_ps(tmp_path)}; $zip={_ps(archive)}; "
-        f"$sevenzFile={_ps(tmp_path / 'fixture.7z')}; $Configuration='Release'; "
+        "$Configuration='Release'; "
         "$DisableReleaseOptimizations=$false; $Version='fixture'; $excludedIds=@()",
         _section("# ---------- 8. Release Size Gate"),
     )
@@ -206,50 +205,11 @@ def test_offline_models_do_not_hide_or_create_size_regression(tmp_path, runtime_
         packed.write(model, "./" + model.relative_to(stage).as_posix())
     result = _run(
         f"$StageRoot={_ps(stage)}; $OutRoot={_ps(tmp_path)}; $zip={_ps(archive)}; "
-        f"$sevenzFile={_ps(tmp_path / 'fixture.7z')}; $Configuration='Release'; "
+        "$Configuration='Release'; "
         "$WithModels=$true; $DisableReleaseOptimizations=$false; $Version='fixture'; $excludedIds=@()",
         _section("# ---------- 8. Release Size Gate"),
     )
     assert (result.returncode != 0) == should_fail, result.stdout + result.stderr
-
-
-@pytest.mark.parametrize("compressor_exit", [0, 2])
-def test_partial_7z_is_rejected_even_when_file_exists(tmp_path, compressor_exit):
-    if not SEVEN_Z.is_file():
-        pytest.skip("缺少仓库随附的 7-Zip 工具")
-    stage = tmp_path / "fixture"
-    _put(stage, "payload.txt")
-    compressor = _put(tmp_path, "compressor.cmd",
-        '@echo off\nif "%~1"=="a" (\n'
-        f' >"{tmp_path / "fixture.7z"}" echo partial\n'
-        f' exit /b {compressor_exit}\n)\n"{SEVEN_Z}" %*\nexit /b %errorlevel%\n')
-    result = _run(
-        f"$StageRoot={_ps(stage)}; $OutRoot={_ps(tmp_path)}; $Name='fixture'; "
-        f"$SevenZ=$true; $SevenZPath={_ps(compressor)}",
-        _section("# ---------- 7.5", "# ---------- 8."),
-    )
-    assert (tmp_path / "fixture.7z").exists(), "失败场景必须实际留下不完整归档"
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert not (tmp_path / "fixture.7z.sha256").exists()
-
-
-def test_valid_7z_is_created_and_checksummed(tmp_path):
-    if not SEVEN_Z.is_file():
-        pytest.skip("缺少仓库随附的 7-Zip 工具")
-    stage = tmp_path / "fixture"
-    _put(stage, "payload.txt")
-    result = _run(
-        f"$StageRoot={_ps(stage)}; $OutRoot={_ps(tmp_path)}; $Name='fixture'; "
-        f"$SevenZ=$true; $SevenZPath={_ps(SEVEN_Z)}",
-        _section("# ---------- 7.5", "# ---------- 8."),
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / "fixture.7z.sha256").is_file()
-    checked = subprocess.run(
-        [str(SEVEN_Z), "t", str(tmp_path / "fixture.7z")],
-        capture_output=True, timeout=30,
-    )
-    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 @pytest.mark.local_asset

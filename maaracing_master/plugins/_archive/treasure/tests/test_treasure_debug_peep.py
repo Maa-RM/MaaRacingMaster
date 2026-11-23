@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""debug.update_peep 公开接口契约：写入副本、读写同一缓冲。"""
+"""巅峰鉴宝调试预览的兼容缓冲契约。"""
 from __future__ import annotations
 
 import numpy as np
-from pathlib import Path
+import pytest
 
 from maaracing_master.core.debug import NavigationDebugger
 
 
-def _make_debugger(tmp_path=None):
+pytestmark = pytest.mark.retired
+
+
+def _make_debugger(tmp_path):
     # 构造最简 NavigationDebugger（debug_root 必填），启用 peep（不触发存盘目录）
-    d = NavigationDebugger(Path(tmp_path or "/tmp/deb_stub"))
+    d = NavigationDebugger(tmp_path)
     d.peep_enabled = True
     return d
 

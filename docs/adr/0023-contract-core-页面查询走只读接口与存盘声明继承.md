@@ -47,7 +47,7 @@
 ## 证据
 
 - **一手核查**：本机 maafw 5.12.3 的 `Context.run_recognition(entry, image, override) -> RecognitionDetail`、`Tasker.post_task(entry, pipeline_override)`、`Tasker.stopping`；`CustomAction.RunArg` 无 `image` 字段（帧须由桥自取）；`docs/MAAFW_GUIDE.md` 的 Context 能力表与节点字段默认值。
-- **机检**：`tests/test_nav_probe.py`（三态、入口门控、提交闸门、墓碑、通道、结构约束、UI 导航段声明落图而驾驶控制链不声明）、`tests/test_nav_debug_scope.py`（内层段继承、`scope_save` 读栈底、无声明走默认、显式覆盖优先、nav 段 `save_fps` 为 3Hz）、`tests/test_debug_stream_contract.py`（`save="self"` 零存盘帧、PEEP 保留）。
+- 通用机检覆盖探针三态、入口门控、异步提交、墓碑、图像通道及导航段存盘继承。见 [探针测试](../../tests/test_nav_probe.py)、[导航段测试](../../tests/test_nav_debug_scope.py)和[调试流测试](../../tests/test_debug_stream_contract.py)。极速狂飙 v1 的调用点和存盘声明见 [归档插件测试](../../maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_nav_probe.py)。
 - **实证**：`tools/maafw_audit/probe_a0/` —— 同帧等价性（框架识别轮 vs `run_recognition` 逐帧全等）、提交闸门对照（无检查时 `stale` 被复活 / 有检查时 `DROPPED`）、成本对照（已注册节点 vs override 新建节点）、离线重放与端到端。
 - **真机**：会话 `20261107_110409`（控制链期间 nav 帧 0、内层 nav 段 `save` 全为 `self`、drive 取证索引与帧文件一一对应且 `frame_id` 全量命中控制链 tick）。
 - **同族**：ADR-0021 决策 4「谁产帧谁写索引」——本决策只补齐它的运行期执行条件，不重新设计取证目录。

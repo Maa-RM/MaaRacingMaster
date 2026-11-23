@@ -91,6 +91,7 @@
     const hiddenLocked = !!it.hidden && !it.unlocked;
     const frozen = pageState !== 'ready';
     const node = el('article', 'maarm-ach-card');
+    node.achItem = it;   // 右键回放解锁提示要用到原始视图条目
     node.dataset.tier = it.tier || (it.hidden ? 'hidden' : 'normal');
     node.classList.add(it.unlocked ? 'is-unlocked' : 'is-locked');
     // 整张卡可点：翻到背面看触发条件（见 style.css 的卡片翻转段）
@@ -631,6 +632,27 @@
       if (!node) return;
       e.preventDefault();
       setFlipped(node);
+    });
+    // 右键：重放解锁提示。只走前端提示条，不回写进度、不改进度存档——
+    // 它是「重温/调试」入口，任何状态都不该因此变化。未解锁的卡没有解锁瞬间可回放，静默。
+    groupsHost.addEventListener('contextmenu', (e) => {
+      const node = e.target && e.target.closest ? e.target.closest('.maarm-ach-card') : null;
+      if (!node) return;
+      e.preventDefault();
+      if (dragSuppress(node)) return;   // 右键拖动同样不算点击
+      const it = node.achItem;
+      const toast = window.MaaRM && window.MaaRM.achievementToast;
+      if (!it || !it.unlocked || !toast) return;
+      toast.push({
+        global_id: it.global_id,
+        title: it.title,
+        description: it.description,
+        tier: it.tier || (it.hidden ? 'hidden' : 'normal'),
+        hint: it.hint || '',
+        category: it.category || '',
+        mod_id: it.mod_id || '',
+        unlocked_ts: it.unlocked_ts,
+      });
     });
   }
   const bodyHost = document.querySelector('.maarm-ach-body');

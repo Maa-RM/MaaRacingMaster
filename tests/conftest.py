@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 # 测试进程不走 maaracing_master 包入口，无法继承 __init__.py 的禁用；
 # 此处同样关闭字节码写入，避免 tests/ 与直导目录散落 __pycache__。
 sys.dont_write_bytecode = True
@@ -23,3 +25,14 @@ _PROJ = Path(__file__).resolve().parent.parent
 # 理由见文件头 docstring（仓库内导入在 CI 下也可导入）。
 if str(_PROJ) not in sys.path:
     sys.path.insert(0, str(_PROJ))
+
+
+@pytest.fixture(autouse=True)
+def _launcher_check_off(monkeypatch):
+    """默认关闭启动器版本检查闸门（MAARM_APP_LAUNCHER_CHECK，运行时覆盖开关）。
+
+    装了游戏的开发机跑单测时，开着闸门会真的拉起官方启动器（弹 UAC、联网）。
+    测试一律从关闭态出发；要测闸门的用例自行 setenv 打开，并打桩
+    game_process 的启动器交互函数。
+    """
+    monkeypatch.setenv("MAARM_APP_LAUNCHER_CHECK", "0")

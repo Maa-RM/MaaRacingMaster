@@ -592,3 +592,45 @@ def test_baseline_file_exists_and_key_format():
             if ln.strip() and not ln.startswith("#")]
     assert all(k.split("|")[0] in {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"}
                and "|" in k for k in keys)
+
+
+def _baseline(tmp_path, text: str) -> Path:
+    (tmp_path / "tools").mkdir(exist_ok=True)
+    bl = tmp_path / "tools" / "repo_hygiene_baseline.txt"
+    bl.write_text(text, encoding="utf-8")
+    return bl
+
+
+def test_update_baseline_shrinks_stale_keeps_hit(tmp_path):
+    """收缩语义（原本正常场景）：已消失的存量移出基线，仍在命中的保留，分诊注释留存。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "bare-topic").mkdir()
+    bl = _baseline(tmp_path,
+                   "# 分诊注释：bare 为立规之日的存量\n"
+                   "R1|bare-topic|缺 README.md\n"
+                   "R1|ghost-topic|缺 README.md\n")
+    assert chk.main(["--update-baseline"], root=tmp_path) == 0
+    content = bl.read_text(encoding="utf-8")
+    assert "R1|bare-topic|缺 README.md" in content
+    assert "ghost-topic" not in content, "已不再命中的存量应随收缩移除"
+    assert "# 分诊注释：bare 为立规之日的存量" in content
+
+
+def test_update_baseline_refuses_unregistered_hit(tmp_path):
+    """棘轮红线：存在未登记的新违规时收缩必须拒绝——基线原样、新违规照报。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "bare-topic").mkdir()
+    bl = _baseline(tmp_path, "R1|ghost-topic|缺 README.md\n")
+    assert chk.main(["--update-baseline"], root=tmp_path) == 1
+    assert bl.read_text(encoding="utf-8") == "R1|ghost-topic|缺 README.md\n"
+    viol, baseline = chk.Checker(tmp_path).scan()
+    assert viol - baseline, "拒绝登记后，新违规在常规检查里必须仍然报红"
+
+
+def test_update_baseline_admit_new_registers_explicitly(tmp_path):
+    """显式登记（立法路径）：只有 --admit-new 才允许把当前全部命中写入基线。"""
+    _mk(tmp_path)
+    (tmp_path / "tools" / "experiments" / "bare-topic").mkdir()
+    bl = _baseline(tmp_path, "")
+    assert chk.main(["--update-baseline", "--admit-new"], root=tmp_path) == 0
+    assert "R1|bare-topic|缺 README.md" in bl.read_text(encoding="utf-8")

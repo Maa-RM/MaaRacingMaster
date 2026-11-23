@@ -5,7 +5,7 @@
 许可声明 README；发布包默认不带权重，见 model_assets）全部位于本目录内，
 registry 按 manifest.py 自动发现；整个目录拷走即卸载、放入即安装。
 
-流程与驾驶入口见 module.py，深度定位和车头角控制见 driving.py。
+流程与驾驶入口见 module.py，道路定位和车头角控制见 driving.py。
 
 **真源分立**：**游戏事实** = RULES.md（外部事实，人工复核制）；**几何标定** =
 calibration/gate0.json（唯一入口 ``world_model.load_calib``）。驾驶行为参数与消费代码同处。
@@ -29,13 +29,11 @@ HUD_REGIONS_FILE = POLICY_DIR / "hud_regions.json"
 # 几何标定真源（Gate-0 收杆产物；world_model.load_calib 唯一读法）
 GATE0_FILE = CALIB_DIR / "gate0.json"
 # 模型权重（发布包默认不带，由可选模型包提供；仓库内保留真源与校验值。
-# perception/ AGPL-3.0 衍生、depth/ Apache-2.0、lane/ BDD100K 非商业——来源与许可声明见
+# perception/ AGPL-3.0 衍生、lane/ BDD100K 非商业——来源与许可声明见
 # models/README.md 与 THIRD_PARTY_LICENSES「模型权重」节。运行时由 model_assets
 # 解析：用户数据目录优先、安装包兜底，带尺寸 + SHA256 校验）
 PERCEPTION_MODEL_REL = "resources/models/perception/model.onnx"
 PERCEPTION_MODEL_FILE = MODELS_DIR / "perception" / "model.onnx"
-DEPTH_MODEL_REL = "resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx"
-DEPTH_MODEL_FILE = MODELS_DIR / "depth" / "relative_mnv4m_slim_spf_448_default.onnx"
 LANE_MODEL_REL = "resources/models/lane/plus_small_384x640.onnx"
 LANE_MODEL_FILE = MODELS_DIR / "lane" / "plus_small_384x640.onnx"
 # DML 专用半精度版本（同一权重转 FP16，keep_io_types）：仅 DML 使用，CPU 回退用 fp32

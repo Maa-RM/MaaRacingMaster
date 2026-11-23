@@ -24,9 +24,11 @@ COORDINATOR = REPO / "apps" / "MaaRacingMaster.Shell" / "UpdateCoordinator.cs"
 HOST_ACTIONS = (
     "update_check", "update_start_download", "update_cancel_download",
     "update_status", "update_apply", "update_set_channel", "update_set_source",
+    "update_set_dismissed", "update_set_auto_check",
 )
 
 INDEX_HTML = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "index.html"
+STYLE_CSS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "style.css"
 
 
 @pytest.fixture(scope="module")
@@ -138,6 +140,63 @@ def test_head_button_absorbs_check_download_and_apply(app_src: str):
     )
 
 
+def test_about_tab_dot_is_anchored_to_label_text():
+    """提醒点锚在「关于」文字外框上（不是整个按钮），并带两圈错峰扩散的圆环。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'class="maarm-tab-label"' in html and 'id="about-tab-dot"' in html, (
+        "关于标签缺少文字外框或提醒点挂点"
+    )
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    assert ".maarm-tab-label { position: relative" in css, "提醒点未锚定到文字外框"
+    assert "maarm-tab-dot-echo" in css and "animation-delay: -1.2s" in css, (
+        "提醒点缺少与底栏状态球同款的两圈错峰扩散"
+    )
+
+
+def test_available_phase_shows_dismiss_control_and_updates_dot(app_src: str):
+    """available 相位展示「本次更新不再提示」；勾选状态回显自快照，
+    提醒点按「目标版本 != 已忽略版本」决定是否亮起。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="upd-remind-row"' in html and 'id="upd-remind-check"' in html
+    assert "本次更新不再提示" in html, "缺少不再提示选项"
+
+    dot = _js_function_body(app_src, "function renderUpdateDot(snapshot)")
+    assert "snapshot.phase === 'available'" in dot, "提醒点未限定在发现更新相位"
+    assert "snapshot.dismissed_version !== target" in dot, "提醒点未按已忽略版本判断"
+    assert "classList.toggle('is-on', on)" in dot, "提醒点缺少显隐切换"
+
+    row = _js_function_body(app_src, "function renderRemindRow(snapshot)")
+    assert "snapshot.dismissed_version === target" in row, "勾选状态未回显快照"
+    assert "下个版本会重新提示" in row, "缺少按版本生效的说明"
+
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "update_set_dismissed" in init, "不再提示未接宿主动作"
+
+
+def test_no_update_states_use_flat_button(app_src: str):
+    """空闲与已是最新时主按钮保持扁平（与齿轮按钮同款），不带主色阴影；
+    只有发现更新/下载/重启升级才用主按钮。"""
+    body = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    for phase in ("idle", "up_to_date"):
+        m = re.search(rf"case '{phase}':.*?(?=case |default:)", body, re.S)
+        assert m, f"renderSnapshot 缺 {phase} 分支"
+        assert "setMainAction('检查更新', checkUpdate, 'rotate-cw', false)" in m.group(0), (
+            f"{phase} 相位的检查更新按钮应为扁平样式"
+        )
+
+
+def test_primary_button_rules_override_base_button():
+    """主按钮规则必须排在基础按钮之后：同权重下提前定义会被背景/文字/边框覆盖，
+    只剩一层红阴影（历史 bug）。"""
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    base = css.index("\n.maarm-btn {")
+    primary = css.index("\n.maarm-btn--primary {")
+    assert primary > base, "主按钮规则被基础按钮覆盖，只剩红阴影"
+    assert ".maarm-btn--primary:hover:not(:disabled)" in css, (
+        "主按钮 hover 权重不足，会被基础按钮的 hover 背景盖掉"
+    )
+
+
 def test_settings_popover_wires_to_host_actions(app_src: str):
     """设置浮窗含下载源与版本渠道两组；选择发固定宿主动作（只带枚举值），
     真源回显来自快照，检查主流程本身仍不带渠道/来源参数。"""
@@ -149,14 +208,51 @@ def test_settings_popover_wires_to_host_actions(app_src: str):
     src = _js_function_body(app_src, "async function setUpdateSource(source)")
     assert "maarm.call('update_set_channel', { value })" in ch, "渠道选择未发宿主动作"
     assert "maarm.call('update_set_source', { value })" in src, "下载源选择未发宿主动作"
-    assert "applySettingsSnapshot" in ch and "applySettingsSnapshot" in src, (
-        "切换后未用快照真源回显"
-    )
+    # 设置回包必须经同一渲染入口：切源前进修订号、切渠道换目标，版本卡与提醒点都要同步
+    assert "renderSnapshot(await maarm.call('update_set_channel'" in ch, "渠道回包未落到版本卡渲染入口"
+    assert "renderSnapshot(await maarm.call('update_set_source'" in src, "下载源回包未落到版本卡渲染入口"
+    render = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    assert "applySettingsSnapshot(snapshot)" in render, "统一渲染入口未回显渠道/源/开关"
     # 前端不持有 URL/路径：设置动作只带枚举值
     for body in (ch, src):
         assert "http" not in body and "localStorage" not in body, "设置动作不得拼 URL 或写本地偏好"
     check = _js_function_body(app_src, "async function checkUpdate()")
     assert "channel" not in check and "source" not in check, "检查主流程不得携带渠道/来源参数"
+
+
+def test_auto_check_switch_and_push_share_one_render_path(app_src: str):
+    """自动检查开关与后台推送：开关走宿主动作并经 renderSnapshot 回显；
+    推送订阅在页面初始化、经同一修订守卫落盘（初次 update_status 可补回错过推送）。"""
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="upd-auto-check"' in html, "设置浮窗缺自动检查开关"
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "update_set_auto_check" in init, "自动检查开关未接宿主动作"
+    assert "renderSnapshot(await maarm.call('update_set_auto_check'" in init, (
+        "开关回包未经统一渲染入口"
+    )
+    listen = _js_function_body(app_src, "maarm.onNativeMessage((msg) =>")
+    assert "'update-status'" in listen, "未订阅后台更新快照推送"
+    assert "renderSnapshot(msg.data)" in listen, "推送未经统一渲染入口"
+    render = _js_function_body(app_src, "function renderSnapshot(snapshot)")
+    assert "snapshot.revision < lastUpdateRevision" in render, "推送路径缺修订守卫"
+
+
+def test_download_and_dismiss_carry_seen_revision(app_src: str):
+    """下载与忽略带渲染时的修订号：后台已换目标时由后端拒绝，不替旧界面操作新目标。"""
+    download = _js_function_body(app_src, "async function downloadUpdate()")
+    assert "maarm.call('update_start_download', { revision: lastUpdateRevision })" in download, (
+        "下载未带玩家看到的修订号"
+    )
+    init = _js_function_body(app_src, "function initAbout()")
+    assert "revision: lastUpdateRevision" in init, "忽略操作未带玩家看到的修订号"
+
+
+def test_manual_check_failure_restores_main_button(app_src: str):
+    """检查失败不得把主按钮留在禁用的「检查中…」：catch 分支先按快照恢复按钮。"""
+    body = _js_function_body(app_src, "async function checkUpdate()")
+    catch = body[body.rindex("} catch (e) {"):]
+    assert "await refreshUpdateStatus()" in catch, "失败分支未恢复快照（主按钮会卡在检查中）"
+    assert "ver-status--err" in catch, "失败分支未显示错误"
 
 
 def test_shell_auto_closes_on_applying():

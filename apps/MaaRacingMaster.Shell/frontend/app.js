@@ -139,11 +139,13 @@
   // 两个下载地址指向同一发行货架：切源只换首选（下次检查生效），切渠道才清空重查。
   let updateSource = 'cnb';
   let updateChannel = 'stable';
+  let autoCheckEnabled = true; // 后台自动检查开关回显（真源是快照）
 
   function applySettingsSnapshot(snapshot) {
     if (!snapshot) return;
     if (snapshot.source === 'cnb' || snapshot.source === 'github') updateSource = snapshot.source;
     if (snapshot.channel === 'stable' || snapshot.channel === 'preview') updateChannel = snapshot.channel;
+    if (typeof snapshot.auto_check === 'boolean') autoCheckEnabled = snapshot.auto_check;
     renderUpdateSettings();
   }
 
@@ -162,6 +164,8 @@
     if (note) {
       note.textContent = '切换版本渠道立即重新检查；切换下载源自下次检查起作为首选';
     }
+    const autoCheck = $('upd-auto-check');
+    if (autoCheck) autoCheck.checked = autoCheckEnabled;
   }
 
   function closeUpdateSettings() {
@@ -189,7 +193,8 @@
     renderUpdateSettings();
     closeUpdateSettings();
     try {
-      applySettingsSnapshot(await maarm.call('update_set_source', { value }));
+      // 回包要同时刷新版本卡与提醒点（切源会前进修订号），不只刷设置高亮
+      renderSnapshot(await maarm.call('update_set_source', { value }));
     } catch (e) {
       showError('切换下载源失败：' + e.message);
       await refreshUpdateStatus(); // 失败回退到后端真实状态
@@ -202,7 +207,8 @@
     renderUpdateSettings();
     closeUpdateSettings();
     try {
-      applySettingsSnapshot(await maarm.call('update_set_channel', { value }));
+      // 切渠道会取消旧索引并当场重查，回包是新渠道的结果；经同一渲染入口落到版本卡
+      renderSnapshot(await maarm.call('update_set_channel', { value }));
     } catch (e) {
       showError('切换渠道失败：' + e.message);
       await refreshUpdateStatus();
@@ -234,12 +240,24 @@
   let lastUpdateRevision = -1;
   let updatePollTimer = null;
 
+  // 后台自动检查的推送：壳在检查提交成功后主动发快照（不必等用户打开关于页）。
+  // 与轮询/回包共用 renderSnapshot 的修订守卫；页面初始化的 update_status 查询
+  // 可补回导航间错过的推送。
+  maarm.onNativeMessage((msg) => {
+    if (!msg || msg.type !== 'update-status') return;
+    renderSnapshot(msg.data);
+  });
+
   function updateElements() {
     return {
       actionBtn: $('btn-update-action'),
       actionLabel: $('btn-update-action-label'),
       statusEl: $('about-update-status'),
       releaseEl: $('about-new-release'),
+      remindRow: $('upd-remind-row'),
+      remindCheck: $('upd-remind-check'),
+      remindHint: $('upd-remind-hint'),
+      tabDot: $('about-tab-dot'),
     };
   }
 
@@ -293,6 +311,40 @@
     releaseEl.style.display = 'none';
   }
 
+  // 关于标签上的更新提醒点：只在「发现可更新目标且本次未选择不再提示」时亮起。
+  // 位置锚在文字外框（.maarm-tab-label）上，不随按钮内边距漂移。
+  function renderUpdateDot(snapshot) {
+    const { tabDot } = updateElements();
+    const tab = document.querySelector('.maarm-tab[data-tab="about"]');
+    if (!tabDot || !tab) return;
+    const target = snapshot ? snapshot.target_version : null;
+    const on = !!(snapshot && snapshot.phase === 'available'
+      && target && snapshot.dismissed_version !== target);
+    tabDot.classList.toggle('is-on', on);
+    if (on) {
+      tab.title = '发现新版本 v' + target;
+      tab.setAttribute('aria-label', '关于，发现新版本 v' + target);
+    } else {
+      tab.removeAttribute('title');
+      tab.removeAttribute('aria-label');
+    }
+  }
+
+  // 「本次更新不再提示」只在发现可更新目标时出现；勾选状态回显自快照。
+  function renderRemindRow(snapshot) {
+    const { remindRow, remindCheck, remindHint } = updateElements();
+    if (!remindRow || !remindCheck || !remindHint) return;
+    const target = snapshot ? snapshot.target_version : null;
+    const active = !!(snapshot && snapshot.phase === 'available' && target);
+    remindRow.hidden = !active;
+    if (!active) return;
+    const dismissed = snapshot.dismissed_version === target;
+    remindCheck.checked = dismissed;
+    remindHint.textContent = dismissed
+      ? '「关于」上的提醒点已隐藏，下个版本会重新提示'
+      : '仅对 v' + target + ' 生效';
+  }
+
   // 快照 → 状态行 + 卡头主按钮 + 卡体次动作区。主按钮吸收检查/下载/重启升级，
   // 卡体只留进度条与取消/稍后这类辅助动作。error 如实显示且保留恢复入口。
   function renderSnapshot(snapshot) {
@@ -308,14 +360,18 @@
     if (phase !== 'downloading') stopUpdatePolling();
 
     clearReleaseArea();
+    renderUpdateDot(snapshot);
+    renderRemindRow(null); // 默认收起，available 分支再按快照展开
     switch (phase) {
       case 'unavailable':
         renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '自动升级不可用');
         setupManualDownloadAction();
         break;
       case 'idle':
-        renderUpdateStatus(statusEl, 'ver-status--ok', snapshot.error || '');
-        setMainAction('检查更新', checkUpdate, 'rotate-cw');
+        // 全源失败/来源未配置都以 idle + error 返回：失败用错误色，不能伪装成绿色「就绪」
+        renderUpdateStatus(statusEl, snapshot.error ? 'ver-status--err' : 'ver-status--ok',
+          snapshot.error || '');
+        setMainAction('检查更新', checkUpdate, 'rotate-cw', false);
         break;
       case 'checking':
         renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
@@ -328,8 +384,11 @@
         setMainAction('检查更新', checkUpdate, 'rotate-cw', false);
         break;
       case 'available':
-        renderUpdateStatus(statusEl, 'ver-status--new', '发现新版本' + target);
+        // error 只可能来自「旧界面点击被拒」：目标已重新确认过，提示玩家重新操作
+        renderUpdateStatus(statusEl, 'ver-status--new',
+          snapshot.error ? '发现新版本' + target + '：' + snapshot.error : '发现新版本' + target);
         setMainAction('下载更新', downloadUpdate, 'arrow-up-right');
+        renderRemindRow(snapshot);
         break;
       case 'downloading': {
         renderUpdateStatus(statusEl, 'ver-status--checking',
@@ -400,6 +459,8 @@
       }
     } catch (e) {
       console.error(e);
+      // 失败不得把主按钮留在禁用的「检查中…」：先按当前快照恢复按钮与状态行，再覆盖错误文案
+      await refreshUpdateStatus();
       renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
     }
   }
@@ -407,7 +468,8 @@
   async function downloadUpdate() {
     const { statusEl } = updateElements();
     try {
-      const d = await maarm.call('update_start_download');
+      // 带上玩家看到目标时的修订号：后台已换目标则后端拒绝，不替旧界面下载新版本
+      const d = await maarm.call('update_start_download', { revision: lastUpdateRevision });
       renderSnapshot(d);
     } catch (e) {
       console.error(e);
@@ -510,6 +572,33 @@
       window.addEventListener('scroll', closeUpdateSettings, true);
     }
     renderUpdateSettings();
+    const { remindCheck } = updateElements();
+    if (remindCheck) {
+      remindCheck.addEventListener('change', async () => {
+        const value = remindCheck.checked;
+        try {
+          // 同下载：勾选只对玩家看到的目标版本生效，快照过期就由后端拒绝
+          const d = await maarm.call('update_set_dismissed', { value, revision: lastUpdateRevision });
+          renderSnapshot(d);
+        } catch (e) {
+          remindCheck.checked = !value; // 失败回退到真实状态
+          showError('更新提醒设置失败：' + e.message);
+        }
+      });
+    }
+    const autoCheck = $('upd-auto-check');
+    if (autoCheck) {
+      autoCheck.addEventListener('change', async () => {
+        const value = autoCheck.checked;
+        try {
+          // 开关回包是快照：经同一渲染入口回显，而不是只改本地勾选
+          renderSnapshot(await maarm.call('update_set_auto_check', { value }));
+        } catch (e) {
+          autoCheck.checked = !value; // 失败回退到真实状态
+          showError('自动检查设置失败：' + e.message);
+        }
+      });
+    }
     refreshUpdateStatus(); // 恢复壳内协调器快照（下载任务跨页面持续，重开关于页不丢状态）
     fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
   }

@@ -7,6 +7,7 @@
 #         -StopExisting   结束正在运行的 MaaRM 实例（含打包版），再起源码版
 #         -CheckDeps      额外做一次 .venv 真导入检查（import maa/cv2/numpy）
 #         -NoLaunch       只编译与自检，不启动窗口
+#         -GuiDebug       启动本机 WebView2 调试端口，确认页面后打印采集命令
 #   编码  本文件含中文，必须保持 UTF-8 **with BOM**：Windows PowerShell 5.1 无 BOM
 #         时按本地代码页误读，中文提示变乱码、引号配对被吞成语法错误。
 #
@@ -21,7 +22,8 @@ param(
     [switch]$Rebuild,
     [switch]$StopExisting,
     [switch]$CheckDeps,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [switch]$GuiDebug
 )
 
 $ErrorActionPreference = 'Stop'
@@ -133,14 +135,38 @@ if ($Existing.Count -gt 0) {
 if ($NoLaunch) { Write-Step 'done' '-NoLaunch：已编译未启动。'; exit 0 }
 
 # ---------------- 4. 启动 ----------------
+$LaunchParameters = @{ FilePath = $BinExe.FullName; WorkingDirectory = $RepoRoot; ErrorAction = 'Stop' }
+if ($GuiDebug) {
+    $GuiNode = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $GuiNode) { Fail 'GUI 调试需要 Node.js 22 或更新版本。' }
+    $GuiNodeVersion = & $GuiNode.Source --version
+    if ($LASTEXITCODE -ne 0 -or $GuiNodeVersion -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 22) {
+        Fail 'GUI 调试需要 Node.js 22 或更新版本。'
+    }
+    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $Listener.Start()
+    try { $GuiPort = $Listener.LocalEndpoint.Port }
+    finally { $Listener.Stop() }
+    $LaunchParameters.ArgumentList = "--gui-debug-port=$GuiPort"
+    Write-Step 'gui-debug' "等待本机 WebView2 调试接口：127.0.0.1:$GuiPort"
+}
+
 # 先记下已存在的后端 pid（-StopExisting 后可能仍有残留），自证时只认新起的那个。
 $PreLaunch = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'maaracing_master' } | ForEach-Object { $_.ProcessId })
 
 # exe 的 app.manifest 带 requireAdministrator：这一步由系统弹 UAC，子进程继承 token。
 Write-Step 'launch' $BinExe.FullName
-try { Start-Process -FilePath $BinExe.FullName -WorkingDirectory $RepoRoot -ErrorAction Stop }
+try { Start-Process @LaunchParameters }
 catch { Fail "启动失败：$($_.Exception.Message)（UAC 弹窗被取消？）" }
+
+if ($GuiDebug) {
+    $GuiTool = Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell\tools\gui-debug.cjs'
+    & $GuiNode.Source $GuiTool wait $GuiPort
+    if ($LASTEXITCODE -ne 0) { Fail '未能附加本次源码窗口。请检查 shell.log，关闭该窗口后重新启动。' }
+    Write-Step 'gui-debug' "手动采集：node `"$GuiTool`" record $GuiPort manage"
+    Write-Step 'gui-debug' "自动对照：node `"$GuiTool`" compare $GuiPort data"
+}
 
 # ---------------- 5. 自证：本次后端到底由哪个 python 拉起 ----------------
 # 打包版 sidecar = 包内 runtime\python\python.exe，源码版 = 仓库 .venv\Scripts\python.exe。

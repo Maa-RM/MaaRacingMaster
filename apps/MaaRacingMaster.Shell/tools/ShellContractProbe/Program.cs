@@ -48,8 +48,9 @@ internal static class Program
             case "cleanup": CheckCleanup(args); break;
             case "update": CheckUpdateCoordinator(args).GetAwaiter().GetResult(); break;
             case "settings": CheckUpdateSettingsAsync().GetAwaiter().GetResult(); break;
+            case "auto": CheckUpdateAutoCheckAsync().GetAwaiter().GetResult(); break;
             default:
-                Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings");
+                Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings|auto");
                 return 2;
         }
         Console.WriteLine(s_failures == 0 ? "ALL PASS" : $"FAILURES: {s_failures}");
@@ -426,6 +427,334 @@ internal static class Program
               final.TargetVersion == "4.0.0" && final.Channel == UpdateSnapshot.ChannelStable
               && !final.AwaitingStable,
               $"late={late.TargetVersion} final={final.TargetVersion}/{final.Channel}/{final.AwaitingStable}");
+
+        // ⑦ 本次更新不再提示：按目标版本记住并落盘；取消后清除。
+        var dismissFeed = MakeFeed("dismiss", ("stable", "6.0.0"));
+        string? savedDismissed = null;
+        var dm = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
+            saveDismissedVersion: v => savedDismissed = v);
+        var dmUp = await dm.CheckAsync();
+        var dmSet = dm.SetDismissed(true);
+        Check("标记本次更新不再提示 → 记住目标版本并落盘",
+              dmUp.Phase == UpdateSnapshot.Available
+              && dmSet.DismissedVersion == dmUp.TargetVersion
+              && savedDismissed == dmUp.TargetVersion,
+              $"phase={dmUp.Phase} target={dmUp.TargetVersion} dismissed={dmSet.DismissedVersion} saved={savedDismissed}");
+        var dmClear = dm.SetDismissed(false);
+        Check("取消不再提示 → 清除标记并落盘",
+              dmClear.DismissedVersion is null && savedDismissed is null,
+              $"dismissed={dmClear.DismissedVersion} saved={savedDismissed}");
+        var dmRestart = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
+            initialDismissedVersion: "6.0.0");
+        var dmRestartUp = await dmRestart.CheckAsync();
+        Check("重启后同一目标仍保持不再提示",
+              dmRestartUp.DismissedVersion == "6.0.0",
+              $"dismissed={dmRestartUp.DismissedVersion} target={dmRestartUp.TargetVersion}");
+    }
+
+    /// <summary>自动检查合同（调度决策 + 并发/取消 + 预算 + 修订准入），全部用环回 HTTP
+    /// 直接计数或用可注入时钟断言，不靠耗时猜测：
+    /// ① 调度锚点：启动即到期、完成后等一个间隔、手动顺延、忙态跳过、开关、重启重算；
+    /// ② 同世代并发检查只发一次索引；切渠道取消旧请求并发出新请求；
+    /// ③ 单镜像短预算：黑洞镜像被放弃、回退到可用源，整轮不拖到默认 30 分钟；
+    /// ④ 自动检查全源失败保留已有目标；手动检查失败如实切空闲并报错；
+    /// ⑤ 更新锁被占用：回可下载 + 可重试提示，且不逐镜像白读索引；
+    /// ⑥ 修订号准入：过期界面的下载/忽略被拒，当前修订生效；
+    /// ⑦ 自动检查提交成功触发推送回调，手动检查不触发；
+    /// ⑧ 调度器启动立即执行首轮。</summary>
+    private static async Task CheckUpdateAutoCheckAsync()
+    {
+        var root = MakeTempDir("auto");
+        var packages = Path.Combine(root, "packages");
+        var current = Path.Combine(root, "current");
+        Directory.CreateDirectory(packages);
+        Directory.CreateDirectory(current);
+        var locator = new TestVelopackLocator(
+            "MaaRM.RealShellProbe", "1.0.0",
+            packages, current, root, Path.Combine(root, "Update.exe"));
+        var interval = TimeSpan.FromHours(1);
+
+        // ① 调度锚点（可控时钟）
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var schedFeed = MakeFeedDir(root, "sched", "stable", "6.0.0");
+        var sched = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: clock);
+        Check("调度：启动即到期（首次检查不额外延迟）",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        var firstAuto = await sched.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+        Check("调度：首轮自动检查建立目标",
+              firstAuto.Phase == UpdateSnapshot.Available && firstAuto.TargetVersion == "6.0.0",
+              $"phase={firstAuto.Phase} target={firstAuto.TargetVersion} error={firstAuto.Error}");
+        Check("调度：本轮结束起等一个完整间隔",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == interval,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        clock.Advance(TimeSpan.FromMinutes(30));
+        Check("调度：未到期给出剩余等待",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.FromMinutes(30),
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        await sched.CheckAsync().ConfigureAwait(false);
+        Check("调度：手动检查顺延一个完整间隔",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == interval,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        clock.Advance(interval);
+        Check("调度：到期后返回零等待",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        sched.SetAutoCheck(false);
+        Check("调度：关闭自动检查 → 停用",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) is null,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        sched.SetAutoCheck(true);
+        Check("调度：重新启用且锚点已过期 → 立即到期",
+              sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
+              $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+        var resumeClock = new ManualTimeProvider(new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+        var resume = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: resumeClock);
+        await resume.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+        resume.SetAutoCheck(false);
+        resumeClock.Advance(TimeSpan.FromMinutes(10));
+        resume.SetAutoCheck(true);
+        Check("调度：重新启用且锚点未过期 → 剩余等待",
+              resume.NextAutoCheckDelay(resumeClock.GetUtcNow(), interval) == TimeSpan.FromMinutes(50),
+              $"delay={resume.NextAutoCheckDelay(resumeClock.GetUtcNow(), interval)}");
+        var restarted = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: clock);
+        Check("调度：重启进程（本进程无已完成检查）→ 立即到期",
+              restarted.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
+              $"delay={restarted.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+
+        // 忙态跳过：下载在途时自动检查不入场，但同样推进锚点（下个周期再试）
+        using (var slowPackage = new SlowHttpServer(FeedIndex("7.0.0"), TimeSpan.Zero, TimeSpan.FromSeconds(30)))
+        {
+            var busy = new UpdateCoordinator($"cnb|http://127.0.0.1:{slowPackage.Port}", managed: true,
+                locator: locator, timeProvider: clock);
+            await busy.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+            var dl = await busy.StartDownloadAsync().ConfigureAwait(false);
+            var skipped = await busy.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+            Check("忙态：自动检查跳过（不打断下载）",
+                  dl.Phase == UpdateSnapshot.Downloading && skipped.Phase == UpdateSnapshot.Downloading
+                  && (skipped.Error ?? "").Contains("下载进行中", StringComparison.Ordinal),
+                  $"dl={dl.Phase} skipped={skipped.Phase} error={skipped.Error}");
+            Check("忙态：跳过也推进锚点（下个周期再试）",
+                  busy.NextAutoCheckDelay(clock.GetUtcNow(), interval) == interval,
+                  $"delay={busy.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
+            busy.CancelDownload();
+        }
+
+        // ② 同世代并发检查合并 + 切渠道取消旧请求
+        using (var slowIndex = new SlowHttpServer(FeedIndex("5.0.0"), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3)))
+        {
+            var cc = new UpdateCoordinator($"cnb|http://127.0.0.1:{slowIndex.Port}", managed: true,
+                locator: locator);
+            var first = cc.CheckAsync();
+            await Task.Delay(150).ConfigureAwait(false);
+            var second = cc.CheckAsync(); // 同世代在途 → 合并
+            var r1 = await first.ConfigureAwait(false);
+            var r2 = await second.ConfigureAwait(false);
+            Check("并发：同世代两次检查只发一次索引请求",
+                  slowIndex.IndexRequests == 1,
+                  $"requests={slowIndex.IndexRequests}");
+            Check("并发：两次调用得到同一结果",
+                  r1.TargetVersion == "5.0.0" && r2.TargetVersion == "5.0.0",
+                  $"r1={r1.TargetVersion} r2={r2.TargetVersion}");
+
+            var before = slowIndex.IndexRequests;
+            var inflight = cc.CheckAsync(); // 第二次真实请求（慢）
+            await Task.Delay(150).ConfigureAwait(false);
+            slowIndex.SetIndexDelay(TimeSpan.Zero); // 新渠道检查立即返回
+            var sw = Stopwatch.StartNew();
+            var switched = await cc.SetChannelAsync(UpdateSnapshot.ChannelPreview).ConfigureAwait(false);
+            sw.Stop();
+            await inflight.ConfigureAwait(false); // 旧事务以取消收尾
+            Check("切渠道：旧索引被取消，不等满慢响应",
+                  sw.ElapsedMilliseconds < 1500, $"{sw.ElapsedMilliseconds}ms");
+            Check("切渠道：新渠道检查另发一次请求",
+                  slowIndex.IndexRequests == before + 2,
+                  $"before={before} after={slowIndex.IndexRequests}");
+            Check("切渠道：新渠道结果生效",
+                  switched.Phase == UpdateSnapshot.Available
+                  && switched.Channel == UpdateSnapshot.ChannelPreview
+                  && switched.TargetVersion == "5.0.0",
+                  $"phase={switched.Phase} channel={switched.Channel} target={switched.TargetVersion} error={switched.Error}");
+        }
+
+        // 关窗取消：在途索引请求随令牌立即结束，不必等满默认超时
+        using (var hang = new SlowHttpServer(FeedIndex("1.1.0"), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
+        {
+            var closing = new UpdateCoordinator($"cnb|http://127.0.0.1:{hang.Port}", managed: true,
+                locator: locator, indexTimeout: TimeSpan.FromSeconds(20));
+            var inflight = closing.CheckAsync();
+            await Task.Delay(150).ConfigureAwait(false);
+            var sw = Stopwatch.StartNew();
+            closing.CancelPendingCheck();
+            var afterCancel = await inflight.ConfigureAwait(false);
+            sw.Stop();
+            Check("关窗取消：在途索引在时限内结束",
+                  sw.ElapsedMilliseconds < 2000, $"{sw.ElapsedMilliseconds}ms");
+            Check("关窗取消：不改变相位（由关窗路径收尾）",
+                  afterCancel.Phase == UpdateSnapshot.Idle, $"phase={afterCancel.Phase}");
+        }
+
+        // ③ 单镜像短预算：黑洞镜像放弃、回退可用源；④ 自动失败保留 / 手动失败如实报错
+        using (var blackhole = new SlowHttpServer(FeedIndex("7.0.0"), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
+        using (var good = new SlowHttpServer(FeedIndex("8.0.0"), TimeSpan.Zero, TimeSpan.Zero))
+        {
+            var hedge = new UpdateCoordinator(
+                $"cnb|http://127.0.0.1:{blackhole.Port}\ngithub|http://127.0.0.1:{good.Port}",
+                managed: true, locator: locator, indexTimeout: TimeSpan.FromMilliseconds(600));
+            var sw = Stopwatch.StartNew();
+            var hedged = await hedge.CheckAsync().ConfigureAwait(false);
+            sw.Stop();
+            Check("短预算：黑洞镜像被放弃并回退到可用源",
+                  hedged.Phase == UpdateSnapshot.Available && hedged.TargetVersion == "8.0.0",
+                  $"phase={hedged.Phase} target={hedged.TargetVersion} error={hedged.Error}");
+            Check("短预算：整轮在预算量级内结束（不拖到默认 30 分钟）",
+                  sw.ElapsedMilliseconds < 5000, $"{sw.ElapsedMilliseconds}ms");
+            Check("短预算：黑洞源请求数受预算约束（含大小写重试）",
+                  blackhole.IndexRequests <= 2, $"requests={blackhole.IndexRequests}");
+
+            good.Down = true;
+            blackhole.Down = true;
+            var autoFailed = await hedge.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+            Check("自动检查全源失败：保留已有目标、相位与按钮",
+                  autoFailed.Phase == UpdateSnapshot.Available
+                  && autoFailed.TargetVersion == "8.0.0"
+                  && string.IsNullOrEmpty(autoFailed.Error),
+                  $"phase={autoFailed.Phase} target={autoFailed.TargetVersion} error={autoFailed.Error}");
+            var manualFailed = await hedge.CheckAsync().ConfigureAwait(false);
+            Check("手动检查全源失败：切到空闲并如实报错",
+                  manualFailed.Phase == UpdateSnapshot.Idle
+                  && (manualFailed.Error ?? "").Contains("所有更新源均不可达", StringComparison.Ordinal),
+                  $"phase={manualFailed.Phase} error={manualFailed.Error}");
+            good.Down = false;
+            blackhole.Down = false;
+        }
+
+        // ⑤ 更新锁被占用：回可下载 + 可重试提示，且不逐镜像白读索引
+        var lockRoot = MakeTempDir("lock");
+        var lockPackages = Path.Combine(lockRoot, "packages");
+        var lockCurrent = Path.Combine(lockRoot, "current");
+        Directory.CreateDirectory(lockPackages);
+        Directory.CreateDirectory(lockCurrent);
+        var lockLocator = new TestVelopackLocator(
+            "MaaRM.RealShellProbe", "1.0.0",
+            lockPackages, lockCurrent, lockRoot, Path.Combine(lockRoot, "Update.exe"));
+        var lockFeed = MakeFeedDir(root, "lockfeed", "stable", "9.0.0");
+        using (var mirror = new SlowHttpServer(FeedIndex("9.0.0"), TimeSpan.Zero, TimeSpan.Zero))
+        {
+            var lockCoord = new UpdateCoordinator(
+                $"cnb|{lockFeed}\ngithub|http://127.0.0.1:{mirror.Port}", managed: true, locator: lockLocator);
+            var lockUp = await lockCoord.CheckAsync().ConfigureAwait(false);
+            Check("锁用例：先拿到可下载目标",
+                  lockUp.Phase == UpdateSnapshot.Available && lockUp.TargetVersion == "9.0.0",
+                  $"phase={lockUp.Phase} target={lockUp.TargetVersion} error={lockUp.Error}");
+            var lockPath = Path.Combine(lockPackages, ".velopack_lock");
+            using (new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            {
+                await lockCoord.StartDownloadAsync().ConfigureAwait(false);
+                var settled = await WaitUntilAsync(
+                    s => s.Phase != UpdateSnapshot.Downloading, lockCoord.GetStatus, 20000).ConfigureAwait(false);
+                Check("锁被占用：回到可下载（不留在下载中）",
+                      settled.Phase == UpdateSnapshot.Available,
+                      $"phase={settled.Phase} error={settled.Error}");
+                if (OperatingSystem.IsWindows())
+                {
+                    Check("锁被占用：给出可重试提示",
+                          (settled.Error ?? "").Contains("稍后重试", StringComparison.Ordinal),
+                          $"error={settled.Error}");
+                    Check("锁被占用：不进入镜像回退（镜像索引请求为 0）",
+                          mirror.IndexRequests == 0, $"requests={mirror.IndexRequests}");
+                }
+                else
+                {
+                    // 这把包目录锁只在 Windows 上阻断下载：非 Windows 实测会照常发起下载
+                    // （本地 feed 只有索引、没有 nupkg，于是报「包缺失」并进镜像回退）。
+                    // 产品只发 Windows 包，这里不假装验过。
+                    Console.WriteLine("[SKIP] 锁被占用：可重试提示与镜像回退计数（锁语义仅 Windows 生效）");
+                }
+            }
+        }
+
+        // ⑥ 修订号准入：过期界面的下载/忽略被拒，当前修订生效
+        var revFeed = MakeFeedDir(root, "rev", "stable", "4.0.0");
+        var rev = new UpdateCoordinator(revFeed, managed: true, locator: locator);
+        var revSnap = await rev.CheckAsync().ConfigureAwait(false);
+        var stale = revSnap.Revision + 100; // 一定不是当前修订
+        var staleDownload = await rev.StartDownloadAsync(stale).ConfigureAwait(false);
+        Check("过期修订：下载被拒且不改变相位",
+              staleDownload.Phase == UpdateSnapshot.Available
+              && (staleDownload.Error ?? "").Contains("确认", StringComparison.Ordinal),
+              $"phase={staleDownload.Phase} error={staleDownload.Error}");
+        var staleDismiss = rev.SetDismissed(true, stale);
+        Check("过期修订：忽略被拒且不写入标记",
+              staleDismiss.DismissedVersion is null
+              && (staleDismiss.Error ?? "").Contains("确认", StringComparison.Ordinal),
+              $"dismissed={staleDismiss.DismissedVersion} error={staleDismiss.Error}");
+        var currentRevision = rev.GetStatus().Revision;
+        var okDismiss = rev.SetDismissed(true, currentRevision);
+        Check("当前修订：忽略生效",
+              okDismiss.DismissedVersion == "4.0.0",
+              $"dismissed={okDismiss.DismissedVersion} error={okDismiss.Error}");
+
+        // ⑦ 推送回调：自动检查成功触发，手动检查不触发
+        var pushFeed = MakeFeedDir(root, "push", "stable", "3.0.0");
+        var push = new UpdateCoordinator(pushFeed, managed: true, locator: locator);
+        UpdateSnapshot? pushed = null;
+        push.AutoCheckCommitted += s => pushed = s;
+        await push.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+        Check("推送：自动检查提交成功 → 回调收到快照",
+              pushed is not null && pushed.TargetVersion == "3.0.0",
+              $"pushed={pushed?.TargetVersion}");
+        pushed = null;
+        await push.CheckAsync().ConfigureAwait(false);
+        Check("推送：手动检查不触发后台推送", pushed is null, $"pushed={pushed?.TargetVersion}");
+
+        // ⑧ 调度器启动立即执行首轮
+        var loopFeed = MakeFeedDir(root, "loop", "stable", "2.0.0");
+        var loopCoord = new UpdateCoordinator(loopFeed, managed: true, locator: locator);
+        using (var scheduler = new UpdateAutoCheck(loopCoord, interval: interval))
+        {
+            scheduler.Start();
+            var loopSnap = await WaitUntilAsync(
+                s => s.Phase == UpdateSnapshot.Available, loopCoord.GetStatus, 5000).ConfigureAwait(false);
+            Check("调度器启动 → 立即执行首轮检查",
+                  loopSnap.Phase == UpdateSnapshot.Available && loopSnap.TargetVersion == "2.0.0",
+                  $"phase={loopSnap.Phase} target={loopSnap.TargetVersion}");
+        }
+    }
+
+    /// <summary>探测用的可控时钟：只提供 GetUtcNow，调度决策（NextAutoCheckDelay）
+    /// 是纯函数式读取，不需要驱动 timer。</summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _now;
+
+        public ManualTimeProvider(DateTimeOffset start) => _now = start;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan delta) => _now += delta;
+    }
+
+    private static string MakeFeedDir(string root, string label, string channel, string version)
+    {
+        var dir = Path.Combine(root, label);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, $"releases.{channel}.json"), FeedIndex(version));
+        return dir;
+    }
+
+    /// <summary>轮询等待条件成立（检查/下载都是后台任务）：返回最后一次快照。</summary>
+    private static async Task<UpdateSnapshot> WaitUntilAsync(Func<UpdateSnapshot, bool> done,
+                                                            Func<UpdateSnapshot> read, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        var last = read();
+        while (!done(last) && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(50).ConfigureAwait(false);
+            last = read();
+        }
+        return last;
     }
 
     /// <summary>最小可用渠道索引：检查阶段只解析 JSON，不需要真实 nupkg（探针既有
@@ -481,8 +810,9 @@ internal static class Program
         private readonly TcpListener _listener;
         private readonly CancellationTokenSource _cts = new();
         private readonly string _indexJson;
-        private readonly TimeSpan _indexDelay;
+        private TimeSpan _indexDelay;
         private readonly TimeSpan _packageDelay;
+        private int _indexRequests;
 
         public SlowHttpServer(string indexJson, TimeSpan indexDelay, TimeSpan packageDelay)
         {
@@ -496,6 +826,17 @@ internal static class Program
         }
 
         public int Port { get; }
+
+        /// <summary>到达本服务的索引请求数（含大小写 URL 的重试）。取消/合并/镜像短路
+        /// 都可据此直接计数，而不是靠耗时推断。</summary>
+        public int IndexRequests => Volatile.Read(ref _indexRequests);
+
+        /// <summary>true = 所有索引请求返回 500（模拟全源故障，不依赖延迟）。</summary>
+        public bool Down { get; set; }
+
+        /// <summary>调整后续请求的索引延迟（已开始的请求仍按旧值等待）。
+        /// 用于「取消旧慢请求、放行新渠道检查」的场景。</summary>
+        public void SetIndexDelay(TimeSpan delay) => _indexDelay = delay;
 
         private async Task AcceptLoopAsync()
         {
@@ -522,6 +863,14 @@ internal static class Program
                 var path = m1 > m0 ? text[m0..m1] : "/";
                 if (path.Contains("releases", StringComparison.OrdinalIgnoreCase))
                 {
+                    Interlocked.Increment(ref _indexRequests);
+                    if (Down)
+                    {
+                        await stream.WriteAsync(
+                            System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                            _cts.Token);
+                        return;
+                    }
                     await Task.Delay(_indexDelay, _cts.Token);
                     var body = System.Text.Encoding.UTF8.GetBytes(_indexJson);
                     await stream.WriteAsync(

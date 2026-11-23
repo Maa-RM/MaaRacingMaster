@@ -101,15 +101,35 @@ def test_panel_renders_option_badges_and_notice_actions():
 
 
 def test_stepper_renderer_rolls_and_estimates():
-    """滚轮计数器：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端。"""
+    """滚轮计数器：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端、原地编辑。"""
     src = PANEL.read_text(encoding="utf-8")
     for token in ("maarm-stepper", "unit_seconds", "prefers-reduced-motion",
                   "spinbutton", "aria-valuenow", "formatEstimateSeconds",
-                  "requestAnimationFrame", "flushCommit"):
+                  "requestAnimationFrame", "flushCommit",
+                  "stepper-edit", "stepper-window--editing"):
         assert token in src, f"滚轮计数器缺少 {token}"
     css = (FRONTEND / "style.css").read_text(encoding="utf-8")
     assert "stepper-col--hidden" in css
+    assert "stepper-window--plain" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
+
+
+def test_panel_layout_is_host_owned():
+    """行/组布局归宿主：插件只声明字段语义，面板不提供可折叠分组。
+
+    布局一旦散进模块声明，后人加字段就会各自调间距；这里锁住渲染器必须走
+    统一的 .cfg-group/.cfg-row 结构，任务设置标题与折叠组不得回潮。
+    """
+    panel = PANEL.read_text(encoding="utf-8")
+    for token in ("cfg-group", "cfg-group-title", "cfg-row",
+                  "cfg-row-label", "cfg-row-control", "cfg-row-desc"):
+        assert token in panel, f"配置面板缺少宿主行结构 {token}"
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    for token in (".cfg-row {", ".cfg-group + .cfg-group", ".cfg-row-desc"):
+        assert token in css, f"样式缺少宿主行布局 {token}"
+    run = RUN.read_text(encoding="utf-8")
+    assert "任务设置" not in run, "任务设置标题已并入分组，不要再加回来"
+    assert "cfg-row cfg-row--switch" in run, "内置步骤开关未走宿主行结构"
 
 
 def test_switch_aria_keeps_explicit_title_and_desc_ids():

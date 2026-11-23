@@ -32,6 +32,8 @@
   --maarm-success-bg: rgba(16, 185, 129, 0.1);
   --maarm-warning: #F59E0B;
   --maarm-warning-bg: rgba(245, 158, 11, 0.1);
+  /* 更新提醒点：比 warning 更偏红，避免和“警告”语义混淆 */
+  --maarm-update-alert: #F97316;
   --maarm-danger: #EF4444;
   --maarm-danger-bg: rgba(239, 68, 68, 0.1);
   --maarm-info: #3B82F6;
@@ -125,6 +127,36 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
   background: var(--maarm-primary); border-radius: 1px 1px 0 0;
   transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
+}
+/* 关于标签的更新提醒点：锚在文字外框（不是整个按钮）的右上角；
+   外圈两圈错开半个周期向外扩散，与底栏状态球同款节奏。 */
+.maarm-tab-label { position: relative; display: inline-block; line-height: 1; }
+.maarm-tab-dot {
+  position: absolute; top: -2px; right: -5px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--maarm-update-alert);
+  box-shadow: 0 0 0 2px var(--maarm-surface);
+  opacity: 0; transform: scale(0.4); pointer-events: none;
+  transition: opacity var(--maarm-duration-fast) ease, transform var(--maarm-duration-fast) ease;
+}
+.maarm-tab-dot.is-on { opacity: 1; transform: scale(1); }
+.maarm-tab-dot::before,
+.maarm-tab-dot::after {
+  content: ''; position: absolute; inset: 0;
+  border: 1px solid var(--maarm-update-alert); border-radius: 50%;
+  opacity: 0; pointer-events: none;
+}
+.maarm-tab-dot.is-on::before,
+.maarm-tab-dot.is-on::after {
+  animation: maarm-tab-dot-echo 2.4s cubic-bezier(0.17, 0.67, 0.4, 1) infinite; /* 周期与底栏状态球一致 */
+}
+.maarm-tab-dot.is-on::after { animation-delay: -1.2s; }
+@keyframes maarm-tab-dot-echo {
+  0%        { transform: scale(1.03); opacity: 0.55; }
+  70%, 100% { transform: scale(2.6);  opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maarm-tab-dot.is-on::before, .maarm-tab-dot.is-on::after { animation: none; }
 }
 /* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
 .win-controls { display: flex; height: 100%; margin-left: auto; flex: 0 0 auto; }
@@ -616,17 +648,18 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 
 /* ---------- 滚轮计数器（stepper 字段）----------
    单颗胶囊：− / 数字窗 / + 一体（布局对齐 21st.dev rolling counter，颜色、
-   圆角、阴影走本仓 token）。每列是 36px 高的开窗，12 格数字条由
-   config-panel.js 的 rAF 弹簧逐帧驱动；列随位数自动收展，速度带动态模糊。 */
+   圆角、阴影走本仓 token）。外高 36px，与普通输入框同高；每列是 30px 高的开窗，
+   12 格数字条由 config-panel.js 的 rAF 弹簧逐帧驱动；列随位数自动收展，速度带动态模糊。
+   点数字可原地编辑，输入框宽度随位数增长。 */
 .maarm-stepper {
   display: inline-flex; align-items: center; gap: 3px;
-  width: fit-content; padding: 3px; user-select: none;
+  width: fit-content; padding: 2px; user-select: none;
   border: 1px solid var(--maarm-border); border-radius: 9px;
   background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm);
 }
 .maarm-stepper--locked { opacity: 0.6; pointer-events: none; }
 .stepper-btn {
-  width: 36px; height: 36px; flex: none;
+  width: 30px; height: 30px; flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border-light);
   background: var(--maarm-surface-active); color: var(--maarm-foreground-secondary);
@@ -643,8 +676,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .stepper-btn:disabled { opacity: 0.4; pointer-events: none; }
 .stepper-window {
   display: flex; align-items: center;
-  height: 36px; min-width: 56px; padding: 0 10px;
-  font-size: 21px;   /* 列宽与数字都按这个 em 走 */
+  height: 30px; min-width: 48px; padding: 0 8px;
+  font-size: 18px;   /* 列宽与数字都按这个 em 走 */
   border-radius: var(--maarm-radius-sm);
   cursor: ns-resize; touch-action: none;   /* 纵向拖拽归这里，别让页面滚走 */
 }
@@ -659,39 +692,33 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   will-change: transform;   /* rAF 逐帧写 transform + filter */
 }
 .stepper-num {
-  height: 36px; flex: none;
+  height: 30px; flex: none;
   display: flex; align-items: center; justify-content: center;
   font-weight: 600; letter-spacing: -0.03em; line-height: 1;
   color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
 }
 .stepper-suffix {
-  margin-left: 6px; font-size: 12px; font-weight: 400;
+  margin-left: 6px; font-size: 11px; font-weight: 400;
   color: var(--maarm-foreground-muted); pointer-events: none;
 }
+/* 原地编辑：点数字把滚动列换成输入框，宽度按位数走；plain 档常驻输入框 */
+.stepper-edit {
+  display: none; min-width: 1.2em; padding: 0; margin: 0;
+  border: none; background: transparent;
+  font-family: var(--maarm-font-sans); font-size: 18px; font-weight: 600;
+  line-height: 1; letter-spacing: -0.03em; text-align: center;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.stepper-edit:focus { outline: none; }
+.stepper-window--editing { cursor: text; }
+.stepper-window--editing .stepper-col { display: none; }
+.stepper-window--editing .stepper-edit { display: block; }
+.stepper-window--plain { cursor: default; }
+.stepper-window--plain .stepper-edit { display: block; }
 @media (prefers-reduced-motion: reduce) {
   .stepper-col { transition: none; }
 }
 
-/* ---------- 内置步骤（启动游戏 / 关闭游戏）的选项面板 ---------- */
-/* 字段行与开关行同住一个纵向节奏容器：间距只由 gap 给，避免"字段有间距、开关没间距" */
-.builtin-fields { display: flex; flex-direction: column; gap: 16px; }
-.builtin-fields .module-options-row + .module-options-row { margin-top: 0; }
-/* 开关标题行与 24px 高的开关同高，标题文字居中；旁注（推荐开启…）挂在这一行右端 */
-.builtin-fields .option-title { min-height: 24px; }
-.builtin-fields .option-title .option-note { margin: 0 0 0 auto; font-weight: 400; }
-/* 数字字段不需要占满整行：定宽后后缀就在框内右侧，不会甩出去 */
-.builtin-fields .maarm-field--narrow .maarm-field-control { max-width: 132px; }
-/* 启动参数：多行等宽，长参数完整可读（高度固定两行，超出滚动，不留拖拽手柄破坏行对齐） */
-.builtin-fields textarea {
-  width: 100%; height: 58px; padding: 8px 12px; resize: none;
-  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
-  background: var(--maarm-surface); color: var(--maarm-foreground);
-  font-size: 12px; line-height: 1.6; font-family: var(--maarm-font-mono);
-  transition: border-color var(--maarm-duration-fast);
-}
-.builtin-fields textarea:focus { border-color: var(--maarm-primary); outline: none; }
-/* 参数框比按钮高：动作按钮贴底，与最后一行文字对齐 */
-.builtin-fields .maarm-field-control-row--multi { align-items: flex-end; }
 .module-options-status {
   margin: 10px 0 0; min-height: 18px;
   font-size: 11px; color: var(--maarm-foreground-muted);
@@ -705,6 +732,60 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .config-panel > * + * { margin-top: 14px; }
 .config-panel .option-row { padding: 0; }
 .config-panel-note { margin: 0 0 4px; }
+
+/* ---------- 任务设置面板：宿主统一排布 ----------
+   插件只声明字段语义，行结构 / 组缩进 / 间距 / 控件宽度都由这里决定。
+   层级：组标题 12px → 字段行 24px；说明独占一行，随字段行对齐。
+   组与组之间用分隔线加更大的上方留白分开，标题紧贴自己的第一行。 */
+.cfg-group { padding-left: 12px; }
+.cfg-group + .cfg-group {
+  margin-top: 6px; padding-top: 8px;
+  border-top: 1px solid var(--maarm-border);
+}
+.cfg-group-title {
+  margin: 0; font-size: 11px; font-weight: 600; line-height: 1.5;
+  color: var(--maarm-foreground-muted);
+}
+.cfg-group-body { padding-left: 12px; }
+.cfg-row {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 16px; row-gap: 5px; align-items: center;
+  padding: 8px 0;
+}
+.cfg-row + .cfg-row { border-top: 1px solid var(--maarm-border-light); }
+.cfg-group-body .cfg-row:first-child { padding-top: 2px; }
+.cfg-row-label {
+  grid-area: 1 / 1;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+  color: var(--maarm-foreground);
+}
+.cfg-row-control {
+  grid-area: 1 / 2; min-width: 0;
+  display: flex; justify-content: flex-start; align-items: center;
+}
+.cfg-row-desc {
+  grid-area: 2 / 1 / 3 / -1; margin: 0;
+  font-size: 11px; line-height: 1.6;
+  color: var(--maarm-foreground-muted);
+}
+.cfg-desc-hint { font-weight: 500; color: var(--maarm-foreground-secondary); }
+/* 内置步骤的数字字段：保持窄框，不随字段栏拉宽 */
+.cfg-row-control .maarm-field-control--narrow { max-width: 132px; }
+/* 控件宽度：分段与下拉限宽，长文本占满字段栏 */
+.cfg-row-control .maarm-segmented,
+.cfg-row-control select { width: min(300px, 100%); }
+.cfg-row-control input[type="text"],
+.cfg-row-control textarea,
+.cfg-row-control .maarm-field-control-row { width: 100%; }
+.cfg-row-control textarea {
+  height: 58px; padding: 8px 12px; resize: none;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  font-size: 12px; line-height: 1.6; font-family: var(--maarm-font-mono);
+}
+.cfg-row-control textarea:focus { border-color: var(--maarm-primary); outline: none; }
+/* 参数框比按钮高：动作按钮贴底，与最后一行文字对齐 */
+.cfg-row-control .maarm-field-control-row--multi { align-items: flex-end; }
 
 /* 断点列表 */
 .breakpoint-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--maarm-foreground-muted); }
@@ -1431,6 +1512,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .upd-set-opt img, .upd-set-opt svg { width: 14px; height: 14px; flex-shrink: 0; }
 .upd-set-check { margin-left: auto; visibility: hidden; }
 .upd-set-opt.is-active .upd-set-check { visibility: visible; }
+/* 后台自动检查：开关行与选项同高，勾选框用主色（不受「不再提示」那块的分隔线影响） */
+.upd-set-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: calc(var(--maarm-radius-sm) - 1px);
+  font-size: 12px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-set-toggle:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.upd-set-toggle input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--maarm-primary); flex-shrink: 0;
+}
 .upd-set-note {
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--maarm-border-light);
   font-size: 11px; line-height: 1.5; color: var(--maarm-foreground-muted);
@@ -1535,6 +1627,22 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .ver-status--new { color: var(--maarm-primary); font-weight: 500; }
 .ver-status--checking { color: var(--maarm-foreground-muted); }
 .ver-status--err { color: var(--maarm-danger); }
+/* 本次更新不再提示：只控制关于标签上的提醒点，不改变更新入口 */
+.upd-remind-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--maarm-border-light);
+}
+.upd-remind-row[hidden] { display: none; }
+.upd-remind-opt {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-remind-opt input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--maarm-primary);
+}
+.upd-remind-hint { font-size: 11px; color: var(--maarm-foreground-dim); }
 .new-release {
   background: color-mix(in srgb, var(--maarm-primary) 6%, transparent); border: 1px solid color-mix(in srgb, var(--maarm-primary) 20%, transparent);
   border-radius: var(--maarm-radius-md); padding: 12px 14px; margin-top: 12px;
@@ -1553,9 +1661,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   background: var(--maarm-primary);
   transition: width 0.3s ease;
 }
-.maarm-btn--primary { background: var(--maarm-primary); color: var(--maarm-primary-foreground); border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent); }
-.maarm-btn--primary:hover { background: var(--maarm-primary-hover); }
-.maarm-btn--primary:active { background: var(--maarm-primary-active); }
 .spinner {
   width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
   border: 2px solid var(--maarm-border-strong); border-top-color: var(--maarm-info);
@@ -1821,6 +1926,15 @@ footer .spacer { flex: 1; }
 }
 .maarm-btn:hover:not(:disabled) { background: var(--maarm-surface-hover); border-color: var(--maarm-border-strong); }
 .maarm-btn:active:not(:disabled) { background: var(--maarm-surface-active); }
+/* 主按钮必须排在 .maarm-btn 之后：同权重后写者胜，提前定义会被基础按钮的
+   背景 / 文字 / 边框覆盖，只剩一层红阴影。hover/active 补齐 :not(:disabled)
+   以匹配基础规则的权重。 */
+.maarm-btn--primary {
+  background: var(--maarm-primary); color: var(--maarm-primary-foreground);
+  border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent);
+}
+.maarm-btn--primary:hover:not(:disabled) { background: var(--maarm-primary-hover); }
+.maarm-btn--primary:active:not(:disabled) { background: var(--maarm-primary-active); }
 .maarm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .maarm-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 #btn-stop {
