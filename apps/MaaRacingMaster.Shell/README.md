@@ -156,7 +156,7 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debu
 
 浏览器参数装配顺序（`WebView2Runtime.cs`）：`--disable-gpu-rasterization` 恒定内置 → `MAARM_APP_WEBVIEW_ARGS` 诊断参数追加 → Debug 诊断窗口再追加调试端口参数。三段共存，互不覆盖（此前的「诊断窗口整体覆盖 env」行为已废）。
 
-CPU 光栅是定案的渲染模式，不是临时旋钮：GPU 光栅路径上，每个新进程对「首次遇到的绘制组合」要现场编译着色器程序（Skia program cache miss → ANGLE 译 D3D），编译被整块瓦片的 `EndRasterCHROMIUM::Flush` 同步串行等待——表现为切页/弹窗**冷首访**帧停顿 100–250ms、进场动画被墙钟时钟快过全程（观感「页面瞬间出现」）；会话内再访命中内存缓存所以永远顺滑。磁盘缓存救不了首访：Windows 上 Chromium persistent cache 默认关闭，WebView2 里读盘路径未装配（只写不读）。改走 Skia 软件光栅后编译为零：数据页冷首访 127.8→22.2ms、齿轮弹窗 244.3→27.8ms（2026-11-23 实测定案），再访节奏无退化；绘制指令同源，视觉效果不变。复测用下方「源码窗口的 GUI 调试」的 `compare` / `record` 命令。
+CPU 光栅是定案的渲染模式，不是临时旋钮：GPU 光栅路径上，每个新进程对「首次遇到的绘制组合」要现场编译着色器程序（Skia program cache miss → ANGLE 译 D3D），编译被整块瓦片的 `EndRasterCHROMIUM::Flush` 同步串行等待——表现为切页/弹窗**冷首访**帧停顿 100–250ms、进场动画被墙钟时钟快过全程（观感「页面瞬间出现」）；会话内再访命中内存缓存所以永远顺滑。磁盘缓存救不了首访：Windows 上 Chromium persistent cache 默认关闭，WebView2 里读盘路径未装配（只写不读）。改走 Skia 软件光栅后编译为零：数据页冷首访 127.8→22.2ms、齿轮弹窗 244.3→27.8ms（2026-11-23 实测定案），再访节奏无退化；绘制指令同源，视觉效果不变。归因工具与对照实验证据见 commit 451033b（含 trace 归因、预解码/延迟/预就绪三重对照与 GPU 侧定案）；复测用下方「源码窗口的 GUI 调试」的 `compare` / `record` 命令。
 
 ## 源码窗口的 GUI 调试
 
