@@ -24,10 +24,12 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
   （`download` 无地址时回退 release 页）；前端不持有、也不传递可打开的 URL。
 - `index.html` 里 `data-link` 的属性值**就是目标名**。新增 `data-link` 静态入口必须同时在
   `EXTERNAL_TARGETS` 里登记，否则静态锁红（名字对不上时按钮点了没反应，属静默失效）。
-- **更新源是偏好，不是 URL**：关于页单个来源按钮展开 CNB / GitHub 菜单，只向 `check_update` 传 `source`
-  枚举（默认 `cnb`，选择存 `localStorage`），实际地址仍由 sidecar 决定；显式选 GitHub 时只查 GitHub 两源，
-  不悄悄回退 CNB。GitHub 图标复用 `icons.js` 的品牌路径（实心版），CNB 图标 `cnb.svg` 取自
-  CNB 官方站点 favicon，仅作来源标识。
+- **更新源与渠道是偏好，不是 URL**：关于页的齿轮浮窗里选 CNB / GitHub 与稳定 / 测试渠道，只向
+  `update_set_source` / `update_set_channel` 传枚举；地址由壳从安装树内随包配置读取，前端不持有、
+  也不传 URL。浮窗里还能开关后台自动检查（`update_set_auto_check`），开关与选择都以快照回显。
+  所有回包（含后台推送）经同一个 `renderSnapshot` 落到版本卡与提醒点，旧快照由 `revision` 守卫丢弃。
+- **动作以玩家看到的快照为前提**：下载与「本次更新不再提示」带上渲染时的 `revision`；后台已换目标
+  时由壳拒绝，界面提示玩家对新目标重新操作，而不是替旧界面下载 / 忽略新版本。
 - **更新提醒点**：宿主快照出现可安装目标（`phase=available`）时，顶部「关于」标签文字右上角亮起橙点；
   勾选「版本与更新」卡里的「本次更新不再提示」后，按目标版本记住（壳的用户数据根），下个版本自动恢复。
   提醒点只做提示，不改变更新入口；显隐由快照的 `dismissed_version` 与 `target_version` 比较得出。

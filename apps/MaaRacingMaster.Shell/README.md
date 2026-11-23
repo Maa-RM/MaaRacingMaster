@@ -18,6 +18,9 @@
 | `RpcBridge.cs` | HTML ↔ C# ↔ sidecar 的 RPC 转发（主窗口与 PEEP 窗**共用**：回发按 `sender.CoreWebView2` 定位，不依赖窗口实例字段，故各窗互不串台） |
 | `PythonSidecar.cs` | JSONL transport（见下） |
 | `WebView2RuntimeUpdater.cs` | 运行时版本查询与按需更新：固定微软官方跳转、验签后静默安装；装完重启本程序才换用新版本 |
+| `UpdateCoordinator.cs` | 应用级更新的唯一宿主：检查（含镜像回退与短预算索引）、下载、提交的状态机；渠道/来源/目标只由它决定 |
+| `UpdateAutoCheck.cs` | 进程内后台自动检查调度：启动即查、按固定间隔重复，等待走 `TimeProvider` + 令牌，关窗可立即打断 |
+| `UpdatePreferences.cs` | 用户级更新偏好（渠道 / 下载源 / 自动检查开关 / 「本次更新不再提示」），读改写串行化且各保存路径互不覆盖字段 |
 | `AppRestarter.cs` | 计划内重启：拉起等待进程，等本进程退出后按同一路径拉起新实例（源码/打包共用） |
 | `TaskbarProgress.cs` | 任务栏进度（`ITaskbarList3`）：运行期不确定进度，结束/关窗熄灭；失败只降级本能力 |
 | `AppNotifications.cs` | 系统通知：Windows 老版 Toast 通道，只显示、不注册点击激活 |
@@ -102,6 +105,44 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 ### 成就解锁的单通道显示
 
 成就解锁与轮次共用事件通道，但**显示走单通道**：窗口激活且未最小化 → 只推 WebView 提示条（`{type:'achievement'}`）；否则只走 `AppNotifications.Show`（标题 + 描述），不再推 WebView。判据是 `Window.Activated` / `Deactivated` 维护的激活态加 `Presenter.State == Minimized`——只看最小化会把「窗口在后台被别的窗口遮住」误判为前台，提示条会推到看不见的地方。`Closing` 期间不弹。
+
+## 应用内更新（自动检查 / 下载 / 提交）
+
+> **住户**：玩家可见的更新行为、跨部件不变量与验证入口。检查/下载/提交的实现细节住在 `UpdateCoordinator.cs` 的类注释；此处只钉「谁决定什么」与「怎么验」。
+
+| 部件 | 决定什么 |
+|---|---|
+| `UpdateCoordinator` | 渠道与来源顺序、已验证目标、下载事务与提交闸门；检查事务串行化（任意时刻一轮），同世代的手动/自动请求合并在途结果；切渠道取消旧索引并等它退出后放行新检查 |
+| `UpdateAutoCheck` | 什么时候问协调器：启动即查，之后按固定间隔（间隔常量住在本文件）；准入（开关 / 受管 / 相位）仍由协调器判断 |
+| `UpdatePreferences` | 偏好落盘；读改写加锁，渠道/源、提醒标记、自动检查开关三条保存路径互不覆盖字段 |
+| `RpcBridge` | `update_*` 固定意图；下载与忽略携带玩家看到的 `revision`，过期即由协调器拒绝 |
+| `MainWindow` | 后台检查提交成功后经 `DispatcherQueue` 推 `{type:'update-status'}`；入队回调先核对关窗态与 WebView2 可用性 |
+
+**玩家可见行为**
+
+- 受管安装且自动检查开启：每次启动安排一轮后台检查，应用常开时继续按间隔检查；发现新版本后关于标签亮橙点，已忽略的版本继续隐藏。
+- 自动检查全源失败只留日志，已有目标、相位与按钮都保留；手动检查失败如实显示错误，主按钮回到可检查状态（不留在「检查中…」）。
+- 设置浮窗可开关后台自动检查，重启回显；关掉后手动检查与切渠道照常可用。
+- 安装器仍持有更新锁时发起下载：回到可下载状态并给可重试提示，不逐镜像重试、不留在下载中。
+
+**不变量**
+
+1. 渠道、镜像顺序、已验证目标与下载绑定只由协调器决定。
+2. 自动触发仅允许 `idle` / `available` / `up_to_date`；手动检查额外允许 `ready`。
+3. 新旧快照按 `revision` 落到同一渲染入口（`renderSnapshot`）；下载与忽略以玩家刚看到的快照为前提。
+
+**验证入口**
+
+```powershell
+# 渠道/源设置与世代守卫（真实 Velopack + 本地源）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- settings
+# 自动检查：调度锚点、并发合并、切渠道取消、单镜像短预算、锁占用短路、修订准入、推送回调
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- auto
+```
+
+静态锁：`tests/test_update_channel_source.py`（渠道/源语义）、`tests/test_update_autocheck.py`（自动检查与并发）、`tests/test_frontend_update_panel.py`（前端入口）。后两者在有 dotnet 的环境里会直接驱动探针对应模式，不做「静态全绿但功能没接线」的假通过。
+
+**边界**：首版覆盖主壳运行期间；发行版触发自动检查还依赖受管产物与更新源接入发布链（普通 ZIP 产物不含随包更新源）。
 
 ## 构建坑
 
