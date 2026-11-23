@@ -63,18 +63,33 @@ public static class WebView2Runtime
             }
 #endif
             Directory.CreateDirectory(udf);
-            // WebView2 浏览器参数经显式 options 传入 WinUI3 加载器。
+            // 浏览器参数经显式 options 传入 WinUI3 加载器。
+            // CPU 光栅为默认：GPU 光栅路径上，新进程首访会对首次遇到的绘制组合现场编译
+            // 着色器程序（Skia program cache miss → ANGLE 译 D3D），且整块瓦片的编译被
+            // EndRasterCHROMIUM::Flush 同步串行等待，造成 100–250ms 帧停顿、切页进场动画
+            // 被墙钟时钟快过全程（用户观感「页面瞬间出现」）。光栅改走 Skia 软件路径后
+            // 编译为零、首访达再访级顺滑，绘制指令同源、视觉效果不变。
+            // 2026-11-23 实测：数据页冷首访 127.8→22.2ms、齿轮弹窗 244.3→27.8ms、
+            // 再访节奏无退化。机制与证据详见 shell README「WebView2 浏览器参数」。
+            const string baseBrowserArgs = "--disable-gpu-rasterization";
             var probeArgs = Environment.GetEnvironmentVariable("MAARM_APP_WEBVIEW_ARGS");
+            var browserArgs = string.IsNullOrWhiteSpace(probeArgs)
+                ? baseBrowserArgs
+                : $"{baseBrowserArgs} {probeArgs}";
 #if DEBUG
             if (debugPort != 0)
             {
-                probeArgs = $"--remote-debugging-port={debugPort} --remote-debugging-address=127.0.0.1";
+                // 调试端口参数与诊断 env 追加共存，不再整体覆盖。
+                var debugArgs = $"--remote-debugging-port={debugPort} --remote-debugging-address=127.0.0.1";
+                browserArgs = string.IsNullOrWhiteSpace(probeArgs)
+                    ? $"{baseBrowserArgs} {debugArgs}"
+                    : $"{baseBrowserArgs} {debugArgs} {probeArgs}";
             }
 #endif
             CoreWebView2EnvironmentOptions? options = null;
-            if (!string.IsNullOrWhiteSpace(probeArgs))
+            if (!string.IsNullOrWhiteSpace(browserArgs))
             {
-                options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = probeArgs };
+                options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = browserArgs };
             }
             // WinUI3 投影：数据目录走 CreateWithOptionsAsync（CreateAsync 只收选项对象，
             // 选项类不暴露数据目录——固定版本 winmd 核验过成员）
