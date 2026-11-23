@@ -33,3 +33,18 @@ def test_core_occupying_retired_namespace_is_flagged():
     origin = {"treasure.hall_dwell": _fake_core("core.json")}
     problems = ct.namespace_checks(graph, origin)
     assert any("占用模块命名空间" in p for p in problems), problems
+
+
+def test_layering_red_line_covers_every_reference_slot():
+    """红线口径 = 一切按名字指人的位置：And/Or 子项与 anchor 对象 value 同样受检。
+
+    只堵 next/on_error 会留后门：公共层可以靠 any_of 借模块的识别定义，
+    等于间接点名业务层，而机检一声不响。
+    """
+    fake = {"global.hall": {
+        "recognition": {"type": "Or", "param": {"any_of": ["treasure.sig"]}},
+        "anchor": {"出口": "treasure.entry"}}}
+    origin = {"global.hall": ct.CORE_PIPELINE_DIR / "hall.json"}
+    problems = ct.namespace_checks(fake, origin)
+    refs = [p for p in problems if "引用模块节点" in p]
+    assert len(refs) == 2, problems

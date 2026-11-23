@@ -20,6 +20,7 @@
 | 游戏分辨率 720p | [`core/window_utils.py`](./window_utils.py) `resize_game_window_720p`（连接时统一窗口，各插件 ROI / 按钮据此归一化） |
 | 文字识别引擎（跨插件共享） | [`core/ocr.py`](./ocr.py)（§1.11：调参、抠图边界与预处理口径的唯一真源） |
 | 远程元数据信任边界（公告/版本标记校验、外链目标白名单） | [`core/remote_meta.py`](./remote_meta.py)（§1.12） |
+| 安全传输（主机白名单、跳转校验、进度/取消/残片清理） | [`core/download.py`](./download.py)（纯搬字节，不含安装/解压语义） |
 | MaaFW 对象签名与红线 | [docs/MAAFW_GUIDE.md](../../docs/MAAFW_GUIDE.md) |
 
 ***
@@ -329,7 +330,7 @@
 | --- | --- |
 | `parse_announcement(data)` | 公告 payload → 归一化 dict；必填字段不合规返回 `None`（整条作废） |
 | `parse_release(data)` | 版本标记 payload → `{tag, published_at, download_url}`；tag 不合规返回 `None`（该源不可用） |
-| `EXTERNAL_TARGETS` | 外链逻辑目标 → 官方地址（`home` / `issue` / `docs` / `release` / `vigembus`） |
+| `EXTERNAL_TARGETS` | 外链逻辑目标 → 官方地址（`home` / `issue` / `docs` / `release` / `vigembus` / `noto_font` / `webview2`） |
 | `is_official_url` / `is_openable_url` | 远程数据可携带的链接白名单 / 交给浏览器前的最终放行判据 |
 | `is_date` / `is_expired` | 严格日期判定与过期比较 |
 
@@ -441,15 +442,18 @@
 - **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；拉起时带 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`——这两个标志只管控制台与进程组归属，**不改父子关系**，壳侧强杀后端进程树时这里拉起的进程照样在树里被带走。
 - **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
 - **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
+- **启动器搬运工**（实测结论，证据以 commit 46727db 为指针）：启动器把版本比对结论写进本地日志 `%LOCALAPPDATA%\RacingMaster\CN\Log.txt`（`_LauncherLogTail` 只采本轮拉起后新写入的行：已读部分被改写或文件换新即判为新会话、从头读，日志拉起前不存在与同进程续写都按增量读）；`Final download config:` 下一行 JSON 的 `update_list` 空=可直启（无需更新或补丁刚装好）、非空=待更新，两种情形同一信号；检查在拉起后 ~5-6.4s 落地、主窗口 ~8.5-9.4s 才出现——先拿结论再决定关不关，即可无窗静默检查。启动器**要求管理员提权**（裸 Popen 740，回退必须走 `spawn_launcher` 的提权路径）；`SW_HIDE`/`b_hide`/`b_background`/`b_silent` 等一切隐藏手段都无效，CLI 仅 `--dygame`/`--restart`，无官方轻量检查入口——**整程序短跑就是运行官方检查代码的唯一官方方式**。Ready 后不自动拉游戏。跨权限时 WM_CLOSE/点击被 UIPI 拦截，`close_launcher`/`click_launcher_update_button` 如实降级不硬闯。
 
 **builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / required_resources(config) / run(config, stop_event, log, session)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
 
 | 步骤 | 配置面 | 行为要点 |
 |---|---|---|
-| `launch_game` | `path`（空=自动探测）、`args`、`timeout_s`、`hall_timeout_s` | 已在运行则不拉第二个进程，接管现有窗口（进程在而窗口未到时等到超时，不放行无窗口状态）；等窗口超时改走官方启动器再等一轮；随后加载启动链走到可交付的大厅状态 |
+| `launch_game` | `path`（空=自动探测）、`args`、`auto_update`、`timeout_s`、`hall_timeout_s` | 已在运行则不拉第二个进程，接管现有窗口（进程在而窗口未到时等到超时，不放行无窗口状态）；**启动前置跑启动器检查闸门**（见下）；等窗口超时改走官方启动器再等一轮；随后加载启动链走到可交付的大厅状态 |
 | `close_game` | `exit_app` | 关进程后清掉窗口句柄（下次运行重新定位）；`exit_app` 请求本轮结束后退出本程序 |
 
-**配置面只放用户能决定的事**（ADR-0020）：怎么起进程、起不来时怎么办、窗口怎么认，都是步骤自己的实现，不进面板；面板上只有路径、参数与两个时限。
+**配置面只放用户能决定的事**（ADR-0020）：怎么起进程、起不来时怎么办、窗口怎么认，都是步骤自己的实现，不进面板；面板上只有路径、参数、自动更新开关与两个时限。
+
+**启动器检查闸门**（游戏不在运行时才走）：拉起官方启动器→只读其日志拿比对结论→分流。壳本身管理员运行（app.manifest `requireAdministrator`），拉提权启动器零 UAC，检查每次启动都做、不缓存。无需更新→出窗前静默关闭启动器、直启；需要更新→开关开=出窗后代点「更新游戏」、等 Ready 关启动器续跑直启，开关关=留下启动器页面、本轮以结局 `needs_update` 干净收停（侧车记「已停止」不记「失败」）。检查不可用（无启动器 / 授权被拒）降级沿用直启，不阻断；启动器在检查时限（`LaunchGameStep._CHECK_WAIT_S`）内没写出结论则留下启动器页面、以结局 `needs_update` 收停——此时启动器可能已在出窗路上，继续直启会撞上第二份进程。环境开关 `MAARM_APP_LAUNCHER_CHECK=0` 可整体跳过（测试默认关闭）。
 
 **启动链**（ADR-0018）：真源 `core/resources/startup/pipeline.json` + `image/`，由启动步骤**显式加载**，不进 `core/resources/pipeline/`（那个目录会被所有模块的导航图自动并入）。入口 `startup.boot`、终点 `startup.done`；汇聚与三个确认节点的候选表都是「已知弹窗 → 登录页 → 下一个确认」，因此确认窗口内弹窗优先规则持续生效。完成判据是「已知覆盖层清理后的大厅状态」连续三轮，不保证识别未知覆盖层。节点表与阈值以真源为准，本文不复述。
 
@@ -458,6 +462,7 @@
 | 条件 | 行为 | 步骤结果 |
 |---|---|---|
 | 仅显示意图 | 起进程、交窗口，但不建连接/不开采集/不加载图 | `skipped`（队列显示「已跳过」） |
+| 需要更新且未开自动更新 | 留下启动器页面，不拉游戏 | `needs_update`（队列显示「已停止」，整轮收停） |
 | 其余 | 跑启动链 | 按导航结局映射为 `completed` / `stopped` / `failed` |
 
 资源需求与业务结果分开判定，不互相推导：仅显示意图既得到空资源集，也不算完成。
@@ -750,7 +755,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | cv2不支持中文路径                | imread/imwrite在中文路径下失败                        | opencv\_utf8\_patch.py monkey-patch            |
 | YOLO ONNX 导出              | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度                        |
 | ORT-DML 并发崩溃           | 两个 GPU run 同时在飞即崩（onnxruntime #20713），与锁占时长/CPU 并发无关 | 全部 GPU run 走 `dml_lock` 串行持锁                    |
-| GPU 消费者排班             | 多个消费者（感知/线观测/深度）共锁时靠抢锁，碰撞与长尾不可控            | `dml_lock.SLOTS` 槽位交接：前一个消费者放锁后 `mark_done(seq)`，后一个 `wait_done(seq, timeout)` 再开工；纯时序原语，不含业务语义 |
+| GPU 消费者排班             | 多个消费者（感知/线观测）共锁时靠抢锁，碰撞与长尾不可控            | `dml_lock.SLOTS` 槽位交接：前一个消费者放锁后 `mark_done(seq)`，后一个 `wait_done(seq, timeout)` 再开工；纯时序原语，不含业务语义 |
 | ORT-DML 派发税与 capture   | run 是分辨率无关的阻塞调用（MoGe 时代实测 ~40ms 固定税，降分辨率无效）；`enable_graph_capture` 首次 run 即崩 | 降税只有减节点（更小骨干）一条路；capture 路线不可用（证据 commit `73a7164`） |
 | 标注写进像素会毁掉模板 | 落盘帧同时被 PEEP、回放、模板标定三处消费；一旦在上面画字幕/框，裁出来的模板天生带污染。赛季更新后的公告页就是活例：左上角返回按钮被状态行压住，同一张模板从带字帧裁出来分数掉一截，好图被判成废图 | 证据帧与视图帧分离：落盘只写原始像素，标注入 `frames.jsonl` 的 `overlay`（归一化坐标），消费方自己画。禁止在 `_process` 的 save 分支加任何 `cv2.putText`/`rectangle` |
 

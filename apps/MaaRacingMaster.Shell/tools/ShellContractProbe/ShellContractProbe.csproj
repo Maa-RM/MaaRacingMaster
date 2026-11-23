@@ -14,6 +14,8 @@
     <Compile Include="..\..\PythonSidecar.cs" Link="PythonSidecar.cs" />
     <Compile Include="..\..\ShellLog.cs" Link="ShellLog.cs" />
     <Compile Include="..\..\UpdateCoordinator.cs" Link="UpdateCoordinator.cs" />
+    <!-- 自动检查调度也链接正式源码：验证首轮立即发起与停止语义，而非复制逻辑 -->
+    <Compile Include="..\..\UpdateAutoCheck.cs" Link="UpdateAutoCheck.cs" />
     <!-- 钩子自退出断言与壳用同一固定版本（与正式接入版本绑定核验） -->
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>

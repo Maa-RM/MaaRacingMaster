@@ -1,11 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Velopack;
+using Velopack.Exceptions;
 using Velopack.Locators;
+using Velopack.Sources;
 
 namespace MaaRacingMaster.Shell;
 
@@ -20,7 +24,9 @@ public sealed record UpdateSnapshot(
     [property: JsonPropertyName("managed")] bool Managed,
     [property: JsonPropertyName("channel")] string Channel,
     [property: JsonPropertyName("source")] string Source,
-    [property: JsonPropertyName("awaiting_stable")] bool AwaitingStable)
+    [property: JsonPropertyName("awaiting_stable")] bool AwaitingStable,
+    [property: JsonPropertyName("dismissed_version")] string? DismissedVersion,
+    [property: JsonPropertyName("auto_check")] bool AutoCheck)
 {
     public const string ChannelStable = "stable";
     public const string ChannelPreview = "preview";
@@ -35,6 +41,14 @@ public sealed record UpdateSnapshot(
     public const string Ready = "ready";              // 已下载完成，可提交
     public const string Preparing = "preparing";      // 冻结后端 + 退出确认中
     public const string Applying = "applying";        // 已交给更新器：等本进程退出后替换
+}
+
+/// <summary>检查发起方：手动检查允许在 ready（已下载）时刷新目标；后台自动检查
+/// 只在 idle/available/up_to_date 允许——不得撤掉玩家已下载好的升级入口。</summary>
+public enum UpdateCheckTrigger
+{
+    Manual,
+    Auto,
 }
 
 /// <summary>
@@ -55,12 +69,14 @@ public sealed record UpdateSnapshot(
 /// · 渠道是用户设置，不是包属性：始终显式传给更新器，默认稳定轨；不做降级
 ///   安装，从测试轨切回后等稳定轨版本追上再升级（数据只升不降）。
 /// · 切渠道换的是目标发行，清空在途与就绪；切下载源只换首选地址，
-///   在途下载与就绪包保留。
+///   在途下载与就绪包保留，但修订号前进（前端据此丢弃旧点击）。
 ///
-/// 两条不变量（各自只有一个出口，避免语义散落在字符串比较里）：
+/// 三条不变量（各自只有一个出口，避免语义散落在字符串比较里）：
 /// ① CheckIntent：一次「检查→下载→提交」的不可变事务上下文，整条异步链只读它；
 /// ② Epoch：任何渠道切换开启新世代；所有异步回写（检查/下载/镜像回退/进度）
-///    都携带发起时的世代，经 SetState(epoch) 唯一出口校验，迟到回写一律丢弃。
+///    都携带发起时的世代，经 SetState(epoch) 唯一出口校验，迟到回写一律丢弃；
+/// ③ CheckRun：任意时刻最多一个检查事务在跑（_checkGate），同世代的手动/自动
+///    请求合并在途结果；切渠道取消旧索引并等它真正退出后，才放行新渠道检查。
 /// </summary>
 public sealed class UpdateCoordinator
 {
@@ -76,6 +92,14 @@ public sealed class UpdateCoordinator
     /// 壳订阅它做「计划内关闭」（窗口收尾 → Update.exe 检测退出 → 替换 → 重启）。</summary>
     public event Action? ApplyingStarted;
 
+    /// <summary>自动检查提交了成功结果（available / up_to_date）：壳据此向页面推送快照，
+    /// 让关于标签的提醒点在用户没打开关于页时也能亮起。参数是提交后的有效快照。</summary>
+    public event Action<UpdateSnapshot>? AutoCheckCommitted;
+
+    /// <summary>自动检查开关变化：进程内调度器据此重算等待（关闭即停等，重新启用以
+    /// 「本进程最近一次检查收尾」为锚点重排；本进程还没检查过则立即安排）。</summary>
+    public event Action? AutoCheckSettingChanged;
+
     /// <summary>一次检查的不可变事务上下文。检查开始时从当前状态快照出来，
     /// 检查、下载、镜像回退全程只读它——切换设置不会让半程事务混用两套渠道/来源。
     /// 渠道是用户设置，总是显式传入；安装包烧录的渠道在此模型下不被读取。</summary>
@@ -86,15 +110,15 @@ public sealed class UpdateCoordinator
         string[] Sources)
     {
         public bool IsStale(string phase, long epoch) => epoch != Epoch || phase != StartPhase;
-
-        public UpdateManager CreateManager(string source, IVelopackLocator? locator)
-        {
-            var options = new UpdateOptions { ExplicitChannel = Channel };
-            return locator is null
-                ? new UpdateManager(source, options)
-                : new UpdateManager(source, options, locator);
-        }
     }
+
+    /// <summary>一次检查事务的运行态：完成信号 + 取消源 + 发起方。
+    /// 完成信号在锁外 TrySetResult，避免把续体调度进状态锁。</summary>
+    private sealed record CheckRun(
+        CheckIntent Intent,
+        UpdateCheckTrigger Trigger,
+        CancellationTokenSource Cts,
+        TaskCompletionSource<UpdateSnapshot> Completion);
 
     /// <summary>随包来源目录：构造时解析一次，之后只读。
     /// 每行「名字|地址」（cnb|https://… / github|https://…）给下载地址起名；
@@ -135,17 +159,61 @@ public sealed class UpdateCoordinator
         }
     }
 
+    /// <summary>索引专用下载器：只覆盖 DownloadString（发行索引 JSON），把检查令牌与
+    /// 单镜像预算接到实际 HTTP 读取——默认源的索引请求既不接受取消令牌、又和包下载
+    /// 共用 30 分钟超时，直接沿用会让一次后台检查在网络黑洞下挂半小时。
+    /// 包下载（DownloadFile）走基类原实现与超时：大文件的进度、校验与重试语义不变。
+    /// 预算覆盖 SDK 的大小写 URL 重试（共享同一个 linked 源），不因重试翻倍。</summary>
+    private sealed class CheckIndexDownloader : HttpClientFileDownloader
+    {
+        private readonly CancellationToken _checkToken;
+        private readonly TimeSpan _budget;
+
+        public CheckIndexDownloader(CancellationToken checkToken, TimeSpan budget)
+        {
+            _checkToken = checkToken;
+            _budget = budget;
+        }
+
+        public override async Task<string> DownloadString(string url,
+                                                          IDictionary<string, string>? headers,
+                                                          double timeout)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(_checkToken);
+            linked.CancelAfter(_budget);
+            var json = await TryDownloadThenLowercase(async candidate =>
+            {
+                // 每次尝试都用同一条预算与令牌：首次成功即结束，失败重试共用剩余时间。
+                using var http = CreateHttpClient(headers, Math.Max(_budget.TotalMinutes, 0.25));
+                using var resp = await http.GetAsync(candidate, linked.Token).ConfigureAwait(false);
+                resp.EnsureSuccessStatusCode();
+                return await resp.Content.ReadAsStringAsync(linked.Token).ConfigureAwait(false);
+            }, url).ConfigureAwait(false);
+            // SDK 的重试层 catch 一切异常（含取消）：把「检查已被取消」还原成取消语义，
+            // 否则切渠道/关窗会被误报成「该源不可达」并继续尝试下一个镜像。
+            _checkToken.ThrowIfCancellationRequested();
+            return json;
+        }
+    }
+
     private readonly SourceCatalog _catalog;
     private readonly IVelopackLocator? _locator;   // 显式定位器注入（合同探针用）；null = 默认定位器
     private readonly PrepareGateAsync? _prepareGate;
     private readonly HandoffRecoveryAsync? _handoffRecovery;
     private readonly bool _managed;
     private readonly Action<string, string, bool> _savePreferences; // 偏好落盘（channel, source, awaitingStable）
+    private readonly Action<string?> _saveDismissedVersion;         // 「本次更新不再提示」落盘
+    private readonly Action<bool> _saveAutoCheck;                   // 后台自动检查开关落盘
+    private readonly TimeProvider _time;                            // 调度/修订计时（探针可注入）
+    private readonly TimeSpan _indexTimeout;                        // 单镜像索引预算（含小写重试）
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _checkGate = new(1, 1);          // 检查事务串行化（旧退出→新放行）
 
     private string _channel = UpdateSnapshot.ChannelStable;   // 渠道是用户设置，默认显式稳定轨
     private string _source = UpdateSnapshot.SourceCnb;        // 当前首选下载地址
     private bool _awaitingStable;                             // 从测试轨切回且稳定版尚未追上
+    private string? _dismissedVersion;                        // 已标记「本次更新不再提示」的目标版本
+    private bool _autoCheckEnabled;                           // 后台自动检查开关（随 prefernces 持久化）
 
     private long _revision;
     private long _epoch;                           // 渠道切换开启新世代：作废此前所有在途异步回写
@@ -160,6 +228,12 @@ public sealed class UpdateCoordinator
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
 
+    private Task<UpdateSnapshot>? _checkTask;      // 在途检查（同世代请求合并）
+    private long _checkTaskEpoch = -1;
+    private CancellationTokenSource? _checkCts;    // 当前检查的取消源（切渠道/关窗/开始下载）
+    private DateTimeOffset? _lastCheckCompletedUtc; // 本进程最近一次检查真正收尾（不含忙态拒绝）
+    private DateTimeOffset? _autoAnchorUtc;         // 自动检查计时起点（收尾 或 忙态跳过）
+
     public UpdateCoordinator(string? feedSource, bool managed,
                              IVelopackLocator? locator = null,
                              PrepareGateAsync? prepareGate = null,
@@ -167,7 +241,13 @@ public sealed class UpdateCoordinator
                              string? initialChannel = null,
                              string? initialSource = null,
                              bool initialAwaitingStable = false,
-                             Action<string, string, bool>? savePreferences = null)
+                             string? initialDismissedVersion = null,
+                             Action<string, string, bool>? savePreferences = null,
+                             Action<string?>? saveDismissedVersion = null,
+                             bool initialAutoCheck = true,
+                             Action<bool>? saveAutoCheck = null,
+                             TimeProvider? timeProvider = null,
+                             TimeSpan? indexTimeout = null)
     {
         _catalog = new SourceCatalog(feedSource);
         _managed = managed;
@@ -175,9 +255,16 @@ public sealed class UpdateCoordinator
         _prepareGate = prepareGate;
         _handoffRecovery = handoffRecovery;
         _savePreferences = savePreferences ?? ((_, _, _) => { });
+        _saveDismissedVersion = saveDismissedVersion ?? (_ => { });
+        _saveAutoCheck = saveAutoCheck ?? (_ => { });
+        _autoCheckEnabled = initialAutoCheck;
+        _time = timeProvider ?? TimeProvider.System;
+        _indexTimeout = indexTimeout ?? TimeSpan.FromSeconds(60);
         if (initialChannel == UpdateSnapshot.ChannelPreview) _channel = UpdateSnapshot.ChannelPreview;
         if (initialSource == UpdateSnapshot.SourceGithub) _source = UpdateSnapshot.SourceGithub;
         _awaitingStable = initialAwaitingStable && _channel == UpdateSnapshot.ChannelStable;
+        _dismissedVersion = string.IsNullOrWhiteSpace(initialDismissedVersion)
+            ? null : initialDismissedVersion.Trim();
         if (!managed)
         {
             _phase = UpdateSnapshot.Unavailable;
@@ -193,109 +280,103 @@ public sealed class UpdateCoordinator
         }
     }
 
-    /// <summary>检查更新：仅在 idle/available/up_to_date/ready 允许（刷新目标）。
+    /// <summary>本进程最近一次检查收尾（成功或失败）；调度器重新启用自动检查时以它为锚点，
+    /// 为空表示本进程还没检查过 → 重新启用后立即安排。</summary>
+    public DateTimeOffset? LastCheckCompletedUtc
+    {
+        get { lock (_gate) return _lastCheckCompletedUtc; }
+    }
+
+    /// <summary>距下一次自动检查的等待时长：null = 当前不该检查（关闭自动检查 / 非受管），
+    /// Zero = 立即。计时锚点取最近一次检查收尾与最近一次忙态跳过中较晚者。</summary>
+    public TimeSpan? NextAutoCheckDelay(DateTimeOffset now, TimeSpan interval)
+    {
+        lock (_gate)
+        {
+            if (!_managed || !_autoCheckEnabled) return null;
+            var anchor = _autoAnchorUtc;
+            if (anchor is null) return TimeSpan.Zero;
+            var delay = anchor.Value + interval - now;
+            return delay > TimeSpan.Zero ? delay : TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>取消在途检查（窗口关闭 / 开始下载 / 调度器停机）：索引请求随令牌中止，
+    /// 不再把一次检查挂到网络超时；状态不变，由调用方决定后续相位。</summary>
+    public void CancelPendingCheck()
+    {
+        lock (_gate)
+        {
+            _checkCts?.Cancel();
+        }
+    }
+
+    /// <summary>检查更新：手动检查仅在 idle/available/up_to_date/ready 允许（刷新目标），
+    /// 自动检查不允许 ready（不撤掉已下载的升级入口）。同世代已有在途检查时直接合并且
+    /// 复用其结果——手动点击不会给同一轮再发一次索引请求。
     /// 来源按「首选在前」的顺序尝试：第一个「可达且给出结论」的地址胜出并锁定
     /// （下载/提交绑定同一已验证来源）；首选不可达时回退其余等价地址。全部
     /// 不可达/失败时诚实报错并可重试——不换目标，不把空/坏镜像误报为「已是最新」。
     /// 检查在途期间状态可能被下载/提交推进（网络慢源是常态）：返回时校验发起时
     /// 的相位与世代，不一致即丢弃结果并返回当前快照。</summary>
-    public async Task<UpdateSnapshot> CheckAsync()
+    public Task<UpdateSnapshot> CheckAsync(UpdateCheckTrigger trigger = UpdateCheckTrigger.Manual)
     {
-        CheckIntent intent;
+        Task<UpdateSnapshot>? shared = null;
+        CheckRun? run = null;
         lock (_gate)
         {
-            if (!CanRunCheck())
-                return Snapshot(BusyReason());
-            var sources = _catalog.For(_source);
-            if (sources.Length == 0)
+            if (_checkTask is { IsCompleted: false } inFlight && _checkTaskEpoch == _epoch)
             {
-                _targetVersion = null;
-                _pending = null;
-                _activeIntent = null;
-                return SetState(_epoch, UpdateSnapshot.Idle, error: "更新源未配置（或所选源无可用地址）");
+                shared = inFlight; // 同世代在途：手动/自动共用这一轮
             }
-            intent = new CheckIntent(_epoch, _phase, _channel, sources);
-        }
-        string? lastError = null;
-        foreach (var source in intent.Sources)
-        {
-            if (!IsSourceReachable(source))
+            else if (!CanRunCheck(trigger))
             {
-                lastError = $"{source}（不可达或未就绪）";
-                continue;
+                if (trigger == UpdateCheckTrigger.Auto) _autoAnchorUtc = _time.GetUtcNow();
+                return Task.FromResult(Snapshot(BusyReason()));
             }
-            try
+            else
             {
-                var manager = intent.CreateManager(source, _locator);
-                var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
-                bool clearedAwaiting = false;
-                UpdateSnapshot result;
-                lock (_gate)
+                var sources = _catalog.For(_source);
+                if (sources.Length == 0)
                 {
-                    if (intent.IsStale(_phase, _epoch))
-                        return Snapshot(); // 迟到结果或切换前的旧检查丢弃；不重绑源
-                    _manager = manager; // 锁定本源：下载/提交绑定同一已验证来源
-                    _lockedSource = source;
-                    _activeIntent = intent;
-                    if (update is null)
-                    {
-                        _targetVersion = null;
-                        _pending = null;
-                        return SetState(intent.Epoch, UpdateSnapshot.UpToDate);
-                    }
-                    _pending = update;
-                    _targetVersion = update.TargetFullRelease.Version.ToString();
-                    if (_awaitingStable)
-                    {
-                        _awaitingStable = false; // 稳定轨追上了：等待标记完成使命
-                        clearedAwaiting = true;
-                    }
-                    result = SetState(intent.Epoch, UpdateSnapshot.Available);
+                    _targetVersion = null;
+                    _pending = null;
+                    _activeIntent = null;
+                    var empty = SetState(_epoch, UpdateSnapshot.Idle, error: "更新源未配置（或所选源无可用地址）");
+                    NoteCheckSettled(_time.GetUtcNow());
+                    return Task.FromResult(empty);
                 }
-                if (clearedAwaiting)
-                    _savePreferences(_channel, _source, false); // 锁外落盘：稳定轨已追上
-                return result;
-            }
-            catch (Exception ex)
-            {
-                lastError = $"{source}（{ex.Message}）";
+                var intent = new CheckIntent(_epoch, _phase, _channel, sources);
+                var cts = new CancellationTokenSource();
+                var completion = new TaskCompletionSource<UpdateSnapshot>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _checkCts = cts;
+                _checkTask = completion.Task;
+                _checkTaskEpoch = _epoch;
+                run = new CheckRun(intent, trigger, cts, completion);
             }
         }
-        lock (_gate)
-        {
-            if (intent.IsStale(_phase, _epoch))
-                return Snapshot(); // 迟到的失败结果或旧世代结果同理不覆盖
-            _targetVersion = null;
-            _pending = null;
-            return SetState(intent.Epoch, UpdateSnapshot.Idle,
-                error: $"所有更新源均不可达：{lastError}");
-        }
-    }
-
-    /// <summary>源可达性预检：本地目录必须存在且非空（空目录 = 镜像未就绪——
-    /// 更新库对空目录返回「无更新」，直接信任会把故障误报为已是最新）；网络源
-    /// 的可达性由检查调用的异常区分（网络错误抛出，正常无更新返回 null）。</summary>
-    private static bool IsSourceReachable(string source)
-    {
-        if (Directory.Exists(source))
-            return Directory.EnumerateFileSystemEntries(source).Any();
-        if (source.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-            return true;
-        return false;
+        if (shared is not null) return shared;
+        _ = RunCheckAsync(run!); // 锁外启动：RunCheckAsync 的同步前段会拿状态锁
+        return run!.Completion.Task;
     }
 
     /// <summary>开始下载：仅 available 允许；下载中重复调用复用当前任务（幂等）；
     /// ready 重复调用幂等返回（已就绪无需重下）。启动即回包 downloading 快照——
     /// 下载在后台任务进行，进度与结果由独立状态查询获得（评审回归：等待整段下载
     /// 会让首次下载期间界面拿不到进度、也无法取消）。事务上下文随任务传递：
-    /// 镜像回退只用检查时锁定的那套渠道与来源，不重新读取可能已被切换的偏好。</summary>
-    public Task<UpdateSnapshot> StartDownloadAsync()
+    /// 镜像回退只用检查时锁定的那套渠道与来源，不重新读取可能已被切换的偏好。
+    /// expectedRevision 是玩家看到目标时的修订号：界面快照已过期（后台检查换掉了目标）
+    /// 就拒绝，让玩家对新目标重新确认，而不是替旧界面下载新版本。</summary>
+    public Task<UpdateSnapshot> StartDownloadAsync(long? expectedRevision = null)
     {
         UpdateInfo? pending;
         CheckIntent intent;
         CancellationTokenSource cts;
         lock (_gate)
         {
+            if (expectedRevision is long seen && seen != _revision)
+                return Task.FromResult(Snapshot("界面信息已更新，请确认当前目标后重新操作"));
             if (_phase == UpdateSnapshot.Downloading && _downloadTask is not null)
                 return Task.FromResult(Snapshot()); // 复用当前任务
             if (_phase == UpdateSnapshot.Ready)
@@ -304,6 +385,7 @@ public sealed class UpdateCoordinator
                 return Task.FromResult(Snapshot(BusyReason()));
             if (_pending is null || _activeIntent is null)
                 return Task.FromResult(Snapshot("没有可安装目标，请先检查更新"));
+            _checkCts?.Cancel(); // 下载事务接管：在途检查的迟到结果没有回写资格
             pending = _pending;
             intent = _activeIntent;
             cts = new CancellationTokenSource();
@@ -334,6 +416,11 @@ public sealed class UpdateCoordinator
             BackToAvailable(intent, "下载已取消");
             return;
         }
+        catch (AcquireLockFailedException lockEx)
+        {
+            BackToAvailable(intent, RetryableLockMessage(lockEx));
+            return;
+        }
         catch (Exception ex)
         {
             failure = ex.Message;
@@ -355,12 +442,23 @@ public sealed class UpdateCoordinator
             BackToAvailable(intent, "下载已取消");
             return;
         }
+        catch (AcquireLockFailedException lockEx)
+        {
+            // 全局更新锁与源无关：镜像重试只会重复撞锁，第一出口就回可重试状态。
+            BackToAvailable(intent, RetryableLockMessage(lockEx));
+            return;
+        }
         catch (Exception ex)
         {
             failure = $"{failure}；镜像回退也失败: {ex.Message}";
         }
         BackToAvailable(intent, $"下载失败: {failure}");
     }
+
+    /// <summary>更新锁被占用（安装器或另一实例正在写安装树）是可重试的暂时状态，
+    /// 与「源不可达/包损坏」区分开：文案直接给出下一步动作，不把玩家留在下载中。</summary>
+    private static string RetryableLockMessage(Exception ex) =>
+        $"暂时无法写入更新文件（可能正在安装更新），请稍后重试: {ex.Message}";
 
     private async Task DownloadOnManagerAsync(UpdateManager manager, UpdateInfo update,
                                               CheckIntent intent, CancellationToken ct)
@@ -382,7 +480,8 @@ public sealed class UpdateCoordinator
 
     /// <summary>镜像回退：按序尝试其余地址；候选给出同目标发行才换源下载。
     /// 换源成功即重绑管理器与目标（提交绑定到已验证的镜像）。
-    /// 候选源与更新器选项都取自事务上下文，不回读当前偏好。</summary>
+    /// 候选源与更新器选项都取自事务上下文，不回读当前偏好；索引读取用同一个
+    /// 下载事务的令牌与预算——取消下载时镜像校验不会继续空转。</summary>
     private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)
     {
         foreach (var source in intent.Sources)
@@ -395,8 +494,9 @@ public sealed class UpdateCoordinator
                 continue;
             try
             {
-                var manager = intent.CreateManager(source, _locator);
+                var manager = CreateManager(intent, source, ct);
                 var info = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
                 if (info?.TargetFullRelease is null || !SameTarget(update.TargetFullRelease, info.TargetFullRelease))
                     continue;
                 await DownloadOnManagerAsync(manager, info, intent, ct).ConfigureAwait(false);
@@ -410,6 +510,7 @@ public sealed class UpdateCoordinator
                 return true;
             }
             catch (OperationCanceledException) { throw; }
+            catch (AcquireLockFailedException) { throw; } // 锁与源无关：不逐镜像重试，交外层统一出口
             catch { /* 该镜像不可用或下载失败：继续下一候选 */ }
         }
         return false;
@@ -455,10 +556,11 @@ public sealed class UpdateCoordinator
     }
 
     /// <summary>切换渠道/下载源（用户在设置浮窗选）。非法值直接拒绝、状态不变。
-    /// 渠道换的是目标发行：清空在途下载与就绪包、开启新世代、落盘偏好、当场重查；
-    /// 从测试轨切回时标记「等待稳定轨追上」——不做降级安装，稳定版版本高于当前
-    /// 测试版后自然提示可升级。下载源只是同一货架的地址选择：保留在途下载与
-    /// 就绪包，仅换首选顺序，下次检查与镜像回退自然采用。提交临界区
+    /// 渠道换的是目标发行：清空在途下载与就绪包、开启新世代、落盘偏好，取消旧渠道
+    /// 索引并等旧检查事务真正退出后再查新渠道（不让两轮请求并发，也不让旧结果落在
+    /// 新渠道上）；从测试轨切回时标记「等待稳定轨追上」——不做降级安装，稳定版版本
+    /// 高于当前测试版后自然提示可升级。下载源只是同一货架的地址选择：保留在途下载
+    /// 与就绪包，仅换首选顺序并前进修订号，下次检查与镜像回退自然采用。提交临界区
     /// （preparing/applying）不允许切换：那时窗口已在关闭链上。</summary>
     public Task<UpdateSnapshot> SetChannelAsync(string? channel) =>
         SwitchSettingAsync(value: channel == UpdateSnapshot.ChannelPreview
@@ -479,6 +581,8 @@ public sealed class UpdateCoordinator
             lock (_gate) return Snapshot($"非法{(isChannel ? "渠道" : "下载源")}值");
         }
         bool changed;
+        long epoch;
+        Task<UpdateSnapshot>? draining = null;
         lock (_gate)
         {
             if (_phase is UpdateSnapshot.Preparing or UpdateSnapshot.Applying)
@@ -488,6 +592,7 @@ public sealed class UpdateCoordinator
                 changed = value != _channel;
                 if (changed)
                 {
+                    draining = _checkTask; // ResetForNewEpoch 会清空在途引用，先留一份等它退出
                     _awaitingStable = value == UpdateSnapshot.ChannelStable
                         && _channel == UpdateSnapshot.ChannelPreview;
                     _channel = value;
@@ -498,15 +603,73 @@ public sealed class UpdateCoordinator
             {
                 changed = value != _source;
                 _source = value;
+                if (changed) _revision++; // 首选地址变化 = 可观察快照变化（旧点击据此失效）
             }
+            epoch = _epoch;
         }
         if (!changed) return GetStatus();
         _savePreferences(_channel, _source, _awaitingStable);
-        return isChannel ? await CheckAsync().ConfigureAwait(false) : GetStatus();
+        if (!isChannel) return GetStatus();
+        // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
+        // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
+        if (draining is { IsCompleted: false })
+        {
+            try { await draining.ConfigureAwait(false); }
+            catch { /* 旧事务的失败/取消由它自己的返回快照承担 */ }
+        }
+        lock (_gate)
+        {
+            // 排水期间可能又切了一次渠道（续体不得为旧意图启动检查）：谁最后改谁负责。
+            if (_epoch != epoch || _channel != value) return Snapshot();
+        }
+        return await CheckAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>更新提醒：记住「本次更新不再提示」的目标版本。只影响关于标签上的
+    /// 提醒点，不改变更新本身的可下载状态；目标版本变化后自然恢复提醒。
+    /// 没有可安装目标时拒绝，避免写入空标记。expectedRevision 同下载：界面快照
+    /// 过期就拒绝，不把「旧界面看到的版本」标成已忽略。</summary>
+    public UpdateSnapshot SetDismissed(bool dismissed, long? expectedRevision = null)
+    {
+        string? value;
+        lock (_gate)
+        {
+            if (expectedRevision is long seen && seen != _revision)
+                return Snapshot("界面信息已更新，请确认当前目标后重新操作");
+            if (dismissed && string.IsNullOrEmpty(_targetVersion))
+                return Snapshot("没有可忽略的更新目标");
+            value = dismissed ? _targetVersion : null;
+            if (value == _dismissedVersion) return Snapshot(); // 幂等：不产生无意义修订
+            _dismissedVersion = value;
+            _revision++;
+        }
+        _saveDismissedVersion(value); // 锁外落盘：文件 IO 不占状态锁
+        return GetStatus();
+    }
+
+    /// <summary>后台自动检查开关：只改偏好与快照，不触发立即检查（调度器按新开关重算；
+    /// 重新启用时以本进程最近一次检查收尾为锚点——还没检查过或锚点已过期就立即安排，
+    /// 否则等剩余时间）。关闭后手动检查与切渠道不受影响。</summary>
+    public UpdateSnapshot SetAutoCheck(bool enabled)
+    {
+        UpdateSnapshot snapshot;
+        lock (_gate)
+        {
+            if (_autoCheckEnabled == enabled) return Snapshot(); // 幂等：不产生无意义修订
+            _autoCheckEnabled = enabled;
+            _autoAnchorUtc = enabled ? _lastCheckCompletedUtc : _autoAnchorUtc;
+            _revision++;
+            snapshot = Snapshot();
+        }
+        _saveAutoCheck(enabled); // 锁外落盘
+        try { AutoCheckSettingChanged?.Invoke(); }
+        catch (Exception ex) { ShellLog.Append($"[update] 自动检查开关回调异常: {ex.Message}"); }
+        return snapshot;
     }
 
     /// <summary>开启新世代并清空一切在途状态。持锁调用；这是唯一绕过 SetState 的状态
-    /// 翻转——因为它主动作废旧世代，而不是在旧世代内推进相位。</summary>
+    /// 翻转——因为它主动作废旧世代，而不是在旧世代内推进相位。
+    /// 同时在途检查被取消（旧渠道的索引请求不再等待），其迟到回写因世代不符被丢弃。</summary>
     private void ResetForNewEpoch()
     {
         _downloadCts?.Cancel();
@@ -517,6 +680,10 @@ public sealed class UpdateCoordinator
         _activeIntent = null;
         _pending = null;
         _targetVersion = null;
+        _checkCts?.Cancel();
+        _checkCts = null;
+        _checkTask = null;
+        _checkTaskEpoch = -1;
         _epoch++;
         _phase = UpdateSnapshot.Idle;
         _progress = 0;
@@ -535,6 +702,7 @@ public sealed class UpdateCoordinator
         {
             if (_phase != UpdateSnapshot.Ready || _pending is null)
                 return Snapshot(BusyReason());
+            _checkCts?.Cancel(); // ready 允许手动复查：提交时在途结果同样失效
             _revision++;
             _phase = UpdateSnapshot.Preparing;
             _error = null;
@@ -606,16 +774,184 @@ public sealed class UpdateCoordinator
 
     // ---------- 内部 ----------
 
-    private bool CanRunCheck()
+    /// <summary>检查事务执行体：持检查槽（任意时刻一轮），完成后释放并结算计时锚点。
+    /// 取消（切渠道/关窗）不改状态——新世代或关窗路径自己决定后续相位。</summary>
+    private async Task<UpdateSnapshot> RunCheckAsync(CheckRun run)
     {
-        return _phase is UpdateSnapshot.Idle or UpdateSnapshot.Available
-            or UpdateSnapshot.UpToDate or UpdateSnapshot.Ready;
+        UpdateSnapshot result = GetStatus();
+        try
+        {
+            await _checkGate.WaitAsync(run.Cts.Token).ConfigureAwait(false);
+            try
+            {
+                result = await DoCheckAsync(run.Intent, run.Trigger, run.Cts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _checkGate.Release();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            result = GetStatus();
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 检查异常: {ex.Message}");
+            result = GetStatus();
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                if (ReferenceEquals(_checkTask, run.Completion.Task))
+                {
+                    _checkTask = null;
+                    _checkTaskEpoch = -1;
+                }
+                if (ReferenceEquals(_checkCts, run.Cts)) _checkCts = null;
+                NoteCheckSettled(_time.GetUtcNow());
+            }
+            run.Cts.Dispose();
+            run.Completion.TrySetResult(result);
+        }
+        if (run.Trigger == UpdateCheckTrigger.Auto
+            && result.Phase is UpdateSnapshot.Available or UpdateSnapshot.UpToDate)
+        {
+            try { AutoCheckCommitted?.Invoke(result); }
+            catch (Exception ex) { ShellLog.Append($"[update] 自动检查推送回调异常: {ex.Message}"); }
+        }
+        return result;
+    }
+
+    private async Task<UpdateSnapshot> DoCheckAsync(CheckIntent intent, UpdateCheckTrigger trigger,
+                                                    CancellationToken ct)
+    {
+        string? lastError = null;
+        foreach (var source in intent.Sources)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (!IsSourceReachable(source))
+            {
+                lastError = $"{source}（不可达或未就绪）";
+                continue;
+            }
+            try
+            {
+                var manager = CreateManager(intent, source, ct);
+                var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                bool clearedAwaiting = false;
+                UpdateSnapshot result;
+                lock (_gate)
+                {
+                    if (intent.IsStale(_phase, _epoch))
+                        return Snapshot(); // 迟到结果或切换前的旧检查丢弃；不重绑源
+                    _manager = manager; // 锁定本源：下载/提交绑定同一已验证来源
+                    _lockedSource = source;
+                    _activeIntent = intent;
+                    if (update is null)
+                    {
+                        _targetVersion = null;
+                        _pending = null;
+                        return SetState(intent.Epoch, UpdateSnapshot.UpToDate);
+                    }
+                    _pending = update;
+                    _targetVersion = update.TargetFullRelease.Version.ToString();
+                    if (_awaitingStable)
+                    {
+                        _awaitingStable = false; // 稳定轨追上了：等待标记完成使命
+                        clearedAwaiting = true;
+                    }
+                    result = SetState(intent.Epoch, UpdateSnapshot.Available);
+                }
+                if (clearedAwaiting)
+                    _savePreferences(_channel, _source, false); // 锁外落盘：稳定轨已追上
+                return result;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw; // 取消不是「源不可达」：不再继续尝试下一个镜像
+            }
+            catch (Exception ex)
+            {
+                lastError = $"{source}（{ex.Message}）";
+            }
+        }
+        if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+        if (trigger == UpdateCheckTrigger.Auto)
+        {
+            // 后台刷新全源失败：保留已有目标、相位与错误展示，只留日志。
+            // 一场网络抖动不该把玩家已经看到的「发现新版本」按钮撤掉。
+            ShellLog.Append($"[update] 自动检查全源失败，保留当前状态: {lastError}");
+            return GetStatus();
+        }
+        lock (_gate)
+        {
+            if (intent.IsStale(_phase, _epoch))
+                return Snapshot(); // 迟到的失败结果或旧世代结果同理不覆盖
+            _targetVersion = null;
+            _pending = null;
+            return SetState(intent.Epoch, UpdateSnapshot.Idle,
+                error: $"所有更新源均不可达：{lastError}");
+        }
+    }
+
+    /// <summary>按事务上下文建更新器：http(s) 源注入索引专用下载器（可取消 + 短预算），
+    /// 其余（本地目录/测试源）沿用 SDK 默认行为。渠道始终显式传入。</summary>
+    private UpdateManager CreateManager(CheckIntent intent, string source, CancellationToken checkToken)
+    {
+        var options = new UpdateOptions { ExplicitChannel = intent.Channel };
+        if (Uri.TryCreate(source, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            var downloader = new CheckIndexDownloader(checkToken, _indexTimeout);
+            // 第 3 参是 SimpleWebSource 的请求超时（分钟），只影响包下载与兜底；
+            // 索引走上面的下载器，按自己的短预算与令牌执行。
+            var webSource = new SimpleWebSource(uri, downloader, TimeSpan.FromMinutes(30).TotalMinutes);
+            return new UpdateManager(webSource, options, _locator);
+        }
+        return _locator is null
+            ? new UpdateManager(source, options)
+            : new UpdateManager(source, options, _locator);
+    }
+
+    /// <summary>源可达性预检：本地目录必须存在且非空（空目录 = 镜像未就绪——
+    /// 更新库对空目录返回「无更新」，直接信任会把故障误报为已是最新）；网络源
+    /// 的可达性由检查调用的异常区分（网络错误抛出，正常无更新返回 null）。</summary>
+    private static bool IsSourceReachable(string source)
+    {
+        if (Directory.Exists(source))
+            return Directory.EnumerateFileSystemEntries(source).Any();
+        if (source.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
+    /// <summary>检查结算：记录本进程最近一次检查收尾，并推进自动检查计时锚点。
+    /// 手动检查、自动检查与全源失败同样顺延下一个周期（方案：从本轮结束起等一个间隔）。
+    /// 忙态跳过走 CheckAsync 的拒绝分支，只推进锚点、不记「已完成」。</summary>
+    private void NoteCheckSettled(DateTimeOffset now)
+    {
+        _autoAnchorUtc = now;
+        _lastCheckCompletedUtc = now;
+    }
+
+    private bool CanRunCheck(UpdateCheckTrigger trigger)
+    {
+        return _phase switch
+        {
+            UpdateSnapshot.Idle or UpdateSnapshot.Available or UpdateSnapshot.UpToDate => true,
+            UpdateSnapshot.Ready => trigger == UpdateCheckTrigger.Manual,
+            _ => false,
+        };
     }
 
     private string BusyReason() => _phase switch
     {
         UpdateSnapshot.Unavailable => "非受管安装，自动升级不可用",
         UpdateSnapshot.Downloading => "下载进行中",
+        UpdateSnapshot.Ready => "已下载完成，请重启升级",
         UpdateSnapshot.Preparing => "升级准备中",
         UpdateSnapshot.Applying => "已提交等待退出替换",
         _ => $"当前状态 {_phase} 不允许该操作",
@@ -644,6 +980,6 @@ public sealed class UpdateCoordinator
     {
         var effError = error ?? _error;
         return new UpdateSnapshot(_phase, _progress, _targetVersion, effError, _revision,
-            _managed, _channel, _source, _awaitingStable);
+            _managed, _channel, _source, _awaitingStable, _dismissedVersion, _autoCheckEnabled);
     }
 }

@@ -32,7 +32,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO = SCRIPT_DIR.parents[4]
 sys.path.insert(0, str(REPO))
 
-from maaracing_master.plugins._archive.infinite_drive.tools.training.splits import (  # noqa: E402
+from maaracing_master.plugins.infinite_drive.tools.training.splits import (  # noqa: E402
     write_data_yaml,
     write_split_lists,
 )

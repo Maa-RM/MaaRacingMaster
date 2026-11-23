@@ -7,7 +7,6 @@
 ```
 models/
 ├── perception/model.onnx                                    # 物品感知（YOLO，AGPL-3.0 衍生）
-├── depth/relative_mnv4m_slim_spf_448_default.onnx           # 仓库内离线深度验证（DepthART MNV4-M-slim-SPF，Apache-2.0）
 └── lane/plus_small_384x640.onnx                             # 线观测（TwinLiteNet+ Small，BDD100K 非商业/科研）
     └── plus_small_fp16_384x640.onnx                         # 同上权重的 FP16 版（DML 专用加速件）
 ```
@@ -19,7 +18,7 @@ models/
 手动安装仍然可用：
 
 1. 从 GitHub 或 CNB 的 Release 下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`。
-2. 打开 zip，把里面的 `perception/`、`depth/` 与 `lane/` 文件夹复制到用户数据目录的
+2. 打开 zip，把里面的 `perception/` 与 `lane/` 文件夹复制到用户数据目录的
    `data/infinite_drive/models/`（默认 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\`）。
    Windows 的「全部解压」会多套一层以 zip 命名的目录——直接从 zip 里拖文件夹过去更稳。
 3. 重启 MaaRM 后生效。
@@ -28,8 +27,6 @@ models/
 
 - `perception/model.onnx`：10,665,412 字节，SHA256
   `0ffc20ae13b334bfeccb74e0eeef00c3e6ba98378ab482170c17f33a13ef06af`
-- `depth/relative_mnv4m_slim_spf_448_default.onnx`：24,155,097 字节，SHA256
-  `825114de5341612386de409f82f5dfb0496bb9afa559565ac633466bf172fb71`
 - `lane/plus_small_384x640.onnx`：543,156 字节，SHA256
   `bd35423f6a8a0071f908b74c1a7592210479e24c3714c7091a708eef95cb4bcc`
 - `lane/plus_small_fp16_384x640.onnx`：314,482 字节，SHA256
@@ -49,15 +46,6 @@ models/
 - **商业 / 闭源使用**：如需在不开放源码或商业场合使用本模型，须另行取得
   [Ultralytics Enterprise License](https://www.ultralytics.com/license)。
 - 上游: <https://github.com/ultralytics/ultralytics>
-
-## depth/relative_mnv4m_slim_spf_448_default.onnx —— 深度几何（Apache-2.0）
-
-- **来源**：DepthART（ACM MM 2026）MobileNetV4-M-slim-SPF 相对深度权重，
-  448×448 固定输入；量化与 ONNX 导出产物经离线同卷验证与合成点图回归后入库。
-- **许可**：上游 Hugging Face 模型卡标注 Apache-2.0，可随发布包自由再分发。
-- **运行时不依赖上游仓库代码**：推理仅通过 ONNX Runtime 加载本 ONNX 图；
-  米制换算（车道线灭点行 + 地面模型 → 合成点图）为本仓库实现（`depth_geo.py`）。
-- 上游: <https://github.com/xuefeng-cvr/DepthART> 、<https://huggingface.co/Fengxue93/DepthART>
 
 ## lane/plus_small_384x640.onnx —— 线观测（BDD100K 非商业/科研）
 

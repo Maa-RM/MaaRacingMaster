@@ -16,9 +16,9 @@
 持锁范围只圈 ``session.run`` 本体：前后处理不碰 GPU，留在锁外。
 
 **错峰节拍**（``TICK_BEAT``）：感知每次放锁记一拍，深度 worker 只在一拍之后
-开工（见 speedrush.depth_geo 的 ``_stagger_wait``）。v5 换装后深度前向只占锁
-5~7ms、全链约 38ms，锁冲突已不是主因；错峰的作用是让深度取到本拍刚 push 的
-帧、产出与控制拍同相，而不是防一个比拍还长的原子前向。
+开工（设计出处见归档 `_archive/speedrush/depth_geo.py` 的 ``_stagger_wait``）。
+错峰的作用是让慢取数方取到本拍刚 push 的帧、产出与控制拍同相，而不是防一个
+比拍还长的原子前向。
 """
 
 from __future__ import annotations

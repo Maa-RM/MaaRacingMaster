@@ -27,7 +27,7 @@ def test_heading_control_reuses_measurement_without_reintegrating() -> None:
     assert controller.update(0.02, 0.0, 2_000_000_000) == 0.0
 
 
-def test_lane_drive_constructs_without_depth_model(monkeypatch) -> None:
+def test_lane_drive_constructs_without_street_model(monkeypatch) -> None:
     from maaracing_master.plugins.infinite_drive import PERCEPTION_MODEL_REL, model_assets
     from maaracing_master.plugins.infinite_drive.driving import LaneDrive
 
@@ -94,11 +94,35 @@ def test_opening_observation_never_requests_camera_input(monkeypatch, camera_hei
         assert driver.steer(None, fid, now) == 0.0
 
 
-def test_lane_locks_from_confirmed_lines_and_reacts_to_blocked_road(monkeypatch) -> None:
+def _line_fits() -> list[dict]:
+    """五条竖直线（100px/道，自车像素 640）：L=k−0.5，像素=640+100·L。
+
+    obs 里 L 是线的自车相对道坐标（绝对道号 k 减自车横位），所以车框绝对
+    横位 p、自车 x 下的框心像素 = 640 + 100·(p − x)。"""
+    return [{"accepted": True, "k": k, "side": -1 if k <= 0 else 1, "L": k - 0.5,
+             "fits": [{"s": 0., "a": 640 + 100 * (k - 0.5), "y0": 380., "y1": 700., "rms": 1.}]}
+            for k in range(-2, 3)]
+
+
+def _car_x(p: float, ego_x: float, z_m: float = 9.96):
+    from maaracing_master.plugins.infinite_drive.perception import Detection
+    from maaracing_master.plugins.infinite_drive.world_model import GROUND_FOCAL_PX
+
+    bottom = round(GROUND_FOCAL_PX * 1.25 / z_m) + 365
+    return Detection(round(640 + 100 * (p - ego_x)), bottom - 20, 44, 40, .9)
+
+
+def test_edge_points_hug_each_white_line_on_both_sides() -> None:
+    from maaracing_master.plugins.infinite_drive.driving import _EDGE_OFFSET, _EDGE_POINTS
+
+    assert _EDGE_OFFSET == 0.20
+    assert set(_EDGE_POINTS) == {-1.2, -0.8, -0.2, 0.2, 0.8, 1.2}
+
+
+def test_lane_holds_nearest_edge_point_and_steers_toward_it(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
 
     now = 1_100_000_000
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
@@ -108,36 +132,130 @@ def test_lane_locks_from_confirmed_lines_and_reacts_to_blocked_road(monkeypatch)
     driver._cal = SimpleNamespace(focal_px=880)
     rows = []
     driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.6, "theta": 0.09, "n_locked": 2, "usable": True,
-           "cam_h_lane": 1.25, "lines": [
-               {"accepted": True, "k": 0, "side": -1},
-               {"accepted": True, "k": 1, "side": 1},
-           ]}
+    obs = {"x": 0.6, "theta": 0.0, "usable": True}
     driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
     driver.begin()
 
     now += 100_000_000
     obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    assert driver.steer(None, 8, now) < 0
-    assert rows[-1]["target_lane"] == 0.5
+    assert driver.steer(None, 8, now) > 0
+    assert rows[-1]["target_lane"] == 0.8          # 离 0.6 最近的擦边点
+    assert rows[-1]["edge_event"] == "pick"
     assert driver.throttle_scale == 1.0
 
-    obs.update(x=0.5, theta=0., y_v=365., lines=[
-        {"accepted": True, "k": k, "side": -1 if k <= 0 else 1, "L": k - 0.5,
-         "fits": [{"s": 0., "a": 640 + 100 * (k - 0.5), "y0": 380., "y1": 700., "rms": 1.}]}
-        for k in range(-2, 3)])
-    now += 100_000_000
-    traffic = PerceptionResult(9, now, cars=[Detection(640 + 100 * k, 404, 44, 40, .9)
-                                             for k in range(-2, 2)])
-    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now, traffic=traffic)
-    driver.steer(None, 9, now)
-    assert driver.throttle_scale == 0.0
-    assert rows[-1]["road_path"] == ((0.0, 0.5),)
+
+def test_blocked_point_switches_once_and_holds_after_clearing(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import driving as d
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
+
+    now = 1_100_000_000
+    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    driver._control = d.HeadingControl(3.5)
+    driver._camera_height = 1.25
+    driver._cal = SimpleNamespace(focal_px=880)
+    rows = []
+    driver._trace = SimpleNamespace(append=rows.append)
+    obs = {"x": 0.8, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
+           "lines": _line_fits()}
+    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
+    driver.begin()
 
     now += 100_000_000
-    obs.update(det_fid=10, det_ts_ns=now, theta_src_fid=10, theta_src_ts_ns=now,
-               traffic=PerceptionResult(10, now))
+    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
+    driver.steer(None, 8, now)
+    assert rows[-1]["target_lane"] == 0.8
+
+    # 前方 10m 一辆横位 0.7 的车：堵住 0.2/0.8/1.2，换到最近的净点 −0.2。
+    now += 100_000_000
+    traffic = PerceptionResult(9, now, cars=[_car_x(0.7, 0.8)])
+    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now,
+               traffic=traffic)
+    assert driver.steer(None, 9, now) < 0
+    assert rows[-1]["target_lane"] == -0.2
+    assert rows[-1]["edge_event"] == "switch"
+    assert driver.throttle_scale == 1.0
+
+    # 车还在：新点位净，保持不重估；车走了也不切回。
+    now += 100_000_000
+    obs.update(det_fid=10, det_ts_ns=now, theta_src_fid=10, theta_src_ts_ns=now)
     driver.steer(None, 10, now)
+    assert rows[-1]["target_lane"] == -0.2
+    assert rows[-1]["edge_event"] is None
+    now += 100_000_000
+    obs.update(det_fid=11, det_ts_ns=now, theta_src_fid=11, theta_src_ts_ns=now,
+               traffic=PerceptionResult(11, now))
+    driver.steer(None, 11, now)
+    assert rows[-1]["target_lane"] == -0.2
+    assert driver.throttle_scale == 1.0
+
+
+def test_walled_road_cuts_throttle_until_any_point_clears(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import driving as d
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
+
+    now = 1_100_000_000
+    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    driver._control = d.HeadingControl(3.5)
+    driver._camera_height = 1.25
+    driver._cal = SimpleNamespace(focal_px=880)
+    rows = []
+    driver._trace = SimpleNamespace(append=rows.append)
+    obs = {"x": 0.5, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
+           "lines": _line_fits()}
+    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
+    driver.begin()
+
+    # 四条车道各有居中车（z≈10m）：六个擦边点全堵 → 收油，无点可选。
+    now += 100_000_000
+    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now,
+               traffic=PerceptionResult(8, now, cars=[_car_x(p, 0.5) for p in
+                                                      (-1.5, -0.5, 0.5, 1.5)]))
+    driver.steer(None, 8, now)
+    assert driver.throttle_scale == 0.0
+    assert rows[-1]["target_lane"] is None
+    assert rows[-1]["walled"] is True
+
+    # 车流散开：恢复油门，锁最近净点（0.5 与 0.2/0.8 等距，靠路中心优先）。
+    now += 100_000_000
+    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now,
+               traffic=PerceptionResult(9, now))
+    driver.steer(None, 9, now)
+    assert driver.throttle_scale == 1.0
+    assert rows[-1]["target_lane"] == 0.2
+
+
+def test_far_car_does_not_trigger_a_switch(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import driving as d
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
+
+    now = 1_100_000_000
+    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    driver._control = d.HeadingControl(3.5)
+    driver._camera_height = 1.25
+    driver._cal = SimpleNamespace(focal_px=880)
+    rows = []
+    driver._trace = SimpleNamespace(append=rows.append)
+    obs = {"x": 0.8, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
+           "lines": _line_fits()}
+    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
+    driver.begin()
+
+    # 45m 外同横位的车在换点视界（40m）之外：照常锁点、满油。
+    now += 100_000_000
+    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now,
+               traffic=PerceptionResult(8, now, cars=[_car_x(0.8, 0.8, z_m=45.2)]))
+    driver.steer(None, 8, now)
+    assert rows[-1]["target_lane"] == 0.8
+    assert rows[-1]["edge_event"] == "pick"
     assert driver.throttle_scale == 1.0
 
 
@@ -176,20 +294,10 @@ def test_second_round_steers_when_road_recovers_without_camera_height(monkeypatc
     assert driver.steer(None, 86, now) == 0.0
 
 
-def test_lane_center_requires_two_adjacent_boundaries() -> None:
-    from maaracing_master.plugins.infinite_drive.driving import _lane_center
-
-    lines = [{"accepted": True, "k": -1, "side": -1},
-             {"accepted": True, "k": 1, "side": 1},
-             {"accepted": False, "k": 0, "side": -1}]
-    assert _lane_center(0.49, lines) is None
-    lines[-1]["accepted"] = True
-    assert _lane_center(0.49, lines) == 0.5
-
-
-def test_yolo_uses_matching_lane_frame_to_exclude_roadside_parking() -> None:
+def test_road_projection_uses_box_bottom_and_excludes_roadside_parking() -> None:
     from maaracing_master.plugins.infinite_drive.driving import _road_cars
     from maaracing_master.plugins.infinite_drive.perception import Detection, PerceptionResult
+    from maaracing_master.plugins.infinite_drive.world_model import GROUND_FOCAL_PX
 
     def line(k, pixel):
         return {"accepted": True, "L": k - 0.5, "fits": [
@@ -201,61 +309,7 @@ def test_yolo_uses_matching_lane_frame_to_exclude_roadside_parking() -> None:
             "x": 0.5, "y_v": 365., "cam_h": 1.25, "det_fid": 12, "det_ts_ns": 100,
             "traffic": result}
     cars = _road_cars(lane, 0.5, 1.25)
-    assert len(cars) == 1 and cars[0][0] == pytest.approx(1.5)
+    assert cars == [pytest.approx((1.5, GROUND_FOCAL_PX * 1.25 / 65.0))]
     assert _road_cars(dict(lane, det_fid=13), 0.5, 1.25) is None
+    assert _road_cars(dict(lane, det_ts_ns=101), 0.5, 1.25) is None
     assert _road_cars(dict(lane, lines=[]), 0.5, 1.25) is None
-
-
-def test_opening_camera_waits_for_consensus_after_one_switch() -> None:
-    from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
-
-    guard = ViewGuard(ViewGuardConfig(empty_sample_s=2.0), 0.0)
-    assert guard.update(0.1, None, True) == ViewGuard.WAIT
-    assert guard.update(2.6, None, True) == ViewGuard.SWITCH
-    assert guard.update(2.9, 1.095, True) == ViewGuard.WAIT
-    assert guard.update(4.1, None, True) == ViewGuard.WAIT
-    assert guard.update(4.2, 1.19, True) == ViewGuard.WAIT
-    assert guard.update(4.3, 1.20, True) == ViewGuard.OK
-
-
-def test_phase_two_checks_view_without_cycling_it() -> None:
-    from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
-
-    guard = ViewGuard(ViewGuardConfig(empty_sample_s=2.0), 0.0, allow_switch=False)
-    assert guard.update(0.1, None, True) == ViewGuard.WAIT
-    assert guard.update(2.6, None, True) == ViewGuard.WAIT
-    assert guard.update(8.1, None, True) == ViewGuard.FAIL
-
-
-def test_opening_view_allows_geometry_warmup_and_then_confirms_promptly() -> None:
-    from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
-
-    guard = ViewGuard(ViewGuardConfig(empty_sample_s=2.0), 0.0)
-    assert guard.update(0.1, None, True) == ViewGuard.WAIT
-    assert guard.update(1.3, None, True) == ViewGuard.WAIT
-    assert guard.update(1.8, 1.25, True) == ViewGuard.WAIT
-    assert guard.update(2.0, 1.20, True) == ViewGuard.WAIT
-    assert guard.update(2.6, 1.25, True) == ViewGuard.OK
-
-
-def test_one_high_camera_reading_does_not_block_the_opening_switch() -> None:
-    from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
-
-    guard = ViewGuard(ViewGuardConfig(empty_sample_s=2.0), 0.0)
-    assert guard.update(0.1, None, True) == ViewGuard.WAIT
-    assert guard.update(2.28, 1.706, True) == ViewGuard.WAIT
-    assert guard.update(2.6, None, True) == ViewGuard.WAIT
-    assert guard.update(3.0, None, True) == ViewGuard.SWITCH
-    assert guard.update(3.3, 1.706, True) == ViewGuard.WAIT
-    assert guard.update(6.0, None, True) == ViewGuard.WAIT
-
-
-def test_early_bumper_reading_keeps_camera_still_while_waiting_for_consensus() -> None:
-    from maaracing_master.plugins.infinite_drive.view_guard import ViewGuard, ViewGuardConfig
-
-    guard = ViewGuard(ViewGuardConfig(empty_sample_s=2.0), 0.0)
-    assert guard.update(0.1, None, True) == ViewGuard.WAIT
-    assert guard.update(2.0, 1.25, True) == ViewGuard.WAIT
-    assert guard.update(2.2, 1.706, True) == ViewGuard.WAIT
-    assert guard.update(3.0, None, True) == ViewGuard.WAIT
-    assert guard.update(3.2, 1.24, True) == ViewGuard.OK

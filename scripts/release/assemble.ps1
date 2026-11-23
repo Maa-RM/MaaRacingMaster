@@ -16,13 +16,11 @@
 #   -HostPython             host interpreter, MUST be 3.11 (cp311) to match embedded
 #   -SourceRuntimeDir       reuse an existing verified runtime (skip download+pip) for local re-verify
 #   -KeepGoing              continue on error (local debug); default fail-fast
-#   -SevenZ                 additionally build .7z primary artifact (solid LZMA2 256M, per C1-C bench) + .7z.sha256; zip always built as fallback
 #   -WithModels             include optional ONNX weights in the package; default excludes them (separate model pack)
 #   -UpdateSourceCnb/-UpdateSourceGithub
 #                           managed-mode required; both addresses point to the same release shelf.
 #                           Script emits named lines cnb|<url> / github|<url> (update-source.txt);
 #                           missing either fails the build instead of shipping a half-wired package.
-#   -SevenZPath             7za.exe path (default: scripts\release\tools\7za.exe -> build\7z\extra\x64\7za.exe; missing => zip-only fallback, non-fatal)
 #   -ExcludeModules         人工兜底：在自动判定之外按 plugins/<目录名> 追加剔除（逗号分隔）
 #                           自动剔除：打包时刻已过 manifest VALID_UNTIL 的活动模块不随包分发，
 #                           判据与运行期置灰同源（core/module_validity），见 list_ship_excluded_modules.py
@@ -44,10 +42,8 @@ param(
     [switch]$SkipPublish,
     [switch]$KeepGoing,
     [string]$ExcludeModules = '',  # 人工兜底：按 plugins/<目录名> 追加剔除（逗号分隔）；自动剔除见 §3.5
-    [switch]$SevenZ,        # 额外产出 .7z 主推档（solid LZMA2 256M, 参数同 C1-C 基准）+ .7z.sha256；zip 保底始终产出
     [switch]$WithModels,    # 离线全量包：把可选权重也打进包；默认不带（由可选模型包提供）
     [string]$ModelDescriptor = '',  # make_model_pack.py 生成的 download.json；注入主包供一键安装消费
-    [string]$SevenZPath = '',  # 7za.exe 路径；默认优先 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；均无则降级仅出 zip（不阻断）
     [switch]$Managed,       # 受管模式：GUI 发布产物落内容根（更新器标准布局），
                             # 不编译根入口（入口 exe 由 SDK CLI 生成）；发布流程用 vpk 打包内容树
     [string]$UpdateSourceCnb = '',     # 受管模式必填：随包下载地址。两个地址指向同一发行货架，
@@ -79,14 +75,6 @@ $RepoRoot  = (Resolve-Path $RepoRoot).Path
 if (-not (Test-Path $OutRoot)) { New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null }
 $OutRoot   = (Resolve-Path $OutRoot).Path
 if (-not $RuntimeCacheDir) { $RuntimeCacheDir = Join-Path $RepoRoot 'build\runtime-cache' }
-# 7za.exe 路径解析（-SevenZ 时用）：优先入库的 scripts\release\tools\7za.exe，次选本地缓存 build\7z\extra\x64\7za.exe；
-# 均未找到保持 ''，§7.5 自动走"降级仅出 zip"分支（不阻断）。
-if (-not $SevenZPath) {
-    $builtin7z = Join-Path $RepoRoot 'scripts\release\tools\7za.exe'
-    $cache7z   = Join-Path $RepoRoot 'build\7z\extra\x64\7za.exe'
-    if (Test-Path $builtin7z)     { $SevenZPath = $builtin7z }
-    elseif (Test-Path $cache7z)   { $SevenZPath = $cache7z }
-}
 # native Launcher 编译需 MSVC；未显式指定时自动探测常见 VS 安装路径
 if (-not $VcVarsAll) {
     $candidates = @(
@@ -169,7 +157,7 @@ $PruneExpects = @(
 )
 
 # ---------- 缓存源指纹（防跨分支 / 改代码后误用过期缓存） ----------
-$pubFinger = 'publish/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell') -Recurse -File |
+$pubFinger = 'publish/pathmap/' + ((Get-ChildItem (Join-Path $RepoRoot 'apps\MaaRacingMaster.Shell') -Recurse -File |
     Where-Object { $_.Extension -in '.cs','.xaml','.csproj','.manifest' -and $_.FullName -notmatch '\\(bin|obj)\\' } |
     Sort-Object FullName |
     ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ';')
@@ -246,7 +234,12 @@ if ($SkipPublish -and (& $CacheFPMatch $publishDir $pubFinger)) {
 } else {
     if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
     New-Item -ItemType Directory -Path $publishDir | Out-Null
-    & dotnet publish $csproj -c Release -r win-x64 --self-contained true -p:Version=$Version -o $publishDir | Out-Null
+    # 产物随包分发，构建机路径一个字节都不能进包：文档名与 DLL 内的 PDB 路径由 PathMap
+    # 映射，SourceLink 的 documents 键由 ContinuousIntegrationBuild 的确定性源路径换成 /_/
+    # （两者缺一仍会漏；改构建参数时记得同步 $pubFinger，否则本地 -SkipPublish 会复用旧产物）。
+    $srcRoot = $RepoRoot.TrimEnd('\') + '\'
+    & dotnet publish $csproj -c Release -r win-x64 --self-contained true -p:Version=$Version `
+        -p:ContinuousIntegrationBuild=true "-p:PathMap=$srcRoot=/_/" -o $publishDir | Out-Null
     if ($LASTEXITCODE -ne 0) { $errors.Add('dotnet publish failed') }
     & $CacheFPWrite $publishDir $pubFinger
 }
@@ -1005,36 +998,6 @@ $shaLine = $hash + '  ' + (Split-Path $zip -Leaf)
 Set-Content -Path ($zip + '.sha256') -Value $shaLine -Encoding ascii
 Write-Host ("[assemble] done: {0}  {1}" -f $zip, $hash) -ForegroundColor Green
 
-# ---------- 7.5 7z 主推产物（-SevenZ 时；参数与 C1-C solid256M 基准一致） ----------
-# 7z 为极限压缩主推档；zip 保底必需（§7 恒产出）。顶层结构与 zip 一致（仅打包 $StageRoot 内容）。
-$sevenzFile = Join-Path $OutRoot ($Name + '.7z')
-if ($SevenZ) {
-    if (Test-Path $SevenZPath) {
-        if (Test-Path $sevenzFile) { Remove-Item $sevenzFile -Force }
-        if (Test-Path ($sevenzFile + '.sha256')) { Remove-Item ($sevenzFile + '.sha256') -Force }
-        # 打包 $StageRoot 内容为顶层：Set-Location 到 stage 后用 7za 打包 "."。
-        # 不把 $StageRoot\* 通配符传给原生 exe（PowerShell 会对 * 做通配扩展成多参数 → 触发
-        # "Cannot convert String to SwitchParameter"）。2>&1|Out-Null 隔离 7za stdout/stderr，
-        # 避免在 $ErrorActionPreference='Stop' 下原生命令的输出被当成 ErrorRecord 中断。
-        # §8 全程用绝对路径，不依赖 cwd，此处 Set-Location 安全。
-        $prev = Get-Location
-        Set-Location $StageRoot
-        try {
-            & $SevenZPath 'a' '-t7z' '-mx=9' '-m0=LZMA2:d=256m' '-ms=on' $sevenzFile '.' 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { & $Fail "7z 压缩失败 (7za exit $LASTEXITCODE)" }
-            # 文件存在不代表归档完整；确认可解压后才生成校验和。
-            & $SevenZPath 't' $sevenzFile 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { & $Fail "7z 完整性检查失败 (7za exit $LASTEXITCODE)" }
-        }
-        finally { Set-Location $prev }
-        $hash7 = (Get-FileHash $sevenzFile -Algorithm SHA256).Hash.ToLower()
-        Set-Content -Path ($sevenzFile + '.sha256') -Value ($hash7 + '  ' + (Split-Path $sevenzFile -Leaf)) -Encoding ascii
-        Write-Host ("[assemble] 7z: {0}  {1}" -f $sevenzFile, $hash7) -ForegroundColor Green
-    } else {
-        Write-Host "[assemble] WARN: -SevenZ 已指定但找不到 7za.exe -> 降级仅出 zip（不阻断）" -ForegroundColor Yellow
-    }
-}
-
 # ---------- 8. Release Size Gate + report (Release only) ----------
 # 与已验收 baseline (0.20.0: total 468.86 / zip 198.79) 对比，涨超 5MB 判 SIZE REGRESSION。
 if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
@@ -1056,12 +1019,6 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
                 ForEach-Object { (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum } | Measure -Sum).Sum
     $g_total = $g_runtime + $g_app + $g_sidecar + $g_other
     $g_zip = (Get-Item $zip).Length
-    # 7z 主推档体积（存在才记录；zip 仍为 baseline 主判据，7z 仅记录建新基线，不纳入本次 regression）
-    if (Test-Path $sevenzFile) { $g_7z = (Get-Item $sevenzFile).Length } else { $g_7z = $null }
-    # 7z 基线冷启动：本期（首个产出 7z 的版本）baseline_7z_mb = null，故 delta_7z_mb 恒 null，
-    # 只记录实测 sevenz 值；下轮把本期实测值回填为 baseline 后，delta 才开始参与观察（仍不进 regression）。
-    $baseline7z = $null
-    $d7z = if ($baseline7z -ne $null -and $g_7z) { (($g_7z - $baseline7z) / 1MB) } else { $null }
     # 基线对应默认包；离线全量包只扣除可选权重本身，基础程序的增长仍受同一门禁约束。
     $g_model = 0L
     $g_modelZip = 0L
@@ -1088,7 +1045,6 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         sidecar = [math]::Round($g_sidecar/1MB,2); other = [math]::Round($g_other/1MB,2)
         total_unpacked = [math]::Round($g_total/1MB,2); zip = [math]::Round($g_zip/1MB,2)
     }
-    if ($g_7z) { $sizes['sevenz'] = [math]::Round($g_7z/1MB,2) }
     # 仅"正向变大"判 SIZE REGRESSION：delta<0 是新增裁剪的收益，不是回归。
     # 旧写法 abs()>5 会把 exp8/exp9 这类缩小 30+MB 的合法收益误判为 regression，属 bug。
     $regression = ($dTotal -gt 5) -or ($dZip -gt 5)
@@ -1099,8 +1055,6 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         git_commit = $gitShort
         sizes = $sizes
         baseline_total_mb = 468.86; baseline_zip_mb = 198.79
-        baseline_7z_mb = $baseline7z
-        delta_7z_mb = if ($d7z -ne $null) { [math]::Round($d7z,2) } else { $null }
         delta_total_mb = [math]::Round($dTotal,2); delta_zip_mb = [math]::Round($dZip,2)
         optional_models_mb = [math]::Round($g_model/1MB,2)
         optional_models_zip_mb = [math]::Round($g_modelZip/1MB,2)
@@ -1129,7 +1083,6 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
 | other | $($sizes.other) |
 | total unpacked | $($sizes.total_unpacked) |
 | zip | $($sizes.zip) |
-| 7z | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) |
 
 ## 2. vs baseline (0.20.0)
 可选权重按实际未压缩/压缩字节数扣除后比较，完整包体积仍见上表。
@@ -1138,14 +1091,12 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
 |---|---|---|---|
 | total（不含可选权重） | 468.86 | $([math]::Round(($g_total-$g_model)/1MB,2)) | $([math]::Round($dTotal,2)) |
 | zip（不含可选权重） | 198.79 | $([math]::Round(($g_zip-$g_modelZip)/1MB,2)) | $([math]::Round($dZip,2)) |
-| 7z（新基线，仅记录） | - | $(if($sizes.Contains('sevenz')){$sizes.sevenz}else{'-'}) | $(if($g_7z){[math]::Round($d7z,2)}else{'-'}) |
 
 ## 3. Regression
 $(if($regression){'SIZE REGRESSION (total/zip 较 baseline 涨超 5MB)'}else{'no regression'})
 "@
     Set-Content -Path $ReportPath -Value $md -Encoding utf8
     $gateLine = "[assemble] Size gate: total=$($sizes.total_unpacked)MB zip=$($sizes.zip)MB (baseline 468.86/198.79)"
-    if ($g_7z) { $gateLine += " 7z=$($sizes.sevenz)MB" }
     Write-Host $gateLine
     if ($regression) { & $Fail 'SIZE REGRESSION: total/zip 较 baseline 涨超 5MiB，详见体积报告' }
 }

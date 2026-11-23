@@ -183,7 +183,7 @@ PR 正文承担集成方式的说明：为什么只有一个提交、核过的�
 3. 本地创建 tag：`git tag v0.x.y-dev.N`（0.x 阶段通常为 pre-release）或 `git tag vX.Y.Z`（正式版）。本仓库自 v0.12 起统一用**轻量 tag**（`git cat-file -t refs/tags/<上一个>` 可验类型），沿用即可
 4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在开发分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，避免在共享检出里切分支）
 5. **push 前必须向用户确认**（发版动作不可逆）
-6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release + sdist/wheel + 校验 setuptools-scm 版本一致）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip/7z + sha256，并生成可选模型包，一并补传 Release）→ `cnb-release`（同步 zip/7z/模型包到 CNB）
+6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
 7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
 
 ### ⑥ 本地打包验证（可选）

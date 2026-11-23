@@ -35,6 +35,7 @@
     launch_game: [
       { key: 'path', kind: 'path', label: '程序路径', hint: '（游戏主程序；留空则从启动器配置自动探测）' },
       { key: 'args', kind: 'args', label: '启动参数', hint: '（与启动器实测命令行一致）' },
+      { key: 'auto_update', kind: 'switch', title: '发现更新时自动完成更新', desc: '启动前经官方启动器检查版本；发现更新时代点「更新游戏」并等装好再继续。关闭时发现更新会停下并保留启动器页面，等你手动更新', note: '默认关闭' },
       { key: 'timeout_s', kind: 'number', label: '等待游戏窗口', hint: '（超时则中止本轮）', suffix: '秒', min: 10, max: 600, step: 10 },
       { key: 'hall_timeout_s', kind: 'number', label: '等待进入大厅', hint: '（超时则中止本轮；游戏停在对局中时也会超时）', suffix: '秒', min: 30, max: 900, step: 30 },
     ],
@@ -64,27 +65,35 @@
     if (mid === 'launch_game') {
       const out = [chipHtml('等待窗口 ' + (cfgValue(mid, 'timeout_s') || 120) + 's'),
                    chipHtml('进入大厅 ≤' + (cfgValue(mid, 'hall_timeout_s') || 300) + 's')];
+      if (cfgValue(mid, 'auto_update')) out.push(chipHtml('自动更新'));
       return out.join('');
     }
     if (mid === 'close_game' && cfgValue(mid, 'exit_app')) return chipHtml('关闭后退出');
     return '';
   }
 
-  // 内置步骤的选项面板：字段行与开关行放进同一个纵向节奏容器（.builtin-fields 统一 gap），
-  // 开关的「推荐开启」这类旁注并进标题行右端，避免与标题错行
+  // 内置步骤的选项面板：与插件配置面板共用宿主行结构（.cfg-row）。
+  function descLine(hint, desc) {
+    if (!hint && !desc) return '';
+    return '<p class="cfg-row-desc">'
+      + (hint ? '<span class="cfg-desc-hint">' + esc(hint) + '</span>' + (desc ? ' · ' : '') : '')
+      + (desc ? esc(desc) : '')
+      + '</p>';
+  }
+
   function builtinPanelHtml(mid) {
     const fields = BUILTIN_FIELDS[mid] || [];
     const rows = fields.map((f) => {
       if (f.kind === 'switch') {
         const on = !!cfgValue(mid, f.key);
-        return '<div class="option-row">'
+        const labelId = 'builtin-' + mid + '-' + f.key + '-label';
+        return '<div class="cfg-row cfg-row--switch">'
+          + '<div class="cfg-row-label" id="' + labelId + '">' + esc(f.title) + '</div>'
+          + '<div class="cfg-row-control">'
           + '<button class="maarm-toggle' + (on ? ' maarm-toggle--active' : '') + '" role="switch"'
-          + ' aria-checked="' + on + '" data-key="' + f.key + '" data-kind="switch"></button>'
-          + '<div class="option-main"><div class="option-title">' + esc(f.title)
-          + (f.note ? '<span class="option-note">' + esc(f.note) + '</span>' : '')
-          + '</div>'
-          + '<p class="option-desc">' + esc(f.desc) + '</p></div>'
-          + '</div>';
+          + ' aria-checked="' + on + '" aria-labelledby="' + labelId + '"'
+          + ' data-key="' + f.key + '" data-kind="switch"></button>'
+          + '</div>' + descLine(f.note, f.desc) + '</div>';
       }
       const val = cfgValue(mid, f.key);
       // 启动参数是多个开关项拼成的长串，单行输入必然截断：改多行等宽，一眼能核对完整
@@ -98,15 +107,17 @@
       const extra = f.kind === 'path'
         ? '<button class="maarm-btn" type="button" data-act="browse">浏览…</button>'
         : (f.kind === 'args' ? '<button class="maarm-btn" type="button" data-act="reset" hidden>重置</button>' : '');
-      return '<div class="module-options-row module-options-row--stack">'
-        + '<div class="maarm-field' + (f.kind === 'number' ? ' maarm-field--narrow' : '') + '">'
-        + '<label class="maarm-field-label">' + esc(f.label)
-        + (f.hint ? '<span class="field-hint">' + esc(f.hint) + '</span>' : '') + '</label>'
-        + '<div class="maarm-field-control-row' + (f.kind === 'args' ? ' maarm-field-control-row--multi' : '') + '">'
-        + '<div class="maarm-field-control">' + input + '</div>' + extra + '</div>'
-        + '</div></div>';
+      return '<div class="cfg-row">'
+        + '<div class="cfg-row-label">' + esc(f.label) + '</div>'
+        + '<div class="cfg-row-control"><div class="maarm-field-control-row'
+        + (f.kind === 'args' ? ' maarm-field-control-row--multi' : '') + '">'
+        + '<div class="maarm-field-control' + (f.kind === 'number' ? ' maarm-field-control--narrow' : '') + '">'
+        + input + '</div>' + extra + '</div></div>'
+        + descLine(f.hint, '')
+        + '</div>';
     });
-    return '<div class="builtin-fields">' + rows.join('') + '</div>';
+    return '<section class="cfg-group"><div class="cfg-group-body">'
+      + rows.join('') + '</div></section>';
   }
 
   async function saveBuiltinCfg(mid, patch) {
@@ -279,7 +290,6 @@
       + '<button type="button" class="task-chev" title="展开 / 收起" aria-expanded="' + open + '"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>'
       + '</div>'
       + '<div class="task-panel">'
-      + '<div class="task-panel-label">任务设置' + (state.is_running ? '（运行中锁定）' : '') + '</div>'
       + '<div class="task-options" data-options></div>'
       + '<div class="task-panel-label">细分阶段</div>'
       + '<div data-stages>' + stageListHtml(mid) + '</div>'

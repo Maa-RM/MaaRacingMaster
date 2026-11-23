@@ -48,7 +48,6 @@ README 安装**（lane 的完整 BDD100K 条款随模型包分发）。每个权
 | 权重文件（插件内相对路径） | 许可证 | 声明真源 |
 |---|---|---|
 | infinite_drive `resources/models/perception/model.onnx` | AGPL-3.0（Ultralytics 微调衍生；商业闭源需 Enterprise License） | [plugins/infinite_drive/resources/models/README.md](maaracing_master/plugins/infinite_drive/resources/models/README.md) |
-| infinite_drive `resources/models/depth/relative_mnv4m_slim_spf_448_default.onnx` | Apache-2.0 | 同上 |
 | infinite_drive `resources/models/lane/plus_small_384x640.onnx` | BDD100K 非商业/科研许可（TwinLiteNet+ 代码 MIT；商业仅限 BDD/BAIR 成员） | [LICENSE-BDD100K.txt](maaracing_master/plugins/infinite_drive/resources/models/LICENSE-BDD100K.txt) |
 
 AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生作品，保留 Apache-2.0；
@@ -60,7 +59,6 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 
 - WinUI 3 / Windows App SDK：Microsoft 专有许可，构建产物自包含分发受微软条款约束；本项目不包含其源码。
 - .NET Runtime：由 `dotnet publish --self-contained` 随 `MaaRacingMaster.Shell.exe` 附带，遵循 .NET 开源许可。
-- **7-Zip**（`7za.exe` standalone）：**LGPL**，用于生成发行包 `.7z` 主推档；二进制入库于 `scripts/release/tools/7za.exe`，许可原文随附 `scripts/release/tools/7za_License.txt`，使用说明见其 [README](scripts/release/tools/README.md)。上游源码：<https://www.7-zip.org/>
 
 ---
 

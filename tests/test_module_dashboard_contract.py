@@ -75,21 +75,6 @@ def test_zero_contract_is_reserved_not_candidate(monkeypatch):
     assert reg.get_module_info("reserved")["has_dashboard"] is False
 
 
-def test_archived_speedrush_declares_dashboard():
-    """归档极速狂飙自述回合战绩看板：契约版本 1，资格位成立。
-
-    模块已归档（_archive/speedrush/），不再进 MODULE_REGISTRY；声明面的回归锁
-    改用归档模块类直导。注册侧的下发由下方模块列表用例锁定（后继 infinite_drive
-    的战绩看板已接线，资格位为 True）。
-    """
-    try:
-        from maaracing_master.plugins._archive.speedrush.module import SpeedRushModule
-    except Exception as exc:  # noqa: BLE001 —— 缺重运行时依赖时跳过
-        pytest.skip(f"归档模块需要完整运行时依赖：{exc}")
-    assert SpeedRushModule.DASHBOARD_CONTRACT == DASHBOARD_CONTRACT_VERSION
-    assert declares_dashboard(SpeedRushModule) is True
-
-
 def test_builtin_steps_never_declare_dashboards():
     """内置步骤只跑一次，没有数据看板；它们不得获得看板资格。"""
     for step_id, cls in BUILTIN_STEPS.items():
