@@ -47,6 +47,20 @@ def parse_score(text: str) -> int | None:
     return value if 0 <= value <= _MAX_SCORE else None
 
 
+def parse_progress(text: str) -> tuple[int, int, int | None] | None:
+    """进度条原文 → (关卡号, 关卡总数, 本轮总得分)；连 ``n/m`` 都没有返回 None。
+
+    总得分缺失时第三项为 None（结算页分批渲染时常见）：记录侧容忍缺项照旧落库，
+    读数稳定判据（模块 ``SETTLE_READ_*``）要求三项齐全才算「读完」。
+    """
+    progress = _RE_PROGRESS.search(text or "")
+    if progress is None:
+        return None
+    total_match = _RE_TOTAL.search(text or "")
+    total = parse_score(total_match.group(1)) if total_match else None
+    return int(progress.group(1)), int(progress.group(2)), total
+
+
 def record_settlement(score_text: str, progress_text: str, *,
                       session_token: str | None, round_no: int,
                       now: datetime | None = None) -> dict:
@@ -56,11 +70,8 @@ def record_settlement(score_text: str, progress_text: str, *,
     不许静默丢字段（没采集到 ≠ 字段恰好没有）。
     """
     score = parse_score(score_text)
-    progress = _RE_PROGRESS.search(progress_text or "")
-    level = int(progress.group(1)) if progress else None
-    level_total = int(progress.group(2)) if progress else None
-    total_match = _RE_TOTAL.search(progress_text or "")
-    total_score = parse_score(total_match.group(1)) if total_match else None
+    progress = parse_progress(progress_text)
+    level, level_total, total_score = progress if progress else (None, None, None)
     target = flow_data.PVE_STAGE_TARGETS.get(level) if level is not None else None
     cleared = None
     if score is not None and target is not None:

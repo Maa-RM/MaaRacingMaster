@@ -26,10 +26,11 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 走独立线程读 WGC 中心缓存，队列满丢帧不阻塞流程；录制失败只告警不中止流程。
 录制态不要求虚拟手柄能力、不独占手柄（驾驶阶段可由用户以物理手柄驾驶）。
 
-**debug 存图**（ctx.debug 开关，v1 口径）：程序驾驶局按阶段落 raw 原帧
-（10fps 节流，``debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/``），与录制
-语料同一套 session_layout 布局；录制语料不受此门。控制局取证只存 raw 不画
-叠加（索引 hud=null 表达缺席），决策取证走驾驶 trace。
+**debug 存图**（ctx.debug 开关，v1 口径）：**nav 与 drive 两面一起录**——UI 导航段
+按 3fps 落 ``debug/<会话>/infinite_drive/nav/``（点击步、落地确认、选卡等待、
+提前结算与偶发弹窗的画面证据）；程序驾驶局按阶段落 raw 原帧 + 状态叠加
+（10fps，``debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/``），与录制语料
+同一套 session_layout 布局；录制语料不受此门。决策取证走驾驶 trace。
 """
 
 from __future__ import annotations
@@ -161,6 +162,13 @@ _EXIT_RESUME = "infinite_drive.提前退出.点继续"
 _SETTLE_STAGE_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
                            if stage == "结算·下一关")
 
+# 结算读数稳定窗：结算页刚出现时比分会滚动、面板逐块渲染，单拍读到的可能是空串
+# 或滚动中间值（2026-11-23 实测 4 轮：3 轮空、1 轮 64/「一」）。落库与「点下一关」
+# 都必须等读数读完——相邻两拍两栏原文一致，且得分/关卡/总得分都能解析。
+# 上限兜底页面异常：读数始终不稳定就不把流程卡死，原文照旧落库并告警。
+SETTLE_READ_TIMEOUT_S = 4.0
+SETTLE_READ_POLL_S = 0.25
+
 # 选卡页出现/消失的等待上限（秒）：驾驶结束信号命中横幅时商店尚未开（源码流程：
 # 计时归零→横幅动画→开店），阶段2事件介绍页（每回合必弹，选卡循环内驱赶）需
 # 关闭——bounded 等待吃掉开店延迟、刷新动画与关闭耗时；超时仍不在即按失败走。
@@ -183,6 +191,17 @@ PICK_RESEND_BUDGET = 2
 # 点击落地，落盘体积同比例可控。取帧线程每拍重算，阶段切换下一拍即生效。
 REC_NAV_FPS = 3.0
 REC_DRIVE_FPS = 10.0
+# UI 导航段的存盘策略：**导航要图、驾驶不要图**（v1 口径的延续）。
+#
+# 驾驶侧靠 ``probe()`` 不开调试段，控制链的取证走 DebugPairWriter（10fps），
+# 不受这里影响；UI 侧（点击步、落地确认、选卡等待、提前结算子步、偶发弹窗）用
+# ``run(..., save=NAV_SAVE)`` 显式声明要图——这些画面正是排查「按钮在不在、
+# 有没有弹窗、页面切没切、结算页读数卡在哪一帧」的直接证据。
+#
+# 为什么显式传而不是改 ``DEBUG_SAVE``：它是**运行项级**声明（整局一个值），
+# 改成 "on" 会让驾驶期间栈顶的 scope 也落图，既污染取证又与 writer 双写。
+# 落盘频率不在这里定——core 的 NAV_SAVE_FPS（3Hz）统一管所有 nav 段。
+NAV_SAVE = "on"
 # 录制会话目录标签（<时间戳>_flowcheck）：程序驱动的全流程取证局
 _RECORD_TAG = "flowcheck"
 
@@ -254,6 +273,17 @@ def _refresh_config_ui() -> None:
     重新赋值才对下一次配置读取可见。记录只由本模块落库写入，落库点重建即
     覆盖全部真实变化；面板在运行结束重建任务列表时重取配置，届时可见。"""
     InfiniteDriveModule.CONFIG_UI = _build_config_ui(SOURCE_MODE)
+
+
+def _settlement_readable(score_text: str, progress_text: str) -> bool:
+    """这一拍结算读数是否「读完」：得分可解析，且进度含关卡号与关卡总数与总得分。
+
+    三项齐全是页面渲染完成的判据——滚动中的比分能解析成数字（实测读到过 64），
+    所以单看得分不够；总得分缺失说明进度条还没画完。
+    """
+    parsed = dashboard_store.parse_progress(progress_text)
+    return (dashboard_store.parse_score(score_text) is not None
+            and parsed is not None and parsed[2] is not None)
 
 
 class InfiniteDriveModule(ActivityModule):
@@ -663,7 +693,8 @@ class InfiniteDriveModule(ActivityModule):
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
                 if stage in OPTIONAL_STAGES:
-                    if not self._graph.run(_CAR_SELECT_ANCHOR, _CAR_SELECT_ANCHOR):
+                    if not self._graph.run(_CAR_SELECT_ANCHOR, _CAR_SELECT_ANCHOR,
+                                           save=NAV_SAVE):
                         index += 1
                         continue
                 if stage == "结算·下一关":
@@ -712,19 +743,19 @@ class InfiniteDriveModule(ActivityModule):
         assert self.ctx is not None
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
-            return self._graph.run(action_node, action_node)
+            return self._graph.run(action_node, action_node, save=NAV_SAVE)
         machine = StepMachine(max_retries=STEP_MAX_RETRIES, window_s=STEP_WINDOW_S,
                               clock=time.monotonic)
         send_click = True
         landed_ever = False
         clicked_once = False
-        confirm_pre = self._graph.run(confirm_node, confirm_node)
+        confirm_pre = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
         while self._running and self.ctx.lifecycle.running:
             if send_click:
                 machine.arm()
                 self._graph.last_click_landed = None
                 self._graph.last_click_sent = False
-                self._graph.run(action_node, action_node)
+                self._graph.run(action_node, action_node, save=NAV_SAVE)
                 send_click = False
                 landed = getattr(self._graph, "last_click_landed", None)
                 click_sent = bool(getattr(self._graph, "last_click_sent", False))
@@ -734,7 +765,7 @@ class InfiniteDriveModule(ActivityModule):
                     landed_ever = True
                 if click_sent:
                     clicked_once = True
-            page_ok = self._graph.run(confirm_node, confirm_node)
+            page_ok = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
             page_changed = page_ok and not confirm_pre and clicked_once
             confirm_pre = page_ok
             cmd = machine.observe(
@@ -783,7 +814,7 @@ class InfiniteDriveModule(ActivityModule):
                 return False
             slot = self._choose_card_slot()
             self._graph.run(f"infinite_drive.选卡.r{slot + 1}",
-                            f"infinite_drive.选卡.r{slot + 1}")
+                            f"infinite_drive.选卡.r{slot + 1}", save=NAV_SAVE)
             if self._wait_card_anchor(want_present=False,
                                       wait_s=PICK_CLOSE_WINDOW_S,
                                       quiet_s=PICK_CLOSE_QUIET_S):
@@ -812,12 +843,14 @@ class InfiniteDriveModule(ActivityModule):
         deadline = time.monotonic() + wait_s
         last_seen = time.monotonic()
         while True:
-            if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR):
-                self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS)
+            if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR,
+                                                save=NAV_SAVE):
+                self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS, save=NAV_SAVE)
                 if not self.ctx.lifecycle.sleep(STEP_POLL_S):
                     return False
                 continue
-            present = bool(self._graph.run(_CARD_ANCHOR, _CARD_ANCHOR))
+            present = bool(self._graph.run(_CARD_ANCHOR, _CARD_ANCHOR,
+                                           save=NAV_SAVE))
             if want_present:
                 if present:
                     return True
@@ -855,19 +888,21 @@ class InfiniteDriveModule(ActivityModule):
         进度 / 本轮总得分）；解析失败的字段显式置 None 不静默丢。**录制局**
         （record_mode，人工驾驶语料局）只落画面与手柄、不写战绩——v1 口径
         （人工/宏局不写战绩库）的延续。落库失败只告警——记录是旁路，不阻断流程。
+
+        **读数前先清覆盖层、读数没读完不往下走**：结算页刚出现时可能还压着奖励链
+        「点击屏幕继续」这类无专模板弹窗——「本场得分」标题在弹窗上方仍能命中，
+        但分数区被盖住，OCR 会把「×40」读成「发40」（2026-11-23 实测）。所以先
+        用文字兜底把覆盖层赶掉，再阻塞到读数稳定才返回；调用链的下一步就是点
+        下一关，提前放行会把弹窗文本写进战绩库（见 ``_read_settlement_stable``）。
         """
         assert self.ctx is not None
-        rgb = self.ctx.capture.frame_with_age()[0]
-        if rgb is None:
-            return
-        if self._ocr is None:
-            self._ocr = RapidOcrEngine()
-        score = self._ocr.recognize(rgb, flow_data.RESULT_SCORE_ROI)
-        progress = self._ocr.recognize(rgb, flow_data.RESULT_PROGRESS_ROI)
-        score_text = getattr(score, "text", "") or ""
-        progress_text = getattr(progress, "text", "") or ""
+        self._dismiss_settlement_overlays()
+        score_text, progress_text, stable = self._read_settlement_stable()
         self.last_settlement = {"score": score_text, "progress": progress_text}
         logger.log(f"[无限驾驶] 结算读数: 得分={score_text} 进度={progress_text}", "DEBUG")
+        if not stable:
+            self._tlog(f"[无限驾驶] 结算读数 {SETTLE_READ_TIMEOUT_S:.1f}s 内未稳定，"
+                       "按原文记录（未解析字段留空）", "WARNING")
         if self._record_mode:
             # 录制局 = 人工驾驶语料局，不进看板（v1 口径：人工/宏局不写战绩库）
             return
@@ -888,6 +923,41 @@ class InfiniteDriveModule(ActivityModule):
         except Exception as exc:  # noqa: BLE001 —— 估计值刷新是旁路，不影响流程
             self._tlog(f"[无限驾驶] 预计用时刷新失败: {exc!r}", "WARNING")
 
+    def _read_settlement_stable(self) -> tuple[str, str, bool]:
+        """反复读结算页，直到相邻两拍读数一致且可解析；返回 (得分原文, 进度原文, 是否稳定)。
+
+        结算页出现后比分先滚动、面板逐块渲染，单拍读数可以是空串、只画了一半的
+        进度条，或滚动中的中间值（实测读到过 64 与「一」）。稳定判据取「两拍
+        原文完全一致 + 得分/关卡/总得分都能解析」，既挡住滚动值，也挡住分批渲染。
+        上限 ``SETTLE_READ_TIMEOUT_S``（页面异常时不卡死流程）；到点或收到停止
+        信号返回最后一拍原文，是否稳定由第三个返回值如实交代，调用方照旧留原文。
+        """
+        assert self.ctx is not None
+        if self._ocr is None:
+            self._ocr = RapidOcrEngine()
+        deadline = time.monotonic() + SETTLE_READ_TIMEOUT_S
+        previous: tuple[str, str] | None = None
+        last = ("", "")
+        while True:
+            rgb = self.ctx.capture.frame_with_age()[0]
+            if rgb is not None:
+                score = self._ocr.recognize(rgb, flow_data.RESULT_SCORE_ROI)
+                progress = self._ocr.recognize(rgb, flow_data.RESULT_PROGRESS_ROI)
+                last = (getattr(score, "text", "") or "",
+                        getattr(progress, "text", "") or "")
+                if _settlement_readable(*last):
+                    if previous == last:
+                        return last[0], last[1], True
+                    previous = last
+                else:
+                    # 读数被新一拍的画面打断（空串/半截进度条）：从头等。
+                    previous = None
+            if (time.monotonic() >= deadline
+                    or not self._running or not self.ctx.lifecycle.running):
+                return last[0], last[1], False
+            if not self.ctx.lifecycle.sleep(SETTLE_READ_POLL_S):
+                return last[0], last[1], False
+
     @classmethod
     def read_dashboard(cls) -> dict:
         """极速狂飙战绩看板：只读结算记录，不创建模块实例。
@@ -907,6 +977,22 @@ class InfiniteDriveModule(ActivityModule):
                 "blocks": [{"type": "text", "text": "稍后自动重试。"}],
             }
 
+    def _dismiss_settlement_overlays(self) -> None:
+        """结算读数前清覆盖层：奖励链「点击屏幕继续」这类弹窗会盖住分数区。
+
+        文字兜底一次约 0.5s（已按下半屏裁剪），只在读数前做、最多两轮：命中一次
+        才重扫（弹窗可能不止一层），扫完停 0.5s 让页面落定。限频游标一并推后，
+        避免紧接着的等待循环立刻再扫一遍。
+        """
+        assert self._graph is not None
+        assert self.ctx is not None
+        for _ in range(2):
+            if not self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE):
+                break
+            if not self.ctx.lifecycle.sleep(0.5):
+                break
+        self._next_sweep_at = time.monotonic() + ADVANCE_SWEEP_INTERVAL_S
+
     def _sweep_transient_popup(self) -> None:
         """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它。
 
@@ -920,7 +1006,7 @@ class InfiniteDriveModule(ActivityModule):
         if now < self._next_sweep_at:
             return
         self._next_sweep_at = now + ADVANCE_SWEEP_INTERVAL_S
-        self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS)
+        self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE)
 
     def _score_above_target(self, frame) -> bool:
         """OCR 驾驶页比分，判「已超本关目标分」（提前结算触发判据）。
@@ -956,7 +1042,8 @@ class InfiniteDriveModule(ActivityModule):
         for stage, node in (("提前结算·齿轮", _EXIT_GEAR),
                             ("提前结算·退出", _EXIT_LEAVE),
                             ("提前结算·确认", _EXIT_CONFIRM)):
-            if stage == "提前结算·确认" and self._graph.run(_SETTLE_ANCHOR, _SETTLE_ANCHOR):
+            if stage == "提前结算·确认" and self._graph.run(
+                    _SETTLE_ANCHOR, _SETTLE_ANCHOR, save=NAV_SAVE):
                 break   # 确认框被跳过，结算页已直接在位：确认步免点
             if self._run_step(node, stage):
                 continue
@@ -972,10 +1059,10 @@ class InfiniteDriveModule(ActivityModule):
         两处锚点都不在位（转场中间帧）就不点击，等下一拍状态落定。
         """
         assert self._graph is not None
-        if self._graph.run(_EXIT_DIALOG_ANCHOR, _EXIT_DIALOG_ANCHOR):
-            self._graph.run(_EXIT_CANCEL, _EXIT_CANCEL)
-        if self._graph.run(_SETTINGS_ANCHOR, _SETTINGS_ANCHOR):
-            self._graph.run(_EXIT_RESUME, _EXIT_RESUME)
+        if self._graph.run(_EXIT_DIALOG_ANCHOR, _EXIT_DIALOG_ANCHOR, save=NAV_SAVE):
+            self._graph.run(_EXIT_CANCEL, _EXIT_CANCEL, save=NAV_SAVE)
+        if self._graph.run(_SETTINGS_ANCHOR, _SETTINGS_ANCHOR, save=NAV_SAVE):
+            self._graph.run(_EXIT_RESUME, _EXIT_RESUME, save=NAV_SAVE)
 
     def _drive(self, phase: str) -> bool:
         """程序驾驶只在新鲜的驾驶画面上出杆；转场先归还手柄，再处理页面。"""
@@ -1071,6 +1158,8 @@ class InfiniteDriveModule(ActivityModule):
                             return False
                         continue
                     if self._record_mode or fresh:
+                        # 驾驶控制链不声明存盘：这里只是判结束信号，画面已由调试
+                        # writer / 录制器按 10fps 取证；再声明会与它们双写同一段。
                         if self._graph.run(end_node, end_node):
                             return True
                         self._sweep_transient_popup()
