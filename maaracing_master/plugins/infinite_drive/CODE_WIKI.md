@@ -78,7 +78,7 @@
 | 模块 | 职责 |
 |---|---|
 | [driving.py](./driving.py) | 驾驶页识别、道路定位、街车框投影、六擦边点维持决策与前视转向 |
-| [pad_source.py](./pad_source.py) | 物理手柄采样与 XInput 槽位锁定，录制器与宏录制器共用同一份挑选规则；只读 XInput，不驱动虚拟设备 |
+| [pad_source.py](./pad_source.py) | 物理手柄采样与 XInput 槽位锁定，录制器按它挑选手柄；只读 XInput，不驱动虚拟设备 |
 
 ### HUD
 
