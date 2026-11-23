@@ -1,6 +1,6 @@
 # 切页动画首访缺失 · WebView2 墙钟动画快进探针
 
-status: active
+status: resolved（2026-11-23 修复落地壳侧 `--disable-gpu-rasterization`，机制与验收数据见本文与 plan；提交后按 experiments README 出口流程退役）
 
 ## 问题
 
@@ -40,6 +40,39 @@ status: active
   数据集），`driver3.js` 为多轮首访/再访采样器（运行前把仓库 frontend 拷贝为本目录
   `frontend_copy/` 并按根目录 README 的桩注入方式插入 `stub.js`），三个 out JSON 为
   已采数据（out2_15 含 244ms 快进实况样本）。
+- `inject_control.js`（2026-11-23）：对照实验注入器，经 CDP 运行时注入、**不改前端文件**。
+  `status <port>` 页面状态；`predecode <port>` 齿轮封面点击前 load+decode（对照 A）；
+  `delay <port> <ms>` 延迟 `get_module_dashboard` 响应（对照 B）；`preready <port>`
+  预取看板 payload 后同参调用零等待（对照 C）；`strip <port> <preset>` 注入一次性
+  `<style>` 隐藏/削平目标效果面（`data-no-perf` / `data-no-right` / `data-bare` /
+  `manage-no-grid` / `manage-flat`），用于首访着色器来源拆分。与 `gui-debug.cjs compare`
+  或 `trace_visit.js` 连用。
+- `trace_visit.js`（2026-11-23）：单次冷首访的 trace 归因，支持 `data` 与 `manage` 两个
+  入口——rAF 采样定位最大帧停顿窗口，页内 `console.timeStamp` 锚点对齐 trace 时基，
+  输出窗口内各进程/线程事件分布；raw 落 `_out/trace-cold-<入口>-raw.json`。gpu/skia 类目已含。
+- `trace_summary.js`（2026-11-23）：读 trace 产物输出停顿摘要（GPU Flush top、着色器
+  缓存 load/store、ANGLE worker、渲染器主线程最大事件）。
+- `kill_residual.ps1` / `list_debug_procs.ps1`：实验收尾清理与进程排查（**注意**：实测
+  本机 windows-mcp PowerShell 通道非提权，杀不动提权壳实例；见 plan 探针裁决节的操作坑）。
+- `_out/refs/`：机制坐实用官方源码存档（Chromium raster_decoder.cc / gr_shader_cache.{h,cc}、
+  Skia GrContextOptions.h、ANGLE README），引用与行号见 plan「着色器编译原理」一节。
+
+## 2026-11-23 裁决摘要（详见 plan §「探针裁决」，含外部复核勘误）
+
+异步加载（等待/预就绪）与封面解码均证伪：数据页冷首访最大帧停顿在 基线 127.9ms /
+延迟 500ms 144.5ms（占位期间原位发生）/ 预就绪 166.9ms / 再访 ≤22ms；齿轮预解码后
+222.2ms（基线 222.3ms）。trace 归因（data 缺口 127.8ms、manage 缺口 244.3ms，同签名）：
+渲染器主线程空闲（data 仅 Layout 24.3ms），GPU 进程被 `DoEndRasterCHROMIUM::Flush`
+串行占满（data 79.9/30.4/9.8ms；manage 单段 176.9ms），等待期间
+`GrShaderCache::load → ANGLE worker 突发 → store` 循环贯穿缺口（data ~20 组、manage
+23/20）→ 停顿为入口子树首次呈现的首用着色器管线编译与串行等待。
+勘误三条已并入 plan：click 处理器实为 39.2ms（136 是含渲染等待的 event timing）、
+遮罩「时钟冻结」实为 endTime 钳制、渐进式加载仅「正文延迟」形态被证伪（轻外框未测）。
+**首访着色器成本分散**：隐藏性能卡 127.8→61.1ms（循环 ~20→12）、隐藏右列 →88.9ms
+（14/13），两列各占约半、无单一元凶 → 修复主攻改为替代预热形态（指纹校验下重测）。
+数据：`_out/gui-baseline-manage.json`、`gui-baseline-data.json`、`gui-ctrlA-predecode-manage.json`、
+`gui-ctrlB-delay500-data.json`、`gui-ctrlC-preready-data.json`、`trace-cold-data.json`、
+`trace-cold-manage.json`。
 
 ## 判据与标尺
 

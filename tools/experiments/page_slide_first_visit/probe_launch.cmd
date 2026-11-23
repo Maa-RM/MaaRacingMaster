@@ -24,8 +24,10 @@ powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='ms
 timeout /t 3 /nobreak >nul
 
 echo [2/3] setting debug-port env (CDP 9223, via shell hook MAARM_APP_WEBVIEW_ARGS) ...
-set "MAARM_APP_WEBVIEW_ARGS=--remote-debugging-port=9223 --remote-allow-origins=*"
-set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223 --remote-allow-origins=*"
+rem MAARM_PROBE_EXTRA: experiment switches appended to browser args. Edit per run.
+set "MAARM_PROBE_EXTRA=--disable-gpu-rasterization"
+set "MAARM_APP_WEBVIEW_ARGS=--remote-debugging-port=9223 --remote-allow-origins=* %MAARM_PROBE_EXTRA%"
+set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223 --remote-allow-origins=* %MAARM_PROBE_EXTRA%"
 set "EXE=%~dp0..\..\..\apps\MaaRacingMaster.Shell\bin\Debug\net8.0-windows10.0.19041.0\win-x64\MaaRacingMaster.Shell.exe"
 if not exist "%EXE%" (
   echo [error] exe not found: %EXE%
