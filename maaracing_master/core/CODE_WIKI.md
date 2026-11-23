@@ -310,14 +310,17 @@
 | 抠图边界是 int 截断 | x1/y1/x2/y2 一律 `int()` 截断后夹紧到帧内，**不是** floor/ceil 式换算——边界差一个像素就换掉喂给模型的像素，识别文本随之漂移，而下游把读数当稳定值用。边界与语义由 `tests/test_core_ocr.py` 机检 |
 | 引擎懒加载 + 失败固化 | `rapidocr` 在函数内导入（模块导入期不拉重依赖）；加载失败置 `_engine_failed`、不再重试，识别返回 None 不抛——调用方按「引擎不可用」降级，不得改成抛异常 |
 
-**配套层：[advance.py](./advance.py)（`MaaRM_Advance`）**——整帧通路的唯一消费者与判定层。
+**配套层：[advance.py](./advance.py)（`MaaRM_Advance`）**——未知页文字通路的唯一消费者与判定层。
 它在文字块之上只做一件事：从「画面里所有字」里挑出「该点的那一个」，把框交给 `MaaRM_Click`。
 用途是**未知页面兜底**：导航图是「一页一模板一节点」，版本更新一次换掉一批界面时枚举追不上，
 而文案（继续 / 进入 / 领取 / 点击屏幕继续）比皮肤稳定。三条误点防护（下半屏搜索区、
 白名单 + 文案长度上限、黑名单）是它存在的条件，不是可调项——规则单测在
-[`tests/test_core_advance.py`](../../tests/test_core_advance.py)。**当前唯一入场点是启动链**
-（`core/resources/startup/README.md` 的未知页面兜底一节）；想推广到别的链，先答「它每拍多付
-一次整帧检测的代价，那条链的节拍扛不扛得住」。
+[`tests/test_core_advance.py`](../../tests/test_core_advance.py)，区域裁剪与坐标映射在
+[`tests/test_advance_zone.py`](../../tests/test_advance_zone.py)。检测输入先按 `zone` 裁图
+（下半屏约 0.5s/次，档位与实测见 `ocr.py` 的 `BLOCK_DET_*`）；入场点是启动链与无限驾驶的
+偶发弹窗兜底，两条都必须限频——启动链挂节流门（见
+`core/resources/startup/README.md`），无限驾驶按秒级间隔调用。想推广到别的链，先答
+「那条链的节拍扛不扛得住一次半屏检测」。
 
 ***
 

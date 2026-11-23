@@ -16,7 +16,7 @@
             "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.1",
-            "startup.advance"
+            "startup.advance.gate"
         ],
         "pre_delay": 0,
         "post_delay": 0,
@@ -372,9 +372,22 @@
         "timeout": 500,
         "rate_limit": 300
     },
+    "startup.advance.gate": {
+        "attach": {
+            "_label": "未知页兜底的节流门：先等 2.5 秒再跑一次文字检测 OCR；未命中立即回汇聚节点，不能把图带死"
+        },
+        "recognition": {"type": "DirectHit", "param": {}},
+        "action": {"type": "DoNothing", "param": {}},
+        "next": ["startup.advance", "startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 2500,
+        "timeout": 5000,
+        "rate_limit": 0
+    },
     "startup.advance": {
         "attach": {
-            "_label": "未知页面兜底：下半屏按文案找推进按钮并点它（继续 / 进入 / 领取 / 点击屏幕继续）；关闭叉与返回箭头是图形，仍由模板节点负责"
+            "_label": "未知页面兜底（经节流门）：下半屏按文案找推进按钮并点它（继续 / 进入 / 领取 / 点击屏幕继续）；关闭叉与返回箭头是图形，仍由模板节点负责"
         },
         "recognition": {
             "type": "Custom",

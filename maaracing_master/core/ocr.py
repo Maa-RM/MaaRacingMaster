@@ -70,9 +70,15 @@ USE_CLS = False
 #   全帧 det limit_side_len=480    → 2700~3500ms（仍慢，瓶颈是线程自旋）
 #   全帧 det limit_side_len=480 且 intra=4/inter=2 → 1000~1300ms（可用）
 # 缩放到 0.5x 再喂没有收益——det 内部按 limit_side_len 归一，输入尺寸不改变计算量。
+# 2026-11-23 复测（结算页帧；下半屏 = 先按 zone 裁剪再喂，与 advance 的接线一致）：
+#   整帧   4+2 = 0.70~0.72s / 3.47~3.53 核秒
+#   下半屏 4+2 = 0.47~0.56s / 2.05~2.36 核秒
+#   下半屏 2+1 = 0.47~0.48s / 1.25~1.30 核秒  ← 采用：墙钟不变，核秒降约 42%
+#   下半屏 1+1 = 0.86~0.91s / 0.77 核秒（省核但墙钟翻倍）
+# 结论：裁剪是主要收益；线程档位取 2/1，1/1 只在能接受秒级延迟时再考虑。
 BLOCK_DET_LIMIT_SIDE = 480
-BLOCK_DET_INTRA_OP_THREADS = 4
-BLOCK_DET_INTER_OP_THREADS = 2
+BLOCK_DET_INTRA_OP_THREADS = 2
+BLOCK_DET_INTER_OP_THREADS = 1
 
 # onnxruntime 推理线程数。档位重标定（2026-10-08，真实 HUD ROI × 产线预处理链
 # 受控复现，2Hz 节奏 30 轮）：一轮墙钟 P50 = 229 / 132 / 86ms（intra=1/2/4），
@@ -283,7 +289,7 @@ class RapidOcrEngine:
                 logger.log(
                     f"[OCR] 整帧检测引擎已加载(limit_side={BLOCK_DET_LIMIT_SIDE}, "
                     f"intra_op={BLOCK_DET_INTRA_OP_THREADS})——按需启用，"
-                    "约 1s/帧，勿用于高频循环", "DEBUG")
+                    "下半屏约 0.5s/帧，勿用于高频循环", "DEBUG")
             except Exception as e:  # noqa: BLE001 —— 与 HUD 路径同策略：降级不抛
                 self._block_engine_failed = True
                 logger.log(f"[OCR] 整帧检测引擎加载失败({e})，位置未知时的文字兜底已禁用",
