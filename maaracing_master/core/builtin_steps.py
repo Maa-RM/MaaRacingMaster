@@ -104,8 +104,6 @@ class LaunchGameStep(BuiltinStep):
                 return exe
             log(f"指定的程序不存在: {exe}，改从启动器配置探测", "WARNING")
         exe = game_process.detect_game_exe()
-        if exe is None:
-            log("未能定位游戏主程序：请填写程序路径，或先用官方启动器安装一次游戏", "ERROR")
         return exe
 
     def _hall_enabled(self) -> bool:
@@ -124,9 +122,6 @@ class LaunchGameStep(BuiltinStep):
     def run(self, config: dict, stop_event, log, session) -> bool:
         cfg = {**self.DEFAULT_CONFIG, **(config or {})}
         exe = self._resolve_exe(cfg, log)
-        if exe is None:
-            self.last_outcome = "failed"
-            return False
         timeout_s = float(cfg.get("timeout_s") or 120)
 
         if not self._ensure_window(cfg, exe, timeout_s, stop_event, log):
@@ -143,11 +138,21 @@ class LaunchGameStep(BuiltinStep):
         return self._enter_hall(session, float(cfg.get("hall_timeout_s") or 300),
                                 stop_event, log)
 
-    def _ensure_window(self, cfg: dict, exe: Path, timeout_s: float,
+    def _ensure_window(self, cfg: dict, exe: Path | None, timeout_s: float,
                        stop_event, log) -> bool:
-        """把游戏窗口准备好并交给连接层。返回 False = 窗口没拿到。"""
+        """把游戏窗口准备好并交给连接层。返回 False = 窗口没拿到。
+
+        定位顺序：**已在运行的游戏窗口 → 已运行的游戏进程 → 启动器闸门/直启**。
+        第一条不依赖安装路径：玩家手动起的游戏、启动器配置读不到时，进程名仍认得
+        出窗口，不能因为「找不到路径」就直接失败——那会把「已在运行就接管」这条
+        链顶掉（启动器闸门并入后出现过这个回归）。
+        """
         t0 = time.monotonic()
-        if game_process.game_running(exe.name):
+        running = game_process.find_window_by_process()
+        if running:
+            log("游戏已在运行，跳过启动")
+            hwnd = running
+        elif exe is not None and game_process.game_running(exe.name):
             # 检查无从谈起：在跑的这版就是玩家此刻的版本，动它反而添乱
             log("游戏已在运行，跳过启动")
             hwnd = game_process.find_window_by_exe(exe.name)
@@ -155,6 +160,10 @@ class LaunchGameStep(BuiltinStep):
                 # 进程在但窗口还没出（刚双击完、还在加载）：等一轮再交给连接层，
                 # 否则下一步只报「链路建立失败」，看不出真因是没有窗口。
                 hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
+        elif exe is None:
+            log("未能定位游戏主程序：请填写程序路径，或先用官方启动器安装一次游戏",
+                "ERROR")
+            return False
         else:
             verdict = self._launcher_gate(cfg, exe, stop_event, log)
             if verdict == "needs_manual":

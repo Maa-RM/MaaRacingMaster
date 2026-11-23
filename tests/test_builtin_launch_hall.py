@@ -68,6 +68,12 @@ class _Session:
         return _FakeGraph(self.run_ok, self.outcome, self.seen)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_game_window(monkeypatch):
+    """默认不碰真实 Win32：测试未显式声明时，按进程名探测恒为 0。"""
+    monkeypatch.setattr(bs.game_process, "find_window_by_process", lambda: 0)
+
+
 @pytest.fixture()
 def window_ready(monkeypatch):
     """窗口能正常拿到：不真的起进程，也不碰 Win32。"""
@@ -139,6 +145,29 @@ def test_running_game_without_window_never_fakes_completion(monkeypatch):
     assert ok is False and step.last_outcome == "failed"
     assert app.hwnd == 0 and session.started is False
     assert any(lv == "ERROR" and "未等到游戏窗口" in m for lv, m in logs)
+
+
+def test_running_game_without_known_install_path_enters_hall(monkeypatch):
+    """安装路径探测不到、但游戏已在运行：仍要接管窗口进大厅，不能直接失败。"""
+    monkeypatch.setattr(bs.game_process, "detect_game_exe", lambda: None)
+    monkeypatch.setattr(bs.game_process, "find_window_by_process", lambda: 4321)
+    app = _App()
+    session = _Session()
+    ok, step, _s, logs = _run({}, app=app, session=session)
+    assert ok is True and step.last_outcome == "completed"
+    assert app.hwnd == 4321 and session.graph_calls == 1
+    assert any("已在运行" in m for _lv, m in logs)
+
+
+def test_no_install_path_and_no_running_game_fails_with_reason(monkeypatch):
+    """既没有安装路径、也没有在跑的游戏窗口：失败并说清真因。"""
+    monkeypatch.setattr(bs.game_process, "detect_game_exe", lambda: None)
+    app = _App()
+    session = _Session()
+    ok, step, _s, logs = _run({}, app=app, session=session)
+    assert ok is False and step.last_outcome == "failed"
+    assert app.hwnd == 0 and session.started is False
+    assert any(lv == "ERROR" and "未能定位游戏主程序" in m for lv, m in logs)
 
 
 def test_window_timeout_falls_back_to_launcher(monkeypatch):
