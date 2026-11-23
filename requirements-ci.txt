@@ -1,0 +1,22 @@
+# CI 测试依赖的唯一人写点。
+# 消费方：.github/workflows/test.yml（PR 门禁），同文件又被 release.yml 以 workflow_call
+# 复用为发布前门禁——所以发布与 PR 装的是同一组包，不再各写一份、各自漂移。
+#
+# 只列 Linux runner 装得上的跨平台包。主依赖见 requirements.txt（含 Windows-only 项），
+# 本文件不碰它；也不采用 `pip install -e .[test]`，那会连带拉入 Windows-only 主依赖。
+#
+# 版本策略（同一事实只留一处）：
+#   - MaaFw / numpy / 传递依赖：由 -c 指向发布运行时锁文件，版本只活在那一处；
+#   - onnxruntime（CPU）与 opencv-python-headless：与锁文件里的
+#     onnxruntime-directml / opencv-python 是**不同发行包名**，pip 的 -c 只约束同名包，
+#     故只能在此显式钉同号版本；改锁文件要同步改这里，
+#     `tests/test_ci_pins.py` 把这条等式机检住（漏改即红）；
+#   - pytest：钉在此处（本地 .venv 实测通过的版本）；
+#   - ruff / pyright：版本只活在 pyproject.toml 的 dev-lint extra（本地
+#     `pip install -e .[dev-lint]` 同一入口），CI 从那里读，不在本文件重复。
+-c scripts/release/requirements-runtime-lock.txt
+pytest==9.1.1
+numpy
+MaaFw
+onnxruntime==1.24.4
+opencv-python-headless==5.0.0.93
