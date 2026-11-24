@@ -66,6 +66,8 @@ def test_dashboard_polling_reuses_inflight_request():
     assert "_dashInflight" in body, "同一看板的在途请求必须被复用"
     assert "_dashInflight.id === mod.id" in body
     assert "return _dashInflight.promise" in body
+    assert "_dashInflight.body === body" in body, (
+        "数据页重建换掉 #dash-body 后，旧节点的在途请求必须作废重发")
     assert body.count("++_dashReqSeq") == 1, (
         "请求序号只在新请求开始时递增；轮询复用不得让在途响应失效")
 

@@ -26,14 +26,20 @@
     return v.toFixed(dec) + ' ' + units[i];
   }
 
-  async function openDataUsage() {
+  async function openDataUsage(opts) {
+    // 预热调用（opts.forWarmup）：回包到达时遮罩可能已被总时限放行，此时再开窗
+    // 会在用户眼前闪一张自己会关的窗，直接放弃。
+    const warmupAborted = () => !!(opts && opts.forWarmup
+      && window.MaaRM.warmupReleased && window.MaaRM.warmupReleased());
     let d;
     try {
       d = await maarm.call('get_data_usage');
     } catch (e) {
+      if (warmupAborted()) return null;
       showError('读取目录占用失败: ' + e.message);
       return;
     }
+    if (warmupAborted()) return null;
     const dirs = Array.isArray(d && d.dirs) ? d.dirs : [];
     const total = Number(d && d.total) || 0;
     // 扇区按累计字节切分：每段接上一段的终点，零字节目录自然没有扇区
@@ -604,7 +610,7 @@
     label: '数据占用',
     order: 20,
     async run() {
-      const modal = await openDataUsage();
+      const modal = await openDataUsage({ forWarmup: true });
       if (!modal) return false;
       try {
         const ready = await waitFor(() => modal.card.querySelector('.space-row'), 900);

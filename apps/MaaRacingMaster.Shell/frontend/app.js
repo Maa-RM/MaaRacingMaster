@@ -1111,6 +1111,9 @@
   // 必须从一开始就算放行，否则切页与其他「放行后才该发生」的事情全被挡住。
   let _bootReleased = document.documentElement.classList.contains('boot-skip');
   let _bootCutShort = false;   // 时限兜底先放行了界面：本次预热不算完成
+  // 预热面在收到回包后才开窗的，开窗前问一句：遮罩若已被时限兜底放行，
+  // 迟到的回包不该再弹一张自己会关的窗到用户眼前抢焦点。
+  window.MaaRM.warmupReleased = () => _bootReleased;
 
   function showOnlyPage(name) {
     TAB_ORDER.forEach((p) => {
@@ -1176,10 +1179,11 @@
         await twoFrames();
         // 看板内容只在页面可见时拉取（见 loadDashboard），这里等它真正画出来再走，
         // 否则冷启动后第一次点数据页仍会为看板内容付一次首访编译。
-        await pollDashboard();
+        // 回包失败（false）算本次预热未完成；没有候选看板（null）不算失败。
+        const drawn = await pollDashboard();
         await twoFrames();
         await delay(80);
-        return true;
+        return drawn !== false;
       }],
       ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); return true; }],
       ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); return true; }],
@@ -1198,9 +1202,11 @@
     // 界面照常释放，但不写完成标记，下次冷启动重试。
     let ok = true;
     for (const [label, run] of steps) {
-      if (performance.now() >= deadline) {
+      // 遮罩已被时限兜底放行、或已到总时限：不再启动新的一步。
+      // 否则同步开窗的预热面会在用户已经看到界面时再闪一张弹窗。
+      if (_bootReleased || performance.now() >= deadline) {
         ok = false;
-        console.warn('[warmup] 超出总时限，跳过剩余步骤');
+        console.warn('[warmup] 遮罩已释放或超出总时限，跳过剩余步骤');
         break;
       }
       try {

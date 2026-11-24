@@ -421,6 +421,8 @@
         if (!opened) return false;
         const paneReady = (el) => {
           const t = el.textContent.trim();
+          // 回包失败写的是「…失败：」文案；空态（当前系统没有可用项）是正常结果
+          if (t.indexOf('失败') >= 0) return false;
           return t.length > 0 && t.indexOf('正在读取') < 0;
         };
         let allReady = true;
@@ -428,6 +430,11 @@
           const tab = modal.card.querySelector('.env-tab[data-pane="' + pane + '"]');
           const paneEl = modal.card.querySelector('#' + pane);
           if (!tab || !paneEl) continue;
+          // 遮罩已被总时限放行：不再翻页占用用户已经看到的界面，直接收尾
+          if (window.MaaRM.warmupReleased && window.MaaRM.warmupReleased()) {
+            allReady = false;
+            break;
+          }
           tab.click();
           const ready = await waitFor(() => paneReady(paneEl), 1200);
           allReady = allReady && ready;

@@ -17,8 +17,8 @@
   let _dashReqSeq = 0;
   let _dashPayloadSig = '';
   // 同一看板的在途请求：3 秒轮询直接复用它，不再每轮发新请求把慢回包作废。
-  // 只有切换看板（或候选清空）才递增序号，让旧响应失效。
-  let _dashInflight = null; // { id, seq, promise }
+  // 只有切换看板（或候选清空、数据页节点被重建）才递增序号，让旧响应失效。
+  let _dashInflight = null; // { id, seq, body, promise }
 
   function dashboardCandidates() {
     const byId = new Map();
@@ -279,10 +279,11 @@
   }
 
   // 只挂载并轮询当前看板；页面不可见时不拉数，切走即停止。
+  // 返回 true=已画出、false=拉取失败、null=不适用（无候选 / 页面不可见 / 节点不在）。
   async function loadDashboard() {
     const page = $('page-data');
     const body = $('dash-body');
-    if (!page || !body) return;
+    if (!page || !body) return null;
     const mod = dashboardCandidates().find((m) => m.id === _dashCurrentId);
     if (!mod) {
       _dashReqSeq += 1;      // 作废在途请求
@@ -290,11 +291,17 @@
       _dashPayloadSig = '';
       delete body.dataset.loadedFor;
       body.innerHTML = dashEmptyHtml();
-      return;
+      return null;
     }
-    if (page.classList.contains('hidden')) return; // 不可见不拉数；切到数据页立即补拉
-    // 同一看板已有一轮在途：复用它的结果，等它回来再决定是否重渲染。
-    if (_dashInflight && _dashInflight.id === mod.id) return _dashInflight.promise;
+    if (page.classList.contains('hidden')) return null; // 不可见不拉数；切到数据页立即补拉
+    // 同一看板、同一个看板节点已有一轮在途：复用它的结果，等它回来再决定是否重渲染。
+    // 数据页重建会换掉 #dash-body 节点，旧请求的回包只能写进已移除的节点；
+    // 这时必须作废重发，否则新页要白等一轮查询。
+    if (_dashInflight && _dashInflight.id === mod.id) {
+      if (_dashInflight.body === body) return _dashInflight.promise;
+      _dashReqSeq += 1;
+      _dashInflight = null;
+    }
     if (body.dataset.loadedFor !== mod.id) {
       _dashPayloadSig = '';
       body.innerHTML = dashLoadingHtml();
@@ -303,21 +310,25 @@
     const promise = (async () => {
       try {
         const payload = await maarm.call('get_module_dashboard', { module_id: mod.id });
-        if (seq !== _dashReqSeq) return; // 已切到别的看板：丢弃过期响应
+        if (seq !== _dashReqSeq) return null; // 已切到别的看板 / 节点已换：丢弃过期响应
+        if (body !== $('dash-body')) return null; // 页面已重建：不再写旧节点
         const sig = JSON.stringify(payload);
-        if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return;
+        if (sig === _dashPayloadSig && body.dataset.loadedFor === mod.id) return true;
         _dashPayloadSig = sig;
         body.innerHTML = dashboardPayloadHtml(payload);
         bindDashboardLists(body);
         body.dataset.loadedFor = mod.id;
+        return true;
       } catch (e) {
-        if (seq !== _dashReqSeq) return;
+        if (seq !== _dashReqSeq) return null;
+        if (body !== $('dash-body')) return null;
         _dashPayloadSig = ''; // 失败后下一次成功必须重渲染，不能因旧签名相同而停在错误态
         body.innerHTML = dashErrorHtml(e);
         body.dataset.loadedFor = mod.id;
+        return false;
       }
     })();
-    _dashInflight = { id: mod.id, seq, promise };
+    _dashInflight = { id: mod.id, seq, body, promise };
     try {
       return await promise;
     } finally {
@@ -328,8 +339,10 @@
 
   async function pollDashboard() {
     try {
-      await loadDashboard();
-    } catch (e) { /* 看板轮询失败静默（库未创建 / 尚未跑过），下一次再试 */ }
+      return await loadDashboard();
+    } catch (e) {
+      return null; // 看板轮询失败静默（库未创建 / 尚未跑过），下一次再试
+    }
   }
 
   function stepDashboard(delta) {

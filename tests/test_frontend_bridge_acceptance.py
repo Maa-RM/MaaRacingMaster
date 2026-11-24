@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""前端页面装载验收：用桥桩驱动真实的 index.html + 全部脚本，在无头浏览器里跑四种场景。
+"""前端页面装载验收：用桥桩驱动真实的 index.html + 全部脚本，在无头浏览器里跑多种场景。
 
 为什么要有这一层：其余前端测试大多是源码文本锁，只能证明「接线还在」，证明不了
 「页面真的能走完」。这里用一份临时副本 + `window.chrome.webview` 桥桩，在真实
-渲染路径上验证四件事：
+渲染路径上验证：
 
-1. normal    —— 正常回包时预热走完、遮罩收起、通知宿主落完成标记；
-2. noreply   —— 后端完全不回包时，总时限兜底放出界面，且不写完成标记；
-3. latepopup —— 弹窗回包晚于总时限时，迟到弹窗会自行关掉，不会留在界面上；
-4. slowdash  —— 看板查询慢于轮询周期时，同一看板复用同一个在途请求，内容最终落地。
+1. normal      —— 正常回包时预热走完、遮罩收起、通知宿主落完成标记；
+2. noreply     —— 后端完全不回包时，总时限兜底放出界面，且不写完成标记；
+3. latepopup   —— 弹窗回包晚于总时限时，迟到的回包不再开窗（遮罩撤下后不得冒弹窗）；
+4. slowdash    —— 看板查询慢于轮询周期时，同一看板复用同一个在途请求，内容最终落地；
+5. dashfail    —— 看板回错时不得写完成标记（预热失败就是失败）；
+6. envfail     —— 环境中心三个页签回错时不得写完成标记（错误文案不当内容已就绪）；
+7. rebuilddash —— 慢看板在途时数据页被重建，回包不得写进已移除的节点，新页要重新取数。
 
 浏览器用本机已有的 Edge/Chrome（Windows）或 CI runner 自带的 Chrome/Chromium；
 都没有时本地跳过、CI 直接失败（不再静默跳过）。不引入任何第三方依赖。
@@ -61,6 +64,13 @@ _STUB = r"""
       }
     }, delay || 0);
   }
+  function replyErr(msg, message, delay) {
+    setTimeout(function () {
+      if (window.__native) {
+        window.__native({ data: { type: 'response', callId: msg.callId, ok: false, error: message } });
+      }
+    }, delay || 0);
+  }
   var payloads = {
     get_initial_state: {
       version: '9.9.9',
@@ -99,13 +109,19 @@ _STUB = r"""
         var method = msg.method;
         if (method === 'get_module_dashboard') {
           window.__dashCalls += 1;
+          if (scen === 'dashfail') { replyErr(msg, 'stub dashboard failure', 0); return; }
           reply(msg, { subtitle: '演示看板', blocks: [{ type: 'text', text: '看板已就绪' }] },
-                scen === 'slowdash' ? 5000 : 0);
+                scen === 'slowdash' ? 5000 : (scen === 'rebuilddash' ? 2500 : 0));
           return;
         }
         if (method === 'get_data_usage') {
           reply(msg, { root: 'C:/stub', total: 10, dirs: [{ key: 'logs', label: '日志', bytes: 10 }] },
                 scen === 'latepopup' ? 13000 : 0);
+          return;
+        }
+        if (scen === 'envfail' && (method === 'get_registry_optimizations'
+            || method === 'get_optional_dependencies' || method === 'webview2_status')) {
+          replyErr(msg, 'stub env failure', 0);
           return;
         }
         reply(msg, payloads[method] || {}, 0);
@@ -120,11 +136,37 @@ _PROBE = r"""
 <script>
 (function () {
   var start = performance.now();
+  var scen = window.__SCEN || 'normal';
   var hiddenAt = 0;
+  var modalsAfterHidden = false;
+  var rebuildAt = 0;
+  var rebuildDoneAt = 0;
+  var loadedAt = 0;
   var watch = setInterval(function () {
     var o = document.getElementById('boot-overlay');
     var hidden = !o || o.hidden === true || getComputedStyle(o).display === 'none';
     if (hidden && !hiddenAt) hiddenAt = Math.round(performance.now() - start);
+    // 遮罩撤下后用户已经看到界面：这时再冒出预热弹窗就是行为问题
+    if (hiddenAt && document.querySelector('.maarm-modal-overlay')) modalsAfterHidden = true;
+    if (hiddenAt && scen === 'rebuilddash' && !rebuildAt) {
+      rebuildAt = Math.round(performance.now() - start);
+      var ctrl = document.getElementById('page-control');
+      var data = document.getElementById('page-data');
+      if (ctrl) ctrl.classList.add('hidden');
+      if (data) data.classList.remove('hidden');
+      // 先发一轮慢看板请求，趁它还在途时重建数据页：旧回包只能写进已移除的节点
+      if (window.MaaRM && window.MaaRM.pollDashboard) window.MaaRM.pollDashboard();
+      setTimeout(function () {
+        if (window.MaaRM && window.MaaRM.renderModulePages) window.MaaRM.renderModulePages('demo');
+        rebuildDoneAt = Math.round(performance.now() - start);
+      }, 500);
+    }
+    if (rebuildDoneAt && !loadedAt) {
+      var live = document.getElementById('dash-body');
+      if (live && live.dataset.loadedFor === 'demo') {
+        loadedAt = Math.round(performance.now() - start);
+      }
+    }
   }, 100);
   var tabOk = null;
   setTimeout(function () {
@@ -145,9 +187,14 @@ _PROBE = r"""
       display: o ? getComputedStyle(o).display : 'none',
       step: step ? step.textContent : '',
       modals: document.querySelectorAll('.maarm-modal-overlay').length,
+      modalsAfterHidden: modalsAfterHidden,
       warmupDone: (window.__sent || []).some(function (m) { return m.type === 'warmup-done'; }),
       dashCalls: window.__dashCalls || 0,
       dashLoaded: body ? (body.dataset.loadedFor || '') : '',
+      dashText: body ? body.textContent.trim() : '',
+      rebuildAt: rebuildAt,
+      rebuildDoneAt: rebuildDoneAt,
+      loadedAt: loadedAt,
       tabOk: tabOk,
       logs: (window.__logs || []).slice(-12)
     };
@@ -251,6 +298,39 @@ def test_late_dialog_closes_itself_after_deadline(tmp_path):
     assert out["hidden"] is True
     assert out["warmupDone"] is False, "有步骤被总时限截断，不应写完成标记"
     assert out["modals"] == 0, "晚于总时限才弹出的面板必须自行关闭，不能留在界面上"
+    assert out["modalsAfterHidden"] is False, (
+        "遮罩撤下后回包才到：不得再开预热弹窗抢焦点")
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_dashboard_error_does_not_mark_warmup_done(tmp_path):
+    """看板回错 = 该预热面没画出来，不能写完成标记。"""
+    out = _run(tmp_path, "dashfail")
+    assert out["hidden"] is True, "失败也要按时放出界面"
+    assert out["warmupDone"] is False, "看板回错时不得写完成标记"
+    assert out["step"].startswith("未完成"), f"步骤文案应标记未完成：{out['step']!r}"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_env_center_error_does_not_mark_warmup_done(tmp_path):
+    """环境中心回错写的是错误文案，不能被当成「内容已就绪」。"""
+    out = _run(tmp_path, "envfail")
+    assert out["hidden"] is True, "失败也要按时放出界面"
+    assert out["warmupDone"] is False, "环境中心回错时不得写完成标记"
+    assert out["step"].startswith("未完成"), f"步骤文案应标记未完成：{out['step']!r}"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_dashboard_rebuild_fetches_into_live_node(tmp_path):
+    """慢看板在途时重建数据页：旧回包不得写进已移除的节点，新页要立刻重取。"""
+    out = _run(tmp_path, "rebuilddash")
+    assert out["rebuildDoneAt"] > 0, "场景没有触发数据页重建"
+    assert out["loadedAt"] > 0, "重建后看板内容没有落地"
+    elapsed = out["loadedAt"] - out["rebuildDoneAt"]
+    assert elapsed <= 4000, (
+        f"重建后应立刻重取看板，不能等旧请求作废再白等一轮：{elapsed}ms（"
+        f"rebuildDoneAt={out['rebuildDoneAt']}, loadedAt={out['loadedAt']}）")
+    assert "看板已就绪" in out["dashText"], f"新节点没有收到看板内容：{out['dashText']!r}"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")

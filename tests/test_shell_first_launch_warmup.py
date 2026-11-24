@@ -71,6 +71,16 @@ def test_marker_only_written_when_warmup_complete():
 def test_env_center_placeholder_is_not_treated_as_ready():
     env = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
     assert "正在读取" in env, "环境中心的占位文案不能算作就绪，否则预热等于没等"
+    assert "失败" in env, "回错写的是「…失败」文案，不能被当成内容已就绪"
+    assert "t.indexOf('失败')" in env, "就绪判据必须显式排除失败文案"
+
+
+def test_late_reply_does_not_open_dialog_after_release():
+    """遮罩被总时限放行后，迟到的回包不得再开一张抢焦点的预热弹窗。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "warmupReleased" in app, "入口必须把「遮罩已放行」暴露给预热面"
+    st = (SHELL / "frontend" / "js" / "settings.js").read_text(encoding="utf-8-sig")
+    assert "warmupReleased" in st, "数据占用预热必须在回包后、开窗前检查放行状态"
 
 
 def test_warmup_closes_only_its_own_dialogs():
