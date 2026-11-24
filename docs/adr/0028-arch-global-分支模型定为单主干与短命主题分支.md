@@ -60,5 +60,6 @@
 - 一手核查：[Conventional Branch 规范](https://conventional-branch.github.io/)（类型前缀与字符集）；[Google 小 CL 指南](http://google.github.io/eng-practices/review/developer/small-cls.html)（体量为软线，由评审者判断，不设自动拦截）。
 - 机检背书：规则集 `stable-master-pr-only`（`pull_request` 仅允许 squash、`required_approving_review_count: 0`；`required_status_checks` 含 `单元测试 (pytest) (3.11)`，`integration_id 15368`）；仓库设置 `delete_branch_on_merge=true`、`allow_merge_commit=false`、`allow_rebase_merge=false`。
 - 实证：旧模型收口的实测代价——`dev/d542Bb` → master 合并报 28 处冲突（20 处取草稿线侧、8 处取稳定线侧、含 3 张 PNG 二进制 add/add），合并结果相对草稿线原树只增 14 文件 +243/−99，相对 master 为 22 文件 +1164/−107（PR [#27](https://github.com/Maa-RM/MaaRacingMaster/pull/27)）。
+- 实证（一次性扫描，2026-11-24）：入库文件（不含 `docs/plan`）里的提交哈希引用，经 `git cat-file` 判型并按完整 SHA 归并后共 **77 个提交**——36 个可达 master（72 处 / 31 文件）、34 个只靠归档引用保活（57 处 / 23 文件，集中在 `_archive` 插件与 core `CODE_WIKI`）、7 个连本地任何 ref 都不指向（10 处 / 6 文件，GC 后会断链）。这就是决策 7 的现场依据：内容级锚只许锚 master 可达提交，主题分支提交一旦成为锚，就会把「只能靠归档保活」的指针制度化。
 - 实证：归档引用指向 `ff2b50f`，合入 PR #27 后远端旧线分支被 `delete_branch_on_merge` 自动删除、归档引用仍存在；证明「合入即删」与「历史例外保活」可以并存。
 - 机检：PR 准入闸由 [`.github/workflows/branch-conventions.yml`](../../.github/workflows/branch-conventions.yml) 承担（`pull_request` 触发，`tools/pr_conventions.py` 实现判定，`tests/test_pr_conventions.py` 守判据）；体积越线只以 `::warning` 呈现、退出码仍为 0，命名与门禁自伤返回 1。检查名登记进规则集 `required_status_checks` 之前，它只是红色提示、不阻塞合并。
