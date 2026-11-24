@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-10-28
 - **决策者**：用户拍板（"应该也成立一套契约吧……反向约束 plugin 给的信息规范化"），AI 落实施
-- **相关**：commit `dc52f2d`（契约与通用渲染）、`59e6de9`（统一采样与落盘）、`789fade`（线程段）、`0c5a1da`（计时精度修复）· [core/CODE_WIKI.md §1.14–1.16](../../maaracing_master/core/CODE_WIKI.md) · [ADR-0010](0010-arch-log-记录流分类与玩法流水汇.md)（perf.jsonl 的流分类）
+- **相关**：实施 commit `bc76ac9`（#14 压扁交付：契约与通用渲染、统一采样与落盘、线程段、计时精度修复同批）· [core/CODE_WIKI.md §1.14–1.16](../../maaracing_master/core/CODE_WIKI.md) · [ADR-0010](0010-arch-log-记录流分类与玩法流水汇.md)（perf.jsonl 的流分类）
 
 ## 背景
 

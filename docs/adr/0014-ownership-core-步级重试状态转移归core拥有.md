@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-11-01
 - **决策者**：用户
-- **相关**：宪法 §4「机制归引擎、策略归数据」（[PIPELINE_V4.md](../PIPELINE_V4.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) 步循环件）· commit `71441c0` / `46df995` / `f8add47`
+- **相关**：宪法 §4「机制归引擎、策略归数据」（[PIPELINE_V4.md](../PIPELINE_V4.md)）· [ADR-0001](0001-arch-global-分层靠引用方向不靠目录.md)（core 不得引用 `<module>.` 节点名）· [ADR-0006](0006-meta-adr-决策粒度只收跨模块约束.md)（本条只记归属决策，机制现状载 [core/CODE_WIKI.md](../../maaracing_master/core/CODE_WIKI.md) 步循环件）· 实施 commit `bc76ac9`（#14 压扁交付：StepMachine、speedrush 步级重试、重试剂量数据面化同批）
 
 ## 背景
 
@@ -36,5 +36,5 @@
 
 - 机检：`tools/pipeline/truth.py`——图自洽、`__confirm` 确认锚点零「跨锚点重复识别」告警；`tools/check_repo_hygiene.py` 通过。
 - 测试：`tests/test_step_machine.py`（三 verdict × 五 command 转移表，逐链复刻 treasure 计数表：重发上限不含首点、耗尽为"达上限后再等一窗"、计时在重发/送达时重置、在途 RETRY 持续到送达且每窗只计一次）；`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_gating.py`（步级重发、窗内命中不重发、停止不记耗尽）。
-- 一手核查：极速狂飙操作路径与各界面要素 [plugins/_archive/speedrush/RULES.md](../../maaracing_master/plugins/_archive/speedrush/RULES.md) §2 / §3；treasure 三条重试链计数表（见 commit `71441c0` 的 core 单测对照）。
-- 落地：commit `71441c0`（core `StepMachine`）、`46df995`（speedrush 步级重试 + `__confirm` 确认锚点）、`f8add47`（重试剂量搬到 `decision.json`，可分步覆盖）。
+- 一手核查：极速狂飙操作路径与各界面要素 [plugins/_archive/speedrush/RULES.md](../../maaracing_master/plugins/_archive/speedrush/RULES.md) §2 / §3；treasure 三条重试链计数表（见 commit `bc76ac9` 的 core 单测对照）。
+- 落地：commit `bc76ac9`（#14 压扁交付，含 core `StepMachine`、speedrush 步级重试 + `__confirm` 确认锚点、重试剂量搬到 `decision.json` 可分步覆盖）。

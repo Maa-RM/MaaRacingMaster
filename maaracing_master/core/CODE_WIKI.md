@@ -445,7 +445,7 @@
 - **直启**：参数与官方启动器实测命令行逐字一致（`-nosound -nohmd --MuMuLauncher -noexceptionhandler -Hdd -force_load_content`）；拉起时带 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`——这两个标志只管控制台与进程组归属，**不改父子关系**，壳侧强杀后端进程树时这里拉起的进程照样在树里被带走。
 - **找窗口按进程名，不按标题**：启动器窗口标题同样是「巅峰极速」，标题匹配会认错窗口；同名进程多窗口时取面积最大的。
 - **关闭**：窗口句柄优先（`terminate_process_by_hwnd`），找不到窗口按进程名兜底（`TerminateProcess`），失败只记 WARNING、不抛。
-- **启动器搬运工**（实测结论，证据以 commit 46727db 为指针）：启动器把版本比对结论写进本地日志 `%LOCALAPPDATA%\RacingMaster\CN\Log.txt`（`_LauncherLogTail` 只采本轮拉起后新写入的行：已读部分被改写或文件换新即判为新会话、从头读，日志拉起前不存在与同进程续写都按增量读）；`Final download config:` 下一行 JSON 的 `update_list` 空=可直启（无需更新或补丁刚装好）、非空=待更新，两种情形同一信号；检查在拉起后 ~5-6.4s 落地、主窗口 ~8.5-9.4s 才出现——先拿结论再决定关不关，即可无窗静默检查。启动器**要求管理员提权**（裸 Popen 740，回退必须走 `spawn_launcher` 的提权路径）；`SW_HIDE`/`b_hide`/`b_background`/`b_silent` 等一切隐藏手段都无效，CLI 仅 `--dygame`/`--restart`，无官方轻量检查入口——**整程序短跑就是运行官方检查代码的唯一官方方式**。Ready 后不自动拉游戏。跨权限时 WM_CLOSE/点击被 UIPI 拦截，`close_launcher`/`click_launcher_update_button` 如实降级不硬闯。
+- **启动器搬运工**（实测结论；探针随实验退役、未进 master，条件与读数即本条）：启动器把版本比对结论写进本地日志 `%LOCALAPPDATA%\RacingMaster\CN\Log.txt`（`_LauncherLogTail` 只采本轮拉起后新写入的行：已读部分被改写或文件换新即判为新会话、从头读，日志拉起前不存在与同进程续写都按增量读）；`Final download config:` 下一行 JSON 的 `update_list` 空=可直启（无需更新或补丁刚装好）、非空=待更新，两种情形同一信号；检查在拉起后 ~5-6.4s 落地、主窗口 ~8.5-9.4s 才出现——先拿结论再决定关不关，即可无窗静默检查。启动器**要求管理员提权**（裸 Popen 740，回退必须走 `spawn_launcher` 的提权路径）；`SW_HIDE`/`b_hide`/`b_background`/`b_silent` 等一切隐藏手段都无效，CLI 仅 `--dygame`/`--restart`，无官方轻量检查入口——**整程序短跑就是运行官方检查代码的唯一官方方式**。Ready 后不自动拉游戏。跨权限时 WM_CLOSE/点击被 UIPI 拦截，`close_launcher`/`click_launcher_update_button` 如实降级不硬闯。
 
 **builtin_steps.py（步骤契约）**：`ID / NAME / DEFAULT_CONFIG / COVER / required_resources(config) / run(config, stop_event, log, session)`，只需「跑一次、可被停止」。`COVER` 是封面文件名（相对 `core/resources/`，见 §1.18）。两个步骤：
 
@@ -759,7 +759,7 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | YOLO ONNX 导出              | `onnx.export(simplify=True)` 可能产生损坏模型（推理结果错乱） | 导出时关闭 simplify，或导出后校验精度                        |
 | ORT-DML 并发崩溃           | 两个 GPU run 同时在飞即崩（onnxruntime #20713），与锁占时长/CPU 并发无关 | 全部 GPU run 走 `dml_lock` 串行持锁                    |
 | GPU 消费者排班             | 多个消费者（感知/线观测）共锁时靠抢锁，碰撞与长尾不可控            | `dml_lock.SLOTS` 槽位交接：前一个消费者放锁后 `mark_done(seq)`，后一个 `wait_done(seq, timeout)` 再开工；纯时序原语，不含业务语义 |
-| ORT-DML 派发税与 capture   | run 是分辨率无关的阻塞调用（MoGe 时代实测 ~40ms 固定税，降分辨率无效）；`enable_graph_capture` 首次 run 即崩 | 降税只有减节点（更小骨干）一条路；capture 路线不可用（证据 commit `73a7164`） |
+| ORT-DML 派发税与 capture   | run 是分辨率无关的阻塞调用（MoGe 时代实测 ~40ms 固定税，降分辨率无效）；`enable_graph_capture` 首次 run 即崩 | 降税只有减节点（更小骨干）一条路；capture 路线不可用（证据 commit `bc76ac9`，实验体随 #20 退役） |
 | 标注写进像素会毁掉模板 | 落盘帧同时被 PEEP、回放、模板标定三处消费；一旦在上面画字幕/框，裁出来的模板天生带污染。赛季更新后的公告页就是活例：左上角返回按钮被状态行压住，同一张模板从带字帧裁出来分数掉一截，好图被判成废图 | 证据帧与视图帧分离：落盘只写原始像素，标注入 `frames.jsonl` 的 `overlay`（归一化坐标），消费方自己画。禁止在 `_process` 的 save 分支加任何 `cv2.putText`/`rectangle` |
 
 ### 5.2 光标导航

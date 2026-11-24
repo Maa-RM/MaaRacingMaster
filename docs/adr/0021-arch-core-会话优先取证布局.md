@@ -29,5 +29,5 @@ v4 的调试与日志身份依附于「日志记录」开关：开关打开才�
 ## 证据
 
 - 机检：[`tests/test_session_layout_v5.py`](../../tests/test_session_layout_v5.py)（会话身份与开关、行为清单/帧索引、越界防护、控制取证清单、流水身份字段）、[`tests/test_debug_stream_contract.py`](../../tests/test_debug_stream_contract.py)（段绑定、排空、计数闭合）、[`tests/test_trace_sink.py`](../../tests/test_trace_sink.py)（同会话重开序号续写）、[`maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_import_rounds.py`](../../maaracing_master/plugins/_archive/speedrush/tests/test_speedrush_import_rounds.py)（控制取证路径）。
-- 实施：`d46ecd7`（运行时布局）、`c748797`（Studio 回放读取 v5）。
+- 实施：commit `20e6c35`（#20 压扁交付，含运行时布局与 Studio 回放读取 v5）。
 - 回归：默认套件 1935 passed / 12 skipped；归档套件 361 passed；`truth` 与仓库卫生检查通过。
