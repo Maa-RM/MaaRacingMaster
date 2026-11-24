@@ -6,7 +6,6 @@ __pycache__/
 maaracing_master/_version.py
 *.pyo
 *.egg-info/
-.venv/
 env/
 venv/
 
@@ -27,32 +26,31 @@ debug.txt
 # 运行时数据（鉴宝结构化落盘数据库 data/treasure/treasure.db）
 /data/
 
-# IDE
-.vscode/
-.idea/
+# IDE 交换文件（IDE 目录本身由上面「本机面」白名单覆盖）
 *.swp
 
-# 本机 harness 配置（各 coding agent 在工作区落盘的目录/文件，不同步到远端；
-# .trae/ 下已跟踪的旧文件用 git rm --cached 移出。共享规则文件 AGENTS.md 不在此列，始终入库）
-# AGENTS.local.md 是项目专属本机个性化规则（不上云，经 AGENTS.md 开头指针加载），AGENTS.md 是项目守则（上云），分工见各自文件头
-.zcode/
-.workbuddy-ai/
+# =============================================================================
+# 本机面（规则）：顶层点目录 / 点文件默认不入库，只放行明确上云的条目。
+# 各 coding agent 的 harness 目录（.trae/ .zcode/ .qoder/ .workbuddy-ai/
+# .screenshots/ .meituan-catpaw/ .zwork/ .mimosa/ .venv/ .pytest_cache/ …）由此
+# 自动覆盖——装一个新工具不再需要回来补枚举；漏一个枚举的代价是 git add -A
+# 把本机路径带上云，代价远大于「新增合法点文件时要记得补一行 !」。
+# 注意：放行必须写在目录本身（!/.github/），父目录被忽略时 git 不会进目录内判断。
+# 嵌套的点目录不在本段覆盖内（本段只锚定顶层）。
+# =============================================================================
+/.*
+!/.gitattributes
+!/.gitignore
+!/.zcodeignore
+!/.github/
+
+# AGENTS.local.md 是项目专属本机个性化规则（不上云，经 AGENTS.md 开头指针加载），
+# AGENTS.md 是项目守则（上云），分工见各自文件头
 AGENTS.local.md
 # 隐私扫描本地词表（check_repo_hygiene R7 的补充正则；只留本机，不上云）
 tools/repo_privacy_terms.local.txt
-.trae/
-.trae-cn/
-.claude/
-.cursor/
-.windsurf/
-.codeium/
-.qoder/
-.gemini/
-.continue/
-.junie/
-.aider*
-
-# Mimosa 安全扫描器本机状态（账本/历史/hook 状态，扫描产物不入库）
+# 嵌套的本机状态目录（上面白名单只锚顶层，插件与子系统里落盘的按需显式列出；
+# .mimosa 账本会落在 apps/* 与 _archive 插件目录，现已存在三处）
 .mimosa/
 
 # AI 生成的 plan 文档（过程产物，不入库）
