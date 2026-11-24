@@ -97,7 +97,7 @@ ADR 记录的是**决策**，不是实现改动。一次跨层改动、接口变
 | [0025](0025-arch-shell-自动展开收窄为真异常.md) | `arch-shell` | 自动展开收窄为真异常——组卡仅 failure 展开，收容卡仅含 ERROR 展开，warning/incomplete 由徽章承载信号 | `accepted` |
 | [0026](0026-arch-core-证据帧与标注分离.md) | `arch-core` | 证据帧与标注分离——落盘只写原始像素，标注进 `frames.jsonl` 的 `overlay`，视图只在副本上画 | `accepted` |
 | [0027](0027-contract-core-模块资产安装声明与下载落点.md) | `contract-core` | 模块资产安装由插件声明，宿主只授予命名空间与生命周期；不建通用下载管理器 | `accepted` |
-| [0028](0028-arch-global-分支模型定为单主干与短命主题分支.md) | `arch-global` | 分支模型：单主干 + 短命主题分支（Conventional Branch 命名）、合入即删、一个主题一个 worktree；PR 准入命名硬拦 / 体积软线 / 门禁自伤硬检 | `accepted` |
+| [0028](0028-arch-global-分支模型定为单主干与短命主题分支.md) | `arch-global` | 分支模型：单主干 + 短命主题分支（Conventional Branch 命名）、合入即删、一个主题一份独立工作区；PR 准入命名硬拦 / 体积软线 / 门禁自伤硬检 | `accepted` |
 
 > **尚未收入宪法其余条款**：宪法第 3 条（加逻辑=加节点）、第 4 条（机制归引擎、策略归数据）偏"工作方式/分工原则"，第 5 条（新概念准入制）为流程规则而非架构事实，按准入条件均不收 ADR，归宿见上表。
 

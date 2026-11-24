@@ -1,6 +1,6 @@
 ---
 name: "project-update"
-description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命主题分支（命名规范、PR 准入三道闸）、commit 粒度、amend 边界、一个主题一个 worktree（并行会话）纪律，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交到 type/slug 主题分支 → 开 PR 并 squash 合入 → 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
+description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命主题分支（命名规范、PR 准入三道闸）、commit 粒度、amend 边界、独立工作区与共享检出的最小约束，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交到 type/slug 主题分支 → 开 PR 并 squash 合入 → 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
 ---
 
 # 项目更新助手（MaaRacingMaster 发版流程）
@@ -40,7 +40,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
   slug 全小写、仅 `a-z0-9.-`，用连字符不用下划线，需说明用途的分段加在后缀（如 `chore/actions-bump-pkgtest`）。`dependabot/**` 为机器生成分支的豁免，不受此约束。
 - **历史例外只留一条**：`archive/dev-d542Bb` 永久保留，作用是让旧草稿线的提交在远端仍可解析（证据锚、历史比对要用）。它**只读**：不新增、不写入、不当合并源；新的长历史一律不再产生。
-- **一个主题一个 worktree**：并行工作时按主题开 `git worktree`，每个工作树的 HEAD 只停在自己的主题分支；**共享检出里禁止切到 `master`，也禁止把别人的主题分支 checkout 到自己的工作树**。worktree 内不建 `.venv`——共用检出目录那份环境是只读的，测试与门禁显式指向它（`<共享检出>\.venv\Scripts\python.exe -m pytest -q`），不在 worktree 里 `pip install`。
+- **一个主题一份独立工作区**：并行工作时每个主题用独立工作区（`git worktree` 或独立 clone 均可），HEAD 只停在自己的主题分支；共享检出不切到 `master`、不改史、不丢别人未提交内容。解释器与验证入口用仓库声明的环境（见 [CONTRIBUTING](../../CONTRIBUTING.md)），环境放在哪个目录属个人配置。
 - 发版顺序随之固定：**先沉淀（PR 合入稳定线）→ 再在稳定线上打 tag**。tag 必须打在稳定线含全部改动的那份上（见发版节）。
 - 旧的「长期草稿线 + 压扁沉淀」模型与它带来的假冲突分流、集成提交，已随本模型退役（决策与代价见 [ADR-0028](../../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)），本节不再保留其操作口径。
 
@@ -66,18 +66,17 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 ### amend 的边界
 
-仅当**三条同时成立**才可 `git commit --amend` 并入上一提交：① 修改仍属于该提交同一逻辑任务的补充 / 修正；② 该提交**未推送**；③ **无并行会话**。其余情形一律新 commit 前进。
+仅当**两条同时成立**才可 `git commit --amend` 并入上一提交：① 修改仍属于该提交同一逻辑任务的补充 / 修正；② 该提交**未推送**，且该分支没有其他人在用。已推送的 `master` 历史一律新 commit 前进。
 
-### 共享检出目录与 worktree（并行会话）纪律
+### 独立工作区与共享检出
 
-多会话可能共用同一检出目录时（AGENTS.md 红线）。**推荐形态是一个主题一个 worktree**，共用检出目录只保留一份 `.venv` 供所有工作树只读引用：
+并行或与他人共用检出目录时的最小约束：
 
-1. **禁止一切改写历史或丢弃未提交内容的操作**——`amend` / `rebase` / `reset --hard`。共享索引与工作树下，改史会掀掉他人未提交内容、或使其提交脱链。上面「未推送可自由归并」的许可在并行期一并收回。
-2. **提交一律 pathspec 直提**：`git commit -m "…" -- 路径`，不做「先 add 再裸 `git commit`」——裸提交与 amend 都吃整个索引，会卷入他人暂存内容。
-3. **提交前核对暂存区**：`git diff --cached --name-only` 只应含自己的文件。
-4. **工作在 worktree 里做，不在共享检出里切分支**：`git worktree add ../wt-<slug> -b <type>/<slug> origin/master`。HEAD 只停在自己的主题分支；**禁止 checkout `master`**（会把共享工作区文件换成稳定线那份，掀掉别人的未提交内容）。
-5. **worktree 里没有 `.venv`**：环境只有共享检出那一份，且**只读**——不要在 worktree 里建 venv 或 `pip install`。跑测试与门禁时显式指向：`& "<共享检出>\.venv\Scripts\python.exe" -m pytest -q`、`-m ruff check .`、`-m pyright maaracing_master`。worktree 的 `sys.path` 以当前工作目录为准，跑测试前 `Set-Location` 到该 worktree 根。
-6. **用完回收**：主题合入后 `git worktree remove <路径>`（有未提交内容时先确认其归属），远端分支由 `delete_branch_on_merge` 自动删除。
+1. **每个主题一份独立工作区与分支**：`git worktree add` 或独立 clone 都行，提交落在哪个工作区是确定的。
+2. **共享检出不改史、不丢别人内容**：共享索引上的 `amend` / `rebase` / `reset --hard` 一律不做；在共享检出里提交时用 pathspec 只带上本主题的文件（`git commit -m "…" -- <路径>`），提交前 `git diff --cached --name-only` 核一遍。
+3. **用完回收**：主题合入后移除工作区（有未提交内容时先确认归属），远端分支由 `delete_branch_on_merge` 自动删除。
+
+环境放在哪、用什么命令跑门禁属个人配置；仓库只要求用 CONTRIBUTING 声明的解释器与验证入口。
 
 ### 对外动作先取得确认
 
@@ -168,7 +167,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 **当前实际模式（2026-11 起）：从 `origin/master` 切 `type/slug` 主题分支，一个主题一条，合入即删**（命名见「分支模型」）。
 
-1. 建分支：`git switch -c feat/<slug> origin/master`（并行工作时改用 `git worktree add ../wt-<slug> -b <type>/<slug> origin/master`）
+1. 建分支：`git switch -c feat/<slug> origin/master`（并行工作时改用独立工作区，见「独立工作区与共享检出」）
 2. `git status --short` 查看未提交改动；提交按 pathspec 直提：`git commit -m "标题" -m "正文" -- <具体文件>`（PowerShell 不支持 heredoc，用 `-m`）
 3. push：`git push -u origin <主题分支>`——只同步/备份，不触发测试（触发面只有 PR、`master` push 与 tag）
 
@@ -180,7 +179,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 4. 合并走 `gh pr merge <N> --squash --subject "<type>(<scope>): <主题> (#<N>)" --body "<正文>"`——**显式给标题与正文**，不要默认值（头分支的提交数不可预期，默认信息取不到可用的摘要）。规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit；检查未绿时先报告用户，确需绕过时走「对外动作先取得确认」的临时改规则集流程（`--admin` 在当前规则集下不可用），合完恢复配置。
 5. **PR 是稳定线写入的唯一通道**：不在共享检出里 checkout `master` 本地操作（见「分支模型」）。
 
-**合入之后**：远端头分支由 `delete_branch_on_merge` 自动删除；本地 `git branch -d <主题分支>`，用了 worktree 的 `git worktree remove <路径>`。下一条主题从最新的 `origin/master` 切。
+**合入之后**：远端头分支由 `delete_branch_on_merge` 自动删除；本地 `git branch -d <主题分支>`，用了独立工作区的把它移除。下一条主题从最新的 `origin/master` 切。
 
 **旧的「集成提交」已退役**：它存在的原因是压扁草稿线与稳定线之间没有合并基线，需要把「日常线的整棵树」挂成一个父为 master 的提交来制造可审对照物。单主干下 PR 的净增量天然等于主题增量，不再需要构造对照树；`release/**` 只保留为「打 tag 前的最后一次收口」这一分支名用途，按常规主题分支操作。`release/**` 在 test.yml 的 push 分支表里，推上去自带一轮全量 CI——PR 流水线与分支流水线各跑一次，**同一提交两边结论可以不同**（计时类断言吃不住负载差），红的先本地复现再定性。
 
