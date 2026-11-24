@@ -24,10 +24,12 @@
   R5 死引用：任何文件引用 `tools/experiments/<主题>/` 而该主题目录已不存在 → 违规
      （退役后引用链必须已拔净，这是"删目录"一步的验收）。
   R6 工作台入口护栏：`docs/plan/*.md` 头部必须有三行——`> **状态**：` 取闭集
-     {active, retiring}、`> **归属去向**：`、`> **退役条件**：`（均非空）。
+     {active, retiring}、`> **归属去向**：`、`> **退役条件**：`（均非空）；状态为
+     `retiring` 时还必须有 `> **落地锚**：`，且内含 PR 号或提交哈希（退役要回答
+     「这份方案的哪部分落在哪个交付上」，只写"已实施"不可复核）。
      与 R1 同构：状态是入口护栏不是生命周期数据库——不存在 done / 已完成 / archived，
-     plan 的"完成"就是删除；写了"已实施"却留在树里即本区唯一的病。
-     另打印台账（未动天数，不影响退出码），让"没人删"持续可见而不是静默豁免。
+     plan 的终点是**转移**到 `docs/plan/_retired/`（不是留在树里，也不是静默删除）。
+     另打印台账（未动天数，不影响退出码），让"没人处理"持续可见而不是静默豁免。
   R7 隐私扫描（红线 4 的机检，2026-11-06 立规）：入库文件不得含本机绝对路径、
      用户名目录、会话 ID。模式刻意收窄防误报；本机不入库面（AGENTS.local.md、
      docs/plan/、archive/、build/、实验区 _out/ 与 weights/ 等）不扫。另支持本地
@@ -97,6 +99,10 @@ STATUS_LINE = re.compile(r"^\s*status:\s*active\b", re.I | re.M)
 PLAN_STATUS = re.compile(r"^>\s*\*\*状态\*\*\s*[:：]\s*(.+?)\s*$", re.M)
 PLAN_HOME = re.compile(r"^>\s*\*\*归属去向\*\*\s*[:：]\s*(\S.*?)\s*$", re.M)
 PLAN_RETIRE = re.compile(r"^>\s*\*\*退役条件\*\*\s*[:：]\s*(\S.*?)\s*$", re.M)
+# 落地锚：状态为 retiring 时必须填，且要含 PR 号或提交哈希——退役是要回答「这份方案的
+# 哪些部分落在了哪个交付上」，只写「已实施」等于没记。
+PLAN_ANCHOR = re.compile(r"^>\s*\*\*落地锚\*\*\s*[:：]\s*(\S.*?)\s*$", re.M)
+PLAN_ANCHOR_HINT = re.compile(r"(#\d+|\b[0-9a-f]{7,40}\b)")
 PLAN_STATUS_VALUES = {"active", "retiring"}
 PLAN_HEAD_LINES = 60                          # 头部窗口：状态行必须写在开头
 # 可选：实质推进日（台账算未动天数用；缺省回退文件 mtime，会因补头部等格式化动作失真）
@@ -608,6 +614,7 @@ class Checker:
 
         for p in self.plan_docs():                                  # R6
             r, head = self.rel(p), self.head_text(p)
+            v = None
             m = PLAN_STATUS.search(head)
             if not m:
                 viol.add(f"R6|{r}|缺状态行（> **状态**：active）")
@@ -621,6 +628,14 @@ class Checker:
                     viol.add(f"R6|{r}|缺{label}行")
                 elif PLAN_PLACEHOLDER.match(mm.group(1).strip()):
                     viol.add(f"R6|{r}|{label}仍是模板占位符，未填")
+            if v == "retiring":
+                mm = PLAN_ANCHOR.search(head)
+                if not mm:
+                    viol.add(f"R6|{r}|状态为 retiring 但缺落地锚行（> **落地锚**：PR #N / master 提交）")
+                elif PLAN_PLACEHOLDER.match(mm.group(1).strip()):
+                    viol.add(f"R6|{r}|落地锚仍是模板占位符，未填")
+                elif not PLAN_ANCHOR_HINT.search(mm.group(1)):
+                    viol.add(f"R6|{r}|落地锚未含 PR 号或提交哈希，无法复核")
 
         for p in self.privacy_files():                              # R7
             r = self.rel(p)
@@ -696,8 +711,9 @@ def main(argv: list[str] | None = None, root: Path | None = None) -> int:
         print(f"\nplan 工作台：{len(ledger)} 个文件（未动天数 / 状态 / 路径，按天数降序）")
         for days, st, r in ledger:
             print(f"  [{days:>4}d] {st:<9} {r}")
-        print("  判读：active = 还有未闭环的事；retiring = 产出已提炼、正在退役。"
-              "没有 done/archived——plan 的完成就是删除；"
+        print("  判读：active = 还有未闭环的事；retiring = 结论已迁 home（或剩余项已转成 issue）、"
+              "正在退役，且头部带可复核的落地锚。没有 done/archived——plan 的终点是移入 "
+              "docs/plan/_retired/。"
               "超过两周没动且状态仍是 active，先答一句「还差什么」再决定留或退役。"
               "带 ~ 的是无更新日期、按文件修改时间估算的。")
 

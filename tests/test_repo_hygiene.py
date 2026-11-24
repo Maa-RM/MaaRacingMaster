@@ -30,7 +30,8 @@ _GOOD_PLAN = (
     "> **状态**：active\n"
     "> **更新**：2026-10-28\n"
     "> **归属去向**：docs/adr/ADR-9999\n"
-    "> **退役条件**：实现合入且 ADR 落地后删除\n\n"
+    "> **退役条件**：实现合入且 ADR 落地后转移\n"
+    "> **落地锚**：PR #28 / master 提交 2e67af5\n\n"
     "## 行为契约\n"
 )
 
@@ -405,6 +406,37 @@ def test_plan_status_value_tolerates_suffix(tmp_path):
     _plan(tmp_path, _GOOD_PLAN.replace("**状态**：active", "**状态**：retiring（2026-10-28）"))
     viol, _ = chk.Checker(tmp_path).scan()
     assert viol == set()
+
+
+def test_plan_retiring_requires_anchor(tmp_path):
+    """退役要回答「哪部分落在哪个交付上」：状态 retiring 却没有落地锚要红。"""
+    _mk(tmp_path)
+    body = "\n".join(
+        line for line in _GOOD_PLAN.splitlines() if "落地锚" not in line
+    ).replace("**状态**：active", "**状态**：retiring")
+    _plan(tmp_path, body + "\n")
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any("状态为 retiring 但缺落地锚行" in v for v in viol)
+
+
+def test_plan_retiring_anchor_needs_pr_or_hash(tmp_path):
+    """只写「已实施」不算落地锚——必须含 PR 号或提交哈希才可复核。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN
+          .replace("**状态**：active", "**状态**：retiring")
+          .replace("PR #28 / master 提交 2e67af5", "已完成"))
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any("落地锚未含 PR 号或提交哈希" in v for v in viol)
+
+
+def test_plan_retiring_anchor_placeholder_flagged(tmp_path):
+    """模板占位符原样留着，等于没填落地锚。"""
+    _mk(tmp_path)
+    _plan(tmp_path, _GOOD_PLAN
+          .replace("**状态**：active", "**状态**：retiring")
+          .replace("PR #28 / master 提交 2e67af5", "<PR #N 与 master 提交 sha>"))
+    viol, _ = chk.Checker(tmp_path).scan()
+    assert any("落地锚仍是模板占位符" in v for v in viol)
 
 
 def test_plan_ledger_lists_files_with_days(tmp_path):
