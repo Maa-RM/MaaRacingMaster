@@ -52,6 +52,10 @@
   --maarm-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
   --maarm-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
 
+  /* 双列页面（主控/数据/设置）与成就页的内容版心：窄窗口仍是 12px 页边，
+     宽窗口内容居中、不再拉满。关于页是单列长文，单列自己的宽度另算（见 .about-container） */
+  --maarm-page-max: 1440px;
+
   /* 圆角 */
   --maarm-radius-sm: 6px;
   --maarm-radius-md: 8px;
@@ -217,6 +221,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   overflow-y: auto; overflow-x: hidden; align-items: flex-start;
 }
 .page.hidden { display: none; }
+/* 双列页面的内容版心：数据/设置页由模板包一层；主控页 .control-cols 与成就页
+   .maarm-ach-inner 引用同一个 --maarm-page-max，避免出现第二份宽度数字。 */
+.page-inner {
+  width: 100%; max-width: var(--maarm-page-max); margin: 0 auto;
+  display: flex; gap: 12px; align-items: flex-start; min-height: 100%;
+}
 .page-about { overflow-y: auto; display: block; }
 .page-about.hidden { display: none; }
 
@@ -335,12 +345,17 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 数据页布局：右栏固定宽度（预览区 16:9 尺寸稳定、不随窗口缩放），左栏自由变换 */
 #page-data .col-left { flex: 1 1 auto; }
 #page-data .col-right { flex: 0 0 420px; }
+/* 设置页与主控/数据同一横向骨架：左列自适应、右栏固定 420。
+   62% / 38% 的比例分栏会让设置页在宽窗口下比其他两页多出一大截右栏，观感割裂。 */
+#page-settings .col-left { flex: 1 1 auto; }
+#page-settings .col-right { flex: 0 0 420px; }
 
 /* 主控页两列装进 .control-cols（内容高度容器，高度跟随左列内容、窗口够高时撑满）：
    日志卡要 sticky 钉在视口上，其包含块必须与左列内容等高——直接挂在 .page 下时
    包含块只有视口高，滚动时没有行程可钉。 */
 #page-control .control-cols {
   display: flex; gap: 12px; align-items: stretch; width: 100%; min-height: 100%;
+  max-width: var(--maarm-page-max); margin: 0 auto;
 }
 #page-control .col-left { flex: 1 1 auto; min-height: 0; }
 /* 日志列钉住跟随滚动：高度 = 视口 − 顶栏 52 − 底栏 44 − 页面上下 padding 24。
@@ -2574,7 +2589,7 @@ footer .spacer { flex: 1; }
 /* ---------- 正文：左分组拉伸、右栏固定 ---------- */
 .maarm-ach-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; }
 .maarm-ach-inner {
-  max-width: 1440px; margin: 0 auto;
+  max-width: var(--maarm-page-max); margin: 0 auto;
   display: flex; gap: 12px; align-items: flex-start;
 }
 .maarm-ach-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }

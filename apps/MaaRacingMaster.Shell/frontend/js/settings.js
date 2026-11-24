@@ -934,6 +934,7 @@
   // 看板中心对所有模块同一套骨架，模块差异只在后端下发的 block 内容里。
   function defaultDataCards(mid) {
     return `
+      <div class="page-inner">
       <div class="col-left">
         <!-- 性能监控 -->
         ${perfCard(mid)}
@@ -973,12 +974,14 @@
             </div>
           </div>
         </div>
+      </div>
       </div>`;
   }
 
   // 设置页默认模板
   function defaultSettingsCards(mid) {
     return `
+      <div class="page-inner">
       <div class="col-left">
         <!-- 调试选项 -->
         <div class="card">
@@ -1093,6 +1096,7 @@
             </div>
           </div>
         </div>
+      </div>
       </div>`;
   }
 
