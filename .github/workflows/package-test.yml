@@ -1,6 +1,6 @@
 # =============================================================================
 # 手动打包验证 — 只产出 zip/模型包 artifact，不创建 Release、不打 tag、不推 CNB
-# 触发：push 到 dev/**-pkgtest 分支（或手动 workflow_dispatch）
+# 触发：push 到任意 *-pkgtest 后缀的分支（命名如 chore/<slug>-pkgtest），或手动 workflow_dispatch
 # 用途：在没有本机 MSVC 的环境里，用云端 Windows runner 验证 assemble.ps1 全链路
 # =============================================================================
 name: Package Test
@@ -8,7 +8,8 @@ name: Package Test
 on:
   push:
     branches:
-      - 'dev/**-pkgtest'
+      # 分支命名规范为 <type>/<slug>，故用后缀匹配；写成 dev/**-pkgtest 会在改用 feat/fix/chore 前缀后失效
+      - '**/*-pkgtest'
   workflow_dispatch:
 
 jobs:
