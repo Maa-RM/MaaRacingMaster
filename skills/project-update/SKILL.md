@@ -1,13 +1,14 @@
 ---
 name: "project-update"
-description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amend 边界、共享检出目录（并行会话）纪律，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交 → 沉淀 PR（压扁假冲突走集成提交）→ 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
+description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命主题分支（命名规范、PR 准入三道闸）、commit 粒度、amend 边界、一个主题一个 worktree（并行会话）纪律，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交到 type/slug 主题分支 → 开 PR 并 squash 合入 → 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
 ---
 
 # 项目更新助手（MaaRacingMaster 发版流程）
 
 为 MaaRacingMaster 项目执行发布前的完整准备流程。本文件反映**当前实际发布模式**
-（2026-11 复核）：**双分支模型——日常 commit 落个人开发分支（命名自定），
-稳定线（默认分支 master）只经沉淀 PR 收入，发版打 tag 触发 CI**。
+（2026-11 复核）：**单主干 + 短命主题分支——一切工作从 `origin/master` 切出
+`type/slug` 分支，一个主题收口即 squash 合入并删除该分支；`master` 历史保持线性，
+发版打 tag 触发 CI**。决策依据见 [ADR-0028](../../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)。
 
 ## 权威定义与安装
 
@@ -23,21 +24,40 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 本节是**操作手册**——口径细则在此，[AGENTS.md](../../AGENTS.md) 只保留红线声明。适用于**任何会写远端历史的操作**：push 分支、push 稳定线、打 tag、开 / 合 PR、发布，不限于发版。
 
-### 分支模型（稳定线 / 日常线）
+### 分支模型（单主干 + 短命主题分支）
 
-- **稳定线**（默认分支 `master`）只收**沉淀**：一个主题收口（实现+回归+验收齐了）才经 PR 合入，合并时 CI 自动全量测试——稳定线上每个点都可运行、可发布。稳定线受 **GitHub 规则集（`stable-master-pr-only`）保护**：直接 push 一律被远端拒绝，只允许 **squash 压扁合并**（每个主题恰好一个 commit，master 历史保持一行主题列表），**任何人（含仓库所有者）不可绕过**。2026-10-17 重构前的完整开发历史保留在 master 祖先里，此后的 master 历史每个点是一个收口主题。
-- **日常线**：日常开发分支，**命名自定**（个人名/主题名皆可，本仓库实例为 `dev/d542Bb`）。进行中的工作、实验、细碎提交全部落这里，保留全部详细历史；多条日常线并存合法。日常线**允许 agent 直接推送**（云端智能体独立提交与审查，不需逐次确认），也**允许对已推送历史改写**（`rebase` / squash / force push，一律 `--force-with-lease`）——只限日常线自身，永不触碰稳定线；改写优先走独立 worktree 或远端操作，不掀共享检出里并行会话的工作树（见「共享检出目录」）。
-- **共享检出目录（并行会话）下**：所有会话的 HEAD 停在同一份工作树的日常线上，日常提交照常直提；**禁止在共享检出里切稳定线**（切分支改写工作区文件会掀他人未提交内容）。需要动稳定线时走远端（push 日常线 → GitHub 开 PR），不经本地 checkout。
-- **压扁的代价 = 假冲突**：稳定线每个点是压扁产物，与日常线的详细历史之间不再有可自动判定的合并基线——**上个 tag 之后首次沉淀的 PR 会在几十个文件上报冲突，而内容并不冲突**（稳定线树与日常线的上个发布点树是同一棵树）。判据与处置见 ④「沉淀」的冲突分流。
+- **稳定线**（默认分支 `master`）是唯一的长期分支，**历史线性**：只收**沉淀**——一个主题收口（实现+回归+验收齐了）才经 PR 合入，合并时 CI 自动全量测试——稳定线上每个点都可运行、可发布。稳定线受 **GitHub 规则集（`stable-master-pr-only`）保护**：直接 push 一律被远端拒绝，只允许 **squash 压扁合并**（每个主题恰好一个 commit，master 历史保持一行主题列表），**任何人（含仓库所有者）不可绕过**（`--admin` 是既有例外通道，见「对外动作先取得确认」）。
+- **主题分支**：一切工作从 `origin/master` 切出，**一个主题一条，收口即合入、合入即删**（仓库开着 `delete_branch_on_merge`，合入后远端头分支自动消失）。**分支是脚手架，不是档案**——它的提交不承诺长期存在，不要在其上写「以后还要回来续做」的期待；跨周工作按**可交付里程碑**拆成多条分支，每条都能独立合入并保持 master 可运行。
+- **命名规范**（[Conventional Branch](https://conventional-branch.github.io/)，CI 硬拦，ADR-0028）：
+
+  | 类型 | 用途 | 示例 |
+  | --- | --- | --- |
+  | `feat/<slug>` | 新功能 / 新能力 | `feat/branch-conventions` |
+  | `fix/<slug>` | Bug 修复 | `fix/settlement-rounding` |
+  | `chore/<slug>` | 文档、CI、依赖、治理、杂务 | `chore/repo-branch-model` |
+  | `hotfix/<slug>` | 线上紧急修复（从 tag 或 master 切） | `hotfix/launcher-crash` |
+  | `release/<版本>` | 打 tag 前的最后收口 | `release/v0.32.2-dev.2` |
+
+  slug 全小写、仅 `a-z0-9.-`，用连字符不用下划线，需说明用途的分段加在后缀（如 `chore/actions-bump-pkgtest`）。`dependabot/**` 为机器生成分支的豁免，不受此约束。
+- **历史例外只留一条**：`archive/dev-d542Bb` 永久保留，作用是让旧草稿线的提交在远端仍可解析（证据锚、历史比对要用）。它**只读**：不新增、不写入、不当合并源；新的长历史一律不再产生。
+- **一个主题一个 worktree**：并行工作时按主题开 `git worktree`，每个工作树的 HEAD 只停在自己的主题分支；**共享检出里禁止切到 `master`，也禁止把别人的主题分支 checkout 到自己的工作树**。worktree 内不建 `.venv`——共用检出目录那份环境是只读的，测试与门禁显式指向它（`<共享检出>\.venv\Scripts\python.exe -m pytest -q`），不在 worktree 里 `pip install`。
 - 发版顺序随之固定：**先沉淀（PR 合入稳定线）→ 再在稳定线上打 tag**。tag 必须打在稳定线含全部改动的那份上（见发版节）。
+- 旧的「长期草稿线 + 压扁沉淀」模型与它带来的假冲突分流、集成提交，已随本模型退役（决策与代价见 [ADR-0028](../../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)），本节不再保留其操作口径。
+
+### PR 准入（开 PR 前自检）
+
+- **命名**：`type/slug`（见上表）。CI 硬拦不合规的头分支；`dependabot/**` 豁免。
+- **体积**：>400 行或 >20 文件属**软线越线**，在 PR 描述里写清为何不能拆；它不阻断，也不要为凑数字拆成「看不见全貌」的碎 PR。
+- **门禁自伤**：同一个 PR 既改 `.github/**` 里的门禁定义、又在测试上做减法（删用例、加 skip、放宽断言）时，必须人工复核并写明理由。**「为变绿改门禁」不接受**。
+- **一个 PR 一个主题**：人判，无自动检查——主题是否单一由评审决定。混杂时拆 PR，不靠描述掩盖。
 
 ### commit 粒度
 
 - **一个 commit 是一个有意义的历史节点**：能独立解释、能独立回滚即可；开发期允许细粒度提交以便回溯、Review 与实验。
 - **交付面**（tag、`docs/update_log.md` 小节、Release 正文）才要求语义完整。
-- **稳定线 push 是历史整理的不可逆分界**：进稳定线（沉淀 PR）的内容必须语义完整，**归并发生在开 PR 之前（先整理、后沉淀）**；稳定线合并由规则集锁定为压扁，历史天然一个主题一个 commit。
+- **稳定线 push 是历史整理的不可逆分界**：进稳定线（PR）的内容必须语义完整，**整理发生在开 PR 之前**；稳定线合并由规则集锁定为压扁，历史天然一个主题一个 commit。
 - **稳定线禁止对已推送历史 rebase / squash / force push**（AGENTS.md 红线），修正一律新 commit 前进。
-- **日常线不受上述限制**：允许 agent 直接推送；允许对已推送的日常线历史 rebase / squash / force push（`--force-with-lease`），改写只落日常线，不触碰稳定线。
+- **主题分支不受上述限制**：允许 agent 直接推送；允许对已推送的主题分支历史 rebase / squash / force push（`--force-with-lease`），改写只落自己的主题分支，不触碰稳定线、不改写别人的分支。
 
 ### 退役、改名、目录瘦身类提交
 
@@ -48,18 +68,20 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 仅当**三条同时成立**才可 `git commit --amend` 并入上一提交：① 修改仍属于该提交同一逻辑任务的补充 / 修正；② 该提交**未推送**；③ **无并行会话**。其余情形一律新 commit 前进。
 
-### 共享检出目录（并行会话）纪律
+### 共享检出目录与 worktree（并行会话）纪律
 
-多会话共用同一工作区时（AGENTS.md 红线）：
+多会话可能共用同一检出目录时（AGENTS.md 红线）。**推荐形态是一个主题一个 worktree**，共用检出目录只保留一份 `.venv` 供所有工作树只读引用：
 
 1. **禁止一切改写历史或丢弃未提交内容的操作**——`amend` / `rebase` / `reset --hard`。共享索引与工作树下，改史会掀掉他人未提交内容、或使其提交脱链。上面「未推送可自由归并」的许可在并行期一并收回。
 2. **提交一律 pathspec 直提**：`git commit -m "…" -- 路径`，不做「先 add 再裸 `git commit`」——裸提交与 amend 都吃整个索引，会卷入他人暂存内容。
 3. **提交前核对暂存区**：`git diff --cached --name-only` 只应含自己的文件。
-4. **需要真隔离用 `git worktree`** 独立工作树——只切分支不换工作树隔离不了暂存区，切分支本身还会改写工作区文件。
+4. **工作在 worktree 里做，不在共享检出里切分支**：`git worktree add ../wt-<slug> -b <type>/<slug> origin/master`。HEAD 只停在自己的主题分支；**禁止 checkout `master`**（会把共享工作区文件换成稳定线那份，掀掉别人的未提交内容）。
+5. **worktree 里没有 `.venv`**：环境只有共享检出那一份，且**只读**——不要在 worktree 里建 venv 或 `pip install`。跑测试与门禁时显式指向：`& "<共享检出>\.venv\Scripts\python.exe" -m pytest -q`、`-m ruff check .`、`-m pyright maaracing_master`。worktree 的 `sys.path` 以当前工作目录为准，跑测试前 `Set-Location` 到该 worktree 根。
+6. **用完回收**：主题合入后 `git worktree remove <路径>`（有未提交内容时先确认其归属），远端分支由 `delete_branch_on_merge` 自动删除。
 
 ### 对外动作先取得确认
 
-稳定线写入（开 / 合沉淀 PR）、打 tag、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。**已授权豁免**：日常线（`dev/**`）push 与历史改写 agent 可直接执行、不需逐次确认（AGENTS.md「对外可见的动作」豁免条款）；本次发版的 `release/**` 集成分支按同一条对待——它只由集成提交生成、无并行写者，`--force-with-lease` 重建不需逐次确认。**逐次确认不可让的三件**：`--admin` 绕过规则集（批准审查 / 必需检查）、tag 推送、稳定线历史改写。
+稳定线写入（开 / 合 PR）、打 tag、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。**已授权豁免**：`feat/**`、`fix/**`、`chore/**`、`hotfix/**`、`release/**` 主题分支的 push 与历史改写 agent 可直接执行、不需逐次确认（AGENTS.md「对外可见的动作」豁免条款）；`--force-with-lease` 只落自己的主题分支，永不触碰 `master` 与 `archive/dev-d542Bb`（archive 只读，任何写入都要单独确认）。**逐次确认不可让的三件**：`--admin` 绕过规则集（必需检查 / 审查）、tag 推送、稳定线历史改写。
 
 ***
 
@@ -72,7 +94,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 | ① 清理临时文件             | 删除 `__pycache__`、`*.pyc`、`*.egg-info`、`build/`、`dist/`、`.pytest_cache/` 等（**不含** `debug/` 调试截图） |
 | ② 确定版本号              | 按「当前 dev 系列顺延 / minor 升级开新系列」规则计算，**用户指定优先**                                                    |
 | ③ 更新文档               | 更新 `docs/update_log.md` 添加新版本条目（README 如需一并更新）                                                  |
-| ④ 提交改动               | commit 到个人开发分支（命名自定）；稳定线只经沉淀 PR 收入，见「分支模型」                      |
+| ④ 提交改动               | 从 `origin/master` 切 `type/slug` 主题分支提交；稳定线只经 PR 收入，见「分支模型」                      |
 | ⑤ 更新版本标记 + 打 Tag 并推送 | 更新 `docs/latest_release.json`，创建 `vX.Y.Z[-dev.N]` tag 并 push，触发 CI/CD Release                   |
 | ⑥ 本地打包验证（可选）         | 跑 `scripts/release/assemble.ps1` 生成 zip+sha256 本地校验                                             |
 | ⑦ 全部执行               | 按 ①→②→③→④→⑤ 顺序（⑥ 可选插入 ⑤ 前）                                                                      |
@@ -144,44 +166,30 @@ description: "MaaRacingMaster 提交纪律与发版手册：commit 粒度、amen
 
 ### ④ 提交改动
 
-**当前实际模式（2026-10 起）：日常 commit 落个人开发分支**（命名自定，本仓库实例 `dev/d542Bb`），稳定线只经沉淀 PR 收入。
+**当前实际模式（2026-11 起）：从 `origin/master` 切 `type/slug` 主题分支，一个主题一条，合入即删**（命名见「分支模型」）。
 
-1. `git status --short` 查看未提交改动；`git add <具体文件>`（按文件名添加，避免误入敏感/大文件）
-2. `git commit -m "标题" -m "正文"`（PowerShell 不支持 heredoc，用 `-m` 参数）
-3. push 日常分支：`git push origin <日常分支>`——push 只同步/备份，不触发 CI（test 镜像只盯稳定线）
+1. 建分支：`git switch -c feat/<slug> origin/master`（并行工作时改用 `git worktree add ../wt-<slug> -b <type>/<slug> origin/master`）
+2. `git status --short` 查看未提交改动；提交按 pathspec 直提：`git commit -m "标题" -m "正文" -- <具体文件>`（PowerShell 不支持 heredoc，用 `-m`）
+3. push：`git push -u origin <主题分支>`——只同步/备份，不触发测试（触发面只有 PR、`master` push 与 tag）
 
-**沉淀（稳定线收入，用户认定主题收口时）：**
+**开 PR（主题收口时，用户认定可合）：**
 
-1. **先跑全仓门禁再开 PR**：`.venv` 下 `ruff check .` → `pyright maaracing_master` → 全量 `pytest -q`。CONTRIBUTING 把这三项留在 CI 侧（提交路径只跑触碰面），但沉淀 PR 的红挡在稳定线门口，而它们是**串行露出**的：ruff 不绿看不到 pyright，pyright 不绿看不到测试。
-2. push 日常分支后 `gh pr create --base master --head <日常分支>`（body 多行先写临时文件用 `--body-file`）。
-3. **冲突分流**（`gh pr view <N> --json mergeable`）：
-   - **假冲突**（压扁的结构性后果，见「分支模型」）——先证两件事：稳定线 HEAD 的树 == 日常线上个发布点的树（`git diff <上个发布点> <稳定线 HEAD>` 为空），且那个发布点是日常线 HEAD 的直系祖先。成立就走下面的**集成提交**；正确答案全是「取日常线那份」，逐文件手工裁决只增加出错面。
-   - **真冲突**（两边内容确实分叉）——交用户裁决，agent 不自动解决。
-   - 冲突态的 PR 建不出 merge ref，`pull_request` 流水线**整个跳过**——「Test 一条都没跑」先查 PR 是否 CONFLICTING，再怀疑 workflow 配置。
-4. 合并走 `gh pr merge <N> --squash --subject ... --body ...`——合并进稳定线即触发 CI 全量测试；规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit。规则集另要求 1 次批准审查，**作者无法自批**：检查全绿仍 BLOCKED 时报告用户，取得明确指示后才 `--admin` 绕过。
-5. **沉淀是稳定线写入的唯一通道**：不在共享检出里 checkout 稳定线本地操作（见「分支模型」）。
+1. **先跑全仓门禁再开 PR**：`ruff check .` → `pyright maaracing_master` → 全量 `pytest -q`（用共享 `.venv` 显式路径）。CONTRIBUTING 把这三项留在 CI 侧（提交路径只跑触碰面），但 PR 的红挡在稳定线门口，而它们是**串行露出**的：ruff 不绿看不到 pyright，pyright 不绿看不到测试。
+2. `gh pr create --base master --head <主题分支> --title "<type>(<scope>): <主题>" --body-file <文件>`（长正文先写临时文件）。
+3. **冲突**：单主干下没有假冲突——分支从 master 切出、只含自己的提交，报冲突就是真冲突（期间 master 前进）。先 `git rebase origin/master` 并在本地重跑门禁；仍有内容分叉交用户裁决，agent 不自动解决语义冲突。冲突态的 PR 建不出 merge ref，`pull_request` 流水线**整个跳过**——「Test 一条都没跑」先查 PR 是否 CONFLICTING，再怀疑 workflow 配置。
+4. 合并走 `gh pr merge <N> --squash --subject "<type>(<scope>): <主题> (#<N>)" --body "<正文>"`——**显式给标题与正文**，不要默认值（头分支的提交数不可预期，默认信息取不到可用的摘要）。规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit；检查未绿时先报告用户，取得明确指示后才 `--admin` 绕过。
+5. **PR 是稳定线写入的唯一通道**：不在共享检出里 checkout `master` 本地操作（见「分支模型」）。
 
-**集成提交（假冲突的处置）**：把日常线当前的树挂成一个提交，父是稳定线 HEAD——发布集成用一份干净的共同历史，日常线的详细提交留在原分支不动。
+**合入之后**：远端头分支由 `delete_branch_on_merge` 自动删除；本地 `git branch -d <主题分支>`，用了 worktree 的 `git worktree remove <路径>`。下一条主题从最新的 `origin/master` 切。
 
-```bash
-git fetch origin master
-P=$(git rev-parse origin/master); T=$(git rev-parse HEAD^{tree})
-C=$(git commit-tree "$T" -p "$P" -m "release: <版本> <一句话主题>")
-git branch -f release/<版本> "$C" && git push --force-with-lease origin release/<版本>
-```
-
-四项验证缺一不推：① 推前重取 `origin/master`，父仍等于刚记录的 `$P`（稳定线在你核树时又动了就整轮重来）；② 新提交的树 == 日常线 HEAD 树；③ `git diff --quiet $C HEAD` 为空；④ `git diff --stat $P..$C | tail -1` 的文件数与增删行数即 PR 净增量，写进 PR 正文前用 `git diff --name-status` 点一遍 A / D / M / R 的构成，重命名与删除要各自归到具体提交。日常线此后每有新提交，重跑这四步重建集成提交（`--force-with-lease` 只落 `release/**` 自身）。
-
-PR 正文承担集成方式的说明：为什么只有一个提交、核过的事实、门禁红的处置——读者没有本次会话的上下文，凭这些才能复核。
-
-`release/**` 也在 test.yml 的 push 分支表里，所以推上去就自带一轮全量 CI。PR 流水线与分支流水线各跑一次，**同一提交两边结论可以不同**（计时类断言吃不住负载差），红的那个先在本地复现再定性——是代码脆还是机器抖，决定它进不进本次发版。
+**旧的「集成提交」已退役**：它存在的原因是压扁草稿线与稳定线之间没有合并基线，需要把「日常线的整棵树」挂成一个父为 master 的提交来制造可审对照物。单主干下 PR 的净增量天然等于主题增量，不再需要构造对照树；`release/**` 只保留为「打 tag 前的最后一次收口」这一分支名用途，按常规主题分支操作。`release/**` 在 test.yml 的 push 分支表里，推上去自带一轮全量 CI——PR 流水线与分支流水线各跑一次，**同一提交两边结论可以不同**（计时类断言吃不住负载差），红的先本地复现再定性。
 
 ### ⑤ 更新版本标记 + 打 Tag 并推送（触发 CI/CD）
 
 1. **更新** **`docs/latest_release.json`**（程序内「检查更新」的唯一信源）：`tag`、`version`、`published_at` 三项指向本次版本，`download_url` 保持不变。CI **不回写此文件**（master 受分支保护），漏写会造成「Release 页面已有新版，但玩家软件里永远收不到更新提示」的错位。该改动必须作为 commit 落在 **tag 之前**——tag 落点那份代码要同时含 changelog 小节与此标记文件（Release 正文由 `extract_changelog.py` 从 tag 那份 `docs/update_log.md` 抽取，改文案必须与 tag 落点一起前移）。
-2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿），tag 打在稳定线上。合入后核一次 `git rev-parse origin/master^{tree}` 等于日常线 HEAD 的树——走过集成提交的话，这一步抓的是「合进去的不是你以为的那份」。
+2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿），tag 打在稳定线上。合入后核一次 `git rev-parse origin/master^{tree}` 与主题分支 HEAD 的树一致（不一致说明合并时带了额外解决残留，先查清再打 tag）。
 3. 本地创建 tag：`git tag v0.x.y-dev.N`（0.x 阶段通常为 pre-release）或 `git tag vX.Y.Z`（正式版）。本仓库自 v0.12 起统一用**轻量 tag**（`git cat-file -t refs/tags/<上一个>` 可验类型），沿用即可
-4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在开发分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，避免在共享检出里切分支）
+4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在主题分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，不在共享检出里切分支）
 5. **push 前必须向用户确认**（发版动作不可逆）
 6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
 7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
@@ -207,7 +215,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 ### 不发版模式（不动程序代码 → 不 tag，方案 C）
 
-**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**；改动先落日常分支，随下次沉淀 PR 进稳定线（稳定线受规则集保护，不能直推）。
+**适用：** 本次改动只涉及文档 / CI / 元数据，**不触碰运行时程序代码**——此时不需要新的安装包，**不打 tag、不触发 release**；改动走常规 `chore/<slug>` 主题分支 PR 进稳定线（稳定线受规则集保护，不能直推）。
 
 **判定"是否动程序代码"：** 用 `git diff --name-only` 检查本次即将提交的文件，凡落入下列**程序路径**即视为「需要出包」：
 
@@ -223,10 +231,10 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 **不发版模式流程：**
 
-1. commit 到个人开发分支
+1. 从 `origin/master` 切 `chore/<slug>` 主题分支提交（纯文档 / CI / 元数据改动统一用 `chore` 前缀）
 2. **不写 update_log**——纯文档 / CI / 元数据改动玩家感知不到，按收录判据一律不进（过程已在 commit message）
-3. `git push origin <日常分支>`（若需同步远程；push 日常分支不触发 CI）
-4. **不打 tag、不触发 release**；文档类改动随下次沉淀 PR 自然进稳定线
+3. `git push -u origin <主题分支>` 后开 PR 合入（push 主题分支不触发测试，PR 才跑）
+4. **不打 tag、不触发 release**；改动随常规 PR 进稳定线
 
 **技术背景：** GitHub Actions 的 `push` tag 事件**不支持** **`paths`** **/** **`paths-ignore`** **过滤**，无法在 trigger 声明层区分「纯文档 tag」与「程序 tag」，故本项目用\*\*流程约定（方案 C）\*\*而非 workflow 自动检测——纯文档改动一律不 tag，只有程序代码有实质改动、需要新产物时才走完整发版（① 清理 → ② 定版本 → ③ 日志 → ④ 提交 → ⑤ tag → push）。
 
@@ -244,7 +252,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **Git Tag 是唯一信源**：禁止手动改源码版本号，`setuptools-scm` 从 tag 自动推导（写入 `maaracing_master/_version.py`）
 
-- **发布模式**：日常 commit 落个人开发分支（命名自定）→ 主题收口经 PR 沉淀进稳定线 → 在稳定线上打 tag → push tag 触发 CI/CD（见「分支模型」）
+- **发布模式**：从 `origin/master` 切 `type/slug` 主题分支 → 主题收口开 PR 并 squash 合入稳定线 → 在稳定线上打 tag → push tag 触发 CI/CD（见「分支模型」）
 
 - tag 触发 CI 时 `test` 会先跑 pytest，测试失败不发布
 
@@ -266,7 +274,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **本地打包脚本：** `scripts/release/assemble.ps1`
 
-- **云端打包验证：** `.github/workflows/package-test.yml`（push `dev/**-pkgtest` 或手动触发，只上传 artifact，不创建 Release；版本号读 `docs/latest_release.json`）
+- **云端打包验证：** `.github/workflows/package-test.yml`（push `**/*-pkgtest` 或手动触发，只上传 artifact，不创建 Release；版本号读 `docs/latest_release.json`）。触发方式：在主题分支上开 `chore/<slug>-pkgtest`，推它即跑一轮 Windows 打包
 
 - **项目规范：** `AGENTS.md`
 
@@ -294,5 +302,5 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - 不用 `git reset --hard` / `git clean -f` 等破坏性命令；同步 master 用 `git pull --rebase origin master` 或仅在用户明确要求时操作
 
-- 稳定线写入（push / 开合 PR）、打 tag、merge、发布前必须向用户确认；日常线（`dev/**`）push 与历史改写已授权，不需逐次确认
+- 稳定线写入（push / 开合 PR）、打 tag、merge、发布前必须向用户确认；主题分支（`feat/**` `fix/**` `chore/**` `hotfix/**` `release/**`）push 与历史改写已授权，不需逐次确认；`archive/dev-d542Bb` 只读，任何写入单独确认
 
