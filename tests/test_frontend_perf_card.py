@@ -16,7 +16,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SETTINGS_JS = (REPO / "apps" / "MaaRacingMaster.Shell" / "frontend"
                / "js" / "settings.js")
-RUN_JS = (REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "run.js")
+PERF_JS = (REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "perf-card.js")
 
 
 def _slice_fn(src: str, header: str) -> str:
@@ -47,7 +47,7 @@ def test_perf_card_template_has_no_module_branch():
 
 def test_module_rows_come_from_backend():
     """模块行由后端下发（perf.rows）驱动，前端不自己算值、不自己判级。"""
-    src = RUN_JS.read_text(encoding="utf-8")
+    src = PERF_JS.read_text(encoding="utf-8")
     body = _slice_fn(src, "function renderPerfRows(mid, rows) {")
     assert "row.display" in body, "模块行应直接使用后端格式化后的 display"
     assert "row.label" in body, "模块行标签应来自声明"
@@ -66,7 +66,7 @@ def test_perf_health_exempt_not_reported_from_error():
     按行自带等级（idle）参与——任何缺失一律判 error 会让每局开跑前的正常等待
     都显示「异常」。
     """
-    src = RUN_JS.read_text(encoding="utf-8")
+    src = PERF_JS.read_text(encoding="utf-8")
     body = _slice_fn(src, "function renderPerfHealth(mid, rows) {")
     assert "PERF_LEVEL_RANK" in body, "抽取到的不是健康度聚合"
     assert "row.reason ? 'error'" not in body, (
