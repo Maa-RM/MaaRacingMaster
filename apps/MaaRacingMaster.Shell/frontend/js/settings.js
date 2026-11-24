@@ -7,6 +7,7 @@
   // 共享物导入（js/rpc.js、js/modal.js、js/preview.js 已先行加载）
   const {
     maarm, $, state, showError, reportError, postWindowAction, escHtml,
+    waitFor, twoFrames,
     openModal, showGamepadNotice,
     setPreviewPlayState, enterPreviewFullscreen, exitPreviewFullscreen,
   } = window.MaaRM;
@@ -593,6 +594,23 @@
     el.classList.toggle('maarm-toggle--active', on);
     el.setAttribute('aria-checked', String(on));
   }
+
+  // 本模块拥有的预热面：数据占用面板（等回包才开窗，迟到的回包由 finally 收掉）。
+  window.MaaRM.registerWarmup({
+    label: '数据占用',
+    order: 20,
+    async run() {
+      const modal = await openDataUsage();
+      if (!modal) return false;
+      try {
+        const ready = await waitFor(() => modal.card.querySelector('.space-row'), 900);
+        await twoFrames();
+        return ready;
+      } finally {
+        modal.close();
+      }
+    },
+  });
 
   // ---------- 导出到 window.MaaRM ----------
   Object.assign(window.MaaRM, {

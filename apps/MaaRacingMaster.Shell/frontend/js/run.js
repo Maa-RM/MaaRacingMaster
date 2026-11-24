@@ -7,7 +7,7 @@
 
   // 共享物导入（js/rpc.js、js/settings.js、js/modal.js 已先行加载）
   const {
-    maarm, $, state, reportError, showError,
+    maarm, $, state, reportError, showError, waitFor, twoFrames,
     renderModulePages, openModal,
     syncDashboardCenter, refreshDashboardRunState,
   } = window.MaaRM;
@@ -870,6 +870,23 @@
       showError('后台已断开，停止指令没能送达');
     }
   };
+
+  // 本模块拥有的预热面：模块管理弹窗。入口只按 order 跑，不关心弹窗内部结构。
+  window.MaaRM.registerWarmup({
+    label: '模块管理',
+    order: 10,
+    async run() {
+      const modal = openManageModal();
+      if (!modal) return null;   // 运行中列表锁定，弹窗打不开（不算失败）
+      try {
+        const ready = await waitFor(() => modal.card.querySelector('.task-gallery-cell'), 900);
+        await twoFrames();
+        return ready;
+      } finally {
+        modal.close();
+      }
+    },
+  });
 
   // ---------- 导出到 window.MaaRM ----------
   Object.assign(window.MaaRM, {

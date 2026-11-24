@@ -43,8 +43,17 @@ def test_warmup_steps_have_floor_and_failure_isolation():
     assert "console.error('[warmup]'" in app, "单步失败只记日志，不得阻断收尾"
     assert "await pollDashboard()" in app, (
         "数据页预热必须等看板数据真正渲染：只切页面不拉数据，首次点击仍会卡")
-    assert "BOOT_SURFACES" in app, "弹窗预热必须是集中维护的清单，便于新增入口时补登记"
-    assert "环境中心" in app, "环境中心曾因漏登记在首次打开时卡顿，必须留在预热清单里"
+    assert "warmupSurfaces" in app, "启动入口只跑注册表；弹窗预热不再维护中央清单"
+    assert "registerWarmup" in app, "入口自己拥有的预热面也要走注册"
+
+
+def test_each_feature_registers_its_own_warmup_surface():
+    """新增弹窗时应改它自己的模块，而不是回来改启动入口。"""
+    for name in ("run.js", "settings.js", "env-center.js", "achievement.js"):
+        src = (SHELL / "frontend" / "js" / name).read_text(encoding="utf-8-sig")
+        assert "registerWarmup" in src, f"{name} 应自己登记预热面"
+    env = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
+    assert "环境中心" in env, "环境中心必须登记预热面（漏了首次打开会卡）"
 
 
 def test_marker_only_written_when_warmup_complete():
@@ -60,20 +69,22 @@ def test_marker_only_written_when_warmup_complete():
 
 
 def test_env_center_placeholder_is_not_treated_as_ready():
-    app = APP.read_text(encoding="utf-8-sig")
-    assert "正在读取" in app, "环境中心的占位文案不能算作就绪，否则预热等于没等"
+    env = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
+    assert "正在读取" in env, "环境中心的占位文案不能算作就绪，否则预热等于没等"
 
 
 def test_warmup_closes_only_its_own_dialogs():
     """预热不得按 Esc 关最顶层弹窗：那会误关启动体检，也拦不住迟到的弹窗。"""
-    app = APP.read_text(encoding="utf-8-sig")
-    assert "useBootModal" in app and "_bootModals" in app
-    assert "closeTopModal" not in app, "禁止恢复「按 Esc 关最顶层」的旧做法"
-    for api in ("openManageModal", "openDataUsage", "openOptimizerCenter", "showVigemDialog"):
-        assert api in app, f"预热应通过 {api} 拿到自己打开的弹窗句柄"
-    run = (SHELL / "frontend" / "js" / "run.js").read_text(encoding="utf-8-sig")
-    settings = (SHELL / "frontend" / "js" / "settings.js").read_text(encoding="utf-8-sig")
-    env_center = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
-    assert "openManageModal" in run, "模块管理弹窗必须把句柄交给调用方"
-    assert "openDataUsage" in settings
-    assert "openOptimizerCenter" in env_center, "环境中心弹窗入口在 env-center.js"
+    files = {
+        name: (SHELL / "frontend" / name).read_text(encoding="utf-8-sig")
+        for name in ("app.js", "js/run.js", "js/settings.js", "js/env-center.js", "js/achievement.js")
+    }
+    for name, src in files.items():
+        assert "closeTopModal" not in src, f"{name} 不得恢复「按 Esc 关最顶层」的旧做法"
+    for name in ("js/run.js", "js/settings.js", "js/env-center.js"):
+        assert "finally" in files[name] and "modal.close()" in files[name], (
+            f"{name} 的预热面必须用句柄在 finally 里关闭自己打开的弹窗")
+    assert "openManageModal" in files["js/run.js"], "模块管理弹窗必须把句柄交给调用方"
+    assert "openDataUsage" in files["js/settings.js"]
+    assert "openOptimizerCenter" in files["js/env-center.js"]
+    assert "showVigemDialog" in files["app.js"]

@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const { maarm, showError, openModal, escHtml } = window.MaaRM;
+  const { maarm, showError, openModal, escHtml, waitFor, twoFrames, delay } = window.MaaRM;
 
   // ---------- 注册表权限优化（启动体检 + 环境中心「权限优化」tab） ----------
   // 渲染单个优化项（三态行式卡片）：available===false→无需处理；optimized→已优化；否则待优化。
@@ -406,6 +406,38 @@
       ],
     });
   }
+
+  // 本模块拥有的预热面：环境中心三个页签。占位文案「正在读取…」不算就绪。
+  window.MaaRM.registerWarmup({
+    label: '环境中心',
+    order: 30,
+    async run() {
+      const modal = openOptimizerCenter();
+      if (!modal) return false;
+      try {
+        const opened = await waitFor(() => modal.card.querySelector('.env-tabs'), 700);
+        if (!opened) return false;
+        const paneReady = (el) => {
+          const t = el.textContent.trim();
+          return t.length > 0 && t.indexOf('正在读取') < 0;
+        };
+        let allReady = true;
+        for (const pane of ['pane-perm', 'pane-dep', 'pane-runtime']) {
+          const tab = modal.card.querySelector('.env-tab[data-pane="' + pane + '"]');
+          const paneEl = modal.card.querySelector('#' + pane);
+          if (!tab || !paneEl) continue;
+          tab.click();
+          const ready = await waitFor(() => paneReady(paneEl), 1200);
+          allReady = allReady && ready;
+          await twoFrames();
+          await delay(60);
+        }
+        return allReady;
+      } finally {
+        modal.close();
+      }
+    },
+  });
 
   Object.assign(window.MaaRM, { checkRegistryOptimizations, openOptimizerCenter });
 })();

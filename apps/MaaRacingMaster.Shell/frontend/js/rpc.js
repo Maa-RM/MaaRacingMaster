@@ -150,6 +150,41 @@ window.MaaRM = (function () {
     ));
   }
 
+  // 预热面注册表：各功能在加载时登记自己的预热项，启动入口只负责按 order 跑一遍。
+  // 项：{ label, order, run() }；run 返回 true=已就绪、false=尝试了但没画出来、null=本次不适用。
+  const warmupSurfaces = [];
+  function registerWarmup(surface) {
+    if (surface && surface.label && typeof surface.run === 'function') {
+      warmupSurfaces.push(surface);
+    }
+  }
+
+  // 等界面条件成立（50ms 轮询）；超时返回 false，不抛错。
+  function waitFor(check, timeoutMs) {
+    const started = performance.now();
+    return new Promise((resolve) => {
+      const tick = () => {
+        let ok = false;
+        try { ok = !!check(); } catch (e) { ok = false; }
+        if (ok) { resolve(true); return; }
+        if (performance.now() - started >= timeoutMs) { resolve(false); return; }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  // 等两帧：刚插入的 DOM 真正完成一次绘制（预热判就绪用）。
+  function twoFrames() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => { requestAnimationFrame(resolve); });
+    });
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => { setTimeout(resolve, ms); });
+  }
+
   // 插入本地图标（icons.js 的静态 SVG 串）。这是远程渲染路径上唯一允许 innerHTML 的
   // 地方：源串是本仓库静态资源、与远程数据无关，静态锁（tests/test_frontend_remote_render.py）
   // 据此把「远程字段 + innerHTML」的组合钉死在这一处之外。
@@ -173,7 +208,11 @@ window.MaaRM = (function () {
   // 保证唯一真源在本文件。初始为空（无面板）——真实值由展开/初始化按任务列表写入。
   let panelModuleId = '';
 
-  const MaaRM = { maarm, $, state, showError, reportError, setInlineStatus, mkEl, escHtml, appendIcon, postWindowAction };
+  const MaaRM = {
+    maarm, $, state, showError, reportError, setInlineStatus, mkEl, escHtml,
+    registerWarmup, warmupSurfaces, waitFor, twoFrames, delay,
+    appendIcon, postWindowAction,
+  };
   Object.defineProperty(MaaRM, 'panelModuleId', {
     get: () => panelModuleId,
     set: (v) => { panelModuleId = v; },

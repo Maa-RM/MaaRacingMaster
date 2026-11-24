@@ -11,7 +11,7 @@
   'use strict';
 
   // 共享物：rpc.js / modal.js 已先行加载（见 index.html 脚本序）
-  const { maarm, openModal, showError } = window.MaaRM;
+  const { maarm, openModal, showError, waitFor, twoFrames } = window.MaaRM;
 
   const TIERS = [
     { id: 'normal', label: '普通', color: '#1F2328' },
@@ -679,4 +679,18 @@
   });
 
   window.MaaRM.achievements = { open, close, refresh };
+
+  // 本模块拥有的预热面：成就管理整页覆盖层。
+  window.MaaRM.registerWarmup({
+    label: '成就页',
+    order: 40,
+    async run() {
+      open();
+      const shown = await waitFor(() => document.querySelector('#ach-sheet .maarm-ach-card'), 1000);
+      await twoFrames();
+      close();
+      await waitFor(() => document.getElementById('ach-sheet').hidden, 700);
+      return shown;
+    },
+  });
 })();
