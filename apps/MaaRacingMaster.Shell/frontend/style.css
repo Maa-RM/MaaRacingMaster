@@ -55,6 +55,7 @@
   /* 双列页面（主控/数据/设置）与成就页的内容版心：窄窗口仍是 12px 页边，
      宽窗口内容居中、不再拉满。关于页是单列长文，单列自己的宽度另算（见 .about-container） */
   --maarm-page-max: 1440px;
+  --maarm-rail-width: 420px;   /* 双列页右栏固定宽度（数据/设置/主控共用） */
 
   /* 圆角 */
   --maarm-radius-sm: 6px;
@@ -223,10 +224,12 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .page.hidden { display: none; }
 /* 双列页面的内容版心：数据/设置页由模板包一层；主控页 .control-cols 与成就页
    .maarm-ach-inner 引用同一个 --maarm-page-max，避免出现第二份宽度数字。 */
-.page-inner {
+.page-inner,
+#page-control .control-cols {
   width: 100%; max-width: var(--maarm-page-max); margin: 0 auto;
-  display: flex; gap: 12px; align-items: flex-start; min-height: 100%;
+  display: flex; gap: 12px; min-height: 100%;
 }
+.page-inner { align-items: flex-start; }
 .page-about { overflow-y: auto; display: block; }
 .page-about.hidden { display: none; }
 
@@ -338,19 +341,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 100%; }
 /* 数据页布局：右栏固定宽度（预览区 16:9 尺寸稳定、不随窗口缩放），左栏自由变换 */
 #page-data .col-left { flex: 1 1 auto; }
-#page-data .col-right { flex: 0 0 420px; }
+#page-data .col-right { flex: 0 0 var(--maarm-rail-width); }
 /* 设置页与主控/数据同一横向骨架：左列自适应、右栏固定 420。
    62% / 38% 的比例分栏会让设置页在宽窗口下比其他两页多出一大截右栏，观感割裂。 */
 #page-settings .col-left { flex: 1 1 auto; }
-#page-settings .col-right { flex: 0 0 420px; }
+#page-settings .col-right { flex: 0 0 var(--maarm-rail-width); }
 
 /* 主控页两列装进 .control-cols（内容高度容器，高度跟随左列内容、窗口够高时撑满）：
    日志卡要 sticky 钉在视口上，其包含块必须与左列内容等高——直接挂在 .page 下时
-   包含块只有视口高，滚动时没有行程可钉。 */
-#page-control .control-cols {
-  display: flex; gap: 12px; align-items: stretch; width: 100%; min-height: 100%;
-  max-width: var(--maarm-page-max); margin: 0 auto;
-}
+   包含块只有视口高，滚动时没有行程可钉。宽度/版心/间距由上面的双列骨架共用。 */
+#page-control .control-cols { align-items: stretch; }
 #page-control .col-left { flex: 1 1 auto; min-height: 0; }
 /* 日志列钉住跟随滚动：高度 = 视口 − 顶栏 52 − 底栏 44 − 页面上下 padding 24。
    top 写 0 而非 12：Chromium 的 sticky 判定基线是滚动容器内容盒顶缘（已含页面
@@ -358,7 +358,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
    min-height:0 覆盖基础规则的 min-height:100%（那会把钉住的列重新撑到与左列
    内容等高，sticky 行程归零） */
 #page-control .col-right {
-  flex: 0 0 420px; align-self: flex-start;
+  flex: 0 0 var(--maarm-rail-width); align-self: flex-start;
   position: sticky; top: 0;
   height: calc(100vh - 120px); min-height: 0;
 }
