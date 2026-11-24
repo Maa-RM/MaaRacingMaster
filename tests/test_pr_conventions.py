@@ -26,7 +26,7 @@ from tools.pr_conventions import (  # noqa: E402
     parse_numstat_path,
     size_warnings,
     test_metrics as count_metrics,
-    test_roots as collect_roots,
+    collection_config as read_config,
     test_subtraction as count_subtraction,
 )
 
@@ -267,25 +267,50 @@ def test_subtraction_silent_on_pure_rename(repo: Path) -> None:
     assert (removed, added_skip) == (0, 0)
 
 
-def test_roots_union_keeps_base_root_when_head_drops_it(repo: Path) -> None:
-    # PR 删收集目录 + 删该目录用例：base 侧仍把目录留在保护面内
-    _write(repo, "legacy/tests/test_l.py", TWO_TESTS)
-    _write(repo, "pyproject.toml", PYPROJECT.replace('"plugin/tests"', '"plugin/tests", "legacy/tests"'))
-    _commit(repo, "base adds legacy root")
+def test_subtraction_counts_test_moved_out_of_collection(repo: Path) -> None:
+    # 回归：测试改成普通辅助文件后 pytest 不再收集，旧实现仍按两侧源码计数、报 0 减法
     _branch(repo)
-    _write(repo, "pyproject.toml", PYPROJECT)
-    _write(repo, "legacy/tests/test_l.py", ONE_TEST)
-    _commit(repo, "drop root and test")
-    roots, _ = collect_roots(repo, "master", "topic")
-    assert "legacy/tests" in roots
-    removed, _ = count_subtraction(repo, "master", "topic", (("legacy/tests/test_l.py", "legacy/tests/test_l.py"),))
-    assert removed == 1
+    (repo / "tests/helpers").mkdir(exist_ok=True)
+    _git(repo, "mv", "tests/test_a.py", "tests/helpers/check_a.py")
+    _commit(repo, "move out of collection scope")
+    removed, _ = count_subtraction(repo, "master", "topic", (("tests/test_a.py", "tests/helpers/check_a.py"),))
+    assert removed == 2
 
 
-def test_roots_fallback_without_pyproject(tmp_path: Path) -> None:
+def test_subtraction_counts_helper_moved_into_collection(repo: Path) -> None:
+    _write(repo, "tests/helpers/check_b.py", "import pytest\n\npytestmark = pytest.mark.skip(reason='x')\n" + TWO_TESTS)
+    _commit(repo, "base has non-collected helper")
+    _branch(repo)
+    _git(repo, "mv", "tests/helpers/check_b.py", "tests/test_b.py")
+    _commit(repo, "move into collection scope")
+    removed, added_skip = count_subtraction(repo, "master", "topic", (("tests/helpers/check_b.py", "tests/test_b.py"),))
+    assert (removed, added_skip) == (0, 2)
+
+
+def test_subtraction_sees_collection_root_dropped(repo: Path) -> None:
+    # 回归：只改收集配置、不改测试文件——旧实现按并集看文件，删收集根完全漏检
+    _branch(repo)
+    _write(repo, "pyproject.toml", PYPROJECT.replace(', "plugin/tests"', ""))
+    _commit(repo, "drop plugin test root")
+    removed, _ = count_subtraction(repo, "master", "topic", (("pyproject.toml", "pyproject.toml"),))
+    assert removed == 2
+
+
+def test_subtraction_sees_collection_root_added_with_skips(repo: Path) -> None:
+    repo_extra = "extra/tests/test_e.py"
+    _write(repo, repo_extra, "import pytest\n\npytestmark = pytest.mark.skip(reason='x')\n" + TWO_TESTS)
+    _commit(repo, "base has non-collected extra tests")
+    _branch(repo)
+    _write(repo, "pyproject.toml", PYPROJECT.replace('"plugin/tests"', '"plugin/tests", "extra/tests"'))
+    _commit(repo, "add extra root")
+    _, added_skip = count_subtraction(repo, "master", "topic", (("pyproject.toml", "pyproject.toml"),))
+    assert added_skip == 2
+
+
+def test_config_fallback_without_pyproject(tmp_path: Path) -> None:
     _git(tmp_path, "init", "-q", "-b", "master")
     _write(tmp_path, "tests/test_a.py", ONE_TEST)
     _commit(tmp_path, "no pyproject")
-    roots, patterns = collect_roots(tmp_path, "master", "master")
+    roots, patterns = read_config(tmp_path, "master")
     assert roots == ("tests",)
     assert "test_*.py" in patterns
