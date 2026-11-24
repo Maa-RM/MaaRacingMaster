@@ -420,7 +420,7 @@ ClearType 式次像素抗锯齿，文字转灰度渲染；字号越小越明显�
 ## 环境中心（设置页）
 
 设置页「运行环境」卡入口（`#btn-optimizer`，样式沿用 `.maarm-tool-btn--block` 不另设视觉）
-打开 `js/settings.js` `openOptimizerCenter()`：三 tab 弹层，tab 视觉对齐顶部导航
+打开 `js/env-center.js` 的 `openOptimizerCenter()`：三 tab 弹层，tab 视觉对齐顶部导航
 （文字 + 主色下划线，`.env-tabs` / `.env-pane`）。
 
 - **「权限优化」tab**：注册表优化项（`get_registry_optimizations`），三态卡片

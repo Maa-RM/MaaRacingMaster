@@ -143,6 +143,13 @@ window.MaaRM = (function () {
     return node;
   }
 
+  // HTML 转义：本地模板拼接（看板、环境中心等）统一走它；远程文本优先走 textContent。
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
   // 插入本地图标（icons.js 的静态 SVG 串）。这是远程渲染路径上唯一允许 innerHTML 的
   // 地方：源串是本仓库静态资源、与远程数据无关，静态锁（tests/test_frontend_remote_render.py）
   // 据此把「远程字段 + innerHTML」的组合钉死在这一处之外。
@@ -166,7 +173,7 @@ window.MaaRM = (function () {
   // 保证唯一真源在本文件。初始为空（无面板）——真实值由展开/初始化按任务列表写入。
   let panelModuleId = '';
 
-  const MaaRM = { maarm, $, state, showError, reportError, setInlineStatus, mkEl, appendIcon, postWindowAction };
+  const MaaRM = { maarm, $, state, showError, reportError, setInlineStatus, mkEl, escHtml, appendIcon, postWindowAction };
   Object.defineProperty(MaaRM, 'panelModuleId', {
     get: () => panelModuleId,
     set: (v) => { panelModuleId = v; },

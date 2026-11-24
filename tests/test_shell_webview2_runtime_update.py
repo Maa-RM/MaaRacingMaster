@@ -19,7 +19,7 @@ UPDATER = REPO / "apps" / "MaaRacingMaster.Shell" / "WebView2RuntimeUpdater.cs"
 RESTARTER = REPO / "apps" / "MaaRacingMaster.Shell" / "AppRestarter.cs"
 PROGRAM = REPO / "apps" / "MaaRacingMaster.Shell" / "Program.cs"
 MAINWINDOW = REPO / "apps" / "MaaRacingMaster.Shell" / "MainWindow.xaml.cs"
-SETTINGS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "settings.js"
+ENV_CENTER = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "env-center.js"
 REMOTE = REPO / "maaracing_master" / "core" / "remote_meta.py"
 
 
@@ -73,7 +73,7 @@ def test_update_is_single_flight():
 
 
 def test_runtime_tab_wired_and_startup_check_unchanged():
-    src = SETTINGS.read_text(encoding="utf-8")
+    src = ENV_CENTER.read_text(encoding="utf-8")
     assert 'data-pane="pane-runtime"' in src
     assert "maarm.call('webview2_status'" in src
     assert "maarm.call('webview2_update'" in src
@@ -85,7 +85,7 @@ def test_runtime_tab_wired_and_startup_check_unchanged():
 def test_runtime_buttons_are_state_driven():
     # 用户回归：已就绪时不能再常驻红色“更新到最新”；待重启时必须给“重启本程序”；
     # 就绪态的维护按钮不能叫“检查更新”——它真的会下载并安装，见下一条断言。
-    src = SETTINGS.read_text(encoding="utf-8")
+    src = ENV_CENTER.read_text(encoding="utf-8")
     item = src[src.index("function runtimeItemHtml"):src.index("async function renderRuntimeList")]
     assert 'data-wv2="restart"' in item
     assert "重启本程序" in item
@@ -97,7 +97,7 @@ def test_runtime_buttons_are_state_driven():
 
 def test_update_button_does_not_pretend_to_be_a_check():
     # 微软没有轻量版本查询：点一次就下载约 1.7MB 并幂等安装，忙碌文案必须如实说明
-    src = SETTINGS.read_text(encoding="utf-8")
+    src = ENV_CENTER.read_text(encoding="utf-8")
     assert "下载安装中" in src
     assert "约 1.7MB" in src
 
@@ -107,7 +107,7 @@ def test_update_channel_health_is_surfaced():
     src = UPDATER.read_text(encoding="utf-8")
     assert "LastCheckSuccess" in src
     assert "UpdateChannelHealth" in src
-    settings = SETTINGS.read_text(encoding="utf-8")
+    settings = ENV_CENTER.read_text(encoding="utf-8")
     assert "自动更新上次成功检查" in settings
     assert "90 天" in settings
 

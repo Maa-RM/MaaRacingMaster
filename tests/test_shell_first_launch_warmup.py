@@ -73,5 +73,7 @@ def test_warmup_closes_only_its_own_dialogs():
         assert api in app, f"预热应通过 {api} 拿到自己打开的弹窗句柄"
     run = (SHELL / "frontend" / "js" / "run.js").read_text(encoding="utf-8-sig")
     settings = (SHELL / "frontend" / "js" / "settings.js").read_text(encoding="utf-8-sig")
+    env_center = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
     assert "openManageModal" in run, "模块管理弹窗必须把句柄交给调用方"
-    assert "openDataUsage" in settings and "openOptimizerCenter" in settings
+    assert "openDataUsage" in settings
+    assert "openOptimizerCenter" in env_center, "环境中心弹窗入口在 env-center.js"
