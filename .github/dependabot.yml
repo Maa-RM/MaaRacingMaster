@@ -1,0 +1,18 @@
+# 只开 Actions 生态：配合 .github/workflows/actions.lock 让钉住的提交能持续更新。
+# 不开 pip / 版本漂移 PR —— 运行时依赖的升级走人工决定（上界策略见 requirements.txt），
+# 依赖安全告警在仓库 Settings 里单独开，不落到本文件。
+#
+# 锁文件同步：Dependabot 为已接入 lockfile 的 workflow 提版本更新时，会在同一个 PR 里
+# 重新生成 actions.lock 对应条目，无需额外配置。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # 一周一个分组 PR，避免多条更新互相冲突；master 只接受经审查的合并。
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 3

@@ -43,7 +43,7 @@ L3 / L4 导航型文档可省去「真源路由」一行。**只声明与指向�
 机检形态：[`tests/test_doc_no_copied_numbers.py`](../tests/test_doc_no_copied_numbers.py)。
 CODE_WIKI 正文的过程残留（日期 / 会话戳 / 轮次 / 阶段代号 / step / 迁移期号 / 计数快照）另由
 [`tools/check_repo_hygiene.py`](../tools/check_repo_hygiene.py) **R11** 棘轮守卫：存量入基线、
-新增即红，历史证据指向 commit。归档区 CODE_WIKI（历史快照）与 ADR / update_log 的合法历史叙述不在面内。
+新增即红，历史证据按 [AGENTS.md](../AGENTS.md) 红线 6 的三类口径留痕（不一律指 commit）。归档区 CODE_WIKI（历史快照）与 ADR / update_log 的合法历史叙述不在面内。
 
 ### Why 归属
 
@@ -83,7 +83,7 @@ CODE_WIKI 正文的过程残留（日期 / 会话戳 / 轮次 / 阶段代号 / s
 
 ### 退役四步（顺序不可换，与实验区出口同构）
 
-1. **结论迁 home**：成立 / 不成立 / 条件成立的最终结论写进「归属去向」那一行填的地方（ADR / 某个 `CODE_WIKI.md` / `RULES.md` / issue），证据指针写 **commit**，不写 plan 路径。
+1. **结论迁 home**：成立 / 不成立 / 条件成立的最终结论写进「归属去向」那一行填的地方（ADR / 某个 `CODE_WIKI.md` / `RULES.md` / issue），证据指针按 [AGENTS.md](../AGENTS.md) 红线 6 的三类口径写，不写 plan 路径。
 2. **资产提升或随删**：plan 引用的脚本、数据、探针，仍被消费的移入 `tools/` 正式位或消费它的插件并改好引用；没人用的随文件删除。判据同"第二个使用者"：今天真实存在才提升。
 3. **拔引用**：全仓 grep 文件名，L0~L3 文档与生产 / 测试 / 运维代码零命中（R3 是这一步的验收）。
 4. **删除**：走回收站——plan 无 git 历史，删错了 `git checkout` 救不回来。
