@@ -59,6 +59,17 @@ def test_data_page_uses_unified_dashboard_route():
     assert "module_id" in body, "读看板必须点名模块，不能依赖隐式的当前模块"
 
 
+def test_dashboard_polling_reuses_inflight_request():
+    """3 秒轮询不得把慢回包作废：同一看板复用同一在途请求。"""
+    src = SETTINGS_JS.read_text(encoding="utf-8")
+    body = _js_function_body(src, "async function loadDashboard() {")
+    assert "_dashInflight" in body, "同一看板的在途请求必须被复用"
+    assert "_dashInflight.id === mod.id" in body
+    assert "return _dashInflight.promise" in body
+    assert body.count("++_dashReqSeq") == 1, (
+        "请求序号只在新请求开始时递增；轮询复用不得让在途响应失效")
+
+
 def test_list_renderer_supports_parts_groups_and_paging():
     """行内着色、日期组头与分页是 list 的共享能力；缺一处前端会静默退化。"""
     src = SETTINGS_JS.read_text(encoding="utf-8")
