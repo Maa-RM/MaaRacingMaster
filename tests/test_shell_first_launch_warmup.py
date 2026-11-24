@@ -45,3 +45,33 @@ def test_warmup_steps_have_floor_and_failure_isolation():
         "数据页预热必须等看板数据真正渲染：只切页面不拉数据，首次点击仍会卡")
     assert "BOOT_SURFACES" in app, "弹窗预热必须是集中维护的清单，便于新增入口时补登记"
     assert "环境中心" in app, "环境中心曾因漏登记在首次打开时卡顿，必须留在预热清单里"
+
+
+def test_marker_only_written_when_warmup_complete():
+    """完成标记只代表「这次真的画完了」：失败、超时或时限兜底都留在冷态。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "BOOT_TOTAL_MS" in app, "冷启动必须有从脚本开始算的总时限"
+    assert "withDeadline(" in app, "单步等待必须受总时限约束"
+    assert "armBootDeadline()" in app, "初始化本身可能挂住，必须有不依赖它的兜底放行"
+    assert "if (ok && !_bootCutShort" in app, \
+        "通知壳落标记必须被「全部成功」条件包住"
+    assert "_bootCutShort = true" in app
+    assert "本次不写完成标记" in app, "超时兜底只放行界面，不得写标记"
+
+
+def test_env_center_placeholder_is_not_treated_as_ready():
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "正在读取" in app, "环境中心的占位文案不能算作就绪，否则预热等于没等"
+
+
+def test_warmup_closes_only_its_own_dialogs():
+    """预热不得按 Esc 关最顶层弹窗：那会误关启动体检，也拦不住迟到的弹窗。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "useBootModal" in app and "_bootModals" in app
+    assert "closeTopModal" not in app, "禁止恢复「按 Esc 关最顶层」的旧做法"
+    for api in ("openManageModal", "openDataUsage", "openOptimizerCenter", "showVigemDialog"):
+        assert api in app, f"预热应通过 {api} 拿到自己打开的弹窗句柄"
+    run = (SHELL / "frontend" / "js" / "run.js").read_text(encoding="utf-8-sig")
+    settings = (SHELL / "frontend" / "js" / "settings.js").read_text(encoding="utf-8-sig")
+    assert "openManageModal" in run, "模块管理弹窗必须把句柄交给调用方"
+    assert "openDataUsage" in settings and "openOptimizerCenter" in settings

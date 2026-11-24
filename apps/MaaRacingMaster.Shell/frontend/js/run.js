@@ -467,7 +467,7 @@
   }
 
   function openManageModal() {
-    if (state.is_running) return; // 运行中列表锁定（勾选/拖拽/增删同一把锁）
+    if (state.is_running) return null; // 运行中列表锁定（勾选/拖拽/增删同一把锁）
     // 卡片尺寸随窗口变化：重算描边路径（新建的 path 直接落在当前选中态，不重播生长动画）。
     // 观察器随弹窗关闭断开——不这么做每开一次弹窗就漏一个。
     let ro = null;
@@ -532,6 +532,7 @@
         showError(err.message);
       }
     });
+    return modal;
   }
 
   // ---------- 断点起点 ----------
@@ -1139,6 +1140,6 @@
 
   // ---------- 导出到 window.MaaRM ----------
   Object.assign(window.MaaRM, {
-    renderTaskList, pollStatus, setStatus, noteConfigSaved,
+    renderTaskList, pollStatus, setStatus, noteConfigSaved, openManageModal,
   });
 })();

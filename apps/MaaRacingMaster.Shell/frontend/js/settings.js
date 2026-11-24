@@ -203,7 +203,7 @@
         + '<span class="space-size">' + fmtBytes(x.bytes) + '</span>'
         + '</li>';
     }).join('');
-    openModal({
+    return openModal({
       title: '调试数据占用',
       maxWidth: 580,
       bodyHtml: '<p class="space-root">' + escHtml((d && d.root) || '') + '</p>'
@@ -440,6 +440,7 @@
     refresh();
     renderDepList(depEl);
     renderRuntimeList(runtimeEl);
+    return modal; // 预热等调用方据此只关自己打开的这一张
   }
 
   // 启动体检：存在未优化且未忽略的项则弹一键优化引导（按项忽略，新增优化项不受影响）
@@ -1376,5 +1377,7 @@
     syncDashboardCenter,
     refreshDashboardRunState,
     refreshDebugState,
+    openDataUsage,
+    openOptimizerCenter,
   });
 })();

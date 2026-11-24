@@ -28,7 +28,8 @@
   // VIGEM_DL_URL 是本仓库静态常量（非远程数据），只用于弹框里的 <a> 与后端失败兜底。
   const VIGEM_DL_URL = 'https://github.com/nefarius/ViGEmBus/releases/latest';
   function showVigemDialog(detailMsg) {
-    openModal({
+    void detailMsg;
+    return openModal({
       title: '缺少 ViGEmBus 驱动',
       titleColor: 'var(--maarm-danger,#ef4444)',
       bodyHtml:
@@ -52,7 +53,6 @@
         { text: '暂不', onClick: (modal) => modal.close() },
       ],
     });
-    void detailMsg;
   }
   // run.js 的 _doStart 先于本文件加载，经 MaaRM 延迟取用
   Object.assign(window.MaaRM, { showVigemDialog });
@@ -1079,6 +1079,12 @@
   // 新增弹窗入口时在 BOOT_SURFACES 补一行；漏了只影响该弹窗首次打开的流畅度。
   const BOOT_MIN_MS = 1200;   // 保底时长：预热再快也让遮罩停留一会儿，不闪一下
   const BOOT_FILL = 0.92;     // 步骤走完先到 92%，保底时长结束时再补满
+  // 总时限：从脚本开始执行算起，到必须释放界面的上限。正常冷启动约 3–4 秒；
+  // 超时只保证界面可用，本次不写完成标记（下次冷启动重试预热）。
+  const BOOT_TOTAL_MS = 12000;
+  const BOOT_T0 = performance.now();
+  let _bootReleased = false;   // 遮罩已经放过（正常收尾或时限兜底）
+  let _bootCutShort = false;   // 时限兜底先放行了界面：本次预热不算完成
 
   function delay(ms) {
     return new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -1096,11 +1102,6 @@
     });
   }
 
-  function clickTool(name) {
-    const btn = document.querySelector('[data-tool="' + name + '"]');
-    if (btn) btn.click();
-  }
-
   // 轮询等待界面条件成立；超时返回 false，不抛错——遮罩不能被一个慢查询卡死
   function waitFor(check, timeoutMs) {
     const started = performance.now();
@@ -1116,10 +1117,48 @@
     });
   }
 
-  async function closeTopModal() {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await waitFor(() => !document.querySelector('.maarm-modal-overlay'), 800);
-    await delay(60);
+  // 给单步套上总时限：到点即拒绝，避免某一步的等待（如看板查询）拖住遮罩
+  function withDeadline(promise, deadline) {
+    const remain = deadline - performance.now();
+    if (remain <= 0) return Promise.reject(new Error('超出启动时限'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('超出启动时限')), remain);
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
+  // 独立的时限兜底：即使初始化请求挂住、预热根本没开始，到点也必须放出界面。
+  // 只放行界面，不写完成标记——没画完的预热下次启动还要重来。
+  function armBootDeadline() {
+    const overlay = $('boot-overlay');
+    if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
+    setTimeout(() => {
+      if (_bootReleased) return;
+      _bootCutShort = true;
+      _bootReleased = true;
+      const stepEl = overlay.querySelector('.boot-step');
+      if (stepEl) stepEl.textContent = '启动较慢，先进入界面';
+      overlay.classList.add('boot-overlay--done');
+      setTimeout(() => { overlay.hidden = true; }, 260);
+      console.warn('[warmup] 超出启动时限，先释放界面；本次不写完成标记');
+    }, BOOT_TOTAL_MS);
+  }
+
+  // 预热打开的弹窗统一记账：只关自己开的这一张，被打断时也能在收尾一并关掉。
+  // 不再用「按 Esc 关最顶层」——那会误关启动体检等别人打开的弹窗。
+  const _bootModals = new Set();
+  async function useBootModal(modal, work) {
+    if (!modal) return false;
+    _bootModals.add(modal);
+    try {
+      return await work(modal);
+    } finally {
+      modal.close();
+      _bootModals.delete(modal);
+    }
   }
 
   // 需要预热的弹窗入口：打开 → 等异步内容出现 → 关闭。全部在遮罩后面执行。
@@ -1129,63 +1168,82 @@
       async run() {
         showOnlyPage('control');
         await twoFrames();
-        const btn = $('btn-manage');
-        if (!btn || state.is_running) return;   // 运行中列表锁定，弹窗打不开
-        btn.click();
-        await waitFor(() => document.querySelector('#manage-grid .task-gallery-cell'), 900);
-        await twoFrames();
-        await closeTopModal();
+        const modal = window.MaaRM.openManageModal ? window.MaaRM.openManageModal() : null;
+        if (!modal) return null;   // 运行中列表锁定，弹窗打不开（不算失败）
+        return useBootModal(modal, async (m) => {
+          const ready = await waitFor(() => m.card.querySelector('.task-gallery-cell'), 900);
+          await twoFrames();
+          return ready;
+        });
       },
     },
     {
       label: '数据占用',
       async run() {
-        clickTool('folder');
-        await waitFor(() => document.querySelector('.maarm-modal-card .space-row'), 900);
-        await twoFrames();
-        await closeTopModal();
+        if (!window.MaaRM.openDataUsage) return null;
+        // 这个入口要等后端回包才开弹窗：若外层已按总时限放行，回包落地后
+        // useBootModal 的 finally 仍会立刻把它关掉，不会留在界面上。
+        const modal = await window.MaaRM.openDataUsage();
+        if (!modal) return false;
+        return useBootModal(modal, async (m) => {
+          const ready = await waitFor(() => m.card.querySelector('.space-row'), 900);
+          await twoFrames();
+          return ready;
+        });
       },
     },
     {
       label: '环境中心',
       async run() {
-        clickTool('env');
-        await waitFor(() => document.querySelector('.maarm-modal-card .env-tabs'), 700);
-        const card = document.querySelector('.maarm-modal-card');
-        if (!card) return;
-        // 三个页签各自异步渲染内容：逐页激活并等内容出现，三种版面才都会被画一遍
-        for (const pane of ['pane-perm', 'pane-dep', 'pane-runtime']) {
-          const tab = card.querySelector('.env-tab[data-pane="' + pane + '"]');
-          const paneEl = card.querySelector('#' + pane);
-          if (!tab || !paneEl) continue;
-          tab.click();
-          await waitFor(() => paneEl.textContent.trim().length > 0, 1200);
-          await twoFrames();
-          await delay(60);
-        }
-        await closeTopModal();
+        const modal = window.MaaRM.openOptimizerCenter ? window.MaaRM.openOptimizerCenter() : null;
+        if (!modal) return false;
+        return useBootModal(modal, async (m) => {
+          const opened = await waitFor(() => m.card.querySelector('.env-tabs'), 700);
+          if (!opened) return false;
+          // 三个页签各自异步渲染内容：逐页激活并等内容出现，三种版面才都会被画一遍。
+          // 「正在读取…」是占位态，不能算就绪——否则预热等于没等。
+          const paneReady = (el) => {
+            const t = el.textContent.trim();
+            return t.length > 0 && t.indexOf('正在读取') < 0;
+          };
+          let allReady = true;
+          for (const pane of ['pane-perm', 'pane-dep', 'pane-runtime']) {
+            const tab = m.card.querySelector('.env-tab[data-pane="' + pane + '"]');
+            const paneEl = m.card.querySelector('#' + pane);
+            if (!tab || !paneEl) continue;
+            tab.click();
+            const ready = await waitFor(() => paneReady(paneEl), 1200);
+            allReady = allReady && ready;
+            await twoFrames();
+            await delay(60);
+          }
+          return allReady;
+        });
       },
     },
     {
       label: '成就页',
       async run() {
-        if (!window.MaaRM.achievements) return;
+        if (!window.MaaRM.achievements) return null;
         window.MaaRM.achievements.open();
-        await waitFor(() => document.querySelector('#ach-sheet .maarm-ach-card'), 1000);
+        const shown = await waitFor(() => document.querySelector('#ach-sheet .maarm-ach-card'), 1000);
         await twoFrames();
         window.MaaRM.achievements.close();
         await waitFor(() => document.getElementById('ach-sheet').hidden, 700);
+        return shown;
       },
     },
     {
       label: '驱动引导',
       async run() {
         // 只有缺 ViGEmBus 时才真的会弹；这里手动放一次只为预热它的版面
-        if (!window.MaaRM.showVigemDialog) return;
-        window.MaaRM.showVigemDialog('');
-        await waitFor(() => document.querySelector('.maarm-modal-card'), 700);
-        await twoFrames();
-        await closeTopModal();
+        if (!window.MaaRM.showVigemDialog) return null;
+        const modal = window.MaaRM.showVigemDialog('');
+        if (!modal) return false;
+        return useBootModal(modal, async () => {
+          await twoFrames();
+          return true;
+        });
       },
     },
   ];
@@ -1193,12 +1251,15 @@
   async function runBootWarmup() {
     const overlay = $('boot-overlay');
     if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
+    // 时限兜底已经放过界面（或初始化太久）：不再在用户眼前翻页开弹窗
+    if (_bootReleased) return;
     const bar = overlay.querySelector('.boot-bar i');
     const stepEl = overlay.querySelector('.boot-step');
     const started = performance.now();
+    const deadline = BOOT_T0 + BOOT_TOTAL_MS;
     let done = 0;
     const steps = [
-      ['主控页', async () => { showOnlyPage('control'); await twoFrames(); }],
+      ['主控页', async () => { showOnlyPage('control'); await twoFrames(); return true; }],
       ['数据页', async () => {
         showOnlyPage('data');
         await twoFrames();
@@ -1207,9 +1268,10 @@
         await pollDashboard();
         await twoFrames();
         await delay(80);
+        return true;
       }],
-      ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); }],
-      ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); }],
+      ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); return true; }],
+      ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); return true; }],
       ...BOOT_SURFACES.map((s) => [s.label, () => s.run()]),
     ];
     const total = steps.length;
@@ -1218,32 +1280,48 @@
       bar.style.width = (done / total * BOOT_FILL * 100).toFixed(1) + '%';
       stepEl.textContent = label + '（' + done + ' / ' + total + '）';
     };
+    // 任何一步抛出、返回 false（尝试了但没画出来）或超出总时限，都算本次预热未完成：
+    // 界面照常释放，但不写完成标记，下次冷启动重试。
+    let ok = true;
     for (const [label, run] of steps) {
+      if (performance.now() >= deadline) {
+        ok = false;
+        console.warn('[warmup] 超出总时限，跳过剩余步骤');
+        break;
+      }
       try {
-        await run();
+        const ready = await withDeadline(run(), deadline);
+        if (ready === false) ok = false;
       } catch (e) {
         // 单步失败不阻断后续预热与收尾（遮罩不能因此卡住）
+        ok = false;
         console.error('[warmup]', e);
       }
       advance(label);
     }
-    // 兜底：任何一步留下弹窗都收掉，避免遮罩消失后挡着界面
-    if (document.querySelector('.maarm-modal-overlay')) await closeTopModal();
+    if (_bootCutShort) ok = false;
+    // 兜底：只关预热自己开的弹窗（启动体检等别人打开的不动）
+    for (const m of Array.from(_bootModals)) m.close();
+    _bootModals.clear();
     showOnlyPage('control'); // 预热完回到启动时的主控页
     await twoFrames();
     const remain = BOOT_MIN_MS - (performance.now() - started);
     if (remain > 0) await delay(remain);
     bar.style.width = '100%';
-    stepEl.textContent = '完成';
+    stepEl.textContent = ok ? '完成' : '未完成，下次启动再试';
     await delay(200);
+    _bootReleased = true;
     overlay.classList.add('boot-overlay--done');
     setTimeout(() => { overlay.hidden = true; }, 260);
-    // 通知壳落标记：同一版本的下次启动不再显示遮罩
-    if (window.chrome && window.chrome.webview) {
+    // 只有全部步骤都画完才通知壳落标记：失败或超时留在冷态，下次启动重来
+    if (ok && !_bootCutShort && window.chrome && window.chrome.webview) {
       window.chrome.webview.postMessage({ type: 'warmup-done' });
+    } else if (!ok) {
+      console.warn('[warmup] 本次预热未完成，不写完成标记');
     }
   }
 
   // ---------- 启动 ----------
+  armBootDeadline(); // 独立兜底：初始化请求挂住也要按时放出界面（且不写完成标记）
   init().then(runBootWarmup, runBootWarmup);
 })();
