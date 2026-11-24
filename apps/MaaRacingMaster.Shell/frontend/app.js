@@ -995,6 +995,97 @@
     peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
   }
 
+  // ---------- 首次启动：界面预热（只有冷启动会看到遮罩） ----------
+  // GPU 光栅下，首访的绘制组合要现场编译着色器（100–250ms 的帧停顿）。冷启动时遮罩
+  // 盖住界面，把四个页面与两个重弹窗各画一遍，把编译集中到遮罩期间。热启动由
+  // index.html 头部脚本直接隐藏遮罩，这里直接返回、不产生任何等待。
+  // 进度是「预热步骤」的完成度，不是着色器条数——Chromium 不暴露待编译总量。
+  const BOOT_MIN_MS = 1200;   // 保底时长：预热再快也让遮罩停留一会儿，不闪一下
+  const BOOT_STEPS = 6;
+  const BOOT_FILL = 0.92;     // 步骤走完先到 92%，保底时长结束时再补满
+
+  function delay(ms) {
+    return new Promise((resolve) => { setTimeout(resolve, ms); });
+  }
+
+  function twoFrames() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => { requestAnimationFrame(resolve); });
+    });
+  }
+
+  function showOnlyPage(name) {
+    TAB_ORDER.forEach((p) => {
+      $('page-' + p).classList.toggle('hidden', p !== name);
+    });
+  }
+
+  async function runBootWarmup() {
+    const overlay = $('boot-overlay');
+    if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
+    const bar = overlay.querySelector('.boot-bar i');
+    const stepEl = overlay.querySelector('.boot-step');
+    const started = performance.now();
+    let done = 0;
+    const advance = (label) => {
+      done += 1;
+      bar.style.width = (done / BOOT_STEPS * BOOT_FILL * 100).toFixed(1) + '%';
+      stepEl.textContent = label + '（' + done + ' / ' + BOOT_STEPS + '）';
+    };
+    const steps = [
+      ['主控页', async () => { showOnlyPage('control'); await twoFrames(); }],
+      ['数据页', async () => {
+        showOnlyPage('data');
+        await twoFrames();
+        // 看板内容只在页面可见时拉取（见 loadDashboard），这里等它真正画出来再走，
+        // 否则冷启动后第一次点数据页仍会为看板内容付一次首访编译。
+        await pollDashboard();
+        await twoFrames();
+        await delay(80);
+      }],
+      ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); }],
+      ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); }],
+      ['模块管理', async () => {
+        showOnlyPage('control');
+        await twoFrames();
+        // 走真实入口：列表就在这个弹窗里，它的首访正是冷停顿最长的一处
+        const btn = $('btn-manage');
+        if (btn) btn.click();
+        await delay(280);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await delay(120);
+      }],
+      ['成就页', async () => {
+        if (window.MaaRM.achievements) window.MaaRM.achievements.open();
+        await delay(360);
+        if (window.MaaRM.achievements) window.MaaRM.achievements.close();
+        await delay(140);
+      }],
+    ];
+    for (const [label, run] of steps) {
+      try {
+        await run();
+      } catch (e) {
+        // 单步失败不阻断后续预热与收尾（遮罩不能因此卡住）
+        console.error('[warmup]', e);
+      }
+      advance(label);
+    }
+    showOnlyPage('control'); // 预热完回到启动时的主控页
+    await twoFrames();
+    const remain = BOOT_MIN_MS - (performance.now() - started);
+    if (remain > 0) await delay(remain);
+    bar.style.width = '100%';
+    stepEl.textContent = '完成';
+    await delay(200);
+    overlay.classList.add('boot-overlay--done');
+    setTimeout(() => { overlay.hidden = true; }, 260);
+    // 通知壳落标记：同一版本的下次启动不再显示遮罩
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage({ type: 'warmup-done' });
+    }
+  }
+
   // ---------- 启动 ----------
-  init();
+  init().then(runBootWarmup, runBootWarmup);
 })();

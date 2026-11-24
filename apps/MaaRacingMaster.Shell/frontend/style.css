@@ -91,6 +91,37 @@ body {
   user-select: none;
 }
 
+/* ============ 启动预热遮罩（冷启动专用） ============ */
+/* 显隐由 index.html 头部脚本按 ?warmup=1 决定：热启动首帧前就有 .boot-skip、不会闪；
+   冷启动由 app.js 的预热流程收尾加 .boot-overlay--done 淡出。 */
+.boot-skip .boot-overlay { display: none; }
+.boot-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: var(--maarm-background);
+  opacity: 1; transition: opacity 220ms ease;
+}
+.boot-overlay--done { opacity: 0; pointer-events: none; }
+.boot-mark {
+  width: 88px; height: 88px; border-radius: 22px; margin-bottom: 6px;
+  display: grid; place-items: center;
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  box-shadow: var(--maarm-shadow-sm);
+}
+.boot-mark img { width: 54px; height: 54px; object-fit: contain; }
+.boot-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.boot-desc { font-size: 12px; color: var(--maarm-foreground-muted); }
+.boot-bar {
+  width: 280px; height: 4px; margin-top: 8px;
+  border-radius: 2px; background: var(--maarm-border-light); overflow: hidden;
+}
+.boot-bar i {
+  display: block; width: 0; height: 100%; border-radius: 2px;
+  background: var(--maarm-primary);
+  transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.boot-step { font-size: 11px; color: var(--maarm-foreground-dim); font-variant-numeric: tabular-nums; }
+
 /* 键盘焦点环（全站唯一规则）：:focus-visible 只在键盘/程序化导航聚焦时命中，
    鼠标点击不出环——因此各控件的 outline:none 抑制声明已删除，新增交互元素零成本继承。
    窗控按钮贴屏幕边缘，环内收防裁切（见 .win-btn:focus-visible）。 */

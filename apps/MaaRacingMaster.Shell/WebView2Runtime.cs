@@ -21,6 +21,9 @@ public static class WebView2Runtime
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static CoreWebView2Environment? _environment;
 
+    /// <summary>本次实际使用的用户数据目录（供预热标记等旁路读写）；创建失败为 null。</summary>
+    public static string? UserDataFolder { get; private set; }
+
     /// <summary>
     /// 取共享环境；首次调用创建（数据目录 = 用户数据根\webview2）。创建失败返回 null，
     /// 调用方以默认位置回落初始化并记 shell.log——源码 / 旧 ZIP 模式的兜底；
@@ -85,6 +88,7 @@ public static class WebView2Runtime
             // WinUI3 投影：数据目录走 CreateWithOptionsAsync（CreateAsync 只收选项对象，
             // 选项类不暴露数据目录——固定版本 winmd 核验过成员）
             _environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, udf, options).AsTask().ConfigureAwait(false);
+            UserDataFolder = udf;
             ShellLog.Append($"[webview2] 用户数据目录: {udf}");
             return _environment;
         }

@@ -172,6 +172,8 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debu
 
 **磁盘占用**：浏览器侧文件全部在用户数据目录 `%APPDATA%\MaaRacingMaster\webview2`（Debug 诊断窗口用 `webview2-gui-debug`），没有开关能把 GPU 缓存单独挪到别处——`--disk-cache-dir` 只管 HTTP 缓存，而界面资源是 `file://`、不经它。各项增长都有上限：GPU 着色器缓存由 Chromium 在桌面端按每类 6MB 封顶（`--gpu-disk-cache-size-kb` 可再收紧，但缩得太小会频繁淘汰、重新触发编译）；Crashpad 转储是目录里唯一会突然长大的东西（单份可达数十 MB），启动时只留最近 3 份且不超过 7 天；组件缓存（Widevine、Subresource Filter、component CRX）由运行时一次性下载，不随使用增长。
 
+**首次启动预热**：冷启动时（用户数据目录根没有 `.render-warmup.json`、标记里的运行时/壳版本对不上，或两处着色器缓存合计不足 512KB）壳给页面地址追加 `?warmup=1`，前端显示启动遮罩，并在遮罩后面依次把四个页面、模块管理弹窗、成就页各画一遍（6 步），把首访着色器编译集中到遮罩期间；数据页会等看板数据真正渲染完再推进。完成后前端发 `warmup-done`，壳把「运行时版本 + 壳版本 + 时间」写进标记。进度按预热步骤推进，不是着色器条数——Chromium 不暴露待编译总量，无法给出真实总数。遮罩有 1.2 秒保底时长，预热更快也不会一闪而过；单步失败只记控制台，不阻断收尾。热启动没有 `warmup=1`，`index.html` 头部脚本在首帧前就隐藏遮罩，不产生额外等待。实测冷启动：模块管理弹窗首访 16.6ms（无预热时 244ms）；数据页首次点击 72ms——编译省掉了，但页面首次真正显示仍有一次整页栅格，缓存已热的启动是 22ms。
+
 **复测**：用下方「源码窗口的 GUI 调试」的 `compare` 命令，`data` 与 `manage` 两个场景各测一次；冷/暖对照可先改名两个缓存目录再启动。
 
 ## 源码窗口的 GUI 调试

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -24,6 +25,20 @@ public sealed partial class MainWindow : Window
     // 最小窗口尺寸（DIP，逻辑像素）
     private const int MinWindowWidth = 1000;
     private const int MinWindowHeight = 700;
+
+    // 首次预热遮罩的旁路信息：标记写回时要用同一个目录与运行时版本
+    private string? _warmupUdf;
+    private string? _warmupRuntimeVersion;
+
+    /// <summary>壳版本戳：进入预热标记，程序更新后自动重新预热一次。</summary>
+    private static string ShellVersionStamp()
+    {
+        var asm = typeof(MainWindow).Assembly;
+        var info = asm.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>();
+        if (info is not null && !string.IsNullOrWhiteSpace(info.InformationalVersion))
+            return info.InformationalVersion;
+        return asm.GetName().Version?.ToString() ?? "unknown";
+    }
 
     /// <summary>读安装树内随包的更新源配置（壳 exe 同目录 update-source.txt，发行时写入）。
     /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随受管树整体替换，受信任。</summary>
@@ -424,8 +439,16 @@ public sealed partial class MainWindow : Window
         var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");
         if (indexPath is not null)
         {
-            // 绝对 windows 路径按文件 URI 解析（auto file:/// scheme），WebView 本地加载
-            web.Source = new Uri(indexPath);
+            // 首次启动预热：冷态（换版本 / 换运行时 / 着色器缓存被清）才显示启动遮罩，
+            // 由前端在遮罩后把各页面与重弹窗先画一遍，把着色器编译提前吃掉。
+            _warmupRuntimeVersion = env?.BrowserVersionString;
+            var cold = RenderWarmup.IsCold(WebView2Runtime.UserDataFolder, _warmupRuntimeVersion,
+                ShellVersionStamp());
+            _warmupUdf = WebView2Runtime.UserDataFolder;
+            // 绝对 windows 路径按文件 URI 解析（auto file:/// scheme），WebView 本地加载；
+            // 冷启动追加 warmup=1，index.html 头部脚本据此决定是否保留遮罩。
+            var pageUri = new Uri(indexPath);
+            web.Source = cold ? new Uri(pageUri, "index.html?warmup=1") : pageUri;
         }
     }
 
@@ -533,6 +556,12 @@ public sealed partial class MainWindow : Window
             {
                 // RPC 转发已抽到 RpcBridge（与 PEEP 悬浮窗共用同一实现，回发按 sender 定位）
                 RpcBridge.TryHandleCall(sender, root);
+            }
+            else if (msgType == "warmup-done")
+            {
+                // 前端预热完成后落标记：同版本下次启动不再显示遮罩
+                RenderWarmup.MarkDone(_warmupUdf, _warmupRuntimeVersion, ShellVersionStamp());
+                ShellLog.Append("[warmup] 界面首次预热完成，已记录标记");
             }
         }
         catch (Exception ex)

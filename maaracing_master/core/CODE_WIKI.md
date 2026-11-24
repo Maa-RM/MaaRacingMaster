@@ -832,7 +832,7 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 - `logs/`：会话记录 `logs/<会话>/`——运行日志 `MaaRM_<会话>.log`（含 DEBUG 级全量）、`perf.jsonl` 与 `trace/<模块>.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：会话优先的取证布局 `debug/<会话>/<模块>/<行为>/`（行为目录内 `manifest.json` + `frames.jsonl`；会话根 `index.jsonl` 只记段/阶段/开关）。会话编号进程启动即存在，日志与调试两个开关只决定有没有文件
-- `webview2/`：壳的 WebView2 浏览器数据（常规资料分区、`GrShaderCache` / `ShaderCache` 着色器缓存、Crashpad 转储），只由壳创建与维护，sidecar 只读取占用统计。分区选择、缓存上限与转储保留策略见 [壳 README](../../apps/MaaRacingMaster.Shell/README.md)「WebView2 渲染与编译缓存」
+- `webview2/`：壳的 WebView2 浏览器数据（常规资料分区、`GrShaderCache` / `ShaderCache` 着色器缓存、Crashpad 转储、`.render-warmup.json` 首次预热标记），只由壳创建与维护，sidecar 只读取占用统计。分区选择、缓存上限、转储保留与首次预热见 [壳 README](../../apps/MaaRacingMaster.Shell/README.md)「WebView2 渲染与编译缓存」
 
 **会话编号契约**（[session_layout.py](./session_layout.py) 单点）：格式 `%Y%m%d_%H%M%S`，同秒撞名一律**换名**追加 `_2`、`_3`（不复用、不叠后缀），人类可读标签到秒并把撞名序号显式写出。任何按时刻命名的落盘目录（`logs/`、`debug/`、宏组、局产物）都取用它的 `fresh_session_dir()` / `session_token_label()`，不各自再写一套防撞规则——换名这件事发生在调用方，日志级别与归属也由调用方定。
 
