@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""PR 准入机检的判据守卫：命名正负例、体积软线、门禁自伤与 AST 计数。
+"""PR 准入机检的判据守卫：命名正负例、体积软线、门禁自伤、AST 计数与快照口径。
 
 判据口径见 [ADR-0028](../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)，
-实现见 `tools/pr_conventions.py`。这里只验证判定函数，不跑 git。
+实现见 `tools/pr_conventions.py`。纯判定函数不跑 git；快照口径（合并基 / testpaths /
+重命名）用临时仓库 fixture 验证。
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -16,18 +18,76 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from tools.pr_conventions import (  # noqa: E402
+    CHECKER_PATH,
     Diff,
+    is_gate_path,
     judge_self_harm,
     name_problems,
+    parse_numstat_path,
     size_warnings,
     test_metrics as count_metrics,
+    test_roots as collect_roots,
+    test_subtraction as count_subtraction,
 )
 
 WORKFLOW = ".github/workflows/test.yml"
 
+PYPROJECT = (
+    "[tool.pytest.ini_options]\n"
+    'testpaths = ["tests", "plugin/tests"]\n'
+    'python_files = ["test_*.py", "*_test.py"]\n'
+)
+TWO_TESTS = "def test_a():\n    assert True\n\ndef test_b():\n    assert True\n"
+ONE_TEST = "def test_a():\n    assert True\n"
+
 
 def _diff(paths=("src/a.py",), added=10, removed=2):
-    return Diff(files=len(paths), added=added, removed=removed, paths=tuple(paths))
+    return Diff(files=len(paths), added=added, removed=removed, changes=tuple((p, p) for p in paths))
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=guard@example.invalid",
+            "-c",
+            "user.name=guard",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write(repo: Path, rel: str, text: str) -> None:
+    target = repo / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+
+def _commit(repo: Path, msg: str) -> None:
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """base 快照：pyproject 两个收集根 + 根测试与插件测试各 2 用例。"""
+    _git(tmp_path, "init", "-q", "-b", "master")
+    _write(tmp_path, "pyproject.toml", PYPROJECT)
+    _write(tmp_path, "tests/test_a.py", TWO_TESTS)
+    _write(tmp_path, "plugin/tests/test_p.py", TWO_TESTS)
+    _commit(tmp_path, "base")
+    return tmp_path
+
+
+def _branch(repo: Path, name: str = "topic") -> None:
+    _git(repo, "checkout", "-q", "-b", name)
 
 
 @pytest.mark.parametrize(
@@ -133,3 +193,99 @@ def test_self_harm_flags_workflow_plus_new_skip() -> None:
 def test_self_harm_quiet_without_subtraction() -> None:
     assert judge_self_harm((WORKFLOW,), removed_tests=0, added_skipped=0) == []
 
+
+def test_gate_covers_checker_and_lock_not_src() -> None:
+    assert is_gate_path(CHECKER_PATH)
+    assert is_gate_path(".github/workflows/actions.lock")
+    assert not is_gate_path("src/a.py")
+    assert not is_gate_path("tests/test_pr_conventions.py")
+
+
+def test_self_harm_flags_checker_plus_deleted_test() -> None:
+    # 改弱检查器 + 删用例与改 workflow 同罪：检查器本身就是门禁定义
+    problems = judge_self_harm((CHECKER_PATH,), removed_tests=1, added_skipped=0)
+    assert any("门禁自伤" in p for p in problems)
+
+
+@pytest.mark.parametrize(
+    ("raw", "old", "new"),
+    [
+        ("tests/test_a.py", "tests/test_a.py", "tests/test_a.py"),
+        ("tests/old.py => tests/new.py", "tests/old.py", "tests/new.py"),
+        ("tests/{old => new}.py", "tests/old.py", "tests/new.py"),
+        ("{a => b}/test_x.py", "a/test_x.py", "b/test_x.py"),
+    ],
+)
+def test_parse_numstat_path(raw: str, old: str, new: str) -> None:
+    assert parse_numstat_path(raw) == (old, new)
+
+
+def test_subtraction_uses_merge_base_not_base_tip(repo: Path) -> None:
+    # 回归：主干在 PR 分叉后往同文件加用例，不得算成 PR 删除
+    _branch(repo)
+    _write(repo, "tests/test_a.py", TWO_TESTS.replace("assert True", "assert 1 == 1"))
+    _commit(repo, "topic touches same file")
+    _git(repo, "checkout", "-q", "master")
+    _write(repo, "tests/test_a.py", TWO_TESTS + "\ndef test_c():\n    assert True\n")
+    _commit(repo, "master adds a test")
+    removed, added_skip = count_subtraction(repo, "master", "topic", (("tests/test_a.py", "tests/test_a.py"),))
+    assert (removed, added_skip) == (0, 0)
+
+
+def test_subtraction_covers_plugin_testpaths(repo: Path) -> None:
+    # 回归：pytest 收集根含插件测试目录，只扫 tests/ 会漏
+    _branch(repo)
+    _write(repo, "plugin/tests/test_p.py", ONE_TEST)
+    _commit(repo, "drop plugin test")
+    removed, _ = count_subtraction(repo, "master", "topic", (("plugin/tests/test_p.py", "plugin/tests/test_p.py"),))
+    assert removed == 1
+
+
+def test_subtraction_counts_new_skip_in_plugin_dir(repo: Path) -> None:
+    _branch(repo)
+    _write(repo, "plugin/tests/test_p.py", "import pytest\n\npytestmark = pytest.mark.skip(reason='x')\n" + TWO_TESTS)
+    _commit(repo, "skip plugin tests")
+    _, added_skip = count_subtraction(repo, "master", "topic", (("plugin/tests/test_p.py", "plugin/tests/test_p.py"),))
+    assert added_skip == 2
+
+
+def test_subtraction_sees_rename_with_deletion(repo: Path) -> None:
+    # 回归：numstat 的 old => new 路径若不解析，改名伴随的删用例完全漏检
+    _branch(repo)
+    _git(repo, "mv", "tests/test_a.py", "tests/test_renamed.py")
+    _write(repo, "tests/test_renamed.py", ONE_TEST)
+    _commit(repo, "rename and drop one test")
+    removed, _ = count_subtraction(repo, "master", "topic", (("tests/test_a.py", "tests/test_renamed.py"),))
+    assert removed == 1
+
+
+def test_subtraction_silent_on_pure_rename(repo: Path) -> None:
+    _branch(repo)
+    _git(repo, "mv", "tests/test_a.py", "tests/test_renamed.py")
+    _commit(repo, "pure rename")
+    removed, added_skip = count_subtraction(repo, "master", "topic", (("tests/test_a.py", "tests/test_renamed.py"),))
+    assert (removed, added_skip) == (0, 0)
+
+
+def test_roots_union_keeps_base_root_when_head_drops_it(repo: Path) -> None:
+    # PR 删收集目录 + 删该目录用例：base 侧仍把目录留在保护面内
+    _write(repo, "legacy/tests/test_l.py", TWO_TESTS)
+    _write(repo, "pyproject.toml", PYPROJECT.replace('"plugin/tests"', '"plugin/tests", "legacy/tests"'))
+    _commit(repo, "base adds legacy root")
+    _branch(repo)
+    _write(repo, "pyproject.toml", PYPROJECT)
+    _write(repo, "legacy/tests/test_l.py", ONE_TEST)
+    _commit(repo, "drop root and test")
+    roots, _ = collect_roots(repo, "master", "topic")
+    assert "legacy/tests" in roots
+    removed, _ = count_subtraction(repo, "master", "topic", (("legacy/tests/test_l.py", "legacy/tests/test_l.py"),))
+    assert removed == 1
+
+
+def test_roots_fallback_without_pyproject(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "master")
+    _write(tmp_path, "tests/test_a.py", ONE_TEST)
+    _commit(tmp_path, "no pyproject")
+    roots, patterns = collect_roots(tmp_path, "master", "master")
+    assert roots == ("tests",)
+    assert "test_*.py" in patterns
