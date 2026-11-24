@@ -11,19 +11,23 @@
   又在测试上做减法时硬拦并要求人工复核——它挡的是「为变绿改门禁」。只改门禁定义不做
   减法时给警告，提示合入前需人工复核。
 
-**信任基线**：CI 里本文件必须从 base ref 取出副本执行（见 branch-conventions.yml），
-PR 合并快照只作 diff 输入——否则 PR 可以改弱检查器自证绿。本地直接跑本文件即可。
-
 测试减法的判据：
 
-- **范围**跟 pytest 真源走：读 base 与 head 两侧 `pyproject.toml` 的 `testpaths` /
-  `python_files` 取并集（插件测试目录同样在保护面内），不写死 `tests/`。
-- **前后内容**统一用合并基（`git merge-base base head`）与 head 对比：用 base 尖端会把
-  「主干在同文件新增用例」误算成 PR 删除。
-- **重命名**解析 numstat 的 `old => new`（含花括号形式），旧路径取合并基内容、新路径取
-  head 内容——纯改名不计减法，改名伴随删用例计得出来。
+- **收集范围**按两侧各自的 pytest 配置判定：合并基侧用合并基的 `testpaths` / `python_files`，
+  PR 快照侧用快照的配置。一个文件只有在某一侧「会被 pytest 收集」时才计入该侧的用例数——
+  把测试改成普通辅助文件、移出收集目录，都会被算成真减法。
+- **收集配置本身变化**（PR 改 `testpaths` / `python_files`）时，两侧各按自己的配置对全集计数，
+  「删掉一个收集根」不会被两侧并集掩盖。
+- **前后内容**用合并基与 head 对比，不拿 base 尖端：主干在同文件新增用例不得算成 PR 删除。
+- **重命名**解析 numstat 的 `old => new`（含花括号形式），旧路径取合并基内容、新路径取 head 内容。
 - **AST 比数**，不用文本匹配：文本匹配会把「测试夹具里引用了 skip 字面量」当成真的新增
   跳过（本条机检首次上线时就被自己的夹具误伤过一次）。
+
+**信任边界**：CI 里执行的是从 base ref 取出的检查器副本（见 branch-conventions.yml），但
+**工作流定义本身仍来自 PR 合并快照**——`pull_request` 事件语义如此，PR 可以改工作流把本
+job 换成空跑。因此本闸对恶意 PR 是提示而非硬约束；门禁文件改动的实际控制是人工复核
+（CONTRIBUTING 与 ADR-0028）。替代路径 `pull_request_target` 自 2026-12-02 起对公开仓库
+默认封禁，组织级 required workflows 仅 Enterprise Cloud 可用，本仓库当前都用不了。
 
 用法（CI 与本地同一条命令）：
 
@@ -208,25 +212,17 @@ def _pytest_config(repo: Path, ref: str) -> tuple[tuple[str, ...], tuple[str, ..
     return roots, patterns
 
 
-def test_roots(repo: Path, base: str, head: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """测试保护面 = base 与 head 两侧 testpaths / python_files 的并集。
-
-    取并集而非单侧：PR 新增收集目录时该目录里的减法也要检得出来；PR 删收集目录时
-    base 侧仍把原有目录留在保护面内。
-    """
-    roots: set[str] = set()
-    patterns: set[str] = set()
-    for ref in (base, head):
-        r, p = _pytest_config(repo, ref)
-        roots.update(r)
-        patterns.update(p)
+def collection_config(repo: Path, ref: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """某一侧快照的 pytest 收集配置（testpaths / python_files），读不到走默认。"""
+    roots, patterns = _pytest_config(repo, ref)
     return (
-        tuple(sorted(roots)) or DEFAULT_TEST_ROOTS,
-        tuple(sorted(patterns)) or DEFAULT_TEST_PATTERNS,
+        roots or DEFAULT_TEST_ROOTS,
+        patterns or DEFAULT_TEST_PATTERNS,
     )
 
 
-def _is_test_file(path: str, roots: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+def _collects(path: str, roots: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+    """该路径在给定配置下是否会被 pytest 收集。"""
     if not path.endswith(".py"):
         return False
     if not any(path.startswith(root + "/") for root in roots):
@@ -235,21 +231,50 @@ def _is_test_file(path: str, roots: tuple[str, ...], patterns: tuple[str, ...]) 
     return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
 
+def _collection_totals(
+    repo: Path, ref: str, roots: tuple[str, ...], patterns: tuple[str, ...]
+) -> TestMetrics:
+    """某一侧全集：按该侧配置列出被收集的测试文件并计数。"""
+    tests = skipped = 0
+    for path in _git(repo, "ls-tree", "-r", "--name-only", ref).splitlines():
+        if not _collects(path, roots, patterns):
+            continue
+        m = test_metrics(_git_optional(repo, "show", f"{ref}:{path}"))
+        tests += m.tests
+        skipped += m.skipped
+    return TestMetrics(tests=tests, skipped=skipped)
+
+
 def test_subtraction(
     repo: Path, base: str, head: str, changes: tuple[tuple[str, str], ...]
 ) -> tuple[int, int]:
     """返回（被删的用例数，被新增跳过的用例数），按 AST 计数、不匹配文本。
 
-    前内容取合并基、后内容取 head，与三点 diff 的路径清单同一快照口径。
+    - 前内容取合并基、后内容取 head，两侧各自用自己那份 pytest 配置判断「会不会被收集」；
+      测试移出收集范围（改成辅助文件、挪出收集目录）计为真减法。
+    - 收集配置本身变化时对两侧全集计数，避免「删收集根」被并集掩盖。
     """
     merge_base = _git(repo, "merge-base", base, head).strip()
-    roots, patterns = test_roots(repo, base, head)
+    base_cfg = collection_config(repo, merge_base)
+    head_cfg = collection_config(repo, head)
+
+    if base_cfg != head_cfg:
+        before = _collection_totals(repo, merge_base, *base_cfg)
+        after = _collection_totals(repo, head, *head_cfg)
+        return max(0, before.tests - after.tests), max(0, after.skipped - before.skipped)
+
     removed = added_skip = 0
     for old, new in changes:
-        if not (_is_test_file(old, roots, patterns) or _is_test_file(new, roots, patterns)):
-            continue
-        before = test_metrics(_git_optional(repo, "show", f"{merge_base}:{old}"))
-        after = test_metrics(_git_optional(repo, "show", f"{head}:{new}"))
+        before = (
+            test_metrics(_git_optional(repo, "show", f"{merge_base}:{old}"))
+            if _collects(old, *base_cfg)
+            else TestMetrics(tests=0, skipped=0)
+        )
+        after = (
+            test_metrics(_git_optional(repo, "show", f"{head}:{new}"))
+            if _collects(new, *head_cfg)
+            else TestMetrics(tests=0, skipped=0)
+        )
         removed += max(0, before.tests - after.tests)
         added_skip += max(0, after.skipped - before.skipped)
     return removed, added_skip
