@@ -43,3 +43,5 @@ def test_warmup_steps_have_floor_and_failure_isolation():
     assert "console.error('[warmup]'" in app, "单步失败只记日志，不得阻断收尾"
     assert "await pollDashboard()" in app, (
         "数据页预热必须等看板数据真正渲染：只切页面不拉数据，首次点击仍会卡")
+    assert "BOOT_SURFACES" in app, "弹窗预热必须是集中维护的清单，便于新增入口时补登记"
+    assert "环境中心" in app, "环境中心曾因漏登记在首次打开时卡顿，必须留在预热清单里"

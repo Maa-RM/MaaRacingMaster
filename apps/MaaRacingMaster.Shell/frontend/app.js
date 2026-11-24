@@ -996,12 +996,13 @@
   }
 
   // ---------- 首次启动：界面预热（只有冷启动会看到遮罩） ----------
-  // GPU 光栅下，首访的绘制组合要现场编译着色器（100–250ms 的帧停顿）。冷启动时遮罩
-  // 盖住界面，把四个页面与两个重弹窗各画一遍，把编译集中到遮罩期间。热启动由
-  // index.html 头部脚本直接隐藏遮罩，这里直接返回、不产生任何等待。
-  // 进度是「预热步骤」的完成度，不是着色器条数——Chromium 不暴露待编译总量。
+  // GPU 光栅下，首访的绘制组合要现场编译着色器（100–250ms 的帧停顿），Chromium 不提供
+  // 全量预编译或「待编译清单」接口，只能把界面真实画一遍。冷启动时遮罩盖住界面，
+  // 在遮罩后逐个打开页面与弹窗、等异步内容渲染完再关闭，把编译集中到遮罩期间。
+  // 热启动由 index.html 头部脚本直接隐藏遮罩，这里直接返回、不产生任何等待。
+  // 进度是「预热步骤」的完成度，不是着色器条数。
+  // 新增弹窗入口时在 BOOT_SURFACES 补一行；漏了只影响该弹窗首次打开的流畅度。
   const BOOT_MIN_MS = 1200;   // 保底时长：预热再快也让遮罩停留一会儿，不闪一下
-  const BOOT_STEPS = 6;
   const BOOT_FILL = 0.92;     // 步骤走完先到 92%，保底时长结束时再补满
 
   function delay(ms) {
@@ -1020,6 +1021,100 @@
     });
   }
 
+  function clickTool(name) {
+    const btn = document.querySelector('[data-tool="' + name + '"]');
+    if (btn) btn.click();
+  }
+
+  // 轮询等待界面条件成立；超时返回 false，不抛错——遮罩不能被一个慢查询卡死
+  function waitFor(check, timeoutMs) {
+    const started = performance.now();
+    return new Promise((resolve) => {
+      const tick = () => {
+        let ok = false;
+        try { ok = !!check(); } catch (e) { ok = false; }
+        if (ok) { resolve(true); return; }
+        if (performance.now() - started >= timeoutMs) { resolve(false); return; }
+        setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+
+  async function closeTopModal() {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await waitFor(() => !document.querySelector('.maarm-modal-overlay'), 800);
+    await delay(60);
+  }
+
+  // 需要预热的弹窗入口：打开 → 等异步内容出现 → 关闭。全部在遮罩后面执行。
+  const BOOT_SURFACES = [
+    {
+      label: '模块管理',
+      async run() {
+        showOnlyPage('control');
+        await twoFrames();
+        const btn = $('btn-manage');
+        if (!btn || state.is_running) return;   // 运行中列表锁定，弹窗打不开
+        btn.click();
+        await waitFor(() => document.querySelector('#manage-grid .task-gallery-cell'), 900);
+        await twoFrames();
+        await closeTopModal();
+      },
+    },
+    {
+      label: '数据占用',
+      async run() {
+        clickTool('folder');
+        await waitFor(() => document.querySelector('.maarm-modal-card .space-row'), 900);
+        await twoFrames();
+        await closeTopModal();
+      },
+    },
+    {
+      label: '环境中心',
+      async run() {
+        clickTool('env');
+        await waitFor(() => document.querySelector('.maarm-modal-card .env-tabs'), 700);
+        const card = document.querySelector('.maarm-modal-card');
+        if (!card) return;
+        // 三个页签各自异步渲染内容：逐页激活并等内容出现，三种版面才都会被画一遍
+        for (const pane of ['pane-perm', 'pane-dep', 'pane-runtime']) {
+          const tab = card.querySelector('.env-tab[data-pane="' + pane + '"]');
+          const paneEl = card.querySelector('#' + pane);
+          if (!tab || !paneEl) continue;
+          tab.click();
+          await waitFor(() => paneEl.textContent.trim().length > 0, 1200);
+          await twoFrames();
+          await delay(60);
+        }
+        await closeTopModal();
+      },
+    },
+    {
+      label: '成就页',
+      async run() {
+        if (!window.MaaRM.achievements) return;
+        window.MaaRM.achievements.open();
+        await waitFor(() => document.querySelector('#ach-sheet .maarm-ach-card'), 1000);
+        await twoFrames();
+        window.MaaRM.achievements.close();
+        await waitFor(() => document.getElementById('ach-sheet').hidden, 700);
+      },
+    },
+    {
+      label: '驱动引导',
+      async run() {
+        // 只有缺 ViGEmBus 时才真的会弹；这里手动放一次只为预热它的版面
+        if (!window.MaaRM.showVigemDialog) return;
+        window.MaaRM.showVigemDialog('');
+        await waitFor(() => document.querySelector('.maarm-modal-card'), 700);
+        await twoFrames();
+        await closeTopModal();
+      },
+    },
+  ];
+
   async function runBootWarmup() {
     const overlay = $('boot-overlay');
     if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
@@ -1027,11 +1122,6 @@
     const stepEl = overlay.querySelector('.boot-step');
     const started = performance.now();
     let done = 0;
-    const advance = (label) => {
-      done += 1;
-      bar.style.width = (done / BOOT_STEPS * BOOT_FILL * 100).toFixed(1) + '%';
-      stepEl.textContent = label + '（' + done + ' / ' + BOOT_STEPS + '）';
-    };
     const steps = [
       ['主控页', async () => { showOnlyPage('control'); await twoFrames(); }],
       ['数据页', async () => {
@@ -1045,23 +1135,14 @@
       }],
       ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); }],
       ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); }],
-      ['模块管理', async () => {
-        showOnlyPage('control');
-        await twoFrames();
-        // 走真实入口：列表就在这个弹窗里，它的首访正是冷停顿最长的一处
-        const btn = $('btn-manage');
-        if (btn) btn.click();
-        await delay(280);
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        await delay(120);
-      }],
-      ['成就页', async () => {
-        if (window.MaaRM.achievements) window.MaaRM.achievements.open();
-        await delay(360);
-        if (window.MaaRM.achievements) window.MaaRM.achievements.close();
-        await delay(140);
-      }],
+      ...BOOT_SURFACES.map((s) => [s.label, () => s.run()]),
     ];
+    const total = steps.length;
+    const advance = (label) => {
+      done += 1;
+      bar.style.width = (done / total * BOOT_FILL * 100).toFixed(1) + '%';
+      stepEl.textContent = label + '（' + done + ' / ' + total + '）';
+    };
     for (const [label, run] of steps) {
       try {
         await run();
@@ -1071,6 +1152,8 @@
       }
       advance(label);
     }
+    // 兜底：任何一步留下弹窗都收掉，避免遮罩消失后挡着界面
+    if (document.querySelector('.maarm-modal-overlay')) await closeTopModal();
     showOnlyPage('control'); // 预热完回到启动时的主控页
     await twoFrames();
     const remain = BOOT_MIN_MS - (performance.now() - started);
