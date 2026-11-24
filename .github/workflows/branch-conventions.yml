@@ -6,8 +6,10 @@
 #   代码都来自该快照（引入本工作流的 #30 在合并前就跑过本 job，即为此语义的实证）。因此：
 #   1. 判定脚本改为从 **base ref** 取副本执行，PR 快照只作 diff 输入（脚本层可信）；
 #   2. **工作流定义本身仍由 PR 提供**——一个 PR 可以把本 job 换成空跑，伪造同名必需检查。
-#      这不是本仓库能机检掉的洞：`pull_request_target` 自 2026-12-02 起对公开仓库默认封禁，
-#      组织级 required workflows 仅 Enterprise Cloud 可用（本仓库两样都用不上）。
+#      本仓库目前**没有「经验证的独立准入检查」**：仓库级 Actions 策略列表为空（只读实测），
+#      未安装上报检查的 GitHub App。加固路径（仓库级策略允许 pull_request_target 并按
+#      workflow_path 限定 / 外部 App 上报同名检查 / Enterprise org required workflows）都存在，
+#      但均未启用、未实测；12-02 的默认封禁只是切换前必须处理的约束，不是能力上限。
 #      实际控制是**门禁文件改动的逐行人工复核**（CONTRIBUTING / ADR-0028）；本 job 另对
 #      门禁定义改动输出 ::warning 提醒。
 #   要让「命名不合规」真正挡住合并，本 job 的检查名还必须登记进规则集
