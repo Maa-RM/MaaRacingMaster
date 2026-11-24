@@ -1,0 +1,45 @@
+# =============================================================================
+# PR 准入机检 — 分支命名硬拦 / 体积只警告 / 门禁自伤硬拦。
+# 口径：docs/adr/0028 决策 5；实现：tools/pr_conventions.py（单测 tests/test_pr_conventions.py）。
+#
+# 【生效时机】pull_request 事件读到的是 **base 分支上的** workflow 文件，因此这个闸
+#   对它自己那条引入 PR 不生效；合入 master 后才开始拦后续 PR。要让「命名不合规」
+#   真正挡住合并，本 job 的检查名还必须登记进规则集 stable-master-pr-only 的
+#   required_status_checks——未登记时它只是红色提示，不阻塞合并。
+# 【为什么不检体积为硬门槛】本仓库的收口 PR 常态越线（如 14 文件 / 342 行、
+#   26 文件 / +1192 行），硬拦只会逼出碎 PR 与「为过闸改门禁」。
+# =============================================================================
+name: PR 准入
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-conventions-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  conventions:
+    name: PR 准入（命名 / 体积 / 门禁自伤）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码（完整历史，diff 需要合并基）
+        uses: actions/checkout@v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: 分支命名与 PR 准入机检
+        # 头分支名走环境变量，不拼进脚本——fork 的 head_ref 是外部可控字符串。
+        env:
+          PR_HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          python3 tools/pr_conventions.py \
+            --head-ref "$PR_HEAD_REF" \
+            --base "origin/$BASE_REF" \
+            --head HEAD
