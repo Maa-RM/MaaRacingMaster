@@ -61,4 +61,4 @@
 - 机检背书：规则集 `stable-master-pr-only`（`pull_request` 仅允许 squash、`required_approving_review_count: 0`；`required_status_checks` 含 `单元测试 (pytest) (3.11)`，`integration_id 15368`）；仓库设置 `delete_branch_on_merge=true`、`allow_merge_commit=false`、`allow_rebase_merge=false`。
 - 实证：旧模型收口的实测代价——`dev/d542Bb` → master 合并报 28 处冲突（20 处取草稿线侧、8 处取稳定线侧、含 3 张 PNG 二进制 add/add），合并结果相对草稿线原树只增 14 文件 +243/−99，相对 master 为 22 文件 +1164/−107（PR [#27](https://github.com/Maa-RM/MaaRacingMaster/pull/27)）。
 - 实证：归档引用指向 `ff2b50f`，合入 PR #27 后远端旧线分支被 `delete_branch_on_merge` 自动删除、归档引用仍存在；证明「合入即删」与「历史例外保活」可以并存。
-- 机检（待落）：PR 准入的命名 / 体积 / 门禁自伤校验与对应单测在本条 accepted 时**尚未实现**，实现后由 CI 背书；本条不预设其文件位置。
+- 机检：PR 准入闸由 [`.github/workflows/branch-conventions.yml`](../../.github/workflows/branch-conventions.yml) 承担（`pull_request` 触发，`tools/pr_conventions.py` 实现判定，`tests/test_pr_conventions.py` 守判据）；体积越线只以 `::warning` 呈现、退出码仍为 0，命名与门禁自伤返回 1。检查名登记进规则集 `required_status_checks` 之前，它只是红色提示、不阻塞合并。
