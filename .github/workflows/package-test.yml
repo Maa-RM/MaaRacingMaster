@@ -21,7 +21,7 @@ jobs:
       contents: read
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           lfs: true
@@ -38,13 +38,13 @@ jobs:
           Write-Host "验证版本: $ver"
 
       - name: 设置 Python 3.11
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
           cache: 'pip'
 
       - name: 设置 .NET SDK
-        uses: actions/setup-dotnet@v4.3.1
+        uses: actions/setup-dotnet@v6.1.0
         with:
           dotnet-version: '8.0.x'
 
@@ -55,7 +55,7 @@ jobs:
           vs-version: latest
 
       - name: 缓存 NuGet 包
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj', 'apps/MaaRacingMaster.Shell/NuGet.Config') }}
@@ -63,7 +63,7 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: 缓存 runtime 依赖
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: build/runtime-cache
           key: ${{ runner.os }}-rtcache-${{ hashFiles('scripts/release/requirements-runtime-lock.txt') }}
@@ -116,7 +116,7 @@ jobs:
           Write-Host "已确认包内存在 $member"
 
       - name: 上传验证产物（不创建 Release）
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: MaaRacingMaster-${{ steps.version.outputs.version }}-pkgtest
           if-no-files-found: error
