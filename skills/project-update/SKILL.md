@@ -26,7 +26,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 ### 分支模型（单主干 + 短命主题分支）
 
-- **稳定线**（默认分支 `master`）是唯一的长期分支，**历史线性**：只收**沉淀**——一个主题收口（实现+回归+验收齐了）才经 PR 合入，合并时 CI 自动全量测试——稳定线上每个点都可运行、可发布。稳定线受 **GitHub 规则集（`stable-master-pr-only`）保护**：直接 push 一律被远端拒绝，只允许 **squash 压扁合并**（每个主题恰好一个 commit，master 历史保持一行主题列表），**任何人（含仓库所有者）不可绕过**（`--admin` 是既有例外通道，见「对外动作先取得确认」）。
+- **稳定线**（默认分支 `master`）是唯一的长期分支，**历史线性**：只收**沉淀**——一个主题收口（实现+回归+验收齐了）才经 PR 合入，合并时 CI 自动全量测试——稳定线上每个点都可运行、可发布。稳定线受 **GitHub 规则集（`stable-master-pr-only`）保护**：直接 push 一律被远端拒绝，只允许 **squash 压扁合并**（每个主题恰好一个 commit，master 历史保持一行主题列表），**任何人（含仓库所有者）不可绕过**：规则集 `bypass_actors` 为空，`--admin` 也会被规则集拒绝（传统分支保护的 admin 豁免不覆盖规则集，两套规则叠加）；紧急通道见「对外动作先取得确认」。
 - **主题分支**：一切工作从 `origin/master` 切出，**一个主题一条，收口即合入、合入即删**（仓库开着 `delete_branch_on_merge`，合入后远端头分支自动消失）。**分支是脚手架，不是档案**——它的提交不承诺长期存在，不要在其上写「以后还要回来续做」的期待；跨周工作按**可交付里程碑**拆成多条分支，每条都能独立合入并保持 master 可运行。
 - **命名规范**（[Conventional Branch](https://conventional-branch.github.io/)，CI 硬拦，ADR-0028）：
 
@@ -48,7 +48,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 - **命名**：`type/slug`（见上表）。CI 硬拦不合规的头分支；`dependabot/**` 豁免。
 - **体积**：>400 行或 >20 文件属**软线越线**，在 PR 描述里写清为何不能拆；它不阻断，也不要为凑数字拆成「看不见全貌」的碎 PR。
-- **门禁自伤**：同一个 PR 既改 `.github/**` 里的门禁定义、又在测试上做减法（删用例、加 skip、放宽断言）时，必须人工复核并写明理由。**「为变绿改门禁」不接受**。
+- **门禁自伤**：同一个 PR 既改门禁定义（`.github/workflows/**` 含锁文件、`tools/pr_conventions.py`）、又在测试上做减法（删用例、加 skip、放宽断言）时，必须人工复核并写明理由。**「为变绿改门禁」不接受**。机检由 **base 上的检查器副本**执行、PR 快照只作 diff 输入——改检查器本身的 PR 由旧判据判定，另加「门禁定义改动」警告提示人工复核。
 - **一个 PR 一个主题**：人判，无自动检查——主题是否单一由评审决定。混杂时拆 PR，不靠描述掩盖。
 
 ### commit 粒度
@@ -81,7 +81,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 ### 对外动作先取得确认
 
-稳定线写入（开 / 合 PR）、打 tag、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。**已授权豁免**：`feat/**`、`fix/**`、`chore/**`、`hotfix/**`、`release/**` 主题分支的 push 与历史改写 agent 可直接执行、不需逐次确认（AGENTS.md「对外可见的动作」豁免条款）；`--force-with-lease` 只落自己的主题分支，永不触碰 `master` 与 `archive/dev-d542Bb`（archive 只读，任何写入都要单独确认）。**逐次确认不可让的三件**：`--admin` 绕过规则集（必需检查 / 审查）、tag 推送、稳定线历史改写。
+稳定线写入（开 / 合 PR）、打 tag、发布、改远端配置一律先向用户确认（AGENTS.md 红线）；发版动作不可逆。**已授权豁免**：`feat/**`、`fix/**`、`chore/**`、`hotfix/**`、`release/**` 主题分支的 push 与历史改写 agent 可直接执行、不需逐次确认（AGENTS.md「对外可见的动作」豁免条款）；`--force-with-lease` 只落自己的主题分支，永不触碰 `master` 与 `archive/dev-d542Bb`（archive 只读，任何写入都要单独确认）。**逐次确认不可让的三件**：临时改规则集绕过必需检查（紧急合入的唯一通道，见下）、tag 推送、稳定线历史改写。**紧急合入流程**：检查未绿而确需合入时，`--admin` 在当前规则集配置下会被拒绝（bypass 名单为空）；唯一通道是向用户逐次确认后**临时修改规则集**（网页或 API 暂停必需检查 / 临时加 bypass）、合入后**立即恢复原配置**并复核生效。不设常设 bypass 名单。
 
 ***
 
@@ -177,7 +177,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 1. **先跑全仓门禁再开 PR**：`ruff check .` → `pyright maaracing_master` → 全量 `pytest -q`（用共享 `.venv` 显式路径）。CONTRIBUTING 把这三项留在 CI 侧（提交路径只跑触碰面），但 PR 的红挡在稳定线门口，而它们是**串行露出**的：ruff 不绿看不到 pyright，pyright 不绿看不到测试。
 2. `gh pr create --base master --head <主题分支> --title "<type>(<scope>): <主题>" --body-file <文件>`（长正文先写临时文件）。
 3. **冲突**：单主干下没有假冲突——分支从 master 切出、只含自己的提交，报冲突就是真冲突（期间 master 前进）。先 `git rebase origin/master` 并在本地重跑门禁；仍有内容分叉交用户裁决，agent 不自动解决语义冲突。冲突态的 PR 建不出 merge ref，`pull_request` 流水线**整个跳过**——「Test 一条都没跑」先查 PR 是否 CONFLICTING，再怀疑 workflow 配置。
-4. 合并走 `gh pr merge <N> --squash --subject "<type>(<scope>): <主题> (#<N>)" --body "<正文>"`——**显式给标题与正文**，不要默认值（头分支的提交数不可预期，默认信息取不到可用的摘要）。规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit；检查未绿时先报告用户，取得明确指示后才 `--admin` 绕过。
+4. 合并走 `gh pr merge <N> --squash --subject "<type>(<scope>): <主题> (#<N>)" --body "<正文>"`——**显式给标题与正文**，不要默认值（头分支的提交数不可预期，默认信息取不到可用的摘要）。规则集只允许压扁合并（`--merge` / `--rebase` 会被远端拒绝），master 上一个主题恰好一个 commit；检查未绿时先报告用户，确需绕过时走「对外动作先取得确认」的临时改规则集流程（`--admin` 在当前规则集下不可用），合完恢复配置。
 5. **PR 是稳定线写入的唯一通道**：不在共享检出里 checkout `master` 本地操作（见「分支模型」）。
 
 **合入之后**：远端头分支由 `delete_branch_on_merge` 自动删除；本地 `git branch -d <主题分支>`，用了 worktree 的 `git worktree remove <路径>`。下一条主题从最新的 `origin/master` 切。
@@ -187,11 +187,11 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 ### ⑤ 更新版本标记 + 打 Tag 并推送（触发 CI/CD）
 
 1. **更新** **`docs/latest_release.json`**（程序内「检查更新」的唯一信源）：`tag`、`version`、`published_at` 三项指向本次版本，`download_url` 保持不变。CI **不回写此文件**（master 受分支保护），漏写会造成「Release 页面已有新版，但玩家软件里永远收不到更新提示」的错位。该改动必须作为 commit 落在 **tag 之前**——tag 落点那份代码要同时含 changelog 小节与此标记文件（Release 正文由 `extract_changelog.py` 从 tag 那份 `docs/update_log.md` 抽取，改文案必须与 tag 落点一起前移）。
-2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿），tag 打在稳定线上。合入后核一次 `git rev-parse origin/master^{tree}` 与主题分支 HEAD 的树一致（不一致说明合并时带了额外解决残留，先查清再打 tag）。
-3. 本地创建 tag：`git tag v0.x.y-dev.N`（0.x 阶段通常为 pre-release）或 `git tag vX.Y.Z`（正式版）。本仓库自 v0.12 起统一用**轻量 tag**（`git cat-file -t refs/tags/<上一个>` 可验类型），沿用即可
-4. push tag：`git push origin <tag>`（tag 在稳定线上——若本地 HEAD 停在主题分支，先 `git fetch origin master` 后对远端稳定线打 tag：`git tag <tag> origin/master`，不在共享检出里切分支）
+2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿）。
+3. **取本次发版 PR 的 squash 提交并显式对它打 tag**：`gh pr view <N> --json mergeCommit --jq .mergeCommit.oid` 拿到 SHA；核 `git merge-base --is-ancestor <sha> origin/master` 成立、且 `git rev-parse <sha>^{tree}` 与验收过的主题 HEAD 树一致（不一致说明合并带了额外解决残留，先查清）。然后 `git tag <tag> <sha>`（0.x 阶段通常为 pre-release；本仓库自 v0.12 起统一用**轻量 tag**，`git cat-file -t refs/tags/<上一个>` 可验类型）。**不要省略目标提交**：`git tag <tag>` 默认打在本地 HEAD（可能停在主题分支）上，`git tag <tag> origin/master` 则会随其他 PR 合入而前进——两者都不绑定本次验收。
+4. push tag：`git push origin <tag>`（tag 已绑定本次 squash 提交，不随 master 前进；不在共享检出里切分支）
 5. **push 前必须向用户确认**（发版动作不可逆）
-6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（pytest + check\_truth 发布前 gate）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
+6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（与 PR / master push 同一条 test.yml：pytest、ruff、pyright、真源与卫生机检、Shell 编译）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
 7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
 
 ### ⑥ 本地打包验证（可选）

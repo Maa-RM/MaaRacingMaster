@@ -24,7 +24,7 @@
 5. **PR 准入三道闸**，机器只拦可判定的两条：
    - **命名**：头分支不匹配第 2 条即红（`dependabot/**` 豁免）。这是唯一能零歧义机检的形态约束。
    - **体积**：只警告不阻断。越软线（>400 行或 >20 文件）在 PR 里提示，要求在描述中说明为何不能拆。**不做硬门槛**——本仓库自己的收口 PR 就在 342 行 / 14 文件与 +1192 行 / 26 文件，硬门槛只会逼出「拆成看不见全貌的碎 PR」「藏进顺手格式化」「绕过门禁」三类规避。
-   - **门禁自伤**：同一 PR 既改 `.github/**` 的门禁定义（workflow、必需检查相关）又在测试上做减法（删除用例、加 skip、放宽断言）时强制人工复核。这一条比体积重要：它挡的是「为变绿改门禁」。
+   - **门禁自伤**：同一 PR 既改门禁定义（workflow、锁文件、准入检查器本身）又在测试上做减法（删除用例、加 skip、放宽断言）时强制人工复核。这一条比体积重要：它挡的是「为变绿改门禁」。检查器在 CI 里从 base ref 取副本执行、PR 合并快照只作 diff 输入——否则 PR 能改弱检查器自证绿；只改门禁定义不做减法时给警告提示人工复核。
    - 「一个 PR 一个主题」**不做机检**（机器判不了主题一致性），留在政策文本，由评审判断。
 6. **寿命是约定不是闸**：主题分支的目标寿命约两天，跨周工作（如 NavKit v4 这类架构迁移）按**可交付里程碑**拆成多条分支，每条都能独立合入 master 并保持可运行；不设自动过期检查。
 7. **证据锚分两级**：交付级锚 tag 与 PR 号，内容级锚 master 可达的提交。**主题分支提交不得作为正式知识层的证据锚**——分支合入即删，它的提交不在任何常规 ref 上，写入等于让每个新 PR 重新制造「只能靠 archive 保活」的指针。
@@ -42,8 +42,8 @@
 
 - **不能再用「一条草稿线并行多主题」**：多主题并行必须多条分支 + 多个 worktree，重建与清理成本上升；占位 worktree 需要显式回收。
 - **分支命名成为硬约束**：写错的头分支开不出 PR（`dependabot/**` 除外）。临时试错分支必须按规范命名，或直接不留远端。
-- **`--admin` 仍是既有通道**：传统分支保护的 `enforce_admins` 为 `false`，仓库所有者可在检查未绿时绕过。本决策不关闭该通道（发版收口与紧急修复需要），只要求「逐次确认」。
-- **必需检查在两处登记**：`stable-master-pr-only` 规则集与传统分支保护同时持有 `单元测试 (pytest) (3.11)`。今后若退役传统保护，**必须先在规则集里确认该检查存在**，否则会连带删掉 CI 门禁且没有任何提示。
+- **`--admin` 在当前远端配置下不可用**（事实更正，2026-11-24 复核）：规则集 `stable-master-pr-only` 的 `bypass_actors` 为空、`current_user_can_bypass` 为 `never`；传统分支保护 `enforce_admins=false` 的 admin 豁免**不覆盖规则集**（两套规则叠加，见 GitHub rulesets 的 rule layering 说明）。紧急合入的唯一通道是逐次确认后临时修改规则集、合完立即恢复；本决策不常设 bypass 名单，「紧急路径存在但逐次确认」的取舍不变。
+- **必需检查在两处登记**：`stable-master-pr-only` 规则集与传统分支保护同时持有 `单元测试 (pytest) (3.11)`；**「分支须最新」来自传统保护的 `strict=true`**（规则集侧 `strict=false`）。今后若退役传统保护，**必须先在规则集里确认该检查存在、并把 strict 要求接过去**，否则会连带删掉 CI 门禁与最新性要求且没有任何提示。
 - **体积软线会常态化越线**：收口类、资源模板批量更新类 PR 天然超标，警告数量不会归零；这被接受为「提示通道」而非「质量信号」。
 
 **被否方案**：
@@ -58,8 +58,8 @@
 ## 证据
 
 - 一手核查：[Conventional Branch 规范](https://conventional-branch.github.io/)（类型前缀与字符集）；[Google 小 CL 指南](http://google.github.io/eng-practices/review/developer/small-cls.html)（体量为软线，由评审者判断，不设自动拦截）。
-- 机检背书：规则集 `stable-master-pr-only`（`pull_request` 仅允许 squash、`required_approving_review_count: 0`；`required_status_checks` 含 `单元测试 (pytest) (3.11)`，`integration_id 15368`）；仓库设置 `delete_branch_on_merge=true`、`allow_merge_commit=false`、`allow_rebase_merge=false`。
+- 机检背书：规则集 `stable-master-pr-only`（`pull_request` 仅允许 squash、`required_approving_review_count: 0`；`required_status_checks` 含 `单元测试 (pytest) (3.11)` 与 `PR 准入（命名 / 体积 / 门禁自伤）`（#30 合入后登记），`integration_id 15368`；`bypass_actors` 为空）；仓库设置 `delete_branch_on_merge=true`、`allow_merge_commit=false`、`allow_rebase_merge=false`。
 - 实证：旧模型收口的实测代价——`dev/d542Bb` → master 合并报 28 处冲突（20 处取草稿线侧、8 处取稳定线侧、含 3 张 PNG 二进制 add/add），合并结果相对草稿线原树只增 14 文件 +243/−99，相对 master 为 22 文件 +1164/−107（PR [#27](https://github.com/Maa-RM/MaaRacingMaster/pull/27)）。
 - 实证（一次性扫描，2026-11-24）：入库文件（不含 `docs/plan`）里的提交哈希引用，经 `git cat-file` 判型并按完整 SHA 归并后共 **77 个提交**——36 个可达 master（72 处 / 31 文件）、34 个只靠归档引用保活（57 处 / 23 文件，集中在 `_archive` 插件与 core `CODE_WIKI`）、7 个连本地任何 ref 都不指向（10 处 / 6 文件，GC 后会断链）。这就是决策 7 的现场依据：内容级锚只许锚 master 可达提交，主题分支提交一旦成为锚，就会把「只能靠归档保活」的指针制度化。
 - 实证：归档引用指向 `ff2b50f`，合入 PR #27 后远端旧线分支被 `delete_branch_on_merge` 自动删除、归档引用仍存在；证明「合入即删」与「历史例外保活」可以并存。
-- 机检：PR 准入闸由 [`.github/workflows/branch-conventions.yml`](../../.github/workflows/branch-conventions.yml) 承担（`pull_request` 触发，`tools/pr_conventions.py` 实现判定，`tests/test_pr_conventions.py` 守判据）；体积越线只以 `::warning` 呈现、退出码仍为 0，命名与门禁自伤返回 1。检查名登记进规则集 `required_status_checks` 之前，它只是红色提示、不阻塞合并。
+- 机检：PR 准入闸由 [`.github/workflows/branch-conventions.yml`](../../.github/workflows/branch-conventions.yml) 承担（`pull_request` 触发，`tools/pr_conventions.py` 实现判定，`tests/test_pr_conventions.py` 守判据）；体积越线只以 `::warning` 呈现、退出码仍为 0，命名与门禁自伤返回 1。检查名登记进规则集 `required_status_checks` 之前，它只是红色提示、不阻塞合并。`pull_request` 实跑 PR 合并快照（引入本工作流的 #30 合并前即运行过本 job），故检查器从 base ref 取副本执行、快照只作输入；测试减法按合并基与 head 对比、保护面读 pytest `testpaths` 并集、解析重命名路径。
