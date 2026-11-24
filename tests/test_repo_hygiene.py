@@ -566,7 +566,7 @@ def test_r11_count_snapshot_flagged(tmp_path):
 
 def test_r11_commit_pointer_and_threshold_clean(tmp_path):
     _mk(tmp_path)
-    _wiki(tmp_path, "# 现状\n\n证据见 commit `9fc13a5`，阈值 conf=0.35、帧预算 33ms。\n")
+    _wiki(tmp_path, "# 现状\n\n证据见 commit `bc76ac9`，阈值 conf=0.35、帧预算 33ms。\n")
     viol, _ = chk.Checker(tmp_path).scan()
     assert not [v for v in viol if v.startswith("R11|")]
 

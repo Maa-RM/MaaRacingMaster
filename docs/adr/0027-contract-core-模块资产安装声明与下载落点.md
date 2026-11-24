@@ -3,7 +3,7 @@
 - **状态**：`accepted`
 - **日期**：2026-11-21
 - **决策者**：用户（确认「未来所有模块都可以自行下载所需资产」的方向）
-- **相关**：[宪法 §1/§4](../PIPELINE_V4.md)、[ADR-0016](./0016-contract-core-模块配置面板由插件声明宿主渲染.md)、`maaracing_master/core/CODE_WIKI.md`「用户数据目录」、commit `f9f9c41`
+- **相关**：[宪法 §1/§4](../PIPELINE_V4.md)、[ADR-0016](./0016-contract-core-模块配置面板由插件声明宿主渲染.md)、`maaracing_master/core/CODE_WIKI.md`「用户数据目录」、实施 commit `9b2ba6c`
 
 ## 背景
 
@@ -41,4 +41,4 @@
 - 代码：`maaracing_master/core/paths.py`（`module_data_dir`）、`core/registry.py`（`plugin_declared_ref` / `load_plugin_ref`）、`core/sidecar.py`（`install_asset_*`、`start`、`prepare_update`、`close`）、`plugins/infinite_drive/model_installer.py`、`scripts/release/make_model_pack.py`、`.github/workflows/release.yml`（描述注入与同 tag 资产不可变检查）。
 - 机检：`tests/test_core_module_data_dir.py`（落点与越界）、`tests/test_sidecar_asset_install.py`（声明加载、双向准入、关闭收尾、第二模块路由、宿主无模块语义）、`tests/test_model_download_descriptor.py`（tag/资产/哈希/摘要绑定与可复现归档）、`plugins/infinite_drive/tests/`（安装器与模型包）。
 - 一手核查（2026-11-20）：Velopack *Preserving Files & Settings*（二进制目录在更新时被整体替换）；VS Code API *Data Storage*（宿主授予每扩展存储根、扩展自定内容）；NuGet *Managing the global packages*（按 id/version 分目录，缓存与已安装分层）；MaaFramework PI V2（资源声明承载 hash、发版组件版本一致）。
-- 实现提交：`f9f9c41`（模型包一键安装与同 tag 发布绑定）。
+- 实现提交：`9b2ba6c`（#21 压扁交付，模型包一键安装与同 tag 发布绑定）。
