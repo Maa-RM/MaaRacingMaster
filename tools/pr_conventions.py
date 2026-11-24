@@ -7,8 +7,12 @@
   slug 只用 `a-z0-9.-`）；`dependabot/**` 是机器生成分支，豁免。这一条零歧义，硬拦。
 - **体积**：超过 `SIZE_LINE_SOFT` 行或 `SIZE_FILE_SOFT` 文件**只警告**。本仓库自己的收口 PR
   就会越线，硬门槛只会逼出碎 PR 与「藏进顺手格式化」两类规避。
-- **门禁自伤**：同一个 PR 既改 `.github/workflows/**`、又在测试上做减法（删用例、新增
-  skip）时判定为自伤，硬拦并要求人工复核——它挡的是「为变绿改门禁」。
+- **门禁自伤**：同一个 PR 既改 `.github/workflows/**`、又在测试上做减法时硬拦并要求人工
+  复核——它挡的是「为变绿改门禁」。
+
+测试减法用 **AST 比数**（base 与 head 各解析一次 `tests/**` 的改动文件），不用文本匹配：
+文本匹配会把「测试夹具里引用了 skip 字面量」当成真的新增跳过（本条机检首次上线时就被
+自己的夹具误伤过一次）。
 
 用法（CI 与本地同一条命令）：
 
@@ -20,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -37,19 +42,25 @@ SIZE_LINE_SOFT = 400
 SIZE_FILE_SOFT = 20
 
 WORKFLOW_DIR = ".github/workflows/"
-_TEST_DEF = re.compile(r"\b(?:async\s+)?def\s+test_")
-_SKIP_ADDED = re.compile(r"pytest\.mark\.skip|\.skip\(|skipif\(")
+TESTS_DIR = "tests/"
 
 
 @dataclass(frozen=True)
 class Diff:
-    """一次 PR 的净增量：文件数、增删行数、改动路径与零上下文补丁。"""
+    """一次 PR 的净增量：文件数、增删行数与改动路径。"""
 
     files: int
     added: int
     removed: int
     paths: tuple[str, ...]
-    patch: str
+
+
+@dataclass(frozen=True)
+class TestMetrics:
+    """一个测试文件的 AST 计数：用例数与带 skip 的用例数。"""
+
+    tests: int
+    skipped: int
 
 
 def name_problems(head_ref: str) -> list[str]:
@@ -80,21 +91,51 @@ def size_warnings(diff: Diff) -> list[str]:
     return out
 
 
-def self_harm_problems(diff: Diff) -> list[str]:
-    """门禁自伤：同改 workflow 定义 + 在测试上做减法。"""
-    touched_workflow = [p for p in diff.paths if p.startswith(WORKFLOW_DIR)]
-    if not touched_workflow:
+def _skip_decorated(decorators: list[ast.expr]) -> bool:
+    for node in decorators:
+        try:
+            text = ast.unparse(node)
+        except Exception:  # pragma: no cover - unparse 失败按未跳过处理
+            continue
+        if "mark.skip" in text or text.endswith("skip") or text.endswith("skipif"):
+            return True
+    return False
+
+
+def test_metrics(source: str) -> TestMetrics:
+    """解析测试源码，数「以 test_ 开头的函数」与「带 skip / skipif / pytestmark 的用例」。"""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return TestMetrics(tests=0, skipped=0)
+
+    module_skip = False
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "pytestmark":
+                    try:
+                        module_skip = "skip" in ast.unparse(node.value)
+                    except Exception:  # pragma: no cover
+                        module_skip = False
+    tests = skipped = 0
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            tests += 1
+            if module_skip or _skip_decorated(list(node.decorator_list)):
+                skipped += 1
+    return TestMetrics(tests=tests, skipped=skipped)
+
+
+def judge_self_harm(workflow_paths: tuple[str, ...], removed_tests: int, added_skipped: int) -> list[str]:
+    """同一 PR 既改门禁定义又在测试上做减法 → 不合规。"""
+    if not workflow_paths:
         return []
-
-    removed_defs = sum(1 for line in diff.patch.splitlines() if line.startswith("-") and "+++" not in line and _TEST_DEF.search(line))
-    added_defs = sum(1 for line in diff.patch.splitlines() if line.startswith("+") and "+++" not in line and _TEST_DEF.search(line))
-    added_skips = sum(1 for line in diff.patch.splitlines() if line.startswith("+") and "+++" not in line and _SKIP_ADDED.search(line))
-
     out: list[str] = []
-    if removed_defs > added_defs:
-        out.append(f"删除 {removed_defs - added_defs} 个测试用例，同时改了 {len(touched_workflow)} 个 workflow 文件")
-    if added_skips:
-        out.append(f"新增 {added_skips} 处 skip/skipif，同时改了 workflow 文件")
+    if removed_tests > 0:
+        out.append(f"删除 {removed_tests} 个测试用例，同时改了 {len(workflow_paths)} 个 workflow 文件")
+    if added_skipped > 0:
+        out.append(f"新增 {added_skipped} 个被跳过的用例，同时改了 workflow 文件")
     if out:
         out.append("门禁自伤：同一个 PR 既改门禁定义又在测试上做减法，需要人工复核并说明失败为何是预期")
     return out
@@ -103,7 +144,6 @@ def self_harm_problems(diff: Diff) -> list[str]:
 def collect_diff(repo: Path, base: str, head: str) -> Diff:
     """用三点 diff（合并基）取 PR 净增量。"""
     numstat = _git(repo, "diff", "--numstat", f"{base}...{head}")
-    patch = _git(repo, "diff", "-U0", f"{base}...{head}")
     files = added = removed = 0
     paths: list[str] = []
     for raw in numstat.splitlines():
@@ -116,7 +156,20 @@ def collect_diff(repo: Path, base: str, head: str) -> Diff:
         # 二进制文件给 "-"，按 0 行计
         added += int(add_s) if add_s.isdigit() else 0
         removed += int(del_s) if del_s.isdigit() else 0
-    return Diff(files=files, added=added, removed=removed, paths=tuple(paths), patch=patch)
+    return Diff(files=files, added=added, removed=removed, paths=tuple(paths))
+
+
+def test_subtraction(repo: Path, base: str, head: str, paths: tuple[str, ...]) -> tuple[int, int]:
+    """返回（被删的用例数，被新增跳过的用例数），按 AST 计数、不匹配文本。"""
+    removed = added_skip = 0
+    for path in paths:
+        if not path.startswith(TESTS_DIR) or not path.endswith(".py"):
+            continue
+        before = test_metrics(_git_optional(repo, "show", f"{base}:{path}"))
+        after = test_metrics(_git_optional(repo, "show", f"{head}:{path}"))
+        removed += max(0, before.tests - after.tests)
+        added_skip += max(0, after.skipped - before.skipped)
+    return removed, added_skip
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -133,6 +186,19 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout
 
 
+def _git_optional(repo: Path, *args: str) -> str:
+    """新增或删除的文件在某一侧取不到，按空文件处理。"""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.stdout if proc.returncode == 0 else ""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PR 准入机检（命名 / 体积 / 门禁自伤）")
     parser.add_argument("--head-ref", default=os.environ.get("GITHUB_HEAD_REF", ""), help="PR 头分支名")
@@ -141,9 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=str(REPO_ROOT), help="仓库根（默认本文件所在仓库）")
     args = parser.parse_args(argv)
 
+    repo = Path(args.repo)
     hard: list[str] = list(name_problems(args.head_ref))
-    diff = collect_diff(Path(args.repo), args.base, args.head)
-    hard.extend(self_harm_problems(diff))
+    diff = collect_diff(repo, args.base, args.head)
+    workflow_paths = tuple(p for p in diff.paths if p.startswith(WORKFLOW_DIR))
+    removed_tests, added_skip = test_subtraction(repo, args.base, args.head, diff.paths)
+    hard.extend(judge_self_harm(workflow_paths, removed_tests, added_skip))
 
     for warn in size_warnings(diff):
         print(f"::warning title=PR 规模软线::{warn}")

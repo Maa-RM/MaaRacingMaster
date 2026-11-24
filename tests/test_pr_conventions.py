@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""PR 准入机检的判据守卫：命名正负例、体积软线、门禁自伤。
+"""PR 准入机检的判据守卫：命名正负例、体积软线、门禁自伤与 AST 计数。
 
 判据口径见 [ADR-0028](../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)，
 实现见 `tools/pr_conventions.py`。这里只验证判定函数，不跑 git。
@@ -17,17 +17,17 @@ if str(REPO) not in sys.path:
 
 from tools.pr_conventions import (  # noqa: E402
     Diff,
+    judge_self_harm,
     name_problems,
-    self_harm_problems,
     size_warnings,
+    test_metrics as count_metrics,
 )
 
 WORKFLOW = ".github/workflows/test.yml"
-TEST_FILE = "tests/test_demo.py"
 
 
-def _diff(paths=("src/a.py",), added=10, removed=2, patch=""):
-    return Diff(files=len(paths), added=added, removed=removed, paths=tuple(paths), patch=patch)
+def _diff(paths=("src/a.py",), added=10, removed=2):
+    return Diff(files=len(paths), added=added, removed=removed, paths=tuple(paths))
 
 
 @pytest.mark.parametrize(
@@ -79,23 +79,57 @@ def test_size_warnings_on_lines_and_files() -> None:
     assert any("行" in w for w in warns) and any("文件" in w for w in warns)
 
 
+def test_metrics_counts_plain_tests() -> None:
+    src = "def test_a():\n    assert True\n\ndef helper():\n    pass\n"
+    m = count_metrics(src)
+    assert (m.tests, m.skipped) == (1, 0)
+
+
+def test_metrics_counts_skip_decorators() -> None:
+    src = (
+        "import pytest\n\n"
+        "@pytest.mark.skip(reason='x')\n"
+        "def test_a():\n    assert True\n\n"
+        "@pytest.mark.skipif(condition, reason='y')\n"
+        "def test_b():\n    assert True\n\n"
+        "def test_c():\n    assert True\n"
+    )
+    m = count_metrics(src)
+    assert (m.tests, m.skipped) == (3, 2)
+
+
+def test_metrics_counts_module_pytestmark() -> None:
+    src = "import pytest\n\npytestmark = pytest.mark.skip(reason='whole module')\n\ndef test_a():\n    assert True\n"
+    m = count_metrics(src)
+    assert (m.tests, m.skipped) == (1, 1)
+
+
+def test_metrics_ignores_skip_text_inside_literals() -> None:
+    # 回归：本条机检首次上线时被自己的夹具误伤——字符串里出现 skip 字面量不等于新增跳过
+    src = 'PATCH = "@pytest.mark.skipif(cond, reason=1)\\n-def test_old():\\n+ pass\\n"\n\ndef test_a():\n    assert True\n'
+    m = count_metrics(src)
+    assert (m.tests, m.skipped) == (1, 0)
+
+
+def test_metrics_tolerates_syntax_error() -> None:
+    metrics = count_metrics("def broken(:\n")
+    assert metrics.tests == 0
+
+
 def test_self_harm_ignores_test_only_pr() -> None:
-    patch = "-def test_old():\n-    assert fail\n"
-    assert self_harm_problems(_diff(paths=(TEST_FILE,), added=0, removed=2, patch=patch)) == []
+    assert judge_self_harm((), removed_tests=3, added_skipped=2) == []
 
 
 def test_self_harm_flags_workflow_plus_deleted_test() -> None:
-    patch = "@@ -1,5 +1,2 @@\n-def test_old():\n-    assert True\n-def test_other():\n-    assert True\n+def test_new():\n+    assert True\n"
-    problems = self_harm_problems(_diff(paths=(WORKFLOW, TEST_FILE), added=2, removed=5, patch=patch))
+    problems = judge_self_harm((WORKFLOW,), removed_tests=1, added_skipped=0)
     assert any("删除 1 个测试用例" in p for p in problems)
 
 
-def test_self_harm_flags_workflow_plus_added_skip() -> None:
-    patch = "@@ -1,2 +1,3 @@\n+@pytest.mark.skipif(not sys.platform.startswith('win'), reason='windows only')\n def test_x():\n     assert True\n"
-    problems = self_harm_problems(_diff(paths=(WORKFLOW, TEST_FILE), added=1, removed=0, patch=patch))
-    assert any("skip" in p for p in problems)
+def test_self_harm_flags_workflow_plus_new_skip() -> None:
+    problems = judge_self_harm((WORKFLOW,), removed_tests=0, added_skipped=2)
+    assert any("2 个被跳过的用例" in p for p in problems)
 
 
-def test_self_harm_quiet_when_tests_grow_alongside_workflow() -> None:
-    patch = "@@ -1,1 +1,2 @@\n+def test_new_case():\n+    assert True\n"
-    assert self_harm_problems(_diff(paths=(WORKFLOW, TEST_FILE), added=2, removed=0, patch=patch)) == []
+def test_self_harm_quiet_without_subtraction() -> None:
+    assert judge_self_harm((WORKFLOW,), removed_tests=0, added_skipped=0) == []
+
