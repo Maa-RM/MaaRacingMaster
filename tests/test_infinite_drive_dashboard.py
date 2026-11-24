@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,26 @@ from maaracing_master.plugins.infinite_drive.module import InfiniteDriveModule
 # 真机 20261121_132826 实测读数（第 1 关结算页）
 SCORE_OK = "16,110"
 PROGRESS_OK = "关卡进度：1/5本轮总得分：16,110"
+
+
+class _FakeGraph:
+    """只回答文字兜底节点是否命中；其余节点视为在位。"""
+
+    def __init__(self, *, sweep_hits: int = 0) -> None:
+        from maaracing_master.plugins.infinite_drive import module as m
+
+        self._advance = m._ADVANCE_DISMISS
+        self._sweep_left = sweep_hits
+        self.calls: list[str] = []
+
+    def run(self, entry, reached=None, *, save=None):
+        self.calls.append(entry)
+        if entry != self._advance:
+            return True
+        if self._sweep_left > 0:
+            self._sweep_left -= 1
+            return True
+        return False
 
 
 @pytest.fixture(autouse=True)
@@ -152,12 +173,14 @@ def test_module_settlement_appends_record(tmp_path, monkeypatch) -> None:
 
     class _Ctx:
         capture = _Capture()
+        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
 
     from maaracing_master.plugins.infinite_drive import module as m
 
     monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
     mod = InfiniteDriveModule(None)
     mod.ctx = _Ctx()
+    mod._graph = _FakeGraph()
 
     mod._read_settlement()
     assert mod._settlement_round == 1
@@ -174,8 +197,11 @@ def test_module_settlement_skips_record_in_record_mode(tmp_path, monkeypatch) ->
         def __init__(self, *a, **k) -> None:
             pass
 
-        def recognize(self, _rgb, _roi):
-            return type("R", (), {"text": SCORE_OK})()
+        def recognize(self, _rgb, roi):
+            from maaracing_master.plugins.infinite_drive import flow_data
+
+            text = SCORE_OK if roi == flow_data.RESULT_SCORE_ROI else PROGRESS_OK
+            return type("R", (), {"text": text})()
 
     class _Capture:
         def frame_with_age(self):
@@ -183,12 +209,14 @@ def test_module_settlement_skips_record_in_record_mode(tmp_path, monkeypatch) ->
 
     class _Ctx:
         capture = _Capture()
+        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
 
     from maaracing_master.plugins.infinite_drive import module as m
 
     monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
     mod = InfiniteDriveModule(None)
     mod.ctx = _Ctx()
+    mod._graph = _FakeGraph()
     mod._record_mode = True
 
     mod._read_settlement()
@@ -217,6 +245,7 @@ def test_module_settlement_refreshes_config_ui_estimate(monkeypatch) -> None:
 
     class _Ctx:
         capture = _Capture()
+        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
 
     from maaracing_master.plugins.infinite_drive import module as m
 
@@ -226,9 +255,108 @@ def test_module_settlement_refreshes_config_ui_estimate(monkeypatch) -> None:
     try:
         mod = m.InfiniteDriveModule(None)
         mod.ctx = _Ctx()
+        mod._graph = _FakeGraph()
         mod._read_settlement()
         fields = {f["key"]: f for g in m.InfiniteDriveModule.CONFIG_UI["groups"]
                   for f in g["fields"]}
         assert fields["round_total"]["unit_seconds"] == 150
     finally:
         m.InfiniteDriveModule.CONFIG_UI = saved   # 重建落在类属性上，测完还原
+
+
+def test_parse_progress_requires_level_but_tolerates_missing_total() -> None:
+    """进度解析：有 n/m 即成立，总得分缺项留给稳定判据去挡。"""
+    assert dashboard_store.parse_progress(PROGRESS_OK) == (1, 5, 16110)
+    assert dashboard_store.parse_progress("关卡进度：2/5") == (2, 5, None)
+    assert dashboard_store.parse_progress("进度") is None
+
+
+def _settlement_module(monkeypatch, scores, progresses, *, sweep_hits=0):
+    """造一个只含 capture/OCR 的模块桩；OCR 按 ROI 顺序吐脚本化读数。"""
+    from maaracing_master.plugins.infinite_drive import flow_data
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    clock = [0.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(m, "SETTLE_READ_TIMEOUT_S", 2.0)
+    monkeypatch.setattr(m, "SETTLE_READ_POLL_S", 0.25)
+
+    class _Ocr:
+        def __init__(self, *_a, **_k) -> None:
+            self._scores = list(scores)
+            self._progresses = list(progresses)
+            self._score_i = 0
+            self._progress_i = 0
+
+        def recognize(self, _rgb, roi):
+            if roi == flow_data.RESULT_SCORE_ROI:
+                text = self._scores[min(self._score_i, len(self._scores) - 1)]
+                self._score_i += 1
+            else:
+                text = self._progresses[min(self._progress_i,
+                                            len(self._progresses) - 1)]
+                self._progress_i += 1
+            return SimpleNamespace(text=text)
+
+    class _Capture:
+        @staticmethod
+        def frame_with_age():
+            return (object(), 1, 2, 0.0)
+
+    class _Lifecycle:
+        running = True
+
+        @staticmethod
+        def sleep(seconds):
+            clock[0] += seconds
+            return True
+
+    monkeypatch.setattr(m, "RapidOcrEngine", _Ocr)
+    mod = InfiniteDriveModule(None)
+    mod.ctx = SimpleNamespace(capture=_Capture(), lifecycle=_Lifecycle())
+    mod._graph = _FakeGraph(sweep_hits=sweep_hits)
+    mod._running = True
+    return mod
+
+
+def test_settlement_dismisses_overlay_before_reading(monkeypatch) -> None:
+    """读数前先清覆盖层：命中一次后再扫一次确认清掉，然后才进入读数。"""
+    mod = _settlement_module(monkeypatch, scores=[SCORE_OK] * 4,
+                             progresses=[PROGRESS_OK] * 4, sweep_hits=1)
+
+    mod._read_settlement()
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    assert mod._graph.calls[:2] == [m._ADVANCE_DISMISS, m._ADVANCE_DISMISS]
+    assert mod.last_settlement["record"]["score"] == 16110
+
+
+def test_settlement_reading_waits_until_stable(monkeypatch) -> None:
+    """滚动中的比分与半截进度条都不落库：两拍一致且三栏可解析才记录。"""
+    mod = _settlement_module(
+        monkeypatch,
+        scores=["", "64", SCORE_OK, SCORE_OK],
+        progresses=["", "一", PROGRESS_OK, PROGRESS_OK])
+
+    mod._read_settlement()
+
+    entry = mod.last_settlement["record"]
+    assert entry["score"] == 16110 and entry["cleared"] is True
+    assert entry["progress_raw"] == PROGRESS_OK
+    assert mod.last_settlement["score"] == SCORE_OK
+
+
+def test_settlement_reading_timeout_keeps_raw_text(monkeypatch) -> None:
+    """读数始终不稳定：到点按原文记录（未解析字段留空），不伪造也不卡死。"""
+    mod = _settlement_module(
+        monkeypatch,
+        scores=["64", "64"], progresses=["一", "一"])
+
+    mod._read_settlement()
+
+    entry = mod.last_settlement["record"]
+    # 比分能解析但进度读不出：过关判定缺失，原文照样留存（与 11-23 看板同貌）。
+    assert entry["score"] == 64 and entry["score_raw"] == "64"
+    assert entry["level"] is None and entry["cleared"] is None
+    assert entry["progress_raw"] == "一"

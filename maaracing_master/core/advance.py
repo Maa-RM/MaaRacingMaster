@@ -14,7 +14,8 @@
 **为什么不能用 `RapidOcrEngine.recognize`（HUD 那条路）**：那个接口关着文本检测，
 只回答「这块固定区域里写着什么」，先验必须已经知道字在哪。未知页面的先验恰恰是
 没有的——位置本身就是要找的东西。所以走 `recognize_blocks`（开 det 拿框），
-代价 1s/帧，只在「所有已知页面都不匹配」时才付。
+代价按整帧算约 0.7s；**先按 `zone` 裁图再检测**后约 0.5s（2026-11-23 实测，见
+`core/ocr.py` 的 BLOCK_DET_* 注释），只在「所有已知页面都不匹配」时才付。
 
 **误点防护**（这是本识别器唯一的实质风险，三条都必须留着）：
   1. 位置先验 `zone`：默认只在下半屏找。推进按钮在游戏 UI 里恒在下半屏；顶部 HUD
@@ -42,7 +43,7 @@ import re
 import cv2
 from maa.custom_recognition import CustomRecognition
 
-from maaracing_master.core.ocr import RapidOcrEngine
+from maaracing_master.core.ocr import OcrBlock, RapidOcrEngine
 
 RECOGNIZER_NAME = "MaaRM_Advance"
 
@@ -55,6 +56,37 @@ DEFAULT_BLOCKLIST: tuple[str, ...] = (
 DEFAULT_ZONE: tuple[float, float, float, float] = (0.0, 0.45, 1.0, 1.0)
 MAX_TEXT_CHARS = 8
 MIN_TEXT_AREA = 0.0008
+
+# 检测区最小边长（像素）：区域裁到比这还小就退回整帧，避免退化参数把检测搞崩。
+_CROP_MIN_PX = 16
+
+
+def _clamp_zone(zone) -> tuple[float, float, float, float]:
+    """归一化搜索区夹到 [0,1] 并按左上/右下排序（参数写反也能用）。"""
+    x1, y1, x2, y2 = (float(v) for v in zone)
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    return x1, y1, x2, y2
+
+
+def _crop_zone(rgb, zone) -> tuple:
+    """按 zone 裁出检测区，返回 (crop, ox, oy)；区域退化时回整帧。"""
+    h, w = rgb.shape[:2]
+    x1, y1, x2, y2 = _clamp_zone(zone)
+    ox, oy = int(x1 * w), int(y1 * h)
+    ex, ey = int(x2 * w), int(y2 * h)
+    if ex - ox < _CROP_MIN_PX or ey - oy < _CROP_MIN_PX:
+        return rgb, 0, 0
+    return rgb[oy:ey, ox:ex], ox, oy
+
+
+def _map_block(block: OcrBlock, *, ox: int, oy: int, cw: int, ch: int,
+               W: int, H: int) -> OcrBlock:
+    """把子图归一化框映射回整帧归一化框（检测只在 zone 内做，坐标语义不变）。"""
+    x1, y1, x2, y2 = block.rect
+    return OcrBlock(text=block.text,
+                    rect=((ox + x1 * cw) / W, (oy + y1 * ch) / H,
+                          (ox + x2 * cw) / W, (oy + y2 * ch) / H))
 
 # 引擎进程内单例：det 模型常驻几十 MB，每张图各建一份没有收益。
 _ENGINE: RapidOcrEngine | None = None
@@ -138,7 +170,10 @@ class AdvanceRecognizer(CustomRecognition):
         if H <= 0 or W <= 0:
             return self.AnalyzeResult(box=None, detail={"error": "帧尺寸非法"})
 
-        blocks = _engine().recognize_blocks(rgb,
+        zone = _clamp_zone(p.get("zone") or DEFAULT_ZONE)
+        crop, ox, oy = _crop_zone(rgb, zone)
+        ch, cw = crop.shape[:2]
+        blocks = _engine().recognize_blocks(crop,
                                             min_score=float(p.get("min_score", 0.5)))
         if blocks is None:
             # 引擎不可用与「画面没字」必须分开：前者要告警一次，后者只是没命中。
@@ -149,9 +184,10 @@ class AdvanceRecognizer(CustomRecognition):
                                  "本次不兜底", "WARNING")
             return self.AnalyzeResult(box=None, detail={"error": "ocr_unavailable"})
 
+        # 检测在裁出来的子图上做，框先映射回整帧归一化，再交给 zone/面积/文案筛选
+        blocks = [_map_block(b, ox=ox, oy=oy, cw=cw, ch=ch, W=W, H=H) for b in blocks]
         words = [normalize_text(w) for w in (p.get("words") or DEFAULT_WORDS)]
         blocklist = [normalize_text(w) for w in (p.get("blocklist") or DEFAULT_BLOCKLIST)]
-        zone = tuple(p.get("zone") or DEFAULT_ZONE)
         max_chars = int(p.get("max_chars") or MAX_TEXT_CHARS)
         min_area = float(p.get("min_area") or MIN_TEXT_AREA)
 

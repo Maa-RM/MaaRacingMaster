@@ -15,6 +15,7 @@ conftest 的 autouse 夹具默认置 MAARM_APP_LAUNCHER_CHECK=0；本文件各�
 """
 from __future__ import annotations
 
+import sys
 import threading
 import types
 
@@ -22,6 +23,13 @@ import pytest
 
 from maaracing_master.core import builtin_steps as bs
 from maaracing_master.core import game_process as gp
+
+# 闸门走 Win32 窗口句柄与回调类型（ctypes.WINFUNCTYPE 仅 Windows 存在），
+# ubuntu CI 上无此属性，不分平台就会整文件必红。
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("win"),
+    reason="启动器闸门依赖 Win32 句柄类型（ctypes.WINFUNCTYPE）",
+)
 
 
 class _App:

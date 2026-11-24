@@ -333,7 +333,7 @@ class _SwallowedClickGraph:
         self.last_click_landed = None
         self.last_click_sent = False
 
-    def run(self, entry: str, _reached: str | None) -> bool:
+    def run(self, entry: str, _reached: str | None, **kwargs) -> bool:
         if entry == "infinite_drive.点比赛":
             self.clicks += 1
             self.last_click_sent = True
@@ -363,7 +363,7 @@ def test_run_step_resend_recovers_when_page_arrives(monkeypatch) -> None:
     monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
 
     class _LateLandingGraph(_SwallowedClickGraph):
-        def run(self, entry: str, _reached: str | None) -> bool:
+        def run(self, entry: str, _reached: str | None, **kwargs) -> bool:
             if entry == "infinite_drive.点比赛":
                 super().run(entry, _reached)
                 return True
@@ -386,7 +386,7 @@ class _EventPageGraph:
         self.dismiss_clicks = 0
         self.card_checks = 0
 
-    def run(self, entry: str, _reached: str | None = None) -> bool:
+    def run(self, entry: str, _reached: str | None = None, **kwargs) -> bool:
         from maaracing_master.plugins.infinite_drive import module as m
 
         if entry == m._EVENT_ANCHOR:
@@ -416,7 +416,7 @@ def test_wait_card_anchor_skips_dismiss_when_page_absent() -> None:
     from maaracing_master.plugins.infinite_drive import module as m
 
     class _NoEventGraph(_EventPageGraph):
-        def run(self, entry: str, _reached: str | None = None) -> bool:
+        def run(self, entry: str, _reached: str | None = None, **kwargs) -> bool:
             if entry == m._EVENT_ANCHOR:
                 self.event_checks += 1
                 return False
@@ -451,7 +451,7 @@ class _ShopGraph:
         self.blink = blink_after_first
         self._blink_seen = 0
 
-    def run(self, entry: str, _reached: str | None = None) -> bool:
+    def run(self, entry: str, _reached: str | None = None, **kwargs) -> bool:
         if entry == self._m._EVENT_ANCHOR:
             return False
         if entry.startswith("infinite_drive.选卡.r"):
@@ -515,7 +515,7 @@ class _SweepTrackingGraph(_SwallowedClickGraph):
         self.sweeps = 0
         self.end_hits = end_hits
 
-    def run(self, entry: str, _reached: str | None = None) -> bool:
+    def run(self, entry: str, _reached: str | None = None, **kwargs) -> bool:
         from maaracing_master.plugins.infinite_drive import module as m
 
         if entry == m._ADVANCE_DISMISS:
@@ -573,7 +573,7 @@ def test_program_drive_only_commands_pad_while_driving(monkeypatch) -> None:
                               update=lambda: commands.append((steer, throttle)))
         commands.append((0, 0))
 
-    def run(entry, _reached):
+    def run(entry, _reached, **kwargs):
         # 导航识别与弹窗不得在持有驾驶输入时运行。
         controls.append(list(commands))
         return entry == m._DRIVE_END["p2"] and len(controls) >= 3
@@ -737,10 +737,10 @@ def _drive_frames_stub(mod, monkeypatch, frame):
 
 
 def test_debug_drive_saves_raw_frames(monkeypatch, tmp_path) -> None:
-    """debug 开 + 程序驾驶局：raw 原帧按阶段落盘并登记行为清单段（v1 口径）。
+    """debug 开 + 程序驾驶局：raw 与叠加图按阶段落盘并登记行为清单段。
 
     布局走 session_layout 控制面（debug/<会话>/infinite_drive/drive/<局前缀>_p<阶段>/），
-    策略面未接先只存 raw（索引 hud=null），行为级索引在收尾重建。"""
+    索引 hud 指向实际叠加图，行为级索引在收尾重建。"""
     import json
 
     import numpy as np
@@ -763,7 +763,8 @@ def test_debug_drive_saves_raw_frames(monkeypatch, tmp_path) -> None:
     assert list((seg / "raw").glob("*.jpg"))                # raw 原帧落盘（10fps 节流）
     rows = [json.loads(line) for line
             in (seg / "frames.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    assert rows and all(row["hud"] is None for row in rows)  # 只存 raw 不画叠加
+    assert rows and all(row["hud"] and (seg / row["hud"]).is_file()
+                        for row in rows)                    # 叠加图落盘且索引可解析
     assert (behavior / "frames.jsonl").is_file()            # 行为级索引收尾重建
 
 
@@ -843,7 +844,7 @@ class _EarlyExitGraph:
         self.done = 0
         self.clicks = []
 
-    def run(self, entry, _reached=None):
+    def run(self, entry, _reached=None, **kwargs):
         from maaracing_master.plugins.infinite_drive import module as m
 
         if entry in (m._EXIT_GEAR, m._EXIT_LEAVE, m._EXIT_CONFIRM):
@@ -889,7 +890,7 @@ def test_early_exit_skips_confirm_when_settlement_direct(monkeypatch) -> None:
     """「今日不再提示」生效日：点完退出直达结算页，确认步免点。"""
 
     class _NoDialogGraph(_EarlyExitGraph):
-        def run(self, entry, _reached=None):
+        def run(self, entry, _reached=None, **kwargs):
             from maaracing_master.plugins.infinite_drive import module as m
 
             if entry == m._EXIT_LEAVE:
@@ -911,7 +912,7 @@ def test_early_exit_failure_dismisses_back_to_driving(monkeypatch) -> None:
     """退出点击被吞：重发耗尽后回赶（设置页在位点继续），序列报失败。"""
 
     class _SwallowLeaveGraph(_EarlyExitGraph):
-        def run(self, entry, _reached=None):
+        def run(self, entry, _reached=None, **kwargs):
             from maaracing_master.plugins.infinite_drive import module as m
 
             if entry == m._EXIT_LEAVE:
@@ -1030,3 +1031,37 @@ def test_p1_early_settle_skips_card2_and_p2_in_flow(monkeypatch) -> None:
     assert mod._run_flow(start) is True
     assert visited == ["p1", "结算读数", "结算·下一关"]   # card2 / p2 未被访问
     assert mod._p1_settled_early is False               # 标记即取即清
+
+
+# ---------- 调试存图接线：nav + drive 两面（v1 口径） ----------
+
+def _function_body(src: str, name: str) -> str:
+    start = src.index(name)
+    end = src.index("\n    def ", start + 10)
+    return src[start:end]
+
+
+def test_ui_nav_segments_save_images_and_drive_chain_does_not() -> None:
+    """UI 导航段必须显式声明落图（nav），驾驶控制链不声明（drive 归 writer/录制器）。
+
+    `DEBUG_SAVE` 是运行项级（本模块为 self），做不到「一半落一半不落」；真正的
+    分界靠接口：`run(..., save=NAV_SAVE)` 开段落图，驾驶侧的 probe/end 判据不声明。
+    """
+    import re
+    from pathlib import Path
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    src = Path(m.__file__).read_text(encoding="utf-8")
+    for name in ("def _run_flow", "def _run_step", "def _pick_cards",
+                 "def _wait_card_anchor", "def _sweep_transient_popup",
+                 "def _dismiss_settlement_overlays",
+                 "def _run_early_exit", "def _dismiss_exit_pages"):
+        body = _function_body(src, name)
+        calls = re.findall(r"self\._graph\.run\([^)]*\)", body)
+        assert calls, f"{name} 里应有 run 调用"
+        for call in calls:
+            assert "save=NAV_SAVE" in call, f"{name} 的 run 未声明落图：{call}"
+
+    drive = _function_body(src, "def _drive(")
+    assert "save=" not in drive, "驾驶控制链不应声明存盘策略（与 drive 取证双写）"

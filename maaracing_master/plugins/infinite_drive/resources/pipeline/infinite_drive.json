@@ -602,6 +602,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -639,6 +643,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -676,6 +684,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -713,6 +725,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -750,6 +766,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -824,6 +844,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -861,6 +885,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -1078,6 +1106,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -1490,6 +1522,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400
@@ -1527,6 +1563,10 @@
             "param": {}
         },
         "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
         "pre_delay": 0,
         "post_delay": 0,
         "timeout": 400

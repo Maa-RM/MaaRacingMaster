@@ -171,11 +171,36 @@ class LaneDrive:
         self._last_fid = -1
         self._target: float | None = None
         self._gross_reanchor = 0
+        self._dbg_refs = None
         self.release()
 
     def release(self) -> None:
         self._control.reset()
         self.throttle_scale = 1.0
+
+    def debug_snapshot(self) -> dict | None:
+        """本拍调试图快照（只给观测量，不做任何决策计算）。
+
+        由控制拍在 ``steer`` 之后取一次、调试图落盘线程延迟渲染；内容全是
+        本拍新建对象或不可变值（``lane`` 是观测线程发布的浅拷贝，``lines``
+        为每拍重建的 dict），交出去之后不再改写。无车账时点位状态显式
+        ``None``（未测），不把「没证据」画成「净空」。
+        """
+        refs = self._dbg_refs
+        if refs is None:
+            return None
+        cars = refs["cars"]
+        if cars is None:
+            # 缺席原因是可读信息：车道原点不可用（决定层本就不出车账）与
+            # 「车道可用但同拍车账没跟上」是两回事，调试图分开展示。
+            states, reason = None, ("lane" if not refs["track_ready"]
+                                    else "traffic")
+        else:
+            states = [(p, _point_blocked(p, cars, _DECISION_HORIZON_M))
+                      for p in _EDGE_POINTS]
+            reason = None
+        return dict(refs, edge_states=states, edge_reason=reason,
+                    clearance=_CLEARANCE, horizon_m=_DECISION_HORIZON_M)
 
     def _hold_edge_point(self, ego_x: float, cars: list[tuple[float, float]]) -> str | None:
         """点位决策：无点先取离自车最近的净点；被堵才换最近的净点，净则保持。
@@ -258,6 +283,18 @@ class LaneDrive:
             self._control.reset()
             steer = 0.0
             target_heading = yaw_rate = None
+
+        # 调试图快照只留引用（lane 快照与车账均为本拍新建对象），点位堵/净
+        # 在 debug_snapshot 里按需算一次，调试关闭时零额外开销。
+        self._dbg_refs = {
+            "lane": lane, "ego_x": x, "target": target, "cars": cars,
+            "walled": walled, "steer": steer,
+            "throttle_scale": self.throttle_scale, "heading": heading,
+            "target_heading": target_heading, "yaw_rate": yaw_rate,
+            "usable": bool(usable), "fresh": bool(fresh),
+            "track_ready": bool(track_ready),
+            "half_lanes": ROAD_HALF_LANES,
+        }
 
         self._trace.append({"fid": fid, "ts_ns": ts_ns,
                             "ego_lane": x, "target_lane": target, "heading_rad": heading,
