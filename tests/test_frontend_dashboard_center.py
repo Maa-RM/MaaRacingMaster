@@ -19,7 +19,7 @@ from pathlib import Path
 from maaracing_master.core.dashboard_contract import BLOCK_TYPES
 
 REPO = Path(__file__).resolve().parent.parent
-SETTINGS_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "settings.js"
+SETTINGS_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "dashboard.js"
 
 
 def _js_function_body(src: str, signature: str) -> str:
