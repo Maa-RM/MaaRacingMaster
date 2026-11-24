@@ -26,12 +26,12 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0  # 完整历史：setuptools-scm 版本推导 + changelog 兜底信源（git log）
 
       - name: 设置 Python
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
 
@@ -156,19 +156,19 @@ jobs:
       contents: write
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0  # 完整历史（版本/README 语义）；模型非 LFS，快照自带
           lfs: true       # 防患：仓库将来若接 LFS 模型，避免打到指针文件
 
       - name: 设置 Python 3.11（装 runtime 依赖，必须 cp311 以匹配 embedded）
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.11'
           cache: 'pip'  # 缓存 pip 下载缓存，作为 runtime-cache 之外的第二层兜底
 
       - name: 设置 .NET SDK（编译 WinUI GUI）
-        uses: actions/setup-dotnet@v4.3.1
+        uses: actions/setup-dotnet@v6.1.0
         with:
           dotnet-version: '8.0.x'
 
@@ -179,7 +179,7 @@ jobs:
           vs-version: latest
 
       - name: 缓存 NuGet 包（Microsoft.WindowsAppSDK 等，避免每次重下）
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('apps/MaaRacingMaster.Shell/MaaRacingMaster.Shell.csproj', 'apps/MaaRacingMaster.Shell/NuGet.Config') }}
@@ -187,7 +187,7 @@ jobs:
             ${{ runner.os }}-nuget-
 
       - name: 缓存 runtime 依赖（embedded Python + pip 包，避免每次重下几百MB）
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: build/runtime-cache
           key: ${{ runner.os }}-rtcache-${{ hashFiles('scripts/release/requirements-runtime-lock.txt') }}
@@ -427,3 +427,4 @@ jobs:
           upload_asset "$ZIP"
           upload_asset "$MODELS"
           echo "CNB Release 同步完成: https://cnb.cool/${CNB_PATH}/-/releases"
+

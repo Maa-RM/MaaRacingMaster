@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
 
       - name: 仓库体积守卫（跟踪文件不得超过 5 MB）
         # 机制：git 历史只增不减——误提交的大文件永久留在 pack 里，并随每一次
@@ -69,7 +69,7 @@ jobs:
           echo "✓ ${COUNT} 个跟踪文件均在体积上限内"
 
       - name: 设置 Python
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -128,16 +128,16 @@ jobs:
       contents: read
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4.4.0
+        uses: actions/checkout@v7.0.1
 
       - name: 设置 .NET SDK
-        uses: actions/setup-dotnet@v4.3.1
+        uses: actions/setup-dotnet@v6.1.0
         with:
           dotnet-version: '8.0.x'
 
       - name: 缓存 NuGet 包
         # Windows App SDK 等包较大，冷启动还原占这一步的大头
-        uses: actions/cache@v4.3.0
+        uses: actions/cache@v6.1.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('apps/**/*.csproj', 'apps/**/NuGet.Config') }}
