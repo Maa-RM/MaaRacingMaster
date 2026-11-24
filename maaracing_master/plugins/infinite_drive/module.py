@@ -1119,7 +1119,7 @@ class InfiniteDriveModule(ActivityModule):
                             throttle_scale = 1.0 if driver is None else driver.throttle_scale
                             pad.right_trigger(value=round(_DRIVE_THROTTLE * throttle_scale))
                             pad.update()
-                            if dbg_snap is not None:
+                            if dbg_snap is not None and dbg is not None:
                                 dbg.tick(frame, dbg_snap)
                             if tick - last_score_check >= _SCORE_CHECK_INTERVAL_S:
                                 last_score_check = tick
@@ -1143,7 +1143,7 @@ class InfiniteDriveModule(ActivityModule):
                                 return False
                             continue
 
-                    if dbg_snap is not None:
+                    if dbg_snap is not None and dbg is not None:
                         # 非驾驶画面（转场/遮挡/等结束信号）：仍然出图，
                         # 叠加图按「本帧无决策快照」表达，不沿用上一拍。
                         dbg.tick(frame, dbg_snap)

@@ -182,7 +182,8 @@ class LaunchGameStep(BuiltinStep):
             log("已停止，放弃等待游戏窗口", "WARNING")
             return False
         if not hwnd:
-            log(f"{timeout_s:.0f}s 内未等到游戏窗口；{_diagnose(exe)}", "ERROR")
+            diag = _diagnose(exe) if exe is not None else "可执行文件路径未知"
+            log(f"{timeout_s:.0f}s 内未等到游戏窗口；{diag}", "ERROR")
             return False
 
         self.app.adopt_window(hwnd)

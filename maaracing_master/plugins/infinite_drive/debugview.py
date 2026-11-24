@@ -132,10 +132,13 @@ def _draw_lane_lines(img: np.ndarray, lane: dict) -> None:
                 continue
             s, a, y_a, y_b = (_num(ft.get("s")), _num(ft.get("a")),
                               _num(ft.get("y0")), _num(ft.get("y1")))
-            if None in (s, a, y_a, y_b) or y_b <= y_a:
+            if s is None or a is None or y_a is None or y_b is None:
+                continue
+            if y_b <= y_a:
                 continue
             band = ft.get("band")
-            col = (_LANE_BAND_BGR.get(band, (170, 170, 170))
+            band_key = band if isinstance(band, str) else ""
+            col = (_LANE_BAND_BGR.get(band_key, (170, 170, 170))
                    if accepted else _LANE_REJ_BGR)
             thick = 2 if accepted else 1
             lo, hi = _clamp(y_a, 0.0, _DESIGN_H), _clamp(y_b, 0.0, _DESIGN_H)
@@ -199,7 +202,7 @@ def _draw_cars(img: np.ndarray, lane: dict) -> None:
     for d in getattr(traffic, "cars", ()) or ():
         cx, cy, w, h = (getattr(d, "cx", None), getattr(d, "cy", None),
                         getattr(d, "w", None), getattr(d, "h", None))
-        if None in (cx, cy, w, h):
+        if cx is None or cy is None or w is None or h is None:
             continue
         x1, y1 = int(cx - w / 2), int(cy - h / 2)
         cv2.rectangle(img, (x1, y1), (x1 + int(w), y1 + int(h)), col, 2)
