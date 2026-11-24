@@ -530,3 +530,8 @@ msedge.exe --headless=new --screenshot=out.png --window-size=900,240 "file:///�
   保持 undefined、外链调用只有 `open_external_url {"target":"…"}` 形态。
 
 探针是临时验证产物，**用完即移出仓库**（见 [`AGENTS.md`](../../../AGENTS.md) 作业纪律 2）。
+
+四种关键场景已经固化成自动化验收：正常启动、后端不回包、迟到弹窗、慢看板。
+它复制页面到临时目录、注入桥桩，用本机 Edge/Chrome（或 CI runner 自带的 Chrome）
+跑无头浏览器并断言结果，见
+[`tests/test_frontend_bridge_acceptance.py`](../../../tests/test_frontend_bridge_acceptance.py)。
