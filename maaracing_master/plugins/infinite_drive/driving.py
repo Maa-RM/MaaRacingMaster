@@ -232,8 +232,8 @@ class LaneDrive:
         if perception is None:
             logger.log(f"[无限驾驶] 街车模型不可用，本次只保持车道：{car_error}", "WARNING")
         # hz=0：按控制拍提交（此前按 10Hz 节流，控制拍 20Hz 下一半拍拿不到新
-        # 检测，是可用率的大头）。单帧预算见 tools/experiments/lane_obs_dml：
-        # DML+FP16 前向约 4~6ms、后处理约 5ms；是否跟得上以 trace 的弃帧计数为准。
+        # 检测，是可用率的大头）。实测 DML+FP16 单帧约 9~11ms（前向 4~6ms、
+        # 后处理约 5ms）；是否跟得上以 trace 的弃帧计数为准。
         self._lines = LaneObsWorker(LaneObsConfig(
             enabled=True, provider="dml", weights=LANE_MODEL_REL,
             weights_fp16=LANE_FP16_MODEL_REL, hz=0.0,
