@@ -90,6 +90,17 @@ _STUB = r"""
       model_ok: true
     },
     get_status: { is_running: false, model_ok: true },
+    // 往返用户：声明已同意、引导已完成，启动验收只关心主界面
+    get_onboarding: {
+      terms_version: '2026-11-A',
+      terms_accepted: true,
+      terms_accepted_at: '2026-01-01T00:00:00+08:00',
+      launch_seen: true,
+      steps_done: ['manage', 'add_start_game', 'add_close_game', 'confirm', 'open_settings', 'open_env'],
+      finished_at: '2026-01-01T00:10:00+08:00',
+      existing_user: false,
+      steps: ['manage', 'add_start_game', 'add_close_game', 'confirm', 'open_settings', 'open_env']
+    },
     fetch_logs: { lines: [] },
     get_registry_optimizations: { items: [] },
     get_optional_dependencies: { items: [] },

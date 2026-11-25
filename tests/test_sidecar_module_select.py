@@ -59,6 +59,20 @@ def _svc(monkeypatch, worker=None):
     return svc
 
 
+# ---------- 默认队列 ----------
+
+def test_fresh_install_starts_with_empty_queue(monkeypatch):
+    """新装默认不预置任务：首次引导的「加任务」步骤才有东西可教。"""
+    monkeypatch.setattr(sc, "MaaRacingMasterController", lambda: object())
+    monkeypatch.setattr(sc, "_load_profile", lambda: {})
+    svc = SidecarService(None)
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
+    # 空队列时启动被明确拒绝，而不是静默跑空轮
+    ok, data, err = svc.start({})
+    assert not ok and data is None and "没有启用" in err
+
+
 # ---------- set_run_queue：运行中守卫 ----------
 
 def test_set_queue_rejected_while_worker_alive(monkeypatch):

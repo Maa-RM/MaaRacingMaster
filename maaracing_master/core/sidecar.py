@@ -45,7 +45,6 @@ from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
-    first_available_module_id,
     get_module_info,
     load_plugin_ref,
     module_expired,
@@ -731,19 +730,11 @@ class SidecarService:
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
         # 插件声明的资产安装器实例（module_id → installer），按 manifest.ID 懒加载
         self._asset_installers: dict[str, Any] = {}
-        # 运行任务列表（数组序 = 执行序）与启用勾选。默认 = 注册表全量按注册序排列、
-        # 勾选第一个仍可用模块（对齐旧单选语义的迁移起点，profile 有存档则以存档为准）。
+        # 运行任务列表（数组序 = 执行序）与启用勾选。默认空列表：装好第一次打开时
+        # 由用户按首次引导自己挑选任务，profile 有存档则以存档为准。
         # 不硬编码任何模块 id（见文件头说明）；set_run_queue 校验后整体覆写。
-        # 默认编排 = 启动游戏 → 活动模块 → 关闭游戏：步骤与模块同列，用户可增删排序。
-        self._queue_order: list[str] = [
-            LaunchGameStep.ID, *MODULE_REGISTRY, CloseGameStep.ID,
-        ]
-        first = first_available_module_id()
-        self._queue_enabled: dict[str, bool] = {
-            sid: True for sid in (LaunchGameStep.ID, CloseGameStep.ID)
-        }
-        if first:
-            self._queue_enabled[first] = True
+        self._queue_order: list[str] = []
+        self._queue_enabled: dict[str, bool] = {}
         # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
         self._start_from: dict[str, str] = {}
         # 运行实况 {index, total, current_module, current_name}（worker 持有期间非 None）与
