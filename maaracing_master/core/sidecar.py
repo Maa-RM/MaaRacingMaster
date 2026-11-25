@@ -45,7 +45,6 @@ from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
-    first_available_module_id,
     get_module_info,
     load_plugin_ref,
     module_expired,
@@ -54,7 +53,6 @@ from maaracing_master.core.registry import (
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
     CloseGameStep,
-    LaunchGameStep,
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.config_ui_contract import (
@@ -102,6 +100,20 @@ _STDERR = cast(TextIO, sys.__stderr__)
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
+
+# ---------- 首次引导状态 ----------
+# 声明文案版本：文案变更时递增，旧版本同意记录失效，下次启动重新弹声明。
+_ONBOARDING_TERMS_VERSION = "2026-11-A"
+# 引导步骤 id：与前端引导步骤一一对应。前端增删步骤必须同步本表，
+# 未知 id 的写入会被拒绝（避免拼错的步骤悄悄写进 profile）。
+_ONBOARDING_STEPS = (
+    "manage",
+    "add_start_game",
+    "add_close_game",
+    "confirm",
+    "open_settings",
+    "open_env",
+)
 # 默认选中模块：**不硬编码任何具体模块 id**——预选注册顺序里第一个仍在有效期内的模块，
 # 全部不可用时不预选（GUI「（空）」承担该状态）。写死某个活动会把该活动固化成特权模块，
 # 且它退役后常量即悬空；core 也不得出现模块 id 字面量。
@@ -357,8 +369,13 @@ def _load_profile() -> dict:
 # （Windows 报「另一个程序正在使用此文件」），表现为「改了没保存」。
 _PROFILE_WRITE_LOCK = threading.Lock()
 
+# 引导状态的读改写锁：每次事件都是「读整段 → 改一项 → 写整段」，两笔并发事件
+# 各自读到旧值会互相覆盖（例如两步几乎同时完成，只剩一步）。与落盘锁分开，
+# 因为 _save_profile 内部还要再取落盘锁。
+_ONBOARDING_LOCK = threading.RLock()
 
-def _save_profile(partial: dict) -> None:
+
+def _save_profile(partial: dict) -> bool:
     """原子写 profile：仅更新 partial 提供的段，其余段（含未知键）原样保留。
 
     - **串行化**：所有写入走同一把锁，临时文件名再带线程号——并发写不再互相踩；
@@ -379,19 +396,32 @@ def _save_profile(partial: dict) -> None:
             for _ in range(5):
                 try:
                     tmp.replace(path)           # 原子替换，防半写文件
-                    return
+                    return True
                 except PermissionError as exc:
                     last = exc
                     time.sleep(0.05)
             raise last if last else RuntimeError("replace failed")
         except Exception as exc:  # noqa: BLE001
             logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
+            return False
         finally:
             if tmp is not None:
                 try:
                     tmp.unlink(missing_ok=True)
                 except Exception:  # noqa: BLE001
                     pass
+
+
+def _legacy_user_from_profile(profile: dict) -> bool:
+    """这份存档是不是「升级上来的老用户」。
+
+    写进 onboarding 段的结论优先（同意声明时固定，之后存档多出引导段也不翻案）；
+    段里没有结论时，按「有业务数据、没有引导进度」判老用户。
+    """
+    raw = profile.get("onboarding")
+    if isinstance(raw, dict) and "existing_user" in raw:
+        return bool(raw.get("existing_user"))
+    return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
 
 
 def _apply_framework_policy() -> None:
@@ -527,6 +557,8 @@ HANDLERS = frozenset({
     # 生命周期与模块
     "get_initial_state", "set_run_queue", "set_start_from", "get_status",
     "start", "stop", "close", "shutdown",
+    # 首次引导（声明 / 过渡页 / 步骤完成）
+    "get_onboarding", "onboarding_event",
     # 升级准备冻结（壳宿主经管道直调，前端不可调；测试 SHELL_ONLY 锁定）
     "prepare_update", "cancel_update_freeze",
     # 模块配置
@@ -714,19 +746,11 @@ class SidecarService:
         self._worker = None  # 非 None = start slot 已占用（互斥依据，与 bridge.py 一致）
         # 插件声明的资产安装器实例（module_id → installer），按 manifest.ID 懒加载
         self._asset_installers: dict[str, Any] = {}
-        # 运行任务列表（数组序 = 执行序）与启用勾选。默认 = 注册表全量按注册序排列、
-        # 勾选第一个仍可用模块（对齐旧单选语义的迁移起点，profile 有存档则以存档为准）。
+        # 运行任务列表（数组序 = 执行序）与启用勾选。默认空列表：装好第一次打开时
+        # 由用户按首次引导自己挑选任务，profile 有存档则以存档为准。
         # 不硬编码任何模块 id（见文件头说明）；set_run_queue 校验后整体覆写。
-        # 默认编排 = 启动游戏 → 活动模块 → 关闭游戏：步骤与模块同列，用户可增删排序。
-        self._queue_order: list[str] = [
-            LaunchGameStep.ID, *MODULE_REGISTRY, CloseGameStep.ID,
-        ]
-        first = first_available_module_id()
-        self._queue_enabled: dict[str, bool] = {
-            sid: True for sid in (LaunchGameStep.ID, CloseGameStep.ID)
-        }
-        if first:
-            self._queue_enabled[first] = True
+        self._queue_order: list[str] = []
+        self._queue_enabled: dict[str, bool] = {}
         # 断点起点（模块 id → 阶段名）：**仅内存**，start 时消费即清——断点不跨会话记忆。
         self._start_from: dict[str, str] = {}
         # 运行实况 {index, total, current_module, current_name}（worker 持有期间非 None）与
@@ -897,26 +921,22 @@ class SidecarService:
             if kept:
                 slots[mid] = kept
         self._module_config_cache = slots
-        # 3) 运行任务列表：order 取已知模块 id 的去重序列（未知 id 丢弃），enabled
-        #    只收已知 id 的布尔值。文件里没有该段 → 保留 __init__ 的默认编排。
+        # 3) 运行任务列表：存档里有 order（哪怕是空列表）就按存档恢复；没有存档就
+        #    保持空列表，由用户自己挑选任务——新装与升级用户同一口径。
         rq = data.get("run_queue")
-        if isinstance(rq, dict):
-            order = rq.get("order")
-            if isinstance(order, list):
-                seen: set[str] = set()
-                cleaned: list[str] = []
-                for mid in order:
-                    if isinstance(mid, str) and mid in _step_ids() and mid not in seen:
-                        seen.add(mid)
-                        cleaned.append(mid)
-                if cleaned:
-                    self._queue_order = cleaned
+        if isinstance(rq, dict) and isinstance(rq.get("order"), list):
+            seen: set[str] = set()
+            cleaned: list[str] = []
+            for mid in rq["order"]:
+                if isinstance(mid, str) and mid in _step_ids() and mid not in seen:
+                    seen.add(mid)
+                    cleaned.append(mid)
+            self._queue_order = cleaned
             en = rq.get("enabled")
-            if isinstance(en, dict):
-                self._queue_enabled = {
-                    k: bool(v) for k, v in en.items()
-                    if isinstance(k, str) and k in _step_ids()
-                }
+            self._queue_enabled = ({
+                k: bool(v) for k, v in en.items()
+                if isinstance(k, str) and k in _step_ids()
+            } if isinstance(en, dict) else {})
         # 4) 旧「运行结束后」开关迁移（跑一次即清键）
         self._migrate_legacy_shutdown(data.get("debug"))
 
@@ -960,6 +980,83 @@ class SidecarService:
         logger.log(
             "旧「运行结束后」开关已迁移到任务列表: " + ("、".join(migrated) if migrated else "（原本都关着）")
         )
+
+    def _onboarding_state(self) -> dict:
+        """读取并规范化 onboarding 段：无效步骤 id 丢弃，缺字段补空值。"""
+        raw = _load_profile().get("onboarding")
+        state = raw if isinstance(raw, dict) else {}
+        done = state.get("steps_done")
+        if not isinstance(done, list):
+            done = []
+        done = [s for s in done if isinstance(s, str) and s in _ONBOARDING_STEPS]
+        return {
+            "terms_version": state.get("terms_version") or "",
+            "terms_accepted_at": state.get("terms_accepted_at"),
+            "launch_seen_at": state.get("launch_seen_at"),
+            "steps_done": done,
+            "finished_at": state.get("finished_at"),
+            # None = 还没判过（首次同意时补记）；老用户升级当天才写得进来
+            "existing_user": state.get("existing_user"),
+        }
+
+    def _is_existing_user(self) -> bool:
+        """升级上来的老用户：只补声明、不补引导。
+
+        判定口径见 _legacy_user_from_profile：写进 onboarding 段的既有结论优先，
+        段里没有结论时按「有业务数据、没有引导记录」判为老用户。
+        """
+        return _legacy_user_from_profile(_load_profile())
+
+    def get_onboarding(self, params):
+        """首次引导状态：声明、过渡页、步骤完成集合与完成时间。"""
+        state = self._onboarding_state()
+        version = state["terms_version"]
+        return (True, {
+            "terms_version": _ONBOARDING_TERMS_VERSION,
+            # 文案版本不一致 = 声明改过，需要重新同意
+            "terms_accepted": version == _ONBOARDING_TERMS_VERSION and bool(state["terms_accepted_at"]),
+            "terms_accepted_at": state["terms_accepted_at"],
+            "launch_seen": bool(state["launch_seen_at"]),
+            "steps_done": state["steps_done"],
+            "finished_at": state["finished_at"],
+            "existing_user": self._is_existing_user(),
+            "steps": list(_ONBOARDING_STEPS),
+        }, None)
+
+    def onboarding_event(self, params):
+        """逐事件写入引导状态：每次变更立即落盘，强杀后最多丢一个事件。
+
+        事件幂等：重复的 step_done / finish 不会产生重复数据；未知事件与未知
+        步骤 id 一律拒绝，前端拼错时能立刻看见。读改写整体串行，两笔并发事件
+        不会互相覆盖（各自读到的都是上一笔的结果）。
+        """
+        kind = params.get("type")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with _ONBOARDING_LOCK:
+            state = self._onboarding_state()
+            if kind == "accept_terms":
+                state["terms_version"] = _ONBOARDING_TERMS_VERSION
+                state["terms_accepted_at"] = now
+                # 身份在同意这一刻固定：之后再读 profile 已经多出 onboarding 段，
+                # 按段判会把老用户误判成新用户
+                if state.get("existing_user") is None:
+                    state["existing_user"] = self._is_existing_user()
+            elif kind == "seen_launch":
+                state["launch_seen_at"] = state["launch_seen_at"] or now
+            elif kind == "step_done":
+                sid = params.get("id")
+                if sid not in _ONBOARDING_STEPS:
+                    return (False, None, f"未知引导步骤: {sid}")
+                if sid not in state["steps_done"]:
+                    state["steps_done"].append(sid)
+            elif kind == "finish":
+                # 幂等：重复 finish 不改写首次完成时间
+                state["finished_at"] = state["finished_at"] or now
+            else:
+                return (False, None, f"未知引导事件: {kind}")
+            if not _save_profile({"onboarding": state}):
+                return (False, None, "引导状态保存失败，请重试")
+            return (True, state, None)
 
     def get_initial_state(self, params):
         return (True, {
@@ -1080,6 +1177,7 @@ class SidecarService:
             # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
             if self._worker is not None:
                 return (False, None, "运行中不允许修改任务列表，请先停止")
+            prev_order, prev_enabled = self._queue_order, self._queue_enabled
             self._queue_order = list(order)
             # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
             # profile 里不残留悬空键（再入列时由前端显式给值）
@@ -1087,7 +1185,10 @@ class SidecarService:
             snapshot = self._queue_snapshot()
             # 落盘与更新同锁：写盘顺序必须等于内存更新顺序，否则并发两笔可能
             # 按相反顺序落盘，重启恢复到旧配置
-            _save_profile({"run_queue": snapshot})
+            if not _save_profile({"run_queue": snapshot}):
+                # 落盘失败不能留「内存已改、磁盘没改」的错位：回滚内存再报错
+                self._queue_order, self._queue_enabled = prev_order, prev_enabled
+                return (False, None, "任务列表保存失败，请重试")
         # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
         logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
         return (True, snapshot, None)

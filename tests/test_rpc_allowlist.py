@@ -112,6 +112,20 @@ def test_frontend_calls_within_allowlist():
     assert not rogue, f"前端调用了白名单外方法：{sorted(rogue)}"
 
 
+def test_frontend_rpc_calls_are_literals():
+    """前端 RPC 方法名必须是字面量。
+
+    白名单测试按 `maarm.call('name')` 的字面量扫描调用点；一旦有人把方法名放进
+    变量（`maarm.call(method)`），调用点就静默离开看护，白名单形同虚设。
+    """
+    bad = []
+    for js in FRONTEND_DIR.rglob("*.js"):
+        text = js.read_text(encoding="utf-8")
+        for match in re.finditer(r"maarm\.call\(\s*([^'\")])", text):
+            bad.append(f"{js.relative_to(FRONTEND_DIR)}: {match.group(1)[:1]!r}")
+    assert not bad, "发现动态方法名的 maarm.call（白名单扫描会漏掉）：" + "；".join(bad)
+
+
 def test_dispatch_rejects_non_allowlist():
     """活性锁：_dispatch 对表外名字（含内部成员、含 dunder）一律 unknown，
     对表内名字必须走到 handler——防止白名单只是装饰。"""

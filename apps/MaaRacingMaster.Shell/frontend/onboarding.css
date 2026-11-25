@@ -1,0 +1,202 @@
+/* 首次使用引导：声明纯色页 + 聚光灯。
+   颜色/字体沿用真实前端的 --maarm-* 变量，不另建一套主题。 */
+
+/* ============ 声明门 ============ */
+.onb-gate {
+  position: fixed; inset: 0; z-index: 10300;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 40px 24px; overflow-y: auto;
+  background: var(--maarm-background);
+  animation: onb-fade .3s ease both;
+}
+.onb-gate.is-leaving { animation: none; }
+.onb-gate.is-leaving .onb-gate-inner { opacity: 0; transition: opacity .3s ease; }
+.onb-gate-inner { width: min(620px, 100%); margin: auto 0; }
+.onb-hero {
+  position: relative; width: 100%; height: 220px; margin-bottom: 22px;
+  border-radius: 14px; corner-shape: squircle;
+  overflow: hidden; background: #0B0B0D;
+}
+.onb-hero-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.onb-hero-mark {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  gap: 10px; color: #fff; pointer-events: none;
+}
+.onb-hero-mark img { width: 44px; height: 44px; object-fit: contain; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .55)); }
+.onb-hero-mark span {
+  font-size: 23px; font-weight: 700; letter-spacing: .01em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .65), 0 0 14px rgba(0, 0, 0, .45);
+}
+.onb-gate-inner h1 { font-size: 22px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 18px; }
+.onb-gate-text {
+  font-size: 13px; line-height: 1.95; color: var(--maarm-foreground-secondary);
+  max-height: 46vh; overflow-y: auto; padding-right: 8px; user-select: text;
+}
+.onb-gate-text p { margin-bottom: 12px; }
+.onb-gate-note { color: var(--maarm-foreground-muted); font-size: 12.5px; }
+.onb-gate-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--maarm-border);
+}
+.onb-gate-actions .tour-btn { min-width: 132px; }
+
+/* ============ 通用按钮（只属于引导层） ============ */
+.tour-btn {
+  height: 34px; padding: 0 15px; border-radius: 9px;
+  border: 1px solid var(--maarm-border); background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary); font-size: 12.5px; font-weight: 500;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  font-family: inherit; transition: background .15s, border-color .15s, color .15s;
+}
+.tour-btn:hover { background: var(--maarm-surface-hover); }
+.tour-btn--primary {
+  background: var(--maarm-primary); border-color: var(--maarm-primary);
+  color: var(--maarm-primary-foreground);
+}
+.tour-btn--primary:hover { background: var(--maarm-primary-hover); border-color: var(--maarm-primary-hover); }
+.tour-btn--primary:disabled {
+  background: var(--maarm-surface-active); border-color: var(--maarm-border);
+  color: var(--maarm-foreground-dim); cursor: not-allowed;
+}
+.tour-text-btn {
+  border: 0; background: transparent; color: var(--maarm-foreground-muted);
+  font-size: 11.5px; cursor: pointer; padding: 4px 0; font-family: inherit;
+}
+.tour-text-btn:hover { color: var(--maarm-foreground-secondary); }
+
+/* ============ 聚光灯 ============ */
+.tour-layer { position: fixed; inset: 0; z-index: 10200; pointer-events: none; }
+/* 引导遮罩期间错误提示仍要看得见：队列 RPC 失败这类问题不能被蒙住 */
+.onb-tour-active #error-toast { z-index: 10250; }
+.tour-layer.is-leaving { opacity: 0; transition: opacity .32s ease; }
+.tour-layer.is-leaving * { pointer-events: none !important; }
+.tour-block {
+  position: fixed; background: rgba(17, 20, 26, .52);
+  pointer-events: auto; cursor: not-allowed;
+  animation: onb-fade .18s ease both;
+}
+.tour-ring {
+  position: fixed; border-radius: 10px; pointer-events: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .92),
+              0 0 0 6px rgba(229, 72, 77, .28),
+              0 12px 32px rgba(0, 0, 0, .22);
+  transition: all .26s cubic-bezier(.22, 1, .36, 1);
+}
+.tour-bubble {
+  position: fixed; width: 300px; z-index: 10210; pointer-events: auto;
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: 12px; box-shadow: 0 16px 40px rgba(20, 23, 30, .16);
+  padding: 14px 16px 12px;
+  animation: onb-bubble-in .26s cubic-bezier(.22, 1, .36, 1) both;
+}
+.tour-bubble.is-nudge { animation: onb-nudge .32s ease; }
+.tour-bubble::before {
+  content: ""; position: absolute; width: 10px; height: 10px;
+  background: var(--maarm-surface);
+  border-left: 1px solid var(--maarm-border);
+  border-top: 1px solid var(--maarm-border);
+  transform: rotate(45deg);
+}
+.tour-bubble[data-arrow="up"]::before { top: -6px; left: var(--arrow-x, 24px); }
+.tour-bubble[data-arrow="down"]::before { bottom: -6px; left: var(--arrow-x, 24px); transform: rotate(225deg); }
+.tour-step {
+  font-family: var(--maarm-font-mono); font-size: 10px;
+  color: var(--maarm-foreground-muted); margin-bottom: 5px;
+}
+.tour-bubble h3 { font-size: 13.5px; font-weight: 600; margin-bottom: 5px; color: var(--maarm-foreground); }
+.tour-bubble p { font-size: 12px; color: var(--maarm-foreground-muted); line-height: 1.65; }
+.tour-actions {
+  display: flex; justify-content: space-between; margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--maarm-border-light);
+}
+
+/* ============ 完成提示 ============ */
+.tour-toast {
+  position: fixed; left: 50%; bottom: 64px; z-index: 10250;
+  transform: translateX(-50%);
+  background: #1F2328; color: #F3F4F6; font-size: 12px;
+  padding: 8px 14px; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  animation: onb-toast-in .25s cubic-bezier(.22, 1, .36, 1) both;
+}
+.tour-toast.is-out { opacity: 0; transition: opacity .4s ease; }
+
+/* ============ 初次教学过渡页 ============ */
+.onb-launch {
+  position: fixed; inset: 0; z-index: 10301;
+  background: var(--maarm-background);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 24px;
+  opacity: 1;
+  transition: opacity .42s ease;
+}
+.onb-launch.is-entering { opacity: 0; }
+.onb-launch.is-leaving { opacity: 0; }
+.onb-launch-stage {
+  display: flex; flex-direction: column; align-items: center;
+  gap: clamp(16px, 2.4vh, 26px);
+}
+.onb-launch-spacer {
+  width: clamp(160px, 32vh, 250px);
+  height: clamp(160px, 32vh, 250px);
+}
+.onb-launch-copy { text-align: center; }
+.onb-launch-copy h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+.onb-launch-copy p { font-size: 13.5px; color: var(--maarm-foreground-secondary); margin-bottom: 20px; }
+
+/* ============ 状态球向导 ============ */
+.tour-orb {
+  --orb-size: 30px;
+  position: fixed; z-index: 10250; pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s ease;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .16));
+}
+.tour-orb.is-active { opacity: 1; }
+.tour-orb.is-launch {
+  z-index: 10310;
+  filter: drop-shadow(0 18px 38px rgba(16, 185, 129, .24));
+  transition: left .68s cubic-bezier(.4,0,.2,1), top .68s cubic-bezier(.4,0,.2,1),
+              width .68s cubic-bezier(.4,0,.2,1), height .68s cubic-bezier(.4,0,.2,1);
+}
+.tour-orb.is-returning {
+  transition: left .58s cubic-bezier(.4,0,.2,1), top .58s cubic-bezier(.4,0,.2,1),
+              width .58s cubic-bezier(.4,0,.2,1), height .58s cubic-bezier(.4,0,.2,1);
+}
+
+/* 结束语：贴在状态球上方的小气泡 */
+.tour-speech {
+  position: fixed; z-index: 10260;
+  max-width: 280px; padding: 11px 13px;
+  background: var(--maarm-surface);
+  border: 1px solid var(--maarm-border);
+  border-radius: 12px;
+  font-size: 12.5px; line-height: 1.7; color: var(--maarm-foreground-secondary);
+  box-shadow: var(--maarm-shadow-md);
+  animation: onb-speech-in .3s ease both;
+}
+.tour-speech::after {
+  content: ''; position: absolute; left: 17px; bottom: -5px;
+  width: 10px; height: 10px; background: var(--maarm-surface);
+  border-right: 1px solid var(--maarm-border); border-bottom: 1px solid var(--maarm-border);
+  transform: rotate(45deg);
+}
+.tour-speech.is-out { opacity: 0; transform: translateY(4px); transition: opacity .3s ease, transform .3s ease; }
+.tour-orb .maarm-orb { --orb-size: 100%; width: 100%; height: 100%; }
+/* 引导球要压过遮罩，就绪态也保持实心，眼睛才读得出来 */
+.tour-orb .maarm-orb[data-state="ready"],
+.tour-orb .maarm-orb[data-state="running"] {
+  --orb-a-in: 1; --orb-a-mid: 1; --orb-a-edge: 1; --orb-a-out: 0.96;
+}
+
+/* ============ 动画 ============ */
+@keyframes onb-speech-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes onb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes onb-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes onb-bubble-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes onb-nudge { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 50% { transform: translateX(4px); } 75% { transform: translateX(-2px); } }
+@keyframes onb-toast-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .onb-gate, .tour-block, .tour-bubble, .tour-toast { animation: none !important; }
+}

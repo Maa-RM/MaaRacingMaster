@@ -54,9 +54,59 @@ def _svc(monkeypatch, worker=None):
                                                 "speedrush": _NoInstantiateModule})
     # set_run_queue 的过期校验走 module_expired；测试里默认全部未过期
     monkeypatch.setattr(sc, "module_expired", lambda mid, now=None: False)
-    # 落盘走假写：队列守卫测试不关心 profile 文件内容
-    monkeypatch.setattr(sc, "_save_profile", lambda partial: None)
+    # 落盘走假写：队列守卫测试不关心 profile 文件内容（返回 True 表示写入成功）
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: True)
     return svc
+
+
+# ---------- 默认队列 ----------
+
+def test_fresh_install_starts_with_empty_queue(monkeypatch):
+    """新装默认不预置任务：首次引导的「加任务」步骤才有东西可教。"""
+    monkeypatch.setattr(sc, "MaaRacingMasterController", lambda: object())
+    monkeypatch.setattr(sc, "_load_profile", lambda: {})
+    svc = SidecarService(None)
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
+    # 空队列时启动被明确拒绝，而不是静默跑空轮
+    ok, data, err = svc.start({})
+    assert not ok and data is None and "没有启用" in err
+
+
+def _init_service(monkeypatch, profile):
+    """跑真实 __init__（含存档恢复），只把控制器换成空壳。"""
+    monkeypatch.setattr(sc, "MaaRacingMasterController", lambda: object())
+    monkeypatch.setattr(sc, "_load_profile", lambda: profile)
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: True)
+    return SidecarService(None)
+
+
+def test_legacy_queue_not_seeded_when_missing(monkeypatch):
+    """老用户没有队列存档也是空列表：任务由用户自己挑选，不补旧版默认。"""
+    svc = _init_service(monkeypatch, {
+        "module_config": {"launch_game": {"args": "-nosound"}},
+    })
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
+
+
+def test_saved_empty_queue_restores_empty(monkeypatch):
+    """存档里明确是空队列：恢复后仍是空，不被任何默认值顶掉。"""
+    svc = _init_service(monkeypatch, {
+        "onboarding": {"existing_user": True},
+        "run_queue": {"order": [], "enabled": {}},
+    })
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
+
+
+def test_new_user_queue_not_seeded(monkeypatch):
+    """新用户即便改过模块配置，也不该凭空冒出默认任务。"""
+    svc = _init_service(monkeypatch, {
+        "onboarding": {"existing_user": False, "terms_accepted_at": "2026-11-25T00:00:00+08:00"},
+        "module_config": {"launch_game": {"args": "-nosound"}},
+    })
+    assert svc._queue_order == []
 
 
 # ---------- set_run_queue：运行中守卫 ----------
@@ -96,7 +146,7 @@ def test_set_queue_rejects_duplicate(monkeypatch):
 def test_set_queue_persists_snapshot(monkeypatch):
     svc = _svc(monkeypatch)
     saved = {}
-    monkeypatch.setattr(sc, "_save_profile", lambda partial: saved.update(partial))
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: saved.update(partial) or True)
     ok, data, err = svc.set_run_queue({
         "order": ["speedrush", "treasure"],
         "enabled": {"speedrush": True},

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>MaaRM</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="onboarding.css">
 <script>
   // 冷启动才显示预热遮罩：壳在冷态下以 ?warmup=1 打开页面；热启动没有这个参数，
   // 这里在首次绘制前就给根元素加类把遮罩隐藏，避免出现一闪而过的加载页。
@@ -163,6 +164,11 @@
             使用文档
           </button>
         </div>
+
+        <p class="about-license">
+          第三方组件、字体与图标的许可见随包发布的 <code>THIRD_PARTY_LICENSES.md</code>；
+          应用内声明的背景动效取自 React Bits（MIT + Commons Clause），许可见该文件第四节。
+        </p>
       </div>
     </section>
   </main>
@@ -357,5 +363,6 @@
   <script src="js/run.js"></script>
   <script src="js/perf-card.js"></script>
   <script src="app.js"></script>
+  <script src="js/onboarding.js"></script>
 </body>
 </html>
