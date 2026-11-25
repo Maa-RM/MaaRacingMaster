@@ -116,6 +116,21 @@
 }
 .tour-toast.is-out { opacity: 0; transition: opacity .4s ease; }
 
+/* ============ 状态球向导 ============ */
+.tour-orb {
+  position: fixed; z-index: 10250; pointer-events: none;
+  opacity: 0;
+  transition: opacity .2s ease;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .16));
+}
+.tour-orb.is-active { opacity: 1; }
+.tour-orb .maarm-orb { --orb-size: 30px; width: 30px; height: 30px; }
+/* 引导球要压过遮罩，就绪态也保持实心，眼睛才读得出来 */
+.tour-orb .maarm-orb[data-state="ready"],
+.tour-orb .maarm-orb[data-state="running"] {
+  --orb-a-in: 1; --orb-a-mid: 1; --orb-a-edge: 1; --orb-a-out: 0.96;
+}
+
 /* ============ 演示控制 ============ */
 .tour-dock {
   position: fixed; right: 14px; bottom: 56px; z-index: 10250;

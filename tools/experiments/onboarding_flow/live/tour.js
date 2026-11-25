@@ -437,6 +437,83 @@
     el.style.height = box.height + 'px';
   }
 
+  // ---------- 状态球向导 ----------
+  // 复用底栏那颗会看人、会眨眼的状态球：引导时它从状态栏起飞，落到当前目标旁边；
+  // 结束时飞回原位。原状态球与文字在它离开期间隐藏，避免出现两个球。
+  var guideOrb = null;
+
+  function ensureGuideOrb() {
+    if (guideOrb) return guideOrb;
+    var src = document.getElementById('status-dot');
+    if (!src) return null;
+    var wrap = document.createElement('div');
+    wrap.className = 'tour-orb';
+    wrap.id = 'onb-orb';
+    wrap.setAttribute('aria-hidden', 'true');
+    var clone = src.cloneNode(true);
+    clone.removeAttribute('id');
+    // 原球在引导开始时已被隐藏，克隆体会连内联 visibility 一起复制，必须清掉
+    clone.style.visibility = '';
+    // 克隆体里的渐变 / 裁剪 id 要改成唯一值，否则会和状态栏那颗互相引用
+    clone.innerHTML = clone.innerHTML
+      .replace(/status-orb-clip/g, 'status-orb-clip-onb')
+      .replace(/status-orb-grad/g, 'status-orb-grad-onb');
+    wrap.appendChild(clone);
+    document.body.appendChild(wrap);
+    if (window.StatusOrb) {
+      try { window.StatusOrb.mount(clone); } catch (e) { /* 忽略 */ }
+    }
+    var r = src.getBoundingClientRect();
+    wrap.style.left = (r.left - 6) + 'px';
+    wrap.style.top = (r.top - 6) + 'px';
+    void wrap.offsetWidth; // 先落一帧，后面的位移才有过渡
+    guideOrb = { el: wrap, started: false };
+    return guideOrb;
+  }
+
+  function hideStatusChrome(hide) {
+    var t = document.getElementById('status-text');
+    var d = document.getElementById('status-dot');
+    if (t) t.style.visibility = hide ? 'hidden' : '';
+    if (d) d.style.visibility = hide ? 'hidden' : '';
+  }
+
+  function moveOrbTo(r) {
+    var orb = ensureGuideOrb();
+    if (!orb) return;
+    var size = 30;
+    var pad = 10;
+    function place() {
+      var x = r.left - size - pad;
+      var y = r.top - 6;
+      if (x < 8) x = r.right + pad;
+      if (y < 8) y = 8;
+      if (y + size > window.innerHeight - 8) y = window.innerHeight - size - 8;
+      orb.el.style.left = x + 'px';
+      orb.el.style.top = y + 'px';
+    }
+    if (!orb.started) {
+      orb.started = true;
+      orb.el.classList.add('is-active');
+    }
+    place();
+  }
+
+  function orbLeave() {
+    var orb = guideOrb;
+    if (!orb) { hideStatusChrome(false); return; }
+    var src = document.getElementById('status-dot');
+    if (src) {
+      var r = src.getBoundingClientRect();
+      orb.el.style.left = (r.left - 6) + 'px';
+      orb.el.style.top = (r.top - 6) + 'px';
+    }
+    setTimeout(function () {
+      if (guideOrb) guideOrb.el.style.display = 'none';
+      hideStatusChrome(false);
+    }, 560);
+  }
+
   function layout(el) {
     if (!el) return;
     var r = el.getBoundingClientRect();
@@ -474,6 +551,7 @@
     bubble.style.top = bTop + 'px';
     bubble.dataset.arrow = above ? 'down' : 'up';
     bubble.style.setProperty('--arrow-x', Math.max(14, Math.min(bw - 24, r.left + r.width / 2 - bLeft - 5)) + 'px');
+    moveOrbTo(r);
   }
 
   var relayoutBound = false;
@@ -571,6 +649,10 @@
     layout(el);
     await delay(20);
     layout(el);
+    // 弹窗内网格行高可能在进场后还会变一次，稍后再校正
+    setTimeout(function () {
+      if (tourActive && currentTarget() === el) layout(el);
+    }, 220);
     try { el.focus({ preventScroll: true }); } catch (e) { /* 忽略 */ }
     // 页面状态已经满足本步（续做 / 提前做过）：稍等后自动前进，避免卡在已完成的一步
     var already = false;
@@ -609,6 +691,7 @@
   function startTour(from, restorePrereq) {
     if (state.tourDone) return;
     tourIndex = Math.max(0, from || 0);
+    hideStatusChrome(true);
     if (restorePrereq) restorePrerequisites(tourIndex);
     showStep(tourIndex);
   }
@@ -623,6 +706,7 @@
     tourActive = false;
     var layer = $('#onb-layer');
     if (layer) layer.hidden = true;
+    orbLeave();
     state.tourDone = true;
     state.tourIndex = STEPS.length;
     save();
