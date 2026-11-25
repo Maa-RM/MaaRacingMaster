@@ -1418,9 +1418,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: 8px;
 }
 /* 数据页放大态：隐藏左栏（性能监控）与右栏其它卡片（今日看板），预览卡独占整页 */
-#page-data.preview-fs-active > .col-left { display: none; }
-#page-data.preview-fs-active .col-right { flex: 1 1 auto; align-self: stretch; }
-#page-data.preview-fs-active .col-right > .card:not(.preview-card--fullscreen) { display: none; }
+/* 两列被 .page-inner 包了一层：选择器要穿过它，否则全屏时左栏（性能监控）仍占位 */
+#page-data.preview-fs-active .page-inner > .col-left { display: none; }
+#page-data.preview-fs-active .page-inner > .col-right { flex: 1 1 auto; align-self: stretch; }
+#page-data.preview-fs-active .page-inner > .col-right > .card:not(.preview-card--fullscreen) { display: none; }
 .preview-legend { display: flex; align-items: center; gap: 12px; }
 .legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--maarm-foreground-muted); }
 .legend-box { width: 12px; height: 12px; border-radius: 2px; }
