@@ -24,13 +24,10 @@
   var tourActive = false;
 
   // ---------- 后端状态 ----------
-  function rpc(method, params) {
-    if (!window.maarm || !maarm.call) return Promise.reject(new Error('RPC 不可用'));
-    return maarm.call(method, params || {});
-  }
-
+  // 方法名保持字符串字面量：白名单测试按字面量扫前端调用点，抽不出名字就等于失守
   async function load() {
-    var s = await rpc('get_onboarding');
+    if (!window.maarm || !maarm.call) throw new Error('RPC 不可用');
+    var s = await maarm.call('get_onboarding', {});
     state.termsAccepted = !!s.terms_accepted;
     state.launchSeen = !!s.launch_seen;
     state.stepsDone = Array.isArray(s.steps_done) ? s.steps_done.slice() : [];
@@ -39,7 +36,8 @@
   }
 
   function report(type, extra) {
-    return rpc('onboarding_event', Object.assign({ type: type }, extra || {}));
+    if (!window.maarm || !maarm.call) return Promise.reject(new Error('RPC 不可用'));
+    return maarm.call('onboarding_event', Object.assign({ type: type }, extra || {}));
   }
 
   function termsAccepted() {
@@ -318,10 +316,13 @@
     var label = $('#onb-accept-label');
     btn.addEventListener('click', async function () {
       if (btn.disabled) return;
+      // 立刻锁住：保存回包期间再点一次会发两笔请求、叠出两层过渡页
+      btn.disabled = true;
       try {
         await report('accept_terms');
       } catch (e) {
         console.warn('[onboarding] 声明状态保存失败', e);
+        btn.disabled = false;
         label.textContent = '保存失败，请重试';
         return;
       }
@@ -329,8 +330,8 @@
       countdown.active = false;
       cancelAnimationFrame(countdown.raf);
       if (hero) hero.stop();
-      // 老用户只补声明：同意后直接进主界面，不展示过渡页和引导
-      if (state.existingUser) {
+      // 老用户只补声明；已完成过引导的人（例如声明改版重签）同样不重放
+      if (state.existingUser || state.finishedAt) {
         gate.classList.add('is-leaving');
         setShellInert(false);
         setTimeout(function () { gate.remove(); }, 320);
@@ -346,6 +347,8 @@
       cancelAnimationFrame(countdown.raf);
       if (hero) hero.stop();
       showExit();
+      // 「不同意并退出」就是要关程序：交给宿主关窗；浏览器直开时退回下面的提示页
+      try { window.MaaRM.postWindowAction('close'); } catch (e) { /* 无宿主 */ }
     });
 
     startCountdown(btn, label);
@@ -359,11 +362,18 @@
       '<div class="onb-gate-inner" style="max-width:360px;text-align:center">'
       + '<h1 style="color:#F3F4F6;font-size:19px">已退出</h1>'
       + '<p style="color:#9CA3AF;font-size:12.5px;line-height:1.75;margin-bottom:18px">'
-      + '未同意使用声明，程序无法继续。你可以重新打开演示，模拟下一次启动。</p>'
+      + '未同意使用声明，程序无法继续。窗口正在关闭；重新打开后仍会看到这份声明。</p>'
       + '<button class="tour-btn tour-btn--primary" type="button" id="onb-restart">重新打开</button>'
       + '</div>';
     document.body.appendChild(exit);
-    $('#onb-restart').addEventListener('click', function () { location.reload(); });
+    // 宿主没接住关窗指令时（浏览器直开）给一个自恢复入口
+    $('#onb-restart').addEventListener('click', function () {
+      var win = $('#onb-gate');
+      if (win) win.remove();
+      exit.remove();
+      setShellInert(false);
+      showGate();
+    });
   }
 
   // ---------- 聚光灯步骤 ----------
@@ -382,6 +392,8 @@
       body: '它会打开游戏，等到进入大厅后，再交给下一个任务。',
       prepare: async function () { activateTab('control'); if (!manageOpen()) { var b = $('#btn-manage'); if (b) b.click(); } },
       wait: 320,
+      // 加任务要等 set_run_queue 回包并重绘，慢机器上可能超过 1.8 秒
+      resultMs: 6000,
       done: function () { return window.MaaRM.state.queue.order.indexOf('launch_game') !== -1; }
     },
     {
@@ -390,6 +402,7 @@
       body: '所有任务都跑完后，它才会关掉游戏。',
       prepare: async function () { activateTab('control'); if (!manageOpen()) { var b = $('#btn-manage'); if (b) b.click(); } },
       wait: 320,
+      resultMs: 6000,
       done: function () { return window.MaaRM.state.queue.order.indexOf('close_game') !== -1; }
     },
     {
@@ -617,6 +630,16 @@
   function bindTargetClick() {
     if (targetClickBound) return;
     targetClickBound = true;
+    // 结果还在路上时，同目标的第二次点击必须挡住：加任务类步骤是「点一下加入、
+    // 再点一下移出」，慢回包期间连点会把刚加上的任务又点掉，而推进判据读到的是
+    // 移除前的队列，最终任务没了、步骤却记成完成。
+    document.addEventListener('click', function (e) {
+      if (!advancing) return;
+      var el = currentTarget();
+      if (!el || !el.contains(e.target)) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }, true);
     // 点击命中高亮目标才算数；命中后等结果状态出现再前进
     document.addEventListener('click', function (e) {
       if (!tourActive) return;
@@ -626,6 +649,27 @@
       if (!el || !el.contains(e.target)) return;
       setTimeout(function () { advance(false); }, 40);
     });
+    // 键盘也能把界面带离目标（Tab 切页、Esc 关弹窗）：目标不可见时把界面拉回本步，
+    // 结果已经达成就直接前进，别让聚光灯停在不存在的位置上。
+    document.addEventListener('keyup', function (e) {
+      if (!tourActive) return;
+      if (e.key !== 'Tab' && e.key !== 'Escape' && e.key !== 'Enter'
+          && e.key !== ' ' && e.key !== 'Spacebar') return;
+      setTimeout(function () {
+        if (!tourActive) return;
+        var step = STEPS[tourIndex];
+        var ok = false;
+        try { ok = step ? !!step.done() : false; } catch (err) { ok = false; }
+        if (ok) { advance(false); return; }
+        if (!isVisible(currentTarget())) showStep(tourIndex);
+      }, 180);
+    });
+  }
+
+  function isVisible(el) {
+    if (!el) return false;
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
   }
 
   function ensureLayer() {
@@ -689,6 +733,7 @@
     $('#onb-bubble').classList.remove('is-nudge');
     layer.hidden = false;
     tourActive = true;
+    document.body.classList.add('onb-tour-active');
     layout(el);
     await delay(20);
     layout(el);
@@ -825,6 +870,7 @@
 
   function finish(completed) {
     tourActive = false;
+    document.body.classList.remove('onb-tour-active');
     var layer = $('#onb-layer');
     if (layer) {
       layer.classList.add('is-leaving');

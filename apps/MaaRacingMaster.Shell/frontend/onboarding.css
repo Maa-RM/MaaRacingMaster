@@ -66,6 +66,8 @@
 
 /* ============ 聚光灯 ============ */
 .tour-layer { position: fixed; inset: 0; z-index: 10200; pointer-events: none; }
+/* 引导遮罩期间错误提示仍要看得见：队列 RPC 失败这类问题不能被蒙住 */
+.onb-tour-active #error-toast { z-index: 10250; }
 .tour-layer.is-leaving { opacity: 0; transition: opacity .32s ease; }
 .tour-layer.is-leaving * { pointer-events: none !important; }
 .tour-block {
