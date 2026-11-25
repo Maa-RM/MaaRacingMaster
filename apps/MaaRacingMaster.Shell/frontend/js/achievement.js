@@ -365,17 +365,21 @@
   // 而且连合成层都不给它建（提层会让文字从次像素抗锯齿退化成灰度，看着像抖了一像素）。
   //
   // 数值与积分方式照 reactbits TiltedCard 的实现：二阶弹簧 v += (ω²(target−x) − 2ζω·v)·h，
-  // 240Hz 子步防大 dt 失稳。三组参数也照它——tilt ω=20·0.2^smoothness、ζ=1−0.3·smoothness
-  // （默认 smoothness 0.6 → 7.62 / 0.82），翻转 ω=9.5、ζ=0.72（略欠阻尼，到位轻轻回弹），
-  // 按压 ω=26、ζ=0.8。翻面与倾斜合进同一个 rotateY，转的是卡本身，不是卡里的图。
+  // 240Hz 子步防大 dt 失稳。倾斜/翻转/按压三组参数也照它——tilt ω=20·0.2^smoothness、
+  // ζ=1−0.3·smoothness（默认 smoothness 0.6 → 7.62 / 0.82），翻转 ω=9.5、ζ=0.72
+  // （略欠阻尼，到位轻轻回弹），按压 ω=26、ζ=0.8。
+  // 浮起（缩放 + 抬升）单走一组更快的弹簧：悬停需要立刻有回应，跟倾斜同速会显得拖沓。
+  // 翻面与倾斜合进同一个 rotateY，转的是卡本身，不是卡里的图。
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const TILT_X = 5.5;             // 上下倾斜上限（度）
-  const TILT_Y = 7;               // 左右倾斜上限（度）
-  const HOVER_SCALE = 1.03;       // 悬停放大
+  const TILT_X = 9;               // 上下倾斜上限（度）
+  const TILT_Y = 12;              // 左右倾斜上限（度）
+  const HOVER_SCALE = 1.06;       // 悬停放大
   const PRESS_SCALE = 0.02;       // 按下缩小量（参考实现同值）
   const PRESS_MOVE_PX = 6;        // 按下后位移超过它 = 拖动，不算点击（同参考实现）
   const OMEGA_TILT = 20 * Math.pow(0.2, 0.6);
   const ZETA_TILT = 1 - 0.3 * 0.6;
+  const OMEGA_LIFT = 24;
+  const ZETA_LIFT = 0.9;
   const OMEGA_FLIP = 9.5;
   const ZETA_FLIP = 0.72;
   const OMEGA_PRESS = 26;
@@ -440,7 +444,7 @@
       let moving = false;
       moving = spring(st, 'rx', rm ? 0 : st.trx, OMEGA_TILT, ZETA_TILT, dt) || moving;
       moving = spring(st, 'ry', rm ? 0 : st.tryY, OMEGA_TILT, ZETA_TILT, dt) || moving;
-      moving = spring(st, 'lift', st.tlift, OMEGA_TILT, Math.max(ZETA_TILT, 0.85), dt) || moving;
+      moving = spring(st, 'lift', st.tlift, OMEGA_LIFT, ZETA_LIFT, dt) || moving;
       moving = spring(st, 'press', st.tpress, OMEGA_PRESS, ZETA_PRESS, dt) || moving;
       moving = spring(st, 'flip', st.tflip, rm ? 18 : OMEGA_FLIP, rm ? 1 : ZETA_FLIP, dt) || moving;
       paint(node, st);
@@ -458,12 +462,15 @@
     }
   }
 
-  // 镜面高光：位置与角度仍跟着指针即时走，倾斜则由弹簧带过去
-  function paintGlare(node, px, py) {
+  // 镜面高光：位置与角度仍跟着指针即时走，倾斜则由弹簧带过去。
+  // 看背面时卡整体绕 Y 转了 180°，面的本地 x 与观感左右相反：光斑位置与光带角度
+  // 按镜像折算，指针在视觉右侧时光仍落在视觉右侧。
+  function paintGlare(node, px, py, mirrored) {
     node.style.setProperty('--glare', '1');
-    node.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
+    node.style.setProperty('--mx', ((mirrored ? 1 - px : px) * 100).toFixed(1) + '%');
     node.style.setProperty('--my', (py * 100).toFixed(1) + '%');
-    node.style.setProperty('--ang', (100 + px * 55).toFixed(0) + 'deg');
+    const ang = 100 + px * 55;
+    node.style.setProperty('--ang', (mirrored ? 180 - ang : ang).toFixed(0) + 'deg');
     node.style.setProperty('--hue', (px * 300).toFixed(0) + 'deg');
   }
 
@@ -493,14 +500,14 @@
         || Math.abs(e.clientY - st.downY) > PRESS_MOVE_PX)) {
       st.moved = true;          // 拖着走不算点击，松手不翻面
     }
-    // 未解锁的卡保持哑光；看背面的卡不再跟着倾斜（文字歪着读不划算）
-    if (node.classList.contains('is-unlocked') && !node.classList.contains('is-flipped')) {
+    // 未解锁的卡保持哑光；正反面都跟着倾斜（背面读条件时同样有立体感）
+    if (node.classList.contains('is-unlocked')) {
       const r = node.getBoundingClientRect();
       const px = clamp01((e.clientX - r.left) / Math.max(1, r.width));
       const py = clamp01((e.clientY - r.top) / Math.max(1, r.height));
       st.trx = (0.5 - py) * TILT_X;
       st.tryY = (px - 0.5) * TILT_Y;
-      paintGlare(node, px, py);
+      paintGlare(node, px, py, node.classList.contains('is-flipped'));
     }
     // 未解锁的卡不倾斜也不放大（只有按下时的回弹）——它不该比到手的更显眼
     st.tlift = node.classList.contains('is-unlocked') ? 1 : 0;
@@ -547,7 +554,6 @@
     st.tflip = on ? 180 : 0;
     node.classList.toggle('is-flipped', on);
     node.setAttribute('aria-expanded', on ? 'true' : 'false');
-    if (on) { st.trx = 0; st.tryY = 0; }   // 背面不倾斜
     wake(node);
   }
 

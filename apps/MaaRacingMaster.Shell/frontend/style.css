@@ -2820,6 +2820,8 @@ footer .spacer { flex: 1; }
    翻的是卡本身（角度来自 --flip，与倾斜合进同一个 rotateY）；两面各自
    backface-visibility: hidden，转到 90° 时正面消失、背面接上。 */
 .maarm-ach-card { cursor: pointer; }
+/* 悬停放大幅度会越过 10px 网格缝：提一层，保证放大的卡压在邻卡之上而不是被后画的邻卡盖边 */
+.maarm-ach-card:hover { z-index: 1; }
 .maarm-ach-card:focus-visible { outline: 2px solid var(--maarm-primary); outline-offset: 2px; }
 .maarm-ach-card__front { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 /* 背面：一张与正面同尺寸、预先转 180° 的面；卡转到 180° 时它正好正对观众。
