@@ -53,7 +53,6 @@ from maaracing_master.core.registry import (
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
     CloseGameStep,
-    LaunchGameStep,
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.config_ui_contract import (
@@ -370,8 +369,13 @@ def _load_profile() -> dict:
 # （Windows 报「另一个程序正在使用此文件」），表现为「改了没保存」。
 _PROFILE_WRITE_LOCK = threading.Lock()
 
+# 引导状态的读改写锁：每次事件都是「读整段 → 改一项 → 写整段」，两笔并发事件
+# 各自读到旧值会互相覆盖（例如两步几乎同时完成，只剩一步）。与落盘锁分开，
+# 因为 _save_profile 内部还要再取落盘锁。
+_ONBOARDING_LOCK = threading.RLock()
 
-def _save_profile(partial: dict) -> None:
+
+def _save_profile(partial: dict) -> bool:
     """原子写 profile：仅更新 partial 提供的段，其余段（含未知键）原样保留。
 
     - **串行化**：所有写入走同一把锁，临时文件名再带线程号——并发写不再互相踩；
@@ -983,16 +987,21 @@ class SidecarService:
             "launch_seen_at": state.get("launch_seen_at"),
             "steps_done": done,
             "finished_at": state.get("finished_at"),
+            # None = 还没判过（首次同意时补记）；老用户升级当天才写得进来
+            "existing_user": state.get("existing_user"),
         }
 
     def _is_existing_user(self) -> bool:
-        """升级上来的老用户：profile 已有业务数据，但还没有 onboarding 段。
+        """升级上来的老用户：只补声明、不补引导。
 
-        老用户只补声明、不补引导；全新安装的 profile 里这些段都不存在。
+        判定输入有两层：写进 onboarding 段的既有结论优先（同意声明时就把当时的
+        身份固定下来，重启后不会因为 onboarding 段已存在而翻案）；段里没有结论时，
+        说明还没走过同意流程，按「有业务数据、没有引导记录」判为老用户。
         """
         profile = _load_profile()
-        if "onboarding" in profile:
-            return False
+        raw = profile.get("onboarding")
+        if isinstance(raw, dict) and "existing_user" in raw:
+            return bool(raw.get("existing_user"))
         return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
 
     def get_onboarding(self, params):
@@ -1015,29 +1024,36 @@ class SidecarService:
         """逐事件写入引导状态：每次变更立即落盘，强杀后最多丢一个事件。
 
         事件幂等：重复的 step_done / finish 不会产生重复数据；未知事件与未知
-        步骤 id 一律拒绝，前端拼错时能立刻看见。
+        步骤 id 一律拒绝，前端拼错时能立刻看见。读改写整体串行，两笔并发事件
+        不会互相覆盖（各自读到的都是上一笔的结果）。
         """
         kind = params.get("type")
-        state = self._onboarding_state()
         now = datetime.now().astimezone().isoformat(timespec="seconds")
-        if kind == "accept_terms":
-            state["terms_version"] = _ONBOARDING_TERMS_VERSION
-            state["terms_accepted_at"] = now
-        elif kind == "seen_launch":
-            state["launch_seen_at"] = state["launch_seen_at"] or now
-        elif kind == "step_done":
-            sid = params.get("id")
-            if sid not in _ONBOARDING_STEPS:
-                return (False, None, f"未知引导步骤: {sid}")
-            if sid not in state["steps_done"]:
-                state["steps_done"].append(sid)
-        elif kind == "finish":
-            state["finished_at"] = now
-        else:
-            return (False, None, f"未知引导事件: {kind}")
-        if not _save_profile({"onboarding": state}):
-            return (False, None, "引导状态保存失败，请重试")
-        return (True, state, None)
+        with _ONBOARDING_LOCK:
+            state = self._onboarding_state()
+            if kind == "accept_terms":
+                state["terms_version"] = _ONBOARDING_TERMS_VERSION
+                state["terms_accepted_at"] = now
+                # 身份在同意这一刻固定：之后再读 profile 已经多出 onboarding 段，
+                # 按段判会把老用户误判成新用户
+                if state.get("existing_user") is None:
+                    state["existing_user"] = self._is_existing_user()
+            elif kind == "seen_launch":
+                state["launch_seen_at"] = state["launch_seen_at"] or now
+            elif kind == "step_done":
+                sid = params.get("id")
+                if sid not in _ONBOARDING_STEPS:
+                    return (False, None, f"未知引导步骤: {sid}")
+                if sid not in state["steps_done"]:
+                    state["steps_done"].append(sid)
+            elif kind == "finish":
+                # 幂等：重复 finish 不改写首次完成时间
+                state["finished_at"] = state["finished_at"] or now
+            else:
+                return (False, None, f"未知引导事件: {kind}")
+            if not _save_profile({"onboarding": state}):
+                return (False, None, "引导状态保存失败，请重试")
+            return (True, state, None)
 
     def get_initial_state(self, params):
         return (True, {
@@ -1158,6 +1174,7 @@ class SidecarService:
             # 检查与写入同一临界区：校验间隙里 start 可能已受理 worker
             if self._worker is not None:
                 return (False, None, "运行中不允许修改任务列表，请先停止")
+            prev_order, prev_enabled = self._queue_order, self._queue_enabled
             self._queue_order = list(order)
             # 启用位收敛为「只挂在列表内的模块」：移出列表的模块连带清掉启用位，
             # profile 里不残留悬空键（再入列时由前端显式给值）
@@ -1165,7 +1182,10 @@ class SidecarService:
             snapshot = self._queue_snapshot()
             # 落盘与更新同锁：写盘顺序必须等于内存更新顺序，否则并发两笔可能
             # 按相反顺序落盘，重启恢复到旧配置
-            _save_profile({"run_queue": snapshot})
+            if not _save_profile({"run_queue": snapshot}):
+                # 落盘失败不能留「内存已改、磁盘没改」的错位：回滚内存再报错
+                self._queue_order, self._queue_enabled = prev_order, prev_enabled
+                return (False, None, "任务列表保存失败，请重试")
         # 回显只写文件、不上面板（面板降噪）：GUI 勾选态本身就是操作提示，回显冗余。
         logger.log(f"运行任务列表已更新: 启用 {self._enabled_ids() or '无'}", "DEBUG")
         return (True, snapshot, None)

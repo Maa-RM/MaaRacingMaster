@@ -445,6 +445,7 @@ def test_run_queue_save_serialized_with_update(monkeypatch):
         if len(calls) == 1:
             entered.set()
             assert release.wait(2.0)
+        return True  # 落盘成功（失败路径由保存失败的用例覆盖）
 
     monkeypatch.setattr(sc, "_save_profile", fake_save)
     a = threading.Thread(

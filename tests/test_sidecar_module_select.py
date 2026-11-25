@@ -54,8 +54,8 @@ def _svc(monkeypatch, worker=None):
                                                 "speedrush": _NoInstantiateModule})
     # set_run_queue 的过期校验走 module_expired；测试里默认全部未过期
     monkeypatch.setattr(sc, "module_expired", lambda mid, now=None: False)
-    # 落盘走假写：队列守卫测试不关心 profile 文件内容
-    monkeypatch.setattr(sc, "_save_profile", lambda partial: None)
+    # 落盘走假写：队列守卫测试不关心 profile 文件内容（返回 True 表示写入成功）
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: True)
     return svc
 
 
@@ -110,7 +110,7 @@ def test_set_queue_rejects_duplicate(monkeypatch):
 def test_set_queue_persists_snapshot(monkeypatch):
     svc = _svc(monkeypatch)
     saved = {}
-    monkeypatch.setattr(sc, "_save_profile", lambda partial: saved.update(partial))
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: saved.update(partial) or True)
     ok, data, err = svc.set_run_queue({
         "order": ["speedrush", "treasure"],
         "enabled": {"speedrush": True},
