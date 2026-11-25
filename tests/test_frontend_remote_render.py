@@ -147,7 +147,7 @@ def test_frontend_target_names_exist_in_sidecar_map():
 
     与 RPC 方法白名单同理：名字对不上时按钮点了没反应，属「静默失效」，让它在 CI 就红。
     """
-    used = set(re.findall(r"openTarget\(\s*'([a-z_]+)'\s*\)", ABOUT_JS.read_text(encoding="utf-8")))
+    used = set(re.findall(r"openTarget\(\s*'([a-z_]+)'", ABOUT_JS.read_text(encoding="utf-8")))
     used |= set(re.findall(r'data-link="([a-z_]+)"', INDEX_HTML.read_text(encoding="utf-8")))
     assert used, "未抽到任何外部目标名，静态锁会空过"
     unknown = used - TARGET_NAMES

@@ -83,7 +83,6 @@ def test_check_update_drops_offsite_download_url():
     assert ok and err is None
     assert data["latest_tag"] == "9.9.9"
     assert data["download_url"] == RELEASE_FALLBACK
-    assert svc._remote_urls["download"] == RELEASE_FALLBACK
 
 
 def test_check_update_keeps_official_download_url():
@@ -215,11 +214,42 @@ def test_open_external_url_announcement_uses_validated_address(opened):
     assert data["opened"] == GOOD_ANNOUNCEMENT["url"]
 
 
-def test_open_external_url_download_falls_back_to_release_page(opened):
-    """未跑过更新检查（或远程没给合规地址）时，下载按钮回退官方 release 页。"""
+def test_open_external_url_download_defaults_to_cnb_release_page(opened):
+    """未带源/渠道（也从未跑过更新检查）时，下载页按默认偏好打开 CNB 发布列表。"""
+    from maaracing_master.core.remote_meta import EXTERNAL_TARGETS as targets
     svc = _service({})
     ok, data, _ = svc.open_external_url({"target": "download"})
-    assert ok and data["opened"] == RELEASE_FALLBACK
+    assert ok and data["opened"] == targets["release_cnb"]
+
+
+@pytest.mark.parametrize("source,channel,expected", [
+    ("cnb", "stable", "release_cnb"),
+    ("cnb", "preview", "release_cnb"),   # CNB 一个列表含全部版本，渠道不改变目标
+    ("github", "stable", "release"),
+    ("github", "preview", "release_all"),  # latest 不含预发布，测试渠道改指全量列表
+    ("evil", "beta", "release_cnb"),       # 非法值回默认偏好
+])
+def test_open_external_url_download_follows_source_and_channel(opened, source, channel, expected):
+    """下载页按当前源/渠道计算：地址由后端给出，调用方只传枚举。"""
+    from maaracing_master.core.remote_meta import EXTERNAL_TARGETS as targets
+    svc = _service({})
+    ok, data, err = svc.open_external_url(
+        {"target": "download", "source": source, "channel": channel})
+    assert ok and err is None
+    assert data["opened"] == targets[expected]
+    assert opened == [targets[expected]]
+
+
+def test_open_external_url_download_ignores_caller_supplied_url(opened):
+    """下载目标同样不读调用方 URL：地址只能由源/渠道枚举算出。"""
+    from maaracing_master.core.remote_meta import EXTERNAL_TARGETS as targets
+    svc = _service({})
+    ok, data, err = svc.open_external_url(
+        {"target": "download", "source": "github", "channel": "stable",
+         "url": "https://evil.tld/phish"})
+    assert ok and err is None
+    assert data["opened"] == targets["release"]
+    assert opened == [targets["release"]]
 
 
 def test_open_vigembus_download_ignores_caller_url(opened):

@@ -333,13 +333,15 @@
 | --- | --- |
 | `parse_announcement(data)` | 公告 payload → 归一化 dict；必填字段不合规返回 `None`（整条作废） |
 | `parse_release(data)` | 版本标记 payload → `{tag, published_at, download_url}`；tag 不合规返回 `None`（该源不可用） |
-| `EXTERNAL_TARGETS` | 外链逻辑目标 → 官方地址（`home` / `issue` / `docs` / `release` / `vigembus` / `noto_font` / `webview2`） |
+| `EXTERNAL_TARGETS` | 外链逻辑目标 → 官方地址（`home` / `issue` / `docs` / `release` / `release_all` / `release_cnb` / `vigembus` / `noto_font` / `webview2`） |
+| `resolve_download_page(source, channel)` | 手动下载页：按下载源与版本渠道选官方发布页；非法/缺失值回默认 cnb / stable |
 | `is_official_url` / `is_openable_url` | 远程数据可携带的链接白名单 / 交给浏览器前的最终放行判据 |
 | `is_date` / `is_expired` | 严格日期判定与过期比较 |
 
 **接法**：`sidecar.check_update` / `fetch_announcement` 的**每个源都过同一个校验器**（不合规即跳过
-该源、继续 fallback）；解析通过的地址记进 `SidecarService._remote_urls`，由 `open_external_url`
-按目标名 `announcement` / `download` 取用——前端只报「打开哪个目标」，不报「打开哪里」。字段级
+该源、继续 fallback）；公告地址记进 `SidecarService._remote_urls`，由 `open_external_url` 按目标名
+`announcement` 取用；下载页按请求里的 `source` / `channel` 两个枚举现算（CNB 列表 / GitHub
+latest 或全量列表）——前端只报「打开哪个目标 + 两个枚举」，不报「打开哪里」。字段级
 规范（必填/可选、长度、域白名单）真源在 [`docs/announcement.md`](../../docs/announcement.md)。
 
 | 坑点 | 说明 |
@@ -348,7 +350,7 @@
 | 内容像 HTML 不是本层的判据 | 本层只管字段形状；防 XSS 靠渲染层 `textContent`。在这里加「过滤尖括号」的假防线，只会掩盖真防线失效 |
 | 动作型字段从严、展示型字段从宽 | `url` / `download_url` 一旦被采信就有副作用（打开浏览器），不合规必须清空；`published_at` 格式不对只省略，不牵连整条更新提示 |
 | 白名单按路径**段边界**比对 | 纯 `startswith` 会把 `/MaaRacingMaster-evil` 放行；`is_official_url` 用 `== 前缀` 或 `前缀 + "/"` 判定 |
-| 仓库 slug 只有一份 | `GITHUB_REPO` 同时喂官方地址表、链接白名单与 sidecar 的更新源 URL——两处各写一遍，改一处漏一处就是白名单静默失效 |
+| 仓库 slug 只有一份 | `GITHUB_REPO` 同时喂官方地址表、链接白名单与 sidecar 的更新源 URL；CNB 站点路径是另一个常量 `CNB_REPO`（两边命名不同源，不能推导），发布标记与 raw 地址都引它——各写一遍就是白名单静默失效 |
 
 **机检**：[`tests/test_remote_meta.py`](../../tests/test_remote_meta.py)（字段口径 + 仓库实际投放数据）、
 [`tests/test_sidecar_external_rpc.py`](../../tests/test_sidecar_external_rpc.py)（端到端：构造出的恶意数据

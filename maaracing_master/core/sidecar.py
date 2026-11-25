@@ -82,12 +82,14 @@ from maaracing_master.core.perf_contract import (
 from maaracing_master.core.perf_sampler import (
     build_perf_payload, ensure_perf_sampler_started, perf_sampler)
 from maaracing_master.core.remote_meta import (
+    CNB_REPO,
     EXTERNAL_TARGETS,
     GITHUB_REPO,
     is_expired,
     is_openable_url,
     parse_announcement,
     parse_release,
+    resolve_download_page,
 )
 from maaracing_master.core.window_utils import ensure_dpi_aware, has_physical_controller
 
@@ -764,7 +766,7 @@ class SidecarService:
         # 采样停摆：只在进入/退出时各报一次，不按轮询刷屏
         self._perf_stalled = False
         self._last_log_seq = 0   # 日志增量游标：单调序列号（见 Logger.get_lines_since）
-        # 远程数据里**已校验通过**的可打开地址（公告详情 / 下载页）：前端只按逻辑目标名
+        # 远程数据里**已校验通过**的可打开地址（公告详情）：前端只按逻辑目标名
         # 请求打开，地址留在本进程，不经过 RPC 往返（信任边界见 remote_meta 模块头）。
         self._remote_urls: dict[str, str] = {}
         self._closed = False
@@ -1714,25 +1716,25 @@ class SidecarService:
             self._controller.stop()
         return (True, None, None)
 
-    def _resolve_target(self, target) -> str:
+    def _resolve_target(self, target, params=None) -> str:
         """逻辑目标名 → 可打开地址；未知目标返回空串。
 
-        静态目标来自 `remote_meta.EXTERNAL_TARGETS`；`announcement` / `download` 是
-        「远程数据里已校验通过的地址」，取本进程最近一次解析结果——前端不传递 URL，
-        因此即使前端被完全控制，也只能请求这几个目标，无法指定打开哪里。
+        静态目标来自 `remote_meta.EXTERNAL_TARGETS`；`download` 按请求里的
+        `source` / `channel` 两个枚举计算发布页（地址不由调用方给定）；`announcement`
+        取本进程最近一次解析结果——前端不传递 URL，因此即使前端被完全控制，
+        也只能请求这几个目标，无法指定打开哪里。
         """
         if not isinstance(target, str):
             return ""
         if target in EXTERNAL_TARGETS:
             return EXTERNAL_TARGETS[target]
-        if target in ("announcement", "download"):
+        if target == "download":
+            source = params.get("source") if isinstance(params, dict) else None
+            channel = params.get("channel") if isinstance(params, dict) else None
+            return resolve_download_page(source, channel)
+        if target == "announcement":
             with self._lock:
-                remembered = self._remote_urls.get(target, "")
-            if remembered:
-                return remembered
-            # 远程没给（或给的地址不合规）时，下载页回退官方 release 页；
-            # 公告没有可回退的地址，返回空串让调用方报「暂不可用」。
-            return EXTERNAL_TARGETS["release"] if target == "download" else ""
+                return self._remote_urls.get("announcement", "")
         return ""
 
     def open_vigembus_download(self, params):
@@ -1753,11 +1755,12 @@ class SidecarService:
         """按**逻辑目标名**在默认浏览器打开官方地址（关于页跳转 / 公告详情 / 下载页）。
 
         调用方只报「打开哪个目标」（`target`），不报「打开哪里」——地址一律由本进程
-        决定：静态目标查 `EXTERNAL_TARGETS`，远程目标取已校验过的地址。放行前再过一次
-        `is_openable_url` 作纵深防御：不论地址从哪条路径攒出来，都逃不过官方白名单。
+        决定：静态目标查 `EXTERNAL_TARGETS`，下载页按 `source` / `channel` 枚举计算，
+        公告取已校验过的远程地址。放行前再过一次 `is_openable_url` 作纵深防御：不论
+        地址从哪条路径攒出来，都逃不过官方白名单。
         """
         import webbrowser
-        url = self._resolve_target(params.get("target"))
+        url = self._resolve_target(params.get("target"), params)
         if not url:
             return (False, None, f"未知或暂不可用的外部目标: {params.get('target')!r}")
         if not is_openable_url(url):
@@ -2103,7 +2106,7 @@ class SidecarService:
     # （由发版提交携带、随 tag 落点入库；master 受分支保护，CI 不回写）——CNB 优先（国内快），
     # GitHub raw / GitHub API 兜底。公告同理 CNB raw 优先。
     # 所有源都只是「取字节」；「这些字节能不能信」由 remote_meta 的校验器统一判定。
-    _CNB_RAW_BASE = "https://cnb.cool/MaaRacingMaster/MAIN/-/git/raw/master"
+    _CNB_RAW_BASE = f"https://cnb.cool/{CNB_REPO}/-/git/raw/master"
     _CNB_RELEASE_URL = f"{_CNB_RAW_BASE}/docs/latest_release.json"
     _GITHUB_RELEASE_URL = f"https://raw.githubusercontent.com/{_GITHUB_REPO}/master/docs/latest_release.json"
     _GITHUB_API_RELEASE_URL = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
@@ -2173,8 +2176,6 @@ class SidecarService:
             return (True, {"has_update": False, "error": "无法连接到更新服务器，请稍后再试",
                            "status": "network", "source": source}, None)
 
-        with self._lock:
-            self._remote_urls["download"] = download_url
         cur = ".".join(str(x) for x in self._version_tuple())
         has_update = self._compare_versions(latest, cur) > 0
         return (True, {
