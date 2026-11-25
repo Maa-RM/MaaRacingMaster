@@ -21,6 +21,33 @@ _DRIVE_HUD = (
 )
 _MAX_HEADING_AGE_S = 0.22
 _FRAME_GAP_S = 0.8
+# 执行链平滑（自 v1 下发链搬来的最小集，2026-11-25）：
+# - 杆值一阶低通（v1 tau_steer_s=0.1）：去掉逐拍阶跃，让执行延迟吃掉突变；
+# - 每拍变化上限（v1 rate_limit_raw=22000/32767≈0.67 归一化）：满行程约 3 拍，
+#   本侧杆幅上限只有 0.45，同比例取 0.30；
+# - 浅杆段补偿：v1 按「命令车头角 − 观测车头角」缺口积分。本侧观测是线角
+#   （含道路方向，无慢基线，见 lane_obs `theta` 定义），直接积分会把曲率积进去，
+#   故改为对持续横位偏差积分，目的相同（补浅杆段响应不足），上限保守。
+_STEER_TAU_S = 0.10
+_STEER_STEP_MAX = 0.30
+_BOOST_GAIN = 0.8          # 杆/(道·s)
+_BOOST_MAX = 0.12          # 杆
+_BOOST_DECAY_S = 1.0
+# 混合横向控制（2026-11-25，由两局实测定口径）：
+# - 杆 → 横速不是即时量：打杆后 0.25/0.5/1.0s 的横速增益约 0.39/0.75/1.21 道/s，
+#   存在约 0.5s 的执行滞后，纯位置 P 在这条链上必然振荡；
+# - 车头角对打杆的响应只有 0.2°/0.5s，且三成检测拍沿用旧角，不能单独当阻尼；
+#   但它与未来 0.5s 横移的相关系数 0.61，仍可作趋势项。
+# 因此：位置误差 → 期望横速 → 内环按「在线估计的杆增益」归一化成杆；车头角
+# 只作弱趋势，角速度作弱阻尼。换车/换速时杆增益在线跟随，增益失配不会失稳。
+_K_POS = 0.5               # 位置环：期望横速 = 0.5 × 横位误差（道/s）；误差 1 道约 0.25 杆
+_K_HEAD = 2.0              # 车头角趋势项（原 3.5，降权，避开弱观测）
+_K_R = 0.3                 # 车头角速度阻尼
+_VLAT_TAU_S = 0.40         # 横位速度 EMA（检测间隔 0.1s，0.2 压不住差分噪声）
+_GAIN_DEFAULT = 1.0        # 杆→横速初始增益（道/s per 归一杆）
+_GAIN_MIN, _GAIN_MAX = 0.6, 3.0
+_GAIN_TAU_S = 3.0          # 增益在线估计的时间常数
+_GAIN_PROBE_OUT = 0.35     # 只在未饱和段做增益辨识（饱和时观测横速被限幅，会低估增益）
 # 擦边点位：三条白线两侧各偏 0.2 道共六个横向维持点。0.2 道偏置使本车与
 # 相邻车道居中车的横向中心距 ≈2.45m，落入极限超车判定阈（两车半宽和 +
 # 0.8m ≈ 2.6m，RULES §2.1）——贴线保持本身就是擦边超车姿态，点位只在
@@ -30,6 +57,11 @@ _EDGE_POINTS = tuple(round(b + s * _EDGE_OFFSET, 2) for b in (-1, 0, 1) for s in
 _CLEARANCE = 0.60                    # 车身净空（道）：点位与街车中心距小于此视为堵
 _DECISION_HORIZON_M = MID_MAX_M      # 换点判定视界：40m ≈ 一次变道来得及起手的下限
 _THROTTLE_HORIZON_M = 2 * NEAR_MAX_M  # 收油视界：30m 内六点全堵才收油
+# 点位承诺（2026-11-25）：实测车流密时目标每 0.42s 换一次、二成跨 2~4 个点，
+# 车被要求来回横跳。选定后至少保持，只有近处车逼到本位才重估；重估优先相邻
+# 擦边点，相邻都堵才允许跨道回退（安全兜底，仍受承诺期约束）。
+_TARGET_HOLD_S = 1.0                 # 最短驻留
+_NEAR_THREAT_M = 25.0                # 近处威胁视界：这个距离内的车才许可提前换点
 LOOKAHEAD_M = 12.0                   # 前视转向预瞄（米）
 
 
@@ -104,9 +136,16 @@ class HeadingControl:
         self.yaw_rate = 0.0
         self.desired_heading = 0.0
         self._steer = 0.0
+        self._out = 0.0          # 上一拍下发值（低通与变化限幅的起点）
+        self._boost = 0.0        # 浅杆补偿量
+        self.boost = 0.0         # 只读诊断
+        self._x_prev: float | None = None
+        self.v_lat = 0.0         # 横位速度 EMA（道/s）
+        self.gain = _GAIN_DEFAULT  # 杆→横速在线增益（道/s per 归一杆）
 
     def update(self, lateral_error_lane: float, heading: float, ts_ns: int, *,
-               preview_m: float | None = None) -> float:
+               preview_m: float | None = None,
+               lateral_x: float | None = None) -> float:
         if ts_ns <= self._ts_ns:
             return self._steer
         dt = (ts_ns - self._ts_ns) / 1e9
@@ -116,15 +155,58 @@ class HeadingControl:
         else:
             self.yaw_rate = 0.0
         self._ts_ns, self._heading = ts_ns, heading
+        # 可用拍之间可能隔着不可用拍，步长按控制拍兜底，避免低通/积分吃进长空窗。
+        dt_eff = dt if 0.0 < dt <= 0.10 else 0.05
+        dt_meas = dt if 0.0 < dt <= 0.20 else 0.10
+
+        # 横位速度：位置环的阻尼源。车头角只作趋势，不用它算微分。
+        if lateral_x is not None:
+            if self._x_prev is not None:
+                raw_v = (lateral_x - self._x_prev) / dt_meas
+                a_v = 1.0 - math.exp(-dt_meas / _VLAT_TAU_S)
+                self.v_lat += a_v * (raw_v - self.v_lat)
+            self._x_prev = lateral_x
 
         # 空间预瞄生成温和的目标角，D 项只看测得的角速度，目标更新不踢杆。
         lookahead = 45.0 if preview_m is None else preview_m
         desired = math.atan2(lateral_error_lane * self._lane_w_m, lookahead)
         self.desired_heading = max(-0.10, min(0.10, desired))
-        steer = 3.5 * (self.desired_heading - heading) - 0.18 * self.yaw_rate
-        # 小指令归真零，留给游戏自己的回正。限幅避开卡牌触发的满杆换道。
+
+        # 浅杆补偿：对持续横位偏差慢速积分，偏差消失后按时间常数衰减。
+        self._boost += _BOOST_GAIN * lateral_error_lane * dt_eff
+        self._boost *= math.exp(-dt_eff / _BOOST_DECAY_S)
+        self._boost = max(-_BOOST_MAX, min(_BOOST_MAX, self._boost))
+        self.boost = self._boost
+
+        # 位置环 → 期望横速 → 用在线杆增益换回杆；车头角趋势与角速度阻尼只做修正。
+        v_des = _K_POS * lateral_error_lane
+        raw = ((v_des - self.v_lat) / self.gain
+               + _K_HEAD * (self.desired_heading - heading)
+               - _K_R * self.yaw_rate + self._boost)
+        # 换车/换速时对象增益会变（同杆值横速不同）：用「上一拍实际下发值 → 当前
+        # 横速」慢速更新。只在未饱和段辨识——杆打到限幅时观测横速被限住，会把
+        # 增益估计拉低，下一拍就要求更大杆值，形成饱和正反馈（实测杆幅中位已顶
+        # 到 0.45 上限）。
+        if (abs(self._out) < _GAIN_PROBE_OUT
+                and abs(self._out) > 0.08
+                and abs(self.v_lat) > 0.05):
+            g_sample = self.v_lat / self._out
+            if _GAIN_MIN <= g_sample <= _GAIN_MAX:
+                a_g = 1.0 - math.exp(-dt_meas / _GAIN_TAU_S)
+                self.gain += a_g * (g_sample - self.gain)
+        # 小指令归真零，留给游戏自己的回正。死区放在低通**之前**：低通首拍只
+        # 给到 39%，若先低通再判死区，正常修正会被首拍衰减吞掉（杆幅上限
+        # 0.45、死区 0.05，占比远大于 v1 的 0.008）。
         deadzone = 0.10 if preview_m is None else 0.05
-        self._steer = 0.0 if abs(steer) < deadzone else max(-0.45, min(0.45, steer))
+        cmd = 0.0 if abs(raw) < deadzone else raw
+        # 杆值低通 → 每拍变化上限：执行链上的两道平滑，再进杆幅限幅。
+        alpha = 1.0 - math.exp(-dt_eff / _STEER_TAU_S)
+        smooth = self._out + alpha * (cmd - self._out)
+        step = max(self._out - _STEER_STEP_MAX,
+                   min(self._out + _STEER_STEP_MAX, smooth))
+        # 限幅避开卡牌触发的满杆换道。
+        self._out = max(-0.45, min(0.45, step))
+        self._steer = self._out
         return self._steer
 
 
@@ -149,8 +231,12 @@ class LaneDrive:
                 car_error = repr(exc)
         if perception is None:
             logger.log(f"[无限驾驶] 街车模型不可用，本次只保持车道：{car_error}", "WARNING")
+        # hz=0：按控制拍提交（此前按 10Hz 节流，控制拍 20Hz 下一半拍拿不到新
+        # 检测，是可用率的大头）。实测 DML+FP16 单帧约 9~11ms（前向 4~6ms、
+        # 后处理约 5ms）；是否跟得上以 trace 的弃帧计数为准。
         self._lines = LaneObsWorker(LaneObsConfig(
-            enabled=True, provider="dml", weights=LANE_MODEL_REL, weights_fp16=LANE_FP16_MODEL_REL,
+            enabled=True, provider="dml", weights=LANE_MODEL_REL,
+            weights_fp16=LANE_FP16_MODEL_REL, hz=0.0,
         ), drive_observations=True, perception=perception)
         self._trace = get_trace_sink("infinite_drive")
         self.begin()
@@ -170,6 +256,7 @@ class LaneDrive:
         self._last_frame_ns = 0
         self._last_fid = -1
         self._target: float | None = None
+        self._target_since_ns = 0
         self._gross_reanchor = 0
         self._dbg_refs = None
         self.release()
@@ -203,24 +290,43 @@ class LaneDrive:
                     clearance=_CLEARANCE, horizon_m=_DECISION_HORIZON_M)
 
     def _hold_edge_point(self, ego_x: float, cars: list[tuple[float, float]]) -> str | None:
-        """点位决策：无点先取离自车最近的净点；被堵才换最近的净点，净则保持。
+        """点位决策：初选最近的净点，之后带承诺期，只有近车逼到才重估。
 
-        保持中的点不重估，切换只由「被堵」这一件事触发——净空恢复不切回，
-        避免决策来回摆；换点锚=自车横位（就近换，横移最小）。
+        - 初选：同过去，按 40m 视界选离自车最近的净擦边点。
+        - 承诺期（``_TARGET_HOLD_S``）内不换，除非目标点被 25m 内的车堵住；
+          远处的车不算——它们进入近处时再判，避免车流密集时目标每拍变。
+        - 重估优先相邻擦边点；相邻都堵才跨道回退到最近净点（安全兜底）。
+        - 保持中的点不因净空恢复切回，切换只由「近车逼到 + 承诺期已过」触发。
         返回本拍点位事件（"pick"/"switch"），无变化返回 None。"""
-        if self._target is None or _point_blocked(self._target, cars, _DECISION_HORIZON_M):
+        now_ns = time.perf_counter_ns()
+        if self._target is None:
             picked = _pick_edge_point(ego_x, cars)
-            if picked is not None and picked != self._target:
-                if self._target is None:
-                    logger.log(f"[无限驾驶] 擦边点位锁定（{picked:+.1f}）", "DEBUG")
-                    event = "pick"
-                else:
-                    logger.log(f"[无限驾驶] 点位被堵，换点 "
-                               f"{self._target:+.1f} → {picked:+.1f}", "DEBUG")
-                    event = "switch"
+            if picked is not None:
                 self._target = picked
-                return event
-        return None
+                self._target_since_ns = now_ns
+                logger.log(f"[无限驾驶] 擦边点位锁定（{picked:+.1f}）", "DEBUG")
+                return "pick"
+            return None
+        if not _point_blocked(self._target, cars, _NEAR_THREAT_M):
+            return None
+        if now_ns - self._target_since_ns < _TARGET_HOLD_S * 1e9:
+            return None
+        anchor = self._target
+        near = [p for p in _EDGE_POINTS
+                if abs(_EDGE_POINTS.index(p) - _EDGE_POINTS.index(anchor)) == 1
+                and not _point_blocked(p, cars, _DECISION_HORIZON_M)]
+        clear = near or [p for p in _EDGE_POINTS
+                         if not _point_blocked(p, cars, _DECISION_HORIZON_M)]
+        if not clear:
+            return None
+        picked = min(clear, key=lambda p: abs(p - ego_x))
+        if picked == self._target:
+            return None
+        logger.log(f"[无限驾驶] 点位被堵，换点 {self._target:+.1f} → {picked:+.1f}"
+                   + ("" if near else "（跨道回退）"), "DEBUG")
+        self._target = picked
+        self._target_since_ns = now_ns
+        return "switch"
 
     def steer(self, frame, fid: int, ts_ns: int) -> float:
         """处理采集帧，返回方向杆。"""
@@ -246,7 +352,11 @@ class LaneDrive:
         heading = lane.get("theta")
         heading_fid = lane.get("theta_src_fid")
         heading_ns = lane.get("theta_src_ts_ns") or 0
-        position_measured = x is not None and math.isfinite(x) and not lane.get("hold")
+        # hold=本拍横位被步长门限速（x 已按物理步长限幅，仍是平滑后的位置
+        # 原点，lane_obs 的 usable 也不因它减分）。此前控制侧额外把 hold 判为
+        # 不可用，实测占不可用原因的 69%，方向输出被切成一段一段；这里按
+        # 「限速值可用」消费，hold 只保留为 trace 的「非新测量」标记。
+        position_measured = x is not None and math.isfinite(x)
         track_ready = fresh and position_measured and lane.get("usable")
         usable = (track_ready
                   and heading is not None and math.isfinite(heading)
@@ -277,7 +387,7 @@ class LaneDrive:
         target = self._target
         if usable and target is not None and x is not None and heading is not None:
             steer = self._control.update(target - x, heading, heading_ns,
-                                         preview_m=LOOKAHEAD_M)
+                                         preview_m=LOOKAHEAD_M, lateral_x=x)
             target_heading, yaw_rate = self._control.desired_heading, self._control.yaw_rate
         else:
             self._control.reset()
@@ -296,6 +406,25 @@ class LaneDrive:
             "half_lanes": ROAD_HALF_LANES,
         }
 
+        # 本拍不可用原因（诊断）：与 usable 的判定顺序逐条对应，便于离线把
+        # 「没出杆」拆成 预测拍/超龄/无位置/未锁/单侧/角度旧。
+        if not fresh:
+            reason = "stale_det"
+        elif x is None:
+            reason = "no_x"
+        elif not lane.get("usable"):
+            reason = lane.get("usable_reason") or "unknown"
+        elif not usable:
+            reason = "theta"
+        else:
+            reason = "ok"
+        line_meta = [
+            {key: ln.get(key) for key in
+             ("k", "L", "resid", "accepted", "reject", "side", "color", "n")
+             if ln.get(key) is not None}
+            for ln in (lane.get("lines") or []) if isinstance(ln, dict)
+        ]
+
         self._trace.append({"fid": fid, "ts_ns": ts_ns,
                             "ego_lane": x, "target_lane": target, "heading_rad": heading,
                             "edge_event": edge_event, "walled": walled,
@@ -306,5 +435,18 @@ class LaneDrive:
                             "lane_fid": lane.get("det_fid"), "lane_ms": lane.get("ms"),
                             "lane_state": lane.get("state"), "lane_locked": lane.get("n_locked"),
                             "heading_fid": heading_fid, "heading_ts_ns": heading_ns or None,
-                            "usable": bool(usable), "steer": steer})
+                            "usable": bool(usable), "steer": steer,
+                            "boost": self._control.boost,
+                            "v_lat": round(self._control.v_lat, 3),
+                            "gain": round(self._control.gain, 3),
+                            "usable_reason": reason, "pred": lane.get("pred"),
+                            "hold": lane.get("hold"), "lock_count": lane.get("locked"),
+                            "det_age_ms": (round((now_ns - det_ns) / 1e6, 1)
+                                           if det_ns else None),
+                            "queue_ms": lane.get("queue_ms"), "cap_ms": lane.get("cap_ms"),
+                            "slot_ms": lane.get("slot_wait_ms"),
+                            "busy_skips": lane.get("busy_skips"),
+                            "slot_skips": lane.get("slot_skips"),
+                            "run_ms": lane.get("hold_ms"),
+                            "line_meta": line_meta})
         return steer
