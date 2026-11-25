@@ -22,6 +22,8 @@
   var countdown = { raf: 0, active: false, done: false };
   var tourIndex = 0;
   var tourActive = false;
+  // 上一个被引导点击的目标：同一目标短时间内的第二次点击按重复点击处理
+  var lastTargetClick = { el: null, at: 0 };
 
   // ---------- 后端状态 ----------
   // 方法名保持字符串字面量：白名单测试按字面量扫前端调用点，抽不出名字就等于失守
@@ -284,6 +286,8 @@
   }
 
   function showGate() {
+    // 重新打开时倒计时必须从零开始：countdown.done 留着会把新按钮永久锁在禁用态
+    countdown = { raf: 0, active: false, done: false };
     var gate = document.createElement('div');
     gate.className = 'onb-gate';
     gate.id = 'onb-gate';
@@ -630,25 +634,33 @@
   function bindTargetClick() {
     if (targetClickBound) return;
     targetClickBound = true;
-    // 结果还在路上时，同目标的第二次点击必须挡住：加任务类步骤是「点一下加入、
-    // 再点一下移出」，慢回包期间连点会把刚加上的任务又点掉，而推进判据读到的是
-    // 移除前的队列，最终任务没了、步骤却记成完成。
-    document.addEventListener('click', function (e) {
-      if (!advancing) return;
-      var el = currentTarget();
-      if (!el || !el.contains(e.target)) return;
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    }, true);
-    // 点击命中高亮目标才算数；命中后等结果状态出现再前进
+    // 点击命中高亮目标才算数；命中后等结果状态出现再前进。
+    // 同一目标的重复点击必须挡住：加任务类步骤是「点一下加入、再点一下移出」，
+    // 慢回包时第二次点击会提交移除，而推进判据读到的还是移除前的队列——任务没了、
+    // 步骤却记成完成。快回包时更隐蔽：步骤已切到下一步，旧卡片仍会收到紧随的点击。
     document.addEventListener('click', function (e) {
       if (!tourActive) return;
       var layer = $('#onb-layer');
       if (!layer || layer.hidden) return;
       var el = currentTarget();
-      if (!el || !el.contains(e.target)) return;
+      if (!el || !el.contains(e.target)) {
+        // 目标已经切走：刚点过的旧目标在短时间内仍算重复点击
+        if (lastTargetClick.el && lastTargetClick.el.contains(e.target)
+            && Date.now() - lastTargetClick.at < 600) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+        return;
+      }
+      var now = Date.now();
+      if (advancing || (lastTargetClick.el === el && now - lastTargetClick.at < 600)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        return;
+      }
+      lastTargetClick = { el: el, at: now };
       setTimeout(function () { advance(false); }, 40);
-    });
+    }, true);
     // 键盘也能把界面带离目标（Tab 切页、Esc 关弹窗）：目标不可见时把界面拉回本步，
     // 结果已经达成就直接前进，别让聚光灯停在不存在的位置上。
     document.addEventListener('keyup', function (e) {
