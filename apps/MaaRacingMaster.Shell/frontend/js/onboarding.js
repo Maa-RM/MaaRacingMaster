@@ -1,4 +1,3 @@
-/* 首次使用引导：在真实前端上做声明门 + 聚光灯。
 /* 首次引导：声明、过渡页、聚光灯步骤。
  * 状态由后端 profile 持有（get_onboarding / onboarding_event），本文件不落盘；
  * 每完成一步立即上报，强杀后最多重看一步。 */
@@ -378,12 +377,12 @@
       done: function () { return manageOpen(); }
     },
     {
-      target: '.task-gallery-cell[data-manage="start_game"]',
+      target: '.task-gallery-cell[data-manage="launch_game"]',
       title: '加上「启动游戏」',
       body: '它会打开游戏，等到进入大厅后，再交给下一个任务。',
       prepare: async function () { activateTab('control'); if (!manageOpen()) { var b = $('#btn-manage'); if (b) b.click(); } },
       wait: 320,
-      done: function () { return window.MaaRM.state.queue.order.indexOf('start_game') !== -1; }
+      done: function () { return window.MaaRM.state.queue.order.indexOf('launch_game') !== -1; }
     },
     {
       target: '.task-gallery-cell[data-manage="close_game"]',
@@ -415,6 +414,8 @@
       body: '系统权限、手柄驱动和运行组件都放在这里。不改也能先跑启动和关闭。',
       prepare: async function () { activateTab('settings'); },
       wait: 520,
+      // 环境中心首次打开要查一遍本机组件，RPC 往返可能超过 1.8 秒
+      resultMs: 8000,
       done: function () { return envOpen(); }
     }
   ];
@@ -662,8 +663,15 @@
 
   async function showStep(i) {
     if (i >= STEPS.length) return finish(true);
-    tourIndex = i;
     var step = STEPS[i];
+    // 页面状态已经满足本步（默认队列里已有、续做时提前做过）就不渲染，
+    // 否则会闪一下「加上…」再自动跳过
+    if (RESULT_CHECKABLE[STEP_IDS[i]]) {
+      var satisfied = false;
+      try { satisfied = !!step.done(); } catch (e) { satisfied = false; }
+      if (satisfied) { stepDone(STEP_IDS[i]); return showStep(i + 1); }
+    }
+    tourIndex = i;
     var layer = ensureLayer();
     layer.hidden = true;
     try { await step.prepare(); } catch (e) { console.warn(e); }
@@ -708,7 +716,7 @@
           showStep(tourIndex + 1);
           return;
         }
-        var ok = await waitFor(step.done, 1800);
+        var ok = await waitFor(step.done, step.resultMs || 1800);
         if (!ok) { nudge(); return; }
       }
       stepDone(STEP_IDS[tourIndex]);
@@ -847,7 +855,9 @@
         var m = window.MaaRM;
         // 预热遮罩撤下后再接管，否则声明页会被压在遮罩下面
         var ov = document.getElementById('boot-overlay');
-        var booted = !ov || ov.hidden;
+        // 热启动靠 .boot-skip 隐藏遮罩（display:none），hidden 属性不会置位，
+        // 只看 hidden 会白等满 8 秒才弹声明。
+        var booted = !ov || ov.hidden || getComputedStyle(ov).display === 'none';
         if (booted && m && m.state && m.state.modules && m.state.modules.length && document.querySelector('#task-list')) {
           return resolve();
         }
