@@ -809,7 +809,7 @@ def _dev_smoke_chain(args) -> dict:
     ①本次启动的侧车（启动前基线差分归属 PID，排除探针自身——探针与侧车共用主线解释器）
       就绪并全程存活；
     ②本壳的浏览器进程存在且命令行携带本隔离用户数据目录（归属判定，非全机名命中）；
-    ③非受管解析决策行落壳日志、界面隐私模式无回落、exe 旁无浏览器数据目录；
+    ③非受管解析决策行落壳日志、界面资料分区选项无回落、exe 旁无浏览器数据目录；
     ④用户关窗（壳进程消失即视为关闭，此字段是推断不是人工确认记录）后，本次后端在
       宽限窗内退出（OnClosed 优雅关停 / 输入管道 EOF 自退）。
     页面桥业务请求强断言不做：RPC 通道由壳持有，黑盒无法注入；就绪代理 = 归属浏览器
@@ -869,7 +869,7 @@ def _dev_smoke_chain(args) -> dict:
     shell_log = _tail(userdata / "MaaRacingMaster" / "logs" / "shell.log", 2500)
     ev["shell_log_tail"] = shell_log
     assert "[approot]" in shell_log, "壳日志缺非受管解析决策行"
-    assert "隐私模式初始化失败" not in shell_log, "界面隐私模式初始化回落（不应发生）"
+    assert "控制选项初始化失败" not in shell_log, "界面资料分区选项初始化回落（不应发生）"
 
     ev.update(_collect_live_evidence(shell.parent, userdata))
     assert _sidecar_alive(), "取证阶段本次侧车消失"

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Web.WebView2.Core;
@@ -10,8 +12,8 @@ namespace MaaRacingMaster.Shell;
 /// WebView2 共享运行时：用户数据目录显式指定到用户数据根（升级不触碰前端存储）。
 /// 不指定时 WebView2 默认落在 exe 旁（{exe}.exe.WebView2）——受管升级整体替换内容树，
 /// 前端存储随升级丢失；显式指定到安装树之外后升级不再触碰。
-/// 界面以隐私模式初始化（见 MainWindow）：站点数据不落盘，该目录只承载引擎基础
-/// 结构，不再累积缓存（评审裁决：业务偏好住后端 config，浏览器侧无真实持久需求）。
+/// 界面使用常规资料分区（非隐私模式）：InPrivate 分区只有内存版 GPU 缓存，着色器程序
+/// 无法跨启动复用（见 MainWindow 初始化注释与 shell README「WebView2 渲染与编译缓存」）。
 /// 主窗与悬浮窗共用同一环境实例（同享浏览器进程与存储分区）。
 /// </summary>
 public static class WebView2Runtime
@@ -63,34 +65,23 @@ public static class WebView2Runtime
             }
 #endif
             Directory.CreateDirectory(udf);
-            // 浏览器参数经显式 options 传入 WinUI3 加载器。
-            // CPU 光栅为默认：GPU 光栅路径上，新进程首访会对首次遇到的绘制组合现场编译
-            // 着色器程序（Skia program cache miss → ANGLE 译 D3D），且整块瓦片的编译被
-            // EndRasterCHROMIUM::Flush 同步串行等待，造成 100–250ms 帧停顿、切页进场动画
-            // 被墙钟时钟快过全程（用户观感「页面瞬间出现」）。光栅改走 Skia 软件路径后
-            // 编译为零、首访达再访级顺滑，绘制指令同源、视觉效果不变。
-            // 2026-11-23 实测：数据页冷首访 127.8→22.2ms、齿轮弹窗 244.3→27.8ms、
-            // 再访节奏无退化。机制与证据详见 shell README「WebView2 浏览器参数」。
-            const string baseBrowserArgs = "--disable-gpu-rasterization";
+            PruneCrashDumps(udf);
+            // 浏览器参数：默认不内置任何渲染开关——GPU 光栅 + 磁盘着色器缓存已是顺畅路径
+            // （首访编译一次、之后跨启动复用，机理与实测见 shell README「WebView2 渲染与编译缓存」）。
+            // 仅诊断 env 与 Debug 调试端口追加参数，互不覆盖。
+            var browserArgs = new List<string>();
             var probeArgs = Environment.GetEnvironmentVariable("MAARM_APP_WEBVIEW_ARGS");
-            var browserArgs = string.IsNullOrWhiteSpace(probeArgs)
-                ? baseBrowserArgs
-                : $"{baseBrowserArgs} {probeArgs}";
+            if (!string.IsNullOrWhiteSpace(probeArgs)) browserArgs.Add(probeArgs);
 #if DEBUG
             if (debugPort != 0)
             {
                 // 调试端口参数与诊断 env 追加共存，不再整体覆盖。
-                var debugArgs = $"--remote-debugging-port={debugPort} --remote-debugging-address=127.0.0.1";
-                browserArgs = string.IsNullOrWhiteSpace(probeArgs)
-                    ? $"{baseBrowserArgs} {debugArgs}"
-                    : $"{baseBrowserArgs} {debugArgs} {probeArgs}";
+                browserArgs.Add($"--remote-debugging-port={debugPort} --remote-debugging-address=127.0.0.1");
             }
 #endif
-            CoreWebView2EnvironmentOptions? options = null;
-            if (!string.IsNullOrWhiteSpace(browserArgs))
-            {
-                options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = browserArgs };
-            }
+            CoreWebView2EnvironmentOptions? options = browserArgs.Count == 0
+                ? null
+                : new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = string.Join(" ", browserArgs) };
             // WinUI3 投影：数据目录走 CreateWithOptionsAsync（CreateAsync 只收选项对象，
             // 选项类不暴露数据目录——固定版本 winmd 核验过成员）
             _environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, udf, options).AsTask().ConfigureAwait(false);
@@ -105,6 +96,54 @@ public static class WebView2Runtime
         finally
         {
             Gate.Release();
+        }
+    }
+
+    // 崩溃转储保留策略：Crashpad 默认不清理 reports，单份转储可达数十 MB，崩溃几次就能
+    // 在用户数据目录里堆出上百 MB。启动时只留最近 3 份且不超过 7 天，只删
+    // Crashpad\reports 下的 .dmp——着色器缓存与资料分区不在此列（它们是可复用 / 再生的
+    // 资产）。清理失败不阻断启动。
+    private const int CrashDumpKeepCount = 3;
+    private static readonly TimeSpan CrashDumpMaxAge = TimeSpan.FromDays(7);
+
+    private static void PruneCrashDumps(string udf)
+    {
+        // WebView2 会把浏览器状态放进用户数据目录下的 EBWebView 子目录；旧版运行时也有
+        // 直接落在根下的情形，两处都扫一遍。
+        foreach (var reports in new[]
+        {
+            Path.Combine(udf, "EBWebView", "Crashpad", "reports"),
+            Path.Combine(udf, "Crashpad", "reports"),
+        })
+        {
+            try
+            {
+                if (!Directory.Exists(reports)) continue;
+                var dumps = new DirectoryInfo(reports).GetFiles("*.dmp", SearchOption.TopDirectoryOnly);
+                if (dumps.Length == 0) continue;
+                var cutoff = DateTime.UtcNow - CrashDumpMaxAge;
+                var newest = dumps.OrderByDescending(f => f.LastWriteTimeUtc).ToArray();
+                for (var i = 0; i < newest.Length; i++)
+                {
+                    if (i < CrashDumpKeepCount && newest[i].LastWriteTimeUtc >= cutoff) continue;
+                    try
+                    {
+                        newest[i].Delete();
+                    }
+                    catch (IOException)
+                    {
+                        // 其它实例占用中：留到下次启动再清
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // 同上
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ShellLog.Append($"[webview2] 崩溃转储清理失败: {ex.Message}");
+            }
         }
     }
 }

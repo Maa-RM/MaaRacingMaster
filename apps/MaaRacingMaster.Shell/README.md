@@ -152,11 +152,27 @@ dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debu
 | `Application.Start` 回调参数用 `_` 与丢弃赋值冲突（CS0029） | 参数命名 `p` |
 | 未打包应用入口样板 | `WinRT.ComWrappersSupport.InitializeComWrappers()` + `DispatcherQueueSynchronizationContext` |
 
-## WebView2 浏览器参数（CPU 光栅）
+## WebView2 渲染与编译缓存
 
-浏览器参数装配顺序（`WebView2Runtime.cs`）：`--disable-gpu-rasterization` 恒定内置 → `MAARM_APP_WEBVIEW_ARGS` 诊断参数追加 → Debug 诊断窗口再追加调试端口参数。三段共存，互不覆盖（此前的「诊断窗口整体覆盖 env」行为已废）。
+**现状**：默认 GPU 光栅 + 常规（非隐私）资料分区，浏览器参数不内置任何渲染开关——只有 `MAARM_APP_WEBVIEW_ARGS` 诊断参数与 Debug 调试端口两段追加（`WebView2Runtime.cs`），互不覆盖。
 
-CPU 光栅是定案的渲染模式，不是临时旋钮：GPU 光栅路径上，每个新进程对「首次遇到的绘制组合」要现场编译着色器程序（Skia program cache miss → ANGLE 译 D3D），编译被整块瓦片的 `EndRasterCHROMIUM::Flush` 同步串行等待——表现为切页/弹窗**冷首访**帧停顿 100–250ms、进场动画被墙钟时钟快过全程（观感「页面瞬间出现」）；会话内再访命中内存缓存所以永远顺滑。磁盘缓存救不了首访：Windows 上 Chromium persistent cache 默认关闭，WebView2 里读盘路径未装配（只写不读）。改走 Skia 软件光栅后编译为零：数据页冷首访 127.8→22.2ms、齿轮弹窗 244.3→27.8ms（2026-11-23 实测定案），再访节奏无退化；绘制指令同源，视觉效果不变。归因方法为 trace 归因 + 预解码/延迟/预就绪三重对照（实验体 `page_slide_first_visit` 随实验退役、从未进 master，读数与定案即上文）；复测用下方「源码窗口的 GUI 调试」的 `compare` / `record` 命令。
+**机制**：GPU 光栅下，GPU 进程对首次遇到的绘制组合现场编译着色器（Skia 程序缓存未命中 → ANGLE 译 D3D），编译被整块瓦片的 `EndRasterCHROMIUM::Flush` 同步串行等待，表现为首访帧停顿几十到两百多毫秒、进场动画被墙钟快过全程（观感「页面瞬间出现」），会话内再访命中内存缓存所以顺滑。Chromium 会把编译结果写进浏览器级的 `GrShaderCache`（Skia 程序）与 `ShaderCache`（ANGLE 程序）两个目录，**下次启动读盘命中就不再编译**。
+
+**关键前提是资料分区**：InPrivate 分区拿到的是内存版 GPU 缓存——缓存文件照样写盘，但下次启动读不命中（trace 里 `GrShaderCache::load` 与 `store` 成对出现，每次都是 miss）。改常规分区后同一份缓存被复用。两个窗口必须同模式（控制选项是控制器级设置，共享环境不会自动传播）。
+
+**实测**（2026-11-24，Edge WebView2 157 / Chromium 157，RTX 4060 Laptop，125% 缩放；指标是点击后连续 rAF 的最大帧间隔，越小越顺）：
+
+| 场景 | 隐私分区（再启动） | 常规分区（预热后启动） | 常规分区（清空缓存后首启） |
+|---|---|---|---|
+| 数据页首访 | 99.9ms | 22.3ms（与再访同值） | 66.6ms |
+| 模块管理弹窗首访 | — | 33.3ms（再访 5.7ms） | — |
+| 切页进场（rAF 驱动） | — | p50/p95 5.6ms，最大 16.8ms，无超 33ms 帧 | — |
+
+**边界**：全新安装、WebView2 运行时更新或显卡驱动更新后的第一次启动仍要编译一遍（首访 60–250ms），从第二次启动起复用；清空 `GrShaderCache` / `ShaderCache` 即回到冷态。常规分区会让浏览数据落盘——界面资源全是 `file://`，不进 HTTP 缓存，实际只有更新与公告接口的少量响应和 V8 代码缓存，量级很小。
+
+**磁盘占用**：浏览器侧文件全部在用户数据目录 `%APPDATA%\MaaRacingMaster\webview2`（Debug 诊断窗口用 `webview2-gui-debug`），没有开关能把 GPU 缓存单独挪到别处——`--disk-cache-dir` 只管 HTTP 缓存，而界面资源是 `file://`、不经它。各项增长都有上限：GPU 着色器缓存由 Chromium 在桌面端按每类 6MB 封顶（`--gpu-disk-cache-size-kb` 可再收紧，但缩得太小会频繁淘汰、重新触发编译）；Crashpad 转储是目录里唯一会突然长大的东西（单份可达数十 MB），启动时只留最近 3 份且不超过 7 天；组件缓存（Widevine、Subresource Filter、component CRX）由运行时一次性下载，不随使用增长。
+
+**复测**：用下方「源码窗口的 GUI 调试」的 `compare` 命令，`data` 与 `manage` 两个场景各测一次；冷/暖对照可先改名两个缓存目录再启动。
 
 ## 源码窗口的 GUI 调试
 

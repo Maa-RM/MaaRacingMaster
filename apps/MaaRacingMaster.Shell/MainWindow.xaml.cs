@@ -386,19 +386,23 @@ public sealed partial class MainWindow : Window
     private async Task InitializeWebViewAsync()
     {
         var env = await WebView2Runtime.GetOrCreateAsync();
-        // 隐私模式（评审裁决）：界面浏览数据不落盘——持久化目录不再累积几十 MB 缓存；
-        // 站点偏好无真实消费者（业务偏好住后端 config），丢失无影响。
+        // 常规资料分区（2026-11-24 实测改判）：InPrivate 分区拿到的是内存版 GPU 缓存，
+        // 首访编译的着色器程序跨启动不命中，每次启动都要重付 100–250ms 的冷编译停顿；
+        // 常规分区下 GrShaderCache / ShaderCache 落盘并在下次启动复用（数据页首访最大帧间隔
+        // ~100ms → 22ms，模块管理弹窗 244ms → 33ms）。界面资源全部来自 file://，HTTP 缓存
+        // 只有更新与公告接口的少量响应，目录增长可忽略。取舍与数据见 shell README
+        // 「WebView2 渲染与编译缓存」。
         try
         {
             if (env is null)
                 throw new InvalidOperationException("自定义环境不可用");
             var options = env.CreateCoreWebView2ControllerOptions();
-            options.IsInPrivateModeEnabled = true;
+            options.IsInPrivateModeEnabled = false;
             await web.EnsureCoreWebView2Async(env, options);
         }
         catch (Exception ex)
         {
-            ShellLog.Append($"[webview2] 隐私模式初始化失败，回落共享环境: {ex.Message}");
+            ShellLog.Append($"[webview2] 控制选项初始化失败，回落共享环境: {ex.Message}");
             try
             {
                 await web.EnsureCoreWebView2Async(env);

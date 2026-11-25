@@ -77,6 +77,7 @@ from maaracing_master.core.paths import (
     framework_dir,
     logs_dir,
     user_data_dir,
+    webview2_dir,
 )
 from maaracing_master.core.perf_contract import (
     all_missing, normalize, rows_for)
@@ -291,6 +292,7 @@ _USER_DATA_CATEGORIES = (
     ("framework", "MAA 框架日志与缓存", framework_dir),
     ("logs", "会话日志", logs_dir),
     ("config", "偏好与选项", config_dir),
+    ("webview2", "界面浏览器缓存（着色器与资料分区）", webview2_dir),
 )
 
 
@@ -1784,10 +1786,10 @@ class SidecarService:
         return (True, data, None)
 
     def get_data_usage(self, params):
-        """用户数据目录五类的占用与文件数（设置页「调试文件夹」面板用）。
+        """用户数据目录各分类的占用与文件数（设置页「调试文件夹」面板用）。
 
         同步统计：本机 3.6 万个文件合计约 0.08s（口径见 _dir_usage），不必异步或缓存。
-        目录不存在时该行按 0 计，前端仍照常显示五项。
+        目录不存在时该行按 0 计，前端仍照常列出全部分类。
         """
         dirs = []
         total = 0

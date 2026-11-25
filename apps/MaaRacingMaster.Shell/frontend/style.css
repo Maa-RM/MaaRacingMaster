@@ -1403,7 +1403,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-tool-btn--block { width: 100%; }
 
 /* ============ 调试数据占用面板（设置页「调试文件夹」） ============ */
-/* 五类目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
+/* 各目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
 .space-body {
   display: flex; align-items: center; gap: 22px;
   --maarm-usage-debug: var(--maarm-primary);
@@ -1411,6 +1411,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   --maarm-usage-framework: var(--maarm-warning);
   --maarm-usage-logs: var(--maarm-success);
   --maarm-usage-config: var(--maarm-foreground-dim);
+  --maarm-usage-webview2: #8B5CF6;
 }
 .space-root {
   font-family: var(--maarm-font-mono); font-size: 11px;
@@ -1444,6 +1445,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .space-dot--framework { background: var(--maarm-usage-framework); }
 .space-dot--logs { background: var(--maarm-usage-logs); }
 .space-dot--config { background: var(--maarm-usage-config); }
+.space-dot--webview2 { background: var(--maarm-usage-webview2); }
 .space-dot--unknown { background: var(--maarm-border-strong); }
 .space-main { flex: 1; min-width: 0; }
 .space-name {
