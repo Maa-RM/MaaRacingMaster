@@ -1,0 +1,2925 @@
+/* MaaRacingMaster GUI 正式前端 —— 纯 CSS（无 Tailwind/Lucide CDN，WebView2 离线可用） */
+/* 设计 token 与组件类取自 .design/pages/（control/debug/about） */
+
+:root {
+  /* 品牌色 — 赛车红 */
+  --maarm-primary: #E5484D;
+  --maarm-primary-hover: #F05A5F;
+  --maarm-primary-active: #D63B3F;
+  --maarm-primary-soft: rgba(229, 72, 77, 0.1);
+  --maarm-primary-foreground: #FFFFFF;
+
+  /* 背景层级 */
+  --maarm-background: #F5F6FA;
+  --maarm-surface: #FFFFFF;
+  --maarm-surface-hover: #F8F9FC;
+  --maarm-surface-active: #F0F2F8;
+  --maarm-sidebar: #FAFBFD;
+
+  /* 文字层级 */
+  --maarm-foreground: #1F2328;
+  --maarm-foreground-secondary: #4A5160;
+  --maarm-foreground-muted: #8B93A7;
+  --maarm-foreground-dim: #B0B7C3;
+
+  /* 边框/分割 */
+  --maarm-border: #E5E7EB;
+  --maarm-border-light: #EEF0F4;
+  --maarm-border-strong: #D1D5DB;
+
+  /* 状态色 */
+  --maarm-success: #10B981;
+  --maarm-success-bg: rgba(16, 185, 129, 0.1);
+  --maarm-warning: #F59E0B;
+  --maarm-warning-bg: rgba(245, 158, 11, 0.1);
+  /* 更新提醒点：比 warning 更偏红，避免和“警告”语义混淆 */
+  --maarm-update-alert: #F97316;
+  --maarm-danger: #EF4444;
+  --maarm-danger-bg: rgba(239, 68, 68, 0.1);
+  --maarm-info: #3B82F6;
+  --maarm-info-bg: rgba(59, 130, 246, 0.1);
+
+  /* 浅底文字用深化色（基础色在白底上对比度不足）；带透明度的变体不设 token，
+     一律用 color-mix 就地派生（基础色按百分比混透明），改基础色全量联动。
+     刻意保留的字面量：成对色的第二色（大师场金渐变 #FCD34D、WIP 徽章底 #fef3c7）
+     与主题无关的黑白（阴影/遮罩/视频底/accent 上的白字）。 */
+  --maarm-success-strong: #15803d;
+  --maarm-warning-strong: #b45309;
+  --maarm-danger-strong: #b91c1c;
+  /* 品牌红的可读深化色：$primary 在白底只有 3.9:1，正文/图标要用深化色（5.7:1） */
+  --maarm-primary-strong: #C22B31;
+
+  /* 阴影 */
+  --maarm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --maarm-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --maarm-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+
+  /* 双列页面（主控/数据/设置）与成就页的内容版心：窄窗口仍是 12px 页边，
+     宽窗口内容居中、不再拉满。关于页是单列长文，单列自己的宽度另算（见 .about-container） */
+  --maarm-page-max: 1440px;
+  --maarm-rail-width: 420px;   /* 双列页右栏固定宽度（数据/设置/主控共用） */
+
+  /* 圆角 */
+  --maarm-radius-sm: 6px;
+  --maarm-radius-md: 8px;
+  --maarm-radius-lg: 10px;
+  --maarm-radius-xl: 12px;
+  /* 圆角形状（作用于所有「面」，见文件末尾的覆盖块）：
+     border-radius 只能画圆弧——圆弧与直边相切，但曲率在切点从 0 直接跳到 1/r，
+     观感是「到这里突然开始转」。corner-shape 让圆角按超椭圆走，切点曲率为 0，
+     且 border / 背景 / outline / box-shadow 都跟着这条曲线，不需要裁切整个元素。
+     取值用 squircle：非圆弧里最圆的一档（等效圆半径 ≈ 0.69 × border-radius）。
+     superellipse(k) 的数字越大越方，2.5 ≈ 0.54、3 ≈ 0.43，别按字面理解。
+     换形状必须同时补半径，倍数见末尾覆盖块的表格。 */
+  --maarm-corner-shape: squircle;
+
+  /* 字体 */
+  /* 中文优先 Noto Sans SC（思源字形，小字号渲染优于雅黑；可变字体，500/600 为真字重），
+     未安装的机器回落雅黑——仅字体栈顺序变化，无打包无依赖 */
+  --maarm-font-sans: "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --maarm-font-mono: "Consolas", "JetBrains Mono", "Cascadia Code", "SF Mono", monospace;
+
+  /* 动效时长（就近归类既有字面量：0.12/0.15s → fast，0.18/0.2s → base，0.3/0.32s → slow。
+     keyframes 周期与需和 JS 计时器配对的个例仍写字面量，在各用处注释说明） */
+  --maarm-duration-fast: 0.15s;
+  --maarm-duration-base: 0.2s;
+  --maarm-duration-slow: 0.3s;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { color-scheme: light; }
+html, body { height: 100%; }
+body {
+  display: flex; flex-direction: column; overflow: hidden;
+  background-color: var(--maarm-background);
+  color: var(--maarm-foreground);
+  font-family: var(--maarm-font-sans);
+  font-size: 13px; line-height: 1.5;
+  user-select: none;
+}
+
+/* ============ 启动预热遮罩（冷启动专用） ============ */
+/* 显隐由 index.html 头部脚本按 ?warmup=1 决定：热启动首帧前就有 .boot-skip、不会闪；
+   冷启动由 app.js 的预热流程收尾加 .boot-overlay--done 淡出。 */
+.boot-skip .boot-overlay { display: none; }
+.boot-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: var(--maarm-background);
+  opacity: 1; transition: opacity 220ms ease;
+}
+.boot-overlay--done { opacity: 0; pointer-events: none; }
+.boot-mark {
+  width: 88px; height: 88px; border-radius: 22px; margin-bottom: 6px;
+  display: grid; place-items: center;
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  box-shadow: var(--maarm-shadow-sm);
+}
+.boot-mark img { width: 54px; height: 54px; object-fit: contain; }
+.boot-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.boot-desc { font-size: 12px; color: var(--maarm-foreground-muted); }
+.boot-bar {
+  width: 280px; height: 4px; margin-top: 8px;
+  border-radius: 2px; background: var(--maarm-border-light); overflow: hidden;
+}
+.boot-bar i {
+  display: block; width: 0; height: 100%; border-radius: 2px;
+  background: var(--maarm-primary);
+  transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.boot-step { font-size: 11px; color: var(--maarm-foreground-dim); font-variant-numeric: tabular-nums; }
+
+/* 键盘焦点环（全站唯一规则）：:focus-visible 只在键盘/程序化导航聚焦时命中，
+   鼠标点击不出环——因此各控件的 outline:none 抑制声明已删除，新增交互元素零成本继承。
+   窗控按钮贴屏幕边缘，环内收防裁切（见 .win-btn:focus-visible）。 */
+:focus-visible { outline: 2px solid var(--maarm-primary); outline-offset: 2px; }
+
+/* ============ 顶部标题栏（Draggable/Passthrough 由 C# InputNonClientPointerSource 管理，窗口控制为自绘 HTML 按钮） ============ */
+header {
+  height: 52px; flex-shrink: 0; display: flex; align-items: center;
+  background: var(--maarm-surface); border-bottom: 1px solid var(--maarm-border);
+  padding: 0 4px 0 16px;
+}
+.brand { display: flex; align-items: center; gap: 8px; margin-right: 24px; flex-shrink: 0; }
+.brand-logo {
+  width: 18px; height: 18px; border-radius: 4px; object-fit: contain; flex-shrink: 0;
+  display: block;
+}
+.brand-title { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
+.brand-version { font-size: 11px; color: var(--maarm-foreground-muted); }
+
+/* Tab 栏 */
+nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%; }
+.maarm-tab {
+  position: relative; display: flex; align-items: center;
+  height: 100%; padding: 0 16px; border: none; background: transparent;
+  font-size: 13px; font-weight: 400; color: var(--maarm-foreground-secondary);
+  cursor: pointer; font-family: var(--maarm-font-sans);
+  transition: color var(--maarm-duration-base) ease, font-weight var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.maarm-tab:hover { color: var(--maarm-foreground); }
+.maarm-tab--active { font-weight: 600; color: var(--maarm-foreground); }
+/* 唯一滑块：JS 计算激活 tab 位置并平移到对应位置（缓动），替代旧"各自内置小条"。
+   bottom:-1px 让滑块盖住标题栏的 1px 下边框：贴着边框时抗锯齿会把 2px 的条底边
+   和灰线混在一起，两端看起来像被削掉一角。 */
+.tab-slider {
+  position: absolute; bottom: -1px; left: 0; height: 2px;
+  background: var(--maarm-primary);
+  transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+/* 关于标签的更新提醒点：锚在文字外框（不是整个按钮）的右上角；
+   外圈两圈错开半个周期向外扩散，与底栏状态球同款节奏。 */
+.maarm-tab-label { position: relative; display: inline-block; line-height: 1; }
+.maarm-tab-dot {
+  position: absolute; top: -2px; right: -5px;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--maarm-update-alert);
+  box-shadow: 0 0 0 2px var(--maarm-surface);
+  opacity: 0; transform: scale(0.4); pointer-events: none;
+  transition: opacity var(--maarm-duration-fast) ease, transform var(--maarm-duration-fast) ease;
+}
+.maarm-tab-dot.is-on { opacity: 1; transform: scale(1); }
+.maarm-tab-dot::before,
+.maarm-tab-dot::after {
+  content: ''; position: absolute; inset: 0;
+  border: 1px solid var(--maarm-update-alert); border-radius: 50%;
+  opacity: 0; pointer-events: none;
+}
+.maarm-tab-dot.is-on::before,
+.maarm-tab-dot.is-on::after {
+  animation: maarm-tab-dot-echo 2.4s cubic-bezier(0.17, 0.67, 0.4, 1) infinite; /* 周期与底栏状态球一致 */
+}
+.maarm-tab-dot.is-on::after { animation-delay: -1.2s; }
+@keyframes maarm-tab-dot-echo {
+  0%        { transform: scale(1.03); opacity: 0.55; }
+  70%, 100% { transform: scale(2.6);  opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maarm-tab-dot.is-on::before, .maarm-tab-dot.is-on::after { animation: none; }
+}
+/* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
+.win-controls { display: flex; height: 100%; margin-left: auto; flex: 0 0 auto; }
+.win-btn {
+  width: 46px; height: 100%; padding: 0; border: 0;
+  background: transparent; color: var(--maarm-foreground-secondary);
+  display: flex; align-items: center; justify-content: center; cursor: default;
+}
+.win-btn svg {
+  width: 10px; height: 10px; fill: none; stroke: currentColor;
+  stroke-width: 1; vector-effect: non-scaling-stroke;
+}
+.win-btn:focus-visible { outline-offset: -2px; } /* 贴屏幕边缘，环内收防被裁切 */
+.win-btn:hover { background: var(--maarm-surface-hover); }
+.win-btn:active { background: var(--maarm-surface-active); }
+.win-btn--close:hover { background: var(--maarm-danger); color: #fff; }
+.win-btn--maximized .icon-max { display: none; }
+.win-btn--maximized .icon-restore { display: block; }
+.win-btn:not(.win-btn--maximized) .icon-restore { display: none; }
+
+/* ============ 主体：三 tab 页切换 ============ */
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+/* 页面级滚动：窗口高度不足时上下滑动查看完整信息流 */
+/* align-items:flex-start：两列不被 stretch 拉到等高校平，列高跟随内容，超高才会触发 page 滚动 */
+.page {
+  flex: 1; min-height: 0; display: flex; gap: 12px; padding: 12px;
+  overflow-y: auto; overflow-x: hidden; align-items: flex-start;
+}
+.page.hidden { display: none; }
+/* 双列页面的内容版心：数据/设置页由模板包一层；主控页 .control-cols 与成就页
+   .maarm-ach-inner 引用同一个 --maarm-page-max，避免出现第二份宽度数字。 */
+.page-inner,
+#page-control .control-cols {
+  width: 100%; max-width: var(--maarm-page-max); margin: 0 auto;
+  display: flex; gap: 12px; min-height: 100%;
+}
+.page-inner { align-items: flex-start; }
+.page-about { overflow-y: auto; display: block; }
+.page-about.hidden { display: none; }
+
+/* Tab 切换的分块进场动画由 app.js 用 rAF 逐帧写样式驱动，这里不设规则：
+   CSS 的 transform 动画会被合成器接管，运动期间按低分辨率位图平移、停下再重绘，
+   观感是「尾部突然变清」；主线程逐帧改样式每帧都按设备像素重绘，全程锐利。 */
+
+/* ============ 通用卡片 ============ */
+.card {
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-md); box-shadow: var(--maarm-shadow-sm);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* 卡头高度基准 53px = 12 上内边距 + 28（卡头内最高控件：图标按钮 / 小按钮）
+   + 12 下内边距 + 1 下边框。用 min-height 而非 height：长标题换行时不裁切，
+   且「只有标题」的卡头与「带按钮」的卡头等高（此前前者 46、后者 53，
+   并排时标题栏底边差 7px）。 */
+.card-head {
+  padding: 12px 16px; min-height: 53px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--maarm-border-light); flex-shrink: 0;
+}
+.card-head h3 { font-size: 14px; font-weight: 600; color: var(--maarm-foreground); }
+.card-body { padding: 16px; }
+.card-body--fill { flex: 1; display: flex; flex-direction: column; justify-content: space-around; min-height: 0; }
+.card-body--col { display: flex; flex-direction: column; gap: 16px; }
+/* 弹性卡片最小安全高度：窗口不足时保持可读高度，剩余通过页面滚动查看 */
+/* flex: 0 1 auto：高度不随窗口增长而膨胀（留白固定），过矮时仍可被压缩或触发页面滚动 */
+.card-flex { flex: 0 1 auto; min-height: 240px; }
+
+/* ============ 通用文字扫描光效（可复用：任意文字元素加 .maarm-text-scan 即生效，无需额外 DOM） ============ */
+/* 两层背景裁进文字：底层铺基色，上层是一条高光带；动画只平移高光带的 background-position。
+   默认 6s 周期里前 1.8s 扫过一次、其余静止——速度与频率刻意压低，供长时间驻留的提示文字使用。
+   两层都是整层可换的渐变，换配色只需覆写变量；现成的动态彩虹变体见下方 .maarm-text-scan--rave，
+   更多变体写法与可调项清单见 frontend/README.md。 */
+/* 色相角注册：只有注册过的自定义属性才能被 @keyframes 平滑插值（未注册只会跳变）。
+   变体把它写进 OKLCH 渐变色标，动画每帧重算彩虹，而明度与彩度不动。 */
+@property --maarm-scan-hue {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+.maarm-text-scan {
+  /* 呈现 */
+  --maarm-scan-base: currentColor;   /* 基色，默认继承元素自身文字色 */
+  --maarm-scan-beam: #FFFFFF;        /* 光带色 */
+  --maarm-scan-angle: 100deg;        /* 光带倾角 */
+  --maarm-scan-half: 5%;             /* 光带半宽（相对光带层） */
+  --maarm-scan-span: 250%;           /* 光带层宽度倍数：越大光带越窄、相对文字的比例越小（≥200% 才扫得完） */
+  /* 节律 */
+  --maarm-scan-cycle: 6s;            /* 一个周期的时长 */
+  --maarm-scan-timing: linear(0, 1 30%, 1 100%); /* 周期内前 30% 走完行程、其余静止；改这段数字即调「扫多快 / 停多久」 */
+  --maarm-scan-hue-cycle: 6s;        /* 附加动效「色相流转」的周期，供 --maarm-scan-anim 引用 */
+  /* 动效清单：默认只有扫描光带；要在其上叠加附加动效（如色相流转）就覆写这个变量 */
+  --maarm-scan-anim: maarm-text-scan var(--maarm-scan-cycle) var(--maarm-scan-timing) infinite;
+  /* 渐变层（整层可覆写） */
+  --maarm-scan-base-layer: linear-gradient(var(--maarm-scan-base), var(--maarm-scan-base));
+  --maarm-scan-layer: linear-gradient(var(--maarm-scan-angle),
+    transparent calc(50% - var(--maarm-scan-half)),
+    var(--maarm-scan-beam) 50%,
+    transparent calc(50% + var(--maarm-scan-half)));
+
+  background-image: var(--maarm-scan-layer), var(--maarm-scan-base-layer);
+  background-size: var(--maarm-scan-span) 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: var(--maarm-scan-anim);
+}
+/* 光带自左向右走完一趟（两端各留一点余量，入画出画都不是硬切）；静态段由 --maarm-scan-timing 压制 */
+@keyframes maarm-text-scan {
+  from { background-position: 100% 0, 0 0; }
+  to   { background-position: 0% 0, 0 0; }
+}
+/* 附加动效：色相绕一整圈。走 OKLCH 色相角而不是 filter: hue-rotate()——后者是线性矩阵近似，
+   实测把色相转到 120° 时行内感知亮度极差从 0.023 涨到 0.117，等于把彩虹的明度抖动又请回来；
+   走色相角则每帧都是同一组等亮度颜色，实测各相位恒为 0.024。 */
+@keyframes maarm-text-scan-hue {
+  from { --maarm-scan-hue: 0deg; }
+  to   { --maarm-scan-hue: 360deg; }
+}
+/* 动态彩虹变体（土味酷炫）：整行彩虹字 + 白光束 + 色相流转。默认不启用，覆写变量即用。
+   彩虹在 OKLCH 里固定 L/C、只走色相：逐列实测行内感知亮度极差 0.024，而 RGB 色标是 0.281、
+   HSL 是 0.471——那正是肉眼看出的「明度忽明忽暗」。小字号彩色细笔画另会被抗锯齿冲淡
+   （11px 实测：不加粗几乎看不出颜色，44px 才饱满），故默认抬一档字重。原理与数据见 frontend/README.md。 */
+.maarm-text-scan--rave {
+  --maarm-scan-rainbow-l: 0.7;   /* 感知亮度：0.7 在浅底上既平整又清楚，调低即整条变暗 */
+  --maarm-scan-rainbow-c: 0.16;  /* 彩度：实测 0.16 时几乎不触发 sRGB 裁剪，再往上会被裁出明度起伏 */
+  --maarm-scan-beam: #FFFFFF;
+  --maarm-scan-weight: 600;
+  --maarm-scan-anim: maarm-text-scan var(--maarm-scan-cycle) var(--maarm-scan-timing) infinite,
+                   maarm-text-scan-hue var(--maarm-scan-hue-cycle) linear infinite;
+  /* 两个色标取同一色相、靠 longer hue 走满一圈：色相角由动画驱动，明度与彩度不动 */
+  --maarm-scan-base-layer: linear-gradient(90deg in oklch longer hue,
+    oklch(var(--maarm-scan-rainbow-l) var(--maarm-scan-rainbow-c) var(--maarm-scan-hue)),
+    oklch(var(--maarm-scan-rainbow-l) var(--maarm-scan-rainbow-c) var(--maarm-scan-hue)));
+
+  font-weight: var(--maarm-scan-weight);
+}
+/* 减弱动效偏好下退化为静态文字：光带停在元素右侧之外，只剩基色层可见（彩虹字保留、不再流转） */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-text-scan { animation: none; }
+}
+
+/* ============ 控制面板页 ============ */
+/* 列高度跟随内容（align-items:flex-start），内容超高时页面滚动；min-height:100% 保证窗口够高时仍撑满 */
+.col-left { flex: 0 0 62%; display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 100%; }
+.col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 100%; }
+/* 数据页布局：右栏固定宽度（预览区 16:9 尺寸稳定、不随窗口缩放），左栏自由变换 */
+#page-data .col-left { flex: 1 1 auto; }
+#page-data .col-right { flex: 0 0 var(--maarm-rail-width); }
+/* 设置页与主控/数据同一横向骨架：左列自适应、右栏固定 420。
+   62% / 38% 的比例分栏会让设置页在宽窗口下比其他两页多出一大截右栏，观感割裂。 */
+#page-settings .col-left { flex: 1 1 auto; }
+#page-settings .col-right { flex: 0 0 var(--maarm-rail-width); }
+
+/* 主控页两列装进 .control-cols（内容高度容器，高度跟随左列内容、窗口够高时撑满）：
+   日志卡要 sticky 钉在视口上，其包含块必须与左列内容等高——直接挂在 .page 下时
+   包含块只有视口高，滚动时没有行程可钉。宽度/版心/间距由上面的双列骨架共用。 */
+#page-control .control-cols { align-items: stretch; }
+#page-control .col-left { flex: 1 1 auto; min-height: 0; }
+/* 日志列钉住跟随滚动：高度 = 视口 − 顶栏 52 − 底栏 44 − 页面上下 padding 24。
+   top 写 0 而非 12：Chromium 的 sticky 判定基线是滚动容器内容盒顶缘（已含页面
+   12px padding），再写 12 会让卡片在未滚动时就下坠一截。钉住前后四周留白一致。
+   min-height:0 覆盖基础规则的 min-height:100%（那会把钉住的列重新撑到与左列
+   内容等高，sticky 行程归零） */
+#page-control .col-right {
+  flex: 0 0 var(--maarm-rail-width); align-self: flex-start;
+  position: sticky; top: 0;
+  height: calc(100vh - 120px); min-height: 0;
+}
+/* 运行日志卡撑满钉住的日志列 */
+#page-control .col-right .card { flex: 1 1 0; min-height: 0; }
+
+/* ---------- 主控页任务列表（每模块一行卡：拖拽排序 / 启用勾选 / 展开面板） ---------- */
+/* 高度随内容自动调节：行数少时卡片就短，不留固定空档（取消 .card-flex 的 240px 兜底）；
+   展开面板或加入更多模块时自然增高，超出视口仍走页面滚动 */
+#page-control .task-card { min-height: 0; }
+.task-card .card-head h3 { margin-right: auto; }
+#task-list {
+  list-style: none; margin: 0; padding: 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  overflow-y: auto; min-height: 0; flex: 1;
+}
+#task-list.dragging-mode { user-select: none; }
+.task-item {
+  border: 1px solid var(--maarm-border); border-radius: var(--maarm-radius-md);
+  background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm);
+  transition: opacity var(--maarm-duration-fast) ease, box-shadow var(--maarm-duration-fast) ease;
+}
+.task-item--disabled { opacity: 0.55; }
+.task-item--dragging { opacity: 0.4; box-shadow: var(--maarm-shadow-md); }
+.task-item--running { border-color: var(--maarm-primary); }
+.task-item--failed { border-color: var(--maarm-danger); }
+/* 行头：拖拽手柄 | 启用勾选 | 图标 | 标题 | 摘要/实况 | 结果标记 | 展开箭头 */
+.task-row { display: flex; align-items: center; gap: 10px; padding: 10px 8px 10px 4px; min-height: 44px; cursor: pointer; }
+.task-grip {
+  flex-shrink: 0; width: 24px; align-self: stretch; display: flex; align-items: center; justify-content: center;
+  color: var(--maarm-foreground-muted); cursor: grab; touch-action: none; border-radius: 6px;
+}
+.task-grip:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground-secondary); }
+.task-item--running .task-grip, .task-item--disabled .task-grip { cursor: default; opacity: 0.4; pointer-events: none; }
+.task-grip svg { width: 14px; height: 14px; fill: currentColor; }
+/* 启用勾选（方形，对齐任务语义；与设置页开关区分） */
+.task-check { flex-shrink: 0; width: 16px; height: 16px; margin: 0; accent-color: var(--maarm-primary); cursor: pointer; }
+.task-item--running .task-check { pointer-events: none; }
+.task-icon { flex-shrink: 0; font-size: 16px; line-height: 1; }
+.task-title { flex-shrink: 0; font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
+.task-item--running .task-title { color: var(--maarm-primary); }
+/* 摘要 chips：空闲 = 已存配置投影；运行中 = 实况阶段 */
+.task-chips { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; flex: 1; }
+.task-chip {
+  flex-shrink: 0; font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 9px;
+  background: var(--maarm-sidebar); border: 1px solid var(--maarm-border-light); color: var(--maarm-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;
+}
+.task-chip--live { background: color-mix(in srgb, var(--maarm-primary) 10%, transparent); border-color: transparent; color: var(--maarm-primary); font-weight: 600; }
+.task-chip--queue { background: var(--maarm-border-light); border-color: transparent; }
+.task-chip--warn { color: var(--maarm-warning-strong); }
+.task-chip--bad { color: var(--maarm-danger); }
+/* 结果标记（一轮结束后的短暂状态：完成/失败/已停止/已中止） */
+.task-result { flex-shrink: 0; font-size: 11px; line-height: 18px; padding: 0 8px; border-radius: 5px; font-weight: 600; }
+.task-result--ok { background: var(--maarm-success-bg); color: var(--maarm-success-strong); }
+.task-result--fail { background: var(--maarm-danger-bg); color: var(--maarm-danger); }
+.task-result--skip { background: var(--maarm-border-light); color: var(--maarm-foreground-muted); }
+.task-chev {
+  flex-shrink: 0; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; padding: 0;
+  display: flex; align-items: center; justify-content: center; color: var(--maarm-foreground-muted); cursor: pointer;
+  transition: transform var(--maarm-duration-base) ease, background var(--maarm-duration-fast) ease;
+}
+.task-chev:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.task-chev svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.task-item--open .task-chev { transform: rotate(180deg); }
+.task-item--running .task-chev, .task-item--disabled .task-chev { pointer-events: none; opacity: 0.5; }
+/* 无阶段步骤的行为说明（替代阶段列表，不新增交互） */
+.task-note {
+  font-size: 11px; line-height: 1.7; color: var(--maarm-foreground-muted);
+  background: var(--maarm-sidebar); border: 1px solid var(--maarm-border-light);
+  border-radius: var(--maarm-radius-sm); padding: 8px 10px;
+}
+/* 空列表占位：与看板中心空态同一套语言（插图框 + 标题 + 说明，居中），
+   高度由内容决定，不撑固定槽位 */
+.task-empty {
+  list-style: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 28px 16px 32px; text-align: center;
+}
+.task-empty b { font-size: 13px; font-weight: 600; color: var(--maarm-foreground-secondary); }
+.task-empty p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--maarm-foreground-muted); max-width: 320px; }
+
+/* 展开面板：模块选项（单实例 DOM 搬入）+ 细分阶段 */
+.task-panel { display: none; border-top: 1px solid var(--maarm-border-light); padding: 12px; cursor: default; }
+.task-item--open .task-panel { display: block; animation: task-panel-in var(--maarm-duration-base) ease-out; }
+@keyframes task-panel-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+/* 分组标题：与上方内容拉开（14px），与自己的字段贴近（12px）——标题是内容的一部分，不是分隔线 */
+.task-panel-label { font-size: 11px; font-weight: 600; color: var(--maarm-foreground-muted); margin: 14px 0 12px; }
+.task-panel-label:first-child { margin-top: 0; }
+.task-options { display: flex; flex-direction: column; }
+.task-panel .module-options-row + .module-options-row { margin-top: 14px; }
+.task-panel .module-options-row + .option-row { margin-top: 16px; }
+.task-panel .option-row { padding: 0; }
+.bp-hint-breakpoint { font-size: 11px; color: var(--maarm-foreground-muted); margin-bottom: 6px; }
+/* 面板里的阶段列表：不带外层 .breakpoint-list 的撑满/滚动语义（列表本身跟随内容） */
+.task-stage-list { list-style: none; margin: 0; padding: 0; overflow: visible; }
+.task-panel .maarm-breakpoint-item { border-radius: 6px; cursor: pointer; }
+.task-panel .maarm-breakpoint-item:hover { background: var(--maarm-surface-hover); }
+.task-item--running .task-panel .maarm-breakpoint-item { cursor: default; }
+.task-item--running .task-panel .maarm-breakpoint-item:hover { background: transparent; }
+.task-item--running .task-panel .maarm-breakpoint-item:not(.maarm-breakpoint-item--current) { opacity: 0.5; }
+.bp-badge--from { background: var(--maarm-primary-soft); color: var(--maarm-primary); }
+
+/* ---------- 模块管理弹窗：游戏选卡网格（3 列、露 2.5 行、底部淡出） ---------- */
+/* 视口：固定行高 → 「2.5 行」可算准（2 行 + 半行），上方留白一指宽；
+   底部遮罩淡出，暗示下面还有内容 */
+.task-gallery-wrap {
+  --gal-row-h: 152px;
+  --gal-gap: 12px;
+  --gal-top: 14px;
+  /* 2 整行 + 2 个间隙 + 半行 + 顶部留白 */
+  max-height: calc(var(--gal-row-h) * 2.5 + var(--gal-gap) * 2 + var(--gal-top));
+  overflow-y: auto;
+  padding: var(--gal-top) 2px 4px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 74px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 74px), transparent 100%);
+}
+.task-gallery-wrap::-webkit-scrollbar { display: none; }
+.task-gallery {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: var(--gal-row-h);
+  gap: var(--gal-gap);
+}
+/* 选中动效的两条曲线：
+   --gal-spike  尖峰式（起始极快、长尾缓收）——扫描带、红光涌起这类「一下就位」的动效用它；
+   --gal-spring 单次过冲：冲到 1.18 后单调收回 1，**不再下探**（过冲后若再压到目标以下，
+                观感就是「弹了两下」）。缓动必须以 1 收尾，否则过渡结束会弹回起始值。 */
+.task-gallery-cell {
+  --gal-spike: cubic-bezier(0.1, 0.94, 0.16, 1);
+  --gal-spring: linear(0, 0.03 5%, 0.13 10%, 0.33 16%, 0.56 22%, 0.78 28%, 0.96 34%,
+    1.09 39%, 1.16 44%, 1.18 50%, 1.14 58%, 1.07 66%, 1.025 75%, 1.005 85%, 1 100%);
+  /* 描边：亮芯 + 红色辉光。品牌红和选中态红光同色，压在上面也糊成一条，
+     所以芯色取到接近白的热红，靠辉光把颜色带回来（参照游戏选卡的高亮描边）。 */
+  --gal-stroke: #FFA3A6;
+  /* 拐角半径：既是 border-radius，也是 squircle 的角框边长（指数 4 的超椭圆在 R×R 的
+     角框内）。20 不是随手取的——它让 squircle 与原来的 G2@10 轮廓等效（最大偏差
+     0.46px，浏览器实测），所以这次换的是实现而不是观感。
+     形状由 CSS 画（末尾的 corner-shape 覆盖块），描边由 js/gallery-shape.js 按同一条
+     方程生成；不支持 corner-shape 的引擎退回 border-radius 圆弧，JS 同步切到指数 2。 */
+  --gal-radius: 20px;
+  /* 封面完全取不到时的兜底底纹（专属封面 → 默认封面 → 这里，三级回退的末级） */
+  --gal-fallback-art: linear-gradient(135deg, #232837 0%, #3a4152 60%, #4b5568 100%);
+  position: relative; padding: 0; overflow: hidden;
+  border: 0; border-radius: var(--gal-radius); background: var(--maarm-sidebar);
+  cursor: pointer; text-align: left; font-family: var(--maarm-font-sans);
+}
+/* 封面：核心下发的 URL（模块声明 → core/covers.py 解析），cover 裁切、居中。
+   选中时推近，过冲一次再收回。回弹只做在图片上，卡片本身不缩放——卡片跟着弹会像
+   整块果冻，喧宾夺主。两条过渡方向分开：基础规则管「缩小」（平顺收，不弹），
+   选中规则管「放大」（带过冲）——CSS 取变化后那个状态上的 transition。 */
+.task-gallery-art {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: center;
+  display: block; pointer-events: none; user-select: none;
+  transition: transform .2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 三级回退的末级：连默认封面都加载失败时，卡片退回纯渐变底（不留空白块） */
+.task-gallery-cell--noart { background: var(--gal-fallback-art); }
+/* 底部压暗：照片比原来的纯色渐变亮得多（关游戏那张几乎是白底），
+   压暗层相应加强——底部 0.68、向上 46% 收干净（原 0.55 / 40%）。 */
+.task-gallery-cell::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.68), transparent 46%);
+}
+/* 选中提示 = 底部涌起的品牌红光。未选中时收起在底部之外，形成「涌起」过渡。
+   只做涌起不做回弹：这一层铺满卡片，位移过冲会在底边露出一条没染上红的缝，
+   冲击力交给底图推近。 */
+.task-gallery-cell::before {
+  content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: linear-gradient(to top,
+    color-mix(in srgb, var(--maarm-primary) 88%, transparent) 0%,
+    color-mix(in srgb, var(--maarm-primary) 46%, transparent) 18%,
+    color-mix(in srgb, var(--maarm-primary) 12%, transparent) 34%,
+    transparent 46%);
+  opacity: 0; transform: translateY(46%);
+  transition: opacity .14s ease-out, transform .3s var(--gal-spike);
+}
+.task-gallery-cell--selected::before { opacity: 1; transform: translateY(0); }
+/* 放大走带过冲的曲线（0.3s），缩小由基础规则接管（0.2s，平顺无回弹） */
+.task-gallery-cell--selected .task-gallery-art {
+  transform: scale(1.2);
+  transition: transform .3s var(--gal-spring);
+}
+/* 弱扫描带：选中瞬间一道很淡的亮带自下而上扫过（单次，随选中类触发/复位） */
+.task-gallery-scan {
+  position: absolute; left: 0; right: 0; top: 0; height: 42%;
+  z-index: 2; pointer-events: none; opacity: 0; transform: translateY(135%);
+  background: linear-gradient(to bottom,
+    transparent 0%,
+    color-mix(in srgb, #fff 62%, var(--maarm-primary)) 50%,
+    transparent 100%);
+}
+.task-gallery-cell--selected .task-gallery-scan { animation: task-scan-up .5s var(--gal-spike) .04s 1 both; }
+@keyframes task-scan-up {
+  0%   { opacity: 0;    transform: translateY(135%); }
+  16%  { opacity: 0.32; }
+  100% { opacity: 0;    transform: translateY(-165%); }
+}
+/* 选中态内描边：可见 2.5px 亮红，从底边中点向两侧生长、在顶边中点会合。
+   路径由 js/gallery-shape.js 按卡片实际像素生成（曲线见该文件），这里只管表现：
+   缓入缓出、无回弹；取消选中按同一曲线收回。dasharray/offset 用 pathLength=1 归一，
+   所以不需要量路径长度——offset 1 = 整条藏起，0 = 全画出来。
+   层级压在最上面：红光（::before）是品牌红，同色描边叠上去会糊成一片，必须压过它。 */
+.task-gallery-stroke {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  overflow: visible;   /* 允许描边越过卡片边界，由卡片的 overflow:hidden 切硬边 */
+  /* 辉光分两层：近处一圈紧贴线条收边，远处一圈铺开做氛围；都取红，避免变成粉色光斑 */
+  filter: drop-shadow(0 0 2px rgba(255, 70, 76, 0.9)) drop-shadow(0 0 6px rgba(255, 40, 48, 0.5));
+}
+.task-gallery-stroke path {
+  fill: none;
+  stroke: var(--gal-stroke);
+  /* 线宽由几何模块下发（--gal-stroke-width）：可见 2.5 + 出血 1 = 3.5，
+     多出的 1px 压在卡片外被轮廓裁掉，边界上被切的是实色，不会透出底图 */
+  stroke-width: var(--gal-stroke-width, 3.5);
+  stroke-linejoin: round;   /* 轮廓是采样折线，圆角接头避免出现尖刺 */
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset .34s cubic-bezier(0.45, 0, 0.55, 1);
+}
+.task-gallery-cell--selected .task-gallery-stroke path { stroke-dashoffset: 0; }
+/* 底部标题栏：白色剪影 logo（emoji 去色后当图标）+ 模块名。文字与 logo 同为纯白，
+   可读性靠底部压暗层与文字投影兜底。文字不做任何动效——选中只动图片。 */
+.task-gallery-banner {
+  position: absolute; left: 12px; bottom: 8px; z-index: 4;
+  max-width: calc(100% - 20px);
+  display: flex; align-items: center; gap: 6px;
+  color: #fff; font-size: 15px; font-weight: 700; line-height: 1.35;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+}
+/* emoji 转纯白剪影：先压成黑（保留 alpha 形状），再反相成白。
+   投影关掉——滤镜会把它一起反相成白色光晕。 */
+.task-gallery-logo {
+  flex-shrink: 0; font-size: 16px; line-height: 1;
+  filter: brightness(0) invert(1);
+  text-shadow: none;
+}
+.task-gallery-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 头图右上角的过期角标 */
+.task-gallery-flag {
+  position: absolute; top: 8px; right: 8px; z-index: 4;
+  font-size: 10px; font-weight: 600; line-height: 16px; padding: 0 7px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.55); color: var(--maarm-warning-strong);
+}
+/* 空槽位：幽灵虚线（不填色），让留白透气；只为让网格连续、底部淡出有依托。
+   形状跟着基础规则走（同一个类 → 同一个半径与 squircle）。虚线边框是原生 border，
+   corner-shape 会让它沿曲线走，不需要单独处理。 */
+.task-gallery-cell--empty {
+  background: transparent; border: 1px dashed var(--maarm-border); cursor: default;
+  pointer-events: none; display: flex; align-items: center; justify-content: center;
+  opacity: 0.5;
+}
+.task-gallery-cell--empty::after, .task-gallery-cell--empty::before { display: none; }
+.task-gallery-empty-plus { font-size: 16px; color: var(--maarm-foreground-muted); }
+
+/* 减弱动效偏好：过冲直接退化成瞬时切换，扫描带不播（同生产对其它动效的处理） */
+@media (prefers-reduced-motion: reduce) {
+  .task-gallery-art,
+  .task-gallery-cell::before,
+  .task-gallery-stroke path { transition-duration: .01s; }
+  .task-gallery-cell--selected .task-gallery-scan { animation: none; }
+}
+
+
+
+/* 模块选项（原主控卡内、现任务卡展开面板；行距/字段样式共用） */
+.module-options-row--stack { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: end; }
+.module-options-row + .module-options-row { margin-top: 14px; }
+.maarm-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.maarm-field-label {
+  font-size: 12px; font-weight: 500;
+  color: var(--maarm-foreground);
+  display: flex; align-items: baseline; gap: 4px;
+  line-height: 1.4;
+}
+.maarm-field-label .field-hint {
+  font-size: 11px; font-weight: 400;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-field-control {
+  position: relative;
+  display: flex; align-items: stretch;
+}
+.maarm-field-control input[type="number"] {
+  width: 100%; height: 36px; padding: 0 42px 0 12px;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  font-size: 13px; font-family: var(--maarm-font-sans);
+  transition: border-color var(--maarm-duration-fast);
+}
+.maarm-field-control input[type="number"]:focus { border-color: var(--maarm-primary); }
+.maarm-field-control input[type="number"]:disabled { opacity: 0.6; cursor: not-allowed; }
+/* 文本字段（路径 / 参数）：与数字框同款，只是不留右侧后缀位 */
+.maarm-field-control input[type="text"] {
+  width: 100%; height: 36px; padding: 0 12px;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  font-size: 13px; font-family: var(--maarm-font-sans);
+  transition: border-color var(--maarm-duration-fast);
+}
+.maarm-field-control input[type="text"]:focus { border-color: var(--maarm-primary); outline: none; }
+.maarm-field-control input[type="text"]::placeholder { color: var(--maarm-foreground-dim); }
+/* 下拉框（宏组选择）：与文本框同款 */
+.maarm-field-control select {
+  width: 100%; height: 36px; padding: 0 12px;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  font-size: 13px; font-family: var(--maarm-font-sans);
+  transition: border-color var(--maarm-duration-fast);
+}
+.maarm-field-control select:focus { border-color: var(--maarm-primary); outline: none; }
+.maarm-field-control select:disabled { opacity: 0.6; cursor: not-allowed; }
+/* 字段 + 右侧动作按钮（浏览… / 重置）：按钮与输入框等高，视觉上是一整行 */
+.maarm-field-control-row { display: flex; align-items: stretch; gap: 8px; }
+.maarm-field-control-row .maarm-field-control { flex: 1; min-width: 0; }
+.maarm-field-control-row .maarm-btn { height: 36px; padding: 0 14px; }
+/* hidden 属性优先于 .maarm-btn 的 display：否则「重置」按钮在默认态也会显示 */
+.maarm-btn[hidden] { display: none; }
+.maarm-field-control .field-suffix {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  font-size: 12px; color: var(--maarm-foreground-muted); pointer-events: none;
+}
+
+/* ---------- 滚轮计数器（stepper 字段）----------
+   单颗胶囊：− / 数字窗 / + 一体（布局对齐 21st.dev rolling counter，颜色、
+   圆角、阴影走本仓 token）。外高 36px，与普通输入框同高；每列是 30px 高的开窗，
+   12 格数字条由 config-panel.js 的 rAF 弹簧逐帧驱动；列随位数自动收展，速度带动态模糊。
+   点数字可原地编辑，输入框宽度随位数增长。 */
+.maarm-stepper {
+  display: inline-flex; align-items: center; gap: 3px;
+  width: fit-content; padding: 2px; user-select: none;
+  border: 1px solid var(--maarm-border); border-radius: 9px;
+  background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm);
+}
+.maarm-stepper--locked { opacity: 0.6; pointer-events: none; }
+.stepper-btn {
+  width: 30px; height: 30px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border-light);
+  background: var(--maarm-surface-active); color: var(--maarm-foreground-secondary);
+  font-size: 16px; line-height: 1; font-family: var(--maarm-font-sans);
+  cursor: pointer; user-select: none;
+  transition: background .15s ease-out, border-color .15s ease-out,
+              color .15s ease-out, transform .15s ease-out;
+}
+.stepper-btn:hover {
+  background: var(--maarm-surface); border-color: var(--maarm-border-strong);
+  color: var(--maarm-foreground);
+}
+.stepper-btn:active { transform: scale(0.96); background: var(--maarm-surface-hover); }
+.stepper-btn:disabled { opacity: 0.4; pointer-events: none; }
+.stepper-window {
+  display: flex; align-items: center;
+  height: 30px; min-width: 48px; padding: 0 8px;
+  font-size: 18px;   /* 列宽与数字都按这个 em 走 */
+  border-radius: var(--maarm-radius-sm);
+  cursor: ns-resize; touch-action: none;   /* 纵向拖拽归这里，别让页面滚走 */
+}
+.stepper-col {
+  position: relative; width: 0.62em; height: 100%; overflow: hidden;
+  transition: width .2s ease-out, opacity .2s ease-out;   /* 位数收展 */
+}
+.stepper-col--hidden { width: 0; opacity: 0; }
+.stepper-strip {
+  position: absolute; top: 0; left: 0; width: 100%;
+  display: flex; flex-direction: column; align-items: center;
+  will-change: transform;   /* rAF 逐帧写 transform + filter */
+}
+.stepper-num {
+  height: 30px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 600; letter-spacing: -0.03em; line-height: 1;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.stepper-suffix {
+  margin-left: 6px; font-size: 11px; font-weight: 400;
+  color: var(--maarm-foreground-muted); pointer-events: none;
+}
+/* 原地编辑：点数字把滚动列换成输入框，宽度按位数走；plain 档常驻输入框 */
+.stepper-edit {
+  display: none; min-width: 1.2em; padding: 0; margin: 0;
+  border: none; background: transparent;
+  font-family: var(--maarm-font-sans); font-size: 18px; font-weight: 600;
+  line-height: 1; letter-spacing: -0.03em; text-align: center;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.stepper-edit:focus { outline: none; }
+.stepper-window--editing { cursor: text; }
+.stepper-window--editing .stepper-col { display: none; }
+.stepper-window--editing .stepper-edit { display: block; }
+.stepper-window--plain { cursor: default; }
+.stepper-window--plain .stepper-edit { display: block; }
+@media (prefers-reduced-motion: reduce) {
+  .stepper-col { transition: none; }
+}
+
+.module-options-status {
+  margin: 10px 0 0; min-height: 18px;
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  line-height: 1.5;
+}
+.module-options-status.maarm-status--ok { color: var(--maarm-success-strong); }
+.module-options-status.maarm-status--warn { color: var(--maarm-warning-strong); }
+.module-options-status.maarm-status--error { color: var(--maarm-danger-strong); }
+/* 通用配置面板（插件声明 schema、宿主渲染）：字段间距与旧专属块保持一致 */
+.config-panel { display: flex; flex-direction: column; padding: 0; }
+.config-panel > * + * { margin-top: 14px; }
+.config-panel .option-row { padding: 0; }
+.config-panel-note { margin: 0 0 4px; }
+
+/* ---------- 任务设置面板：宿主统一排布 ----------
+   插件只声明字段语义，行结构 / 组缩进 / 间距 / 控件宽度都由这里决定。
+   层级：组标题 12px → 字段行 24px；说明独占一行，随字段行对齐。
+   组与组之间用分隔线加更大的上方留白分开，标题紧贴自己的第一行。 */
+.cfg-group { padding-left: 12px; }
+.cfg-group + .cfg-group {
+  margin-top: 6px; padding-top: 8px;
+  border-top: 1px solid var(--maarm-border);
+}
+.cfg-group-title {
+  margin: 0; font-size: 11px; font-weight: 600; line-height: 1.5;
+  color: var(--maarm-foreground-muted);
+}
+.cfg-group-body { padding-left: 12px; }
+.cfg-row {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 16px; row-gap: 5px; align-items: center;
+  padding: 8px 0;
+}
+.cfg-row + .cfg-row { border-top: 1px solid var(--maarm-border-light); }
+.cfg-group-body .cfg-row:first-child { padding-top: 2px; }
+.cfg-row-label {
+  grid-area: 1 / 1;
+  font-size: 12px; font-weight: 500; line-height: 1.4;
+  color: var(--maarm-foreground);
+}
+.cfg-row-control {
+  grid-area: 1 / 2; min-width: 0;
+  display: flex; justify-content: flex-start; align-items: center;
+}
+.cfg-row-desc {
+  grid-area: 2 / 1 / 3 / -1; margin: 0;
+  font-size: 11px; line-height: 1.6;
+  color: var(--maarm-foreground-muted);
+}
+.cfg-desc-hint { font-weight: 500; color: var(--maarm-foreground-secondary); }
+/* 内置步骤的数字字段：保持窄框，不随字段栏拉宽 */
+.cfg-row-control .maarm-field-control--narrow { max-width: 132px; }
+/* 控件宽度：分段与下拉限宽，长文本占满字段栏 */
+.cfg-row-control .maarm-segmented,
+.cfg-row-control select { width: min(300px, 100%); }
+.cfg-row-control input[type="text"],
+.cfg-row-control textarea,
+.cfg-row-control .maarm-field-control-row { width: 100%; }
+.cfg-row-control textarea {
+  height: 58px; padding: 8px 12px; resize: none;
+  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface); color: var(--maarm-foreground);
+  font-size: 12px; line-height: 1.6; font-family: var(--maarm-font-mono);
+}
+.cfg-row-control textarea:focus { border-color: var(--maarm-primary); outline: none; }
+/* 参数框比按钮高：动作按钮贴底，与最后一行文字对齐 */
+.cfg-row-control .maarm-field-control-row--multi { align-items: flex-end; }
+
+/* 断点列表 */
+.breakpoint-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--maarm-foreground-muted); }
+.breakpoint-list { flex: 1; overflow-y: auto; min-height: 0; }
+.maarm-breakpoint-item {
+  display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 16px;
+  cursor: default; border-left: 2px solid transparent; border-bottom: 1px solid var(--maarm-border-light);
+  transition: background-color var(--maarm-duration-fast) ease; user-select: none;
+}
+/* 阶段进度只读：不提供可点击 hover 反馈 */
+.maarm-breakpoint-item:hover { background: transparent; }
+.maarm-breakpoint-item--current { background: color-mix(in srgb, var(--maarm-primary) 6%, transparent); border-left-color: var(--maarm-primary); }
+.bp-icon { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.bp-icon svg { width: 14px; height: 14px; color: var(--maarm-primary); fill: currentColor; }
+.bp-idx {
+  width: 16px; text-align: center; font-size: 12px; color: var(--maarm-foreground-muted); flex-shrink: 0;
+}
+.bp-name { flex: 1; min-width: 0; font-size: 13px; color: var(--maarm-foreground-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.maarm-breakpoint-item--current .bp-name { font-weight: 500; color: var(--maarm-foreground); }
+.bp-badge {
+  font-size: 11px; font-weight: 500; color: var(--maarm-primary); padding: 2px 6px;
+  border-radius: 4px; background: var(--maarm-primary-soft); flex-shrink: 0;
+}
+
+/* 运行日志 —— 区块化展示（参考 MAA 风格：锚点分段 + 区块卡片 + 色点级别） */
+.log-head-actions { display: flex; align-items: center; gap: 4px; }
+.icon-btn {
+  width: 28px; height: 28px; border: none; border-radius: 4px; background: transparent;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  color: var(--maarm-foreground-muted); transition: all var(--maarm-duration-fast) ease;
+}
+.icon-btn:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground-secondary); }
+.icon-btn svg { width: 14px; height: 14px; }
+
+/* 日志区：浅色底 + 中文无衬线，行距宽松（替代原等宽密排） */
+.log-area {
+  flex: 1; overflow-y: auto; min-height: 0;
+  background: var(--maarm-surface); padding: 12px;
+  font-family: var(--maarm-font-sans); font-size: 12px; line-height: 1.7;
+}
+
+/* 日志卡：回顶按钮的定位上下文 */
+.log-card { position: relative; }
+
+/* 卡片（组卡来自组事件；无组散行收进「其他日志」容器卡，承载规则见 ADR-0017）。
+   下内衬为展开正文预留，仅 --open 时出现——折叠卡底边不「胖」。
+   入场动画只在建卡瞬间播（CSS 动画随元素插入触发）。 */
+.log-section {
+  background: var(--maarm-sidebar);
+  border: 1px solid var(--maarm-border-light);
+  border-radius: var(--maarm-radius-md);
+  padding: 4px 12px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  animation: maarm-card-in var(--maarm-duration-base) ease-out;
+}
+.log-section--open { padding-bottom: 6px; }
+@keyframes maarm-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 卡头：展开无箭头——可点性由「内容存在」本身承载：首条正文落进卡体时
+   渲染层才加 .log-section--expandable（指针光标 + 悬停底色 + 「N 条」计数胶囊），
+   空卡不给可点承诺，视觉承诺与行为一致。
+   注意：卡头同时挂 .log-line 与 .log-section-head，.log-line 的后声明同级规则会
+   顶掉卡头的居中与内衬（元素贴顶、内容贴边），故卡头几何一律提权选择器。 */
+.log-section .log-section-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin: 0 -6px;
+  border-radius: var(--maarm-radius-sm);
+  user-select: none;
+  transition: background var(--maarm-duration-fast) ease;
+}
+.log-section--expandable .log-section-head { cursor: pointer; }
+.log-section--expandable .log-section-head:hover { background: var(--maarm-border-light); }
+.log-section-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+.log-section-meta .log-time { color: var(--maarm-foreground-muted); flex-shrink: 0; }
+.log-count {
+  font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 8px;
+  background: var(--maarm-border-light); color: var(--maarm-foreground-muted);
+}
+.log-section--expandable .log-section-head:hover .log-count,
+.log-section--open .log-count { background: var(--maarm-border); color: var(--maarm-foreground-secondary); }
+
+/* 卡状态槽：徽章承载「卡头风险」= 组卡生命周期终态，词与色由
+   group_start.outcome / group_end.outcome 驱动，前端不再自行推导（契约 §8 第 9 步）。 */
+.log-status {
+  flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 16px;
+  padding: 0 7px; border-radius: 5px; letter-spacing: 0.5px;
+}
+.log-status--run  { background: color-mix(in srgb, var(--maarm-info) 12%, transparent); color: var(--maarm-info); animation: maarm-status-pulse 1.4s ease-in-out infinite; }
+.log-status--ok   { background: var(--maarm-success-bg); color: var(--maarm-success-strong); }
+.log-status--warn { background: var(--maarm-warning-bg); color: var(--maarm-warning-strong); }
+.log-status--err  { background: var(--maarm-danger-bg); color: var(--maarm-danger); }
+.log-status--part { background: var(--maarm-border-light); color: var(--maarm-foreground-secondary); }
+@keyframes maarm-status-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* 标题溢出：静止时右缘渐隐提示（无 ellipsis 断头感），悬停卡头慢速展卷露全文
+   （进 2.8s / 出 0.4s 快收）——常驻跑马灯对长驻面板是视觉噪音（WCAG 2.2.2）。
+   全文出口另有卡头 title 兜底。 */
+.log-section .log-section-head .log-msg { font-weight: 600; color: var(--maarm-foreground); white-space: nowrap; overflow: hidden; }
+.log-msg--more { mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }
+.log-msg-inner { display: inline-block; transition: transform 0.4s ease; }
+.log-section-head:hover .log-msg--more {
+  mask-image: linear-gradient(90deg, transparent, #000 10px, #000 calc(100% - 12px), transparent);
+}
+.log-section-head:hover .log-msg--more .log-msg-inner {
+  transform: translateX(var(--scroll-x, 0));
+  transition: transform 2.8s cubic-bezier(0.25, 0.5, 0.35, 1);
+}
+
+/* 卡体：默认折叠（高度 0，不占位）；点卡头展开，高度过渡即「卡头不动、内容向下推出」。
+   `interpolate-size: allow-keywords` 是 height: auto 能参与过渡的前提（Chromium 129+，
+   WebView2 常青自动更新；不支持时退化为瞬时开合，版式不受影响）。 */
+.log-section-body {
+  height: 0; overflow: hidden;
+  interpolate-size: allow-keywords;
+  transition: height var(--maarm-duration-base) cubic-bezier(0.22, 1, 0.36, 1);
+}
+.log-section--open .log-section-body { height: auto; }
+
+/* 日志行（组卡正文行与散行容器卡正文行）：级别由文字色承载，无彩点无关键词着色
+   ——一个位置一种承载（卡头看词=徽章，正文看色）。 */
+.log-line {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 2px 0 2px 10px; word-break: break-all;
+  color: var(--maarm-foreground-secondary);
+}
+.log-msg { flex: 1; min-width: 0; }
+.log-time { color: var(--maarm-foreground-muted); flex-shrink: 0; }
+.log-line--ERROR, .log-line--ERROR .log-msg { color: var(--maarm-danger); }
+.log-line--WARNING, .log-line--WARNING .log-msg { color: var(--maarm-warning-strong); }
+
+/* 回顶按钮：正下方居中，默认隐没——鼠标进入按钮附近一小圈（JS 距离判定）才浮现，
+   键盘 Tab 到它也必须浮现（focus-visible）；随滚动位置换向（贴底→最旧/翻上→最新），
+   内容不溢出不存在（hidden）。 */
+.log-top-btn {
+  position: absolute; left: 50%; bottom: 10px; z-index: 2;
+  width: 30px; height: 30px; border: 1px solid var(--maarm-border);
+  border-radius: 50%; background: var(--maarm-surface);
+  box-shadow: var(--maarm-shadow-sm); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--maarm-foreground-secondary);
+  transform: translateX(-50%) translateY(4px) scale(0.9);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--maarm-duration-fast) ease, transform var(--maarm-duration-fast) ease,
+              background var(--maarm-duration-fast) ease, color var(--maarm-duration-fast) ease;
+}
+.log-top-btn--show, .log-top-btn:focus-visible {
+  opacity: 1; transform: translateX(-50%) scale(1); pointer-events: auto;
+}
+.log-top-btn--show:hover, .log-top-btn:focus-visible:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.log-top-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.log-top-btn .log-top-down { display: none; }
+.log-top-btn--down .log-top-up { display: none; }
+.log-top-btn--down .log-top-down { display: block; }
+
+@media (prefers-reduced-motion: reduce) {
+  .log-section { animation: none; }
+  .log-section-body { transition: none; }
+  .log-status--run { animation: none; }
+  .log-section-head:hover .log-msg--more .log-msg-inner { transform: none; }
+}
+
+/* 看板中心 · 列表 block（明细行） */
+/* 列表上下边界用不透明度淡出，不画线；行间仍保留细分隔线 */
+.board-list {
+  padding: 8px 0;
+  max-height: 264px;
+  overflow-y: auto;
+  scrollbar-width: none; -ms-overflow-style: none;
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+  mask-image: linear-gradient(to bottom,
+    transparent 0, #000 8px, #000 calc(100% - 8px), transparent 100%);
+}
+.board-list::-webkit-scrollbar { display: none; }
+.board-item + .board-item { border-top: 1px solid var(--maarm-border-light); }
+.board-item[hidden] { display: none !important; }
+.board-date {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 2px 2px; font-size: 10px; color: var(--maarm-foreground-muted);
+}
+.board-date::after {
+  content: ''; flex: 1; height: 1px; background: var(--maarm-border-light);
+}
+.row-part--info { color: var(--maarm-info); }
+.row-part--negative { color: var(--maarm-danger); }
+.row-part--muted { color: var(--maarm-foreground-muted); }
+.row-part--positive { color: var(--maarm-success-strong); }
+.row-part--warn { color: var(--maarm-warning-strong); }
+.board-sentinel { height: 1px; }
+.board-empty { font-size: 12px; color: var(--maarm-foreground-muted); text-align: center; padding: 8px 0; }
+/* 行：时间 / 正文 / 状态 / 结果；状态与结果各占固定列，换行时仍对齐 */
+.dash-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 46px 76px;
+  column-gap: 8px;
+  align-items: center;
+  padding: 5px 2px;
+  font-size: 12px; color: var(--maarm-foreground-secondary);
+}
+.dash-row + .dash-row { border-top: 1px solid var(--maarm-border-light); }
+.dash-row-time {
+  font-family: var(--maarm-font-mono);
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dash-row-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-row-badge { justify-self: end; min-width: 0; overflow: hidden; }
+.dash-row-value {
+  justify-self: end; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--maarm-font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.board-res {
+  flex-shrink: 0; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--maarm-border-light); color: var(--maarm-foreground-muted);
+  white-space: nowrap;
+}
+.board-res--win { background: var(--maarm-success-bg); color: var(--maarm-success); }
+.board-res--fail { background: var(--maarm-danger-bg); color: var(--maarm-danger); }
+.board-res--warn { background: var(--maarm-warning-bg); color: var(--maarm-warning-strong); }
+
+/* ============ 看板中心（数据页右栏固定槽位） ============ */
+/* 卡头固定为槽位标题 + 当前模块名胶囊；标题不随翻页控件显隐而收缩 */
+.dash-head { justify-content: flex-start; }
+.dash-head h3 { flex: none; white-space: nowrap; }
+.dash-module-chip {
+  flex: none; display: inline-flex; align-items: center;
+  margin-left: 8px; padding: 0 8px;
+  font-size: 11px; line-height: 20px;
+  color: var(--maarm-foreground-secondary);
+}
+.dash-module-chip[hidden] { display: none; }
+/* 单看板没有翻页器时，当前看板正在运行由胶囊上的绿点提示 */
+.dash-module-chip--run::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success); margin-right: 5px;
+}
+.dash-nav { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.dash-pager { display: inline-flex; align-items: center; gap: 6px; }
+.dash-pager[hidden] { display: none; }
+.dash-nav-btn {
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px; background: transparent;
+  color: var(--maarm-foreground-muted); cursor: pointer;
+}
+.dash-nav-btn:hover:not([disabled]) { background: var(--maarm-surface-hover); color: var(--maarm-foreground-secondary); }
+.dash-nav-btn[disabled] { opacity: .3; cursor: default; }
+/* 运行中的模块在通往它的箭头上打绿点（方向由 JS 计算） */
+.dash-nav-btn--run { position: relative; color: var(--maarm-foreground-secondary); }
+.dash-nav-btn--run::after {
+  content: ''; position: absolute; top: 2px; right: 2px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success);
+  box-shadow: 0 0 0 2px var(--maarm-surface);
+}
+.dash-nav-btn svg { width: 14px; height: 14px; }
+.dash-page {
+  min-width: 38px; text-align: center;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dash-page.is-running { color: var(--maarm-success-strong); font-weight: 500; }
+.dash-page.is-running::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success); flex: none;
+}
+/* 主体随内容收缩；上下留白与卡片内边距同一档 */
+.dash-body { padding: 16px 16px 12px; }
+.dash-panel { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+/* 日期说明与可选徽章同一行，位于统计之上 */
+.dash-caption-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; min-height: 18px;
+}
+.dash-caption { font-size: 10px; line-height: 1.4; color: var(--maarm-foreground-muted); }
+.kind-chip {
+  flex: none; font-size: 10px; line-height: 18px; padding: 0 7px;
+  border-radius: 999px; color: var(--maarm-foreground-muted);
+  background: var(--maarm-surface-active);
+}
+.kind-chip--positive { color: var(--maarm-success); background: var(--maarm-success-bg); }
+.kind-chip--negative { color: var(--maarm-danger); background: var(--maarm-danger-bg); }
+.kind-chip--warn { color: var(--maarm-warning-strong); background: var(--maarm-warning-bg); }
+
+/* 标准 block：stats / list / text / path / action / empty */
+/* 统计：一行四列窄条；超过四项时换行，行首不画左边线 */
+.dash-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--maarm-border-light);
+  border-radius: var(--maarm-radius-md);
+  background: var(--maarm-surface-hover);
+  overflow: hidden;
+}
+.dash-stat { min-width: 0; padding: 7px 10px 8px; }
+.dash-stat + .dash-stat { border-left: 1px solid var(--maarm-border-light); }
+.dash-stat:nth-child(4n+1) { border-left: none; }
+.dash-stat:nth-child(n+5) { border-top: 1px solid var(--maarm-border-light); }
+.dash-stat-label {
+  display: block; font-size: 10px; line-height: 1.3;
+  color: var(--maarm-foreground-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dash-stat-value {
+  display: block; font-size: 16px; font-weight: 600; line-height: 1.3;
+  letter-spacing: -.01em; font-variant-numeric: tabular-nums;
+}
+.dash-stat-value.pos { color: var(--maarm-success-strong); }
+.dash-stat-value.neg { color: var(--maarm-danger); }
+.dash-stat-sub { display: block; font-size: 10px; line-height: 1.3; color: var(--maarm-foreground-muted); }
+.stat-eggs {
+  display: flex; gap: 7px; margin-top: 3px;
+  font-size: 11px; font-weight: 600; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.stat-eggs .egg-red { color: var(--maarm-danger); }
+.stat-eggs .egg-yellow { color: var(--maarm-warning-strong); }
+.stat-eggs .egg-blue { color: var(--maarm-info); }
+.stat-eggs .is-zero { opacity: .32; }
+.egg-dots { display: flex; gap: 3px; margin-top: 4px; }
+.egg-dots i { width: 7px; height: 7px; border-radius: 50%; opacity: .8; }
+.egg-dots i:nth-child(1) { background: var(--maarm-danger); }
+.egg-dots i:nth-child(2) { background: var(--maarm-warning); }
+.egg-dots i:nth-child(3) { background: var(--maarm-info); }
+.dash-note { font-size: 10px; line-height: 1.5; color: var(--maarm-foreground-muted); white-space: pre-wrap; }
+.path-chip {
+  align-self: flex-start; max-width: 100%; padding: 6px 9px;
+  border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-sm);
+  background: var(--maarm-surface-active); color: var(--maarm-foreground-secondary);
+  font-family: var(--maarm-font-mono); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-action {
+  align-self: flex-start; height: 30px; padding: 0 12px;
+  border: 1px solid var(--maarm-border); border-radius: var(--maarm-radius-sm);
+  background: var(--maarm-surface); color: var(--maarm-foreground-secondary);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.dash-action:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+
+/* 空态 / 加载 / 错误：给槽位一个可读高度，内容仍居中 */
+.dash-empty {
+  width: 100%; min-height: 240px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 24px 12px 30px; text-align: center;
+}
+.empty-art {
+  width: 46px; height: 46px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--maarm-border); border-radius: var(--maarm-radius-xl);
+  background: var(--maarm-surface-hover); color: var(--maarm-foreground-dim);
+  margin-bottom: 2px;
+}
+.empty-art svg { width: 22px; height: 22px; }
+.dash-empty b { font-size: 13px; font-weight: 600; color: var(--maarm-foreground-secondary); }
+.dash-empty p { font-size: 11px; line-height: 1.7; color: var(--maarm-foreground-muted); max-width: 320px; }
+
+/* ============ 调试页 ============ */
+/* iOS 风格 Toggle */
+.maarm-toggle {
+  position: relative; width: 40px; height: 24px; border-radius: 12px;
+  background-color: var(--maarm-border-strong); cursor: pointer; flex-shrink: 0;
+  transition: background-color var(--maarm-duration-base) ease; border: none;
+}
+.maarm-toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background-color: var(--maarm-surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform var(--maarm-duration-base) ease;
+}
+.maarm-toggle--active { background-color: var(--maarm-primary); }
+.maarm-toggle--active::after { transform: translateX(16px); }
+
+.option-row { display: flex; align-items: flex-start; gap: 12px; }
+.option-main { flex: 1; min-width: 0; }
+.option-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
+.option-desc { font-size: 12px; color: var(--maarm-foreground-secondary); margin-top: 4px; line-height: 1.6; }
+.option-note { font-size: 11px; color: var(--maarm-foreground-muted); flex-shrink: 0; margin-top: 4px; }
+
+/* Radio Card 截图方式 */
+.radio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.maarm-radio-card {
+  border: 1.5px solid var(--maarm-border); border-radius: var(--maarm-radius-md);
+  padding: 12px; cursor: pointer; transition: all var(--maarm-duration-fast) ease;
+  background-color: var(--maarm-surface);
+}
+.maarm-radio-card:hover { border-color: var(--maarm-border-strong); }
+.maarm-radio-card--selected { border-color: var(--maarm-primary); background-color: var(--maarm-primary-soft); }
+.maarm-radio-card--selected .maarm-radio-dot { border-color: var(--maarm-primary); }
+.maarm-radio-card--selected .maarm-radio-dot::after { transform: translate(-50%, -50%) scale(1); }
+/* 禁用态（如「后台(手柄)」开发中）：置灰且不可点，保留徽章醒目 */
+.maarm-radio-card--disabled { cursor: not-allowed; background-color: var(--maarm-surface-hover); border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled:hover { border-color: var(--maarm-border-light); }
+.maarm-radio-card--disabled .radio-title strong,
+.maarm-radio-card--disabled .radio-desc { color: var(--maarm-foreground-muted); }
+.maarm-radio-card--disabled .maarm-radio-dot { opacity: 0.4; }
+.radio-inner { display: flex; align-items: flex-start; gap: 10px; }
+.maarm-radio-dot {
+  width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--maarm-border-strong);
+  position: relative; flex-shrink: 0; margin-top: 2px;
+}
+.maarm-radio-dot::after {
+  content: ''; position: absolute; top: 50%; left: 50%;
+  width: 8px; height: 8px; border-radius: 50%; background-color: var(--maarm-primary);
+  transform: translate(-50%, -50%) scale(0); transition: transform var(--maarm-duration-fast) ease;
+}
+.radio-title { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--maarm-foreground); }
+.radio-title strong { font-weight: 600; }
+.radio-desc { font-size: 12px; color: var(--maarm-foreground-secondary); margin-top: 4px; line-height: 1.6; }
+.badge-recommend {
+  font-size: 10px; font-weight: 500; color: var(--maarm-primary); padding: 2px 6px;
+  border-radius: 4px; background: var(--maarm-primary-soft);
+}
+.badge-wip {
+  font-size: 10px; font-weight: 500; color: var(--maarm-warning-strong); padding: 2px 6px;
+  border-radius: 4px; background: #fef3c7;
+}
+.capture-note { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 12px; }
+
+/* 性能监控 */
+.perf-item { margin-bottom: 16px; }
+.perf-item:last-child { margin-bottom: 0; }
+.perf-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.perf-label { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
+.perf-right { display: flex; align-items: center; gap: 8px; }
+.perf-value { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
+.perf-badge { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
+.perf-badge-dot { width: 6px; height: 6px; border-radius: 50%; }
+.perf-badge--ok { color: var(--maarm-success); }
+.perf-badge--ok .perf-badge-dot { background: var(--maarm-success); }
+.perf-badge--idle { color: var(--maarm-foreground-dim); }
+.perf-badge--idle .perf-badge-dot { background: var(--maarm-foreground-dim); }
+.perf-badge--warn { color: var(--maarm-warning); }
+.perf-badge--warn .perf-badge-dot { background: var(--maarm-warning); }
+.perf-badge--error { color: var(--maarm-danger); }
+.perf-badge--error .perf-badge-dot { background: var(--maarm-danger); }
+/* 性能卡迷你走势图：纯内联 SVG polyline，无 CDN（WebView2 离线可用） */
+.perf-spark { display: block; width: 100%; height: 22px; margin: 2px 0 4px; }
+.perf-spark polyline { fill: none; stroke: var(--maarm-foreground-muted); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.maarm-perf-bar { height: 4px; border-radius: 2px; background-color: var(--maarm-border-light); overflow: hidden; }
+.maarm-perf-bar-fill { height: 100%; border-radius: 2px; transition: width var(--maarm-duration-slow) ease; }
+
+/* ---------- 性能卡（通用：资源面磁贴 + 模块行） ----------
+   磁贴两列并排：整机与本程序对比着看才有意义（谁在吃）。
+   模块行单行紧凑，值右对齐成一条线；只有偏高/异常上色，正常保持深色。 */
+.perf-health { display: flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.perf-health--ok { color: var(--maarm-foreground-muted); }
+.perf-health--warn { color: var(--maarm-warning); }
+.perf-health--error { color: var(--maarm-danger); }
+.perf-health--idle { color: var(--maarm-foreground-dim); }
+.perf-health-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* 资源磁贴：一格一颗器件。整块就是走势图，右上角大字是器件名（弱装饰），
+   左上角是器件图标，左下角是读数；曲线基线离底边 4px（贴边会被裁掉），
+   面积铺到格子底部。数字带白色晕影，曲线穿过时仍读得清。 */
+.perf-kpis { display: grid; grid-template-columns: 1fr 1fr; column-gap: 40px;
+  margin-bottom: 10px; }
+.perf-kpi { position: relative; height: 96px; min-width: 0; overflow: hidden; }
+
+.perf-kpi-icon { position: absolute; left: 10px; top: 2px; width: 24px; height: 24px;
+  color: var(--maarm-foreground-secondary); opacity: 0.45; z-index: 3; pointer-events: none; }
+
+.perf-kpi-mark { position: absolute; right: 10px; top: -2px; display: flex;
+  flex-direction: column; align-items: flex-end;
+  pointer-events: none; user-select: none; z-index: 2; }
+.perf-kpi-word { font-size: 64px; font-weight: 800; line-height: 0.82;
+  letter-spacing: -0.06em; color: var(--maarm-foreground); opacity: 0.06; }
+.perf-kpi-sub { font-size: 10px; line-height: 1; letter-spacing: 0.01em;
+  color: var(--maarm-foreground-muted); opacity: 0.45; margin-top: -2px;
+  text-shadow: 0 0 3px var(--maarm-surface), 0 0 6px var(--maarm-surface); }
+
+.perf-kpi-spark { position: absolute; inset: 0 10px auto 10px; display: block;
+  width: calc(100% - 20px); height: 100%; overflow: hidden; z-index: 1; }
+.perf-kpi-spark .spark-line { fill: none; vector-effect: non-scaling-stroke;
+  stroke-linejoin: round; stroke-linecap: round; }
+.spark-line--total { stroke: var(--maarm-foreground-muted); stroke-width: 1.2; }
+.spark-line--prog { stroke: var(--maarm-primary); stroke-width: 1.4; }
+
+.perf-kpi-nums { position: absolute; left: 10px; bottom: 10px; display: flex;
+  align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em; z-index: 3;
+  text-shadow: 0 0 3px var(--maarm-surface), 0 0 7px var(--maarm-surface),
+               0 0 2px var(--maarm-surface); }
+.perf-kpi-nums .num { display: flex; align-items: baseline; gap: 1px; }
+.perf-kpi-nums .num b { font-weight: 600; line-height: 1; }
+.perf-kpi-nums .num em { font-style: normal; font-size: 11px; font-weight: 500;
+  color: var(--maarm-foreground-muted); margin-left: 1px; }
+.perf-kpi-nums .num--total b { font-size: 32px; }
+.perf-kpi-nums .num--prog { color: var(--maarm-primary); }
+.perf-kpi-nums .num--prog b { font-size: 13px; }
+.perf-kpi-nums .num--prog em { color: var(--maarm-primary); opacity: 0.7; }
+
+.perf-rows { border-top: 1px solid var(--maarm-border-light); padding-top: 5px; }
+.perf-rows:empty { display: none; }
+.perf-row { display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 7px 0; }
+.perf-row-label { font-size: 12.5px; color: var(--maarm-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf-row-val { font-size: 12.5px; font-weight: 600; color: var(--maarm-foreground);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.perf-row-val--warn { color: var(--maarm-warning); }
+.perf-row-val--error { color: var(--maarm-danger); }
+
+/* 线程明细：默认展开。折叠只影响显示，采集与落盘始终全量。 */
+.perf-threads { display: flex; align-items: center; gap: 6px; width: 100%;
+  margin-top: 10px; padding: 9px 0 5px; border: 0;
+  border-top: 1px solid var(--maarm-border-light); background: transparent;
+  color: var(--maarm-foreground-muted); font: inherit; font-size: 11px;
+  cursor: pointer; }
+.perf-threads:hover { color: var(--maarm-foreground-secondary); }
+.perf-caret { width: 10px; height: 10px; flex: none;
+  transition: transform var(--maarm-duration-fast, .15s) ease; }
+.perf-threads[aria-expanded="true"] .perf-caret { transform: rotate(90deg); }
+.perf-threads-meta { margin-left: auto; font-variant-numeric: tabular-nums; }
+.perf-threads-body { max-height: 186px; overflow-y: auto;
+  scrollbar-width: none; -ms-overflow-style: none; }
+.perf-threads-body::-webkit-scrollbar { display: none; }
+.perf-trow { display: grid; grid-template-columns: 1fr 54px 38px 50px;
+  align-items: center; gap: 10px; padding: 5px 0; }
+.perf-tname { font-size: 11.5px; color: var(--maarm-foreground-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf-tbar { height: 3px; border-radius: 2px; background: var(--maarm-border-light);
+  overflow: hidden; }
+.perf-tbar i { display: block; height: 100%; border-radius: 2px;
+  background: var(--maarm-foreground-dim); }
+.perf-tbar i.hot { background: var(--maarm-warning); }
+.perf-tnum { font-size: 11px; text-align: right; font-variant-numeric: tabular-nums;
+  color: var(--maarm-foreground-secondary); }
+.perf-tmore { font-size: 10.5px; color: var(--maarm-foreground-dim);
+  padding: 5px 0 2px; }
+.maarm-perf-bar-fill--success { background-color: var(--maarm-success); }
+.maarm-perf-bar-fill--warning { background-color: var(--maarm-warning); }
+.maarm-perf-bar-fill--danger { background-color: var(--maarm-danger); }
+.perf-note { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 6px; }
+
+/* 实时预览 */
+.preview-wrap { flex: 1; padding: 12px; display: flex; flex-direction: column; min-height: 0; }.preview-canvas {
+  aspect-ratio: 16 / 9; width: 100%; min-height: 0;
+  border-radius: 6px; background: #1a1a2e;
+  position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center;
+}
+.preview-img { display: none; width: 100%; height: 100%; object-fit: contain; }
+.preview-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  color: rgba(255, 255, 255, 0.55); font-size: 12px;
+}
+.preview-empty svg { width: 32px; height: 32px; opacity: 0.6; }
+.preview-control { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-shrink: 0; }
+
+/* 悬浮窗接管期间：卡片内容让位给虚线占位框（三态互斥中的 floating 态） */
+.preview-away {
+  display: none; flex: 1; min-height: 0; margin: 12px;
+  border: 1px dashed var(--maarm-foreground-muted);
+  border-radius: var(--maarm-radius-md);
+  align-items: center; justify-content: center;
+  color: var(--maarm-foreground-muted); font-size: 12px;
+}
+.preview-card--floating .preview-away { display: flex; }
+.preview-card--floating .card-head,
+.preview-card--floating .preview-wrap,
+.preview-card--floating .preview-meta { display: none; }
+
+/* 实时预览：播放/暂停图标（默认播放态，由 JS 按 peep 状态切换） */
+#page-data .preview-card .icon-play { display: block; }
+#page-data .preview-card .icon-pause { display: none; }
+#page-data .preview-card .preview-wrap { flex: 1; }
+/* 实时预览：放大态（撑满数据页整块区域、画面随窗口自动适配、居中）
+   不复用 position:fixed——卡片在切换动画里带 filter/transform 会成为 fixed 的包含块；
+   改为隐藏其它卡片，让预览卡在文档流里撑满整页。 */
+.preview-card--fullscreen {
+  border-radius: var(--maarm-radius-md);
+  box-shadow: var(--maarm-shadow-lg);
+  flex: 1 1 0; min-height: 0;
+}
+.preview-card--fullscreen .preview-wrap { padding: 32px; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
+/* 放大态预览盒：保持 16:9 并在四周留白、居中。宽高由 JS fitPreviewCanvas 按
+   (wrap - 32px留白) 计算出来再写内联样式，保证等比不变形 */
+.preview-card--fullscreen .preview-canvas {
+  flex: 0 0 auto;
+  border-radius: 8px;
+}
+/* 数据页放大态：隐藏左栏（性能监控）与右栏其它卡片（今日看板），预览卡独占整页 */
+/* 两列被 .page-inner 包了一层：选择器要穿过它，否则全屏时左栏（性能监控）仍占位 */
+#page-data.preview-fs-active .page-inner > .col-left { display: none; }
+#page-data.preview-fs-active .page-inner > .col-right { flex: 1 1 auto; align-self: stretch; }
+#page-data.preview-fs-active .page-inner > .col-right > .card:not(.preview-card--fullscreen) { display: none; }
+.preview-legend { display: flex; align-items: center; gap: 12px; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--maarm-foreground-muted); }
+.legend-box { width: 12px; height: 12px; border-radius: 2px; }
+.legend-box--coin { border: 1px solid var(--maarm-warning); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-warning) 40%, transparent); }
+.legend-box--car { border: 1px solid var(--maarm-danger); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-danger) 40%, transparent); }
+.legend-box--cursor { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--maarm-success); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-success) 40%, transparent); }
+.preview-link { font-size: 10px; color: var(--maarm-primary); font-weight: 500; cursor: pointer; background: none; border: none; font-family: var(--maarm-font-sans); }
+.preview-link:hover { text-decoration: underline; }
+
+/* 快捷工具 */
+.tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.maarm-tool-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  padding: 14px 8px; border-radius: var(--maarm-radius-md);
+  background-color: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  cursor: pointer; transition: all var(--maarm-duration-fast) ease; font-family: var(--maarm-font-sans);
+}
+.maarm-tool-btn:hover { background-color: var(--maarm-surface-hover); border-color: var(--maarm-border-strong); }
+.maarm-tool-btn:active { background-color: var(--maarm-surface-active); }
+.maarm-tool-btn-icon { width: 22px; height: 22px; color: var(--maarm-foreground-secondary); }
+.maarm-tool-btn-label { font-size: 11px; color: var(--maarm-foreground-secondary); }
+.maarm-tool-btn--block { width: 100%; }
+
+/* ============ 调试数据占用面板（设置页「调试文件夹」） ============ */
+/* 各目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
+.space-body {
+  display: flex; align-items: center; gap: 22px;
+  --maarm-usage-debug: var(--maarm-primary);
+  --maarm-usage-data: var(--maarm-info);
+  --maarm-usage-framework: var(--maarm-warning);
+  --maarm-usage-logs: var(--maarm-success);
+  --maarm-usage-config: var(--maarm-foreground-dim);
+  --maarm-usage-webview2: #8B5CF6;
+}
+.space-root {
+  font-family: var(--maarm-font-mono); font-size: 11px;
+  color: var(--maarm-foreground-muted); margin-bottom: 10px;
+}
+.space-chart {
+  position: relative; width: 148px; height: 148px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+/* 扇区由 JS 按真实字节数拼 conic-gradient 写在行内；此处只管环形形状与内孔 */
+.space-donut { position: absolute; inset: 0; border-radius: 50%; }
+.space-donut::after {
+  content: ''; position: absolute; inset: 26px; border-radius: 50%;
+  background: var(--maarm-surface);
+}
+.space-donut-center { position: relative; text-align: center; }
+.space-donut-center b {
+  display: block; font-family: var(--maarm-font-mono); font-size: 15px;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums; line-height: 1.2;
+}
+.space-donut-center span { font-size: 10px; color: var(--maarm-foreground-muted); }
+.space-list { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 0; }
+.space-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--maarm-border-light);
+}
+.space-row:last-child { border-bottom: none; }
+.space-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
+.space-dot--debug { background: var(--maarm-usage-debug); }
+.space-dot--data { background: var(--maarm-usage-data); }
+.space-dot--framework { background: var(--maarm-usage-framework); }
+.space-dot--logs { background: var(--maarm-usage-logs); }
+.space-dot--config { background: var(--maarm-usage-config); }
+.space-dot--webview2 { background: var(--maarm-usage-webview2); }
+.space-dot--unknown { background: var(--maarm-border-strong); }
+.space-main { flex: 1; min-width: 0; }
+.space-name {
+  font-family: var(--maarm-font-mono); font-size: 12px;
+  color: var(--maarm-foreground); line-height: 1.4;
+}
+.space-desc { font-size: 11px; color: var(--maarm-foreground-muted); line-height: 1.5; }
+.space-size {
+  font-family: var(--maarm-font-mono); font-size: 12px; color: var(--maarm-foreground);
+  font-variant-numeric: tabular-nums; flex-shrink: 0; line-height: 1.4;
+}
+
+/* ============ 关于页 ============ */
+.about-container { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.about-hero {
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-lg); box-shadow: var(--maarm-shadow-sm); padding: 20px;
+}
+.about-hero-inner { display: flex; align-items: flex-start; gap: 16px; }
+.about-icon {
+  width: 72px; height: 72px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.about-icon img { width: 64px; height: 64px; object-fit: contain; }
+.about-hero-text { flex: 1; min-width: 0; }
+.about-title { font-size: 18px; font-weight: 700; color: var(--maarm-foreground); line-height: 1.3; }
+.about-subtitle { font-size: 13px; color: var(--maarm-foreground-muted); margin-top: 4px; }
+.about-tags { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.about-tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.about-tag--plain { background: var(--maarm-surface-hover); color: var(--maarm-foreground-secondary); }
+.about-tag--warn { background: var(--maarm-warning-bg); color: var(--maarm-warning); }
+
+/* 版本与更新卡：一行说清「现在怎样 + 能做什么」——图标 + 标题 + 说明 + 动作，
+   附加内容（进度 / 稍后 / 提醒勾选）只在需要时出现。彩色只用在图标与说明行，
+   状态文字一律取深化色，保证 12px 正文在白底 ≥4.5:1。 */
+.upd-gear { width: 28px; padding: 0; color: var(--maarm-foreground-muted); }
+.upd-gear:hover:not(:disabled) { color: var(--maarm-foreground); }
+.upd-gear:disabled { opacity: 0.4; cursor: not-allowed; }
+.upd-row { display: flex; align-items: center; gap: 12px; min-height: 28px; }
+.upd-icon {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--maarm-foreground-muted);
+}
+.upd-icon svg { width: 18px; height: 18px; display: block; }
+.upd-icon--ok { color: var(--maarm-success-strong); }
+.upd-icon--err { color: var(--maarm-danger-strong); }
+.upd-icon--new { color: var(--maarm-primary-strong); }
+.upd-text { flex: 1; min-width: 0; }
+.upd-title { font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--maarm-foreground); }
+.upd-title--err { color: var(--maarm-danger-strong); }
+.upd-meta {
+  margin-top: 2px; font-size: 11.5px; line-height: 1.5;
+  color: var(--maarm-foreground-secondary);
+}
+.upd-meta--err { color: var(--maarm-danger-strong); }
+.upd-meta[hidden] { display: none; }
+/* 行内文字按钮：查看更新内容 / 取消 / 稍后 */
+.upd-link {
+  font: inherit; font-size: 11.5px; padding: 0; border: none; background: none;
+  color: var(--maarm-primary-strong); cursor: pointer;
+}
+.upd-link:hover { text-decoration: underline; }
+/* 附加区：进度条 / 稍后 / 提醒勾选，无内容时整块收起（.upd-detail 带 hidden） */
+.upd-detail { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--maarm-border-light); }
+.upd-detail[hidden] { display: none; }
+.upd-progress { display: flex; align-items: center; gap: 10px; }
+.upd-progress-num {
+  min-width: 34px; text-align: right; font-size: 11.5px;
+  color: var(--maarm-foreground-secondary); font-variant-numeric: tabular-nums;
+}
+.upd-remind {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-remind input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer; accent-color: var(--maarm-primary);
+}
+.upd-remind-hint { color: var(--maarm-foreground-secondary); opacity: 0.85; }
+.update-settings-popover {
+  position: fixed; z-index: 1000; width: 224px; padding: 12px;
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  font-family: var(--maarm-font-sans);
+}
+.update-settings-popover[hidden] { display: none; }
+.upd-set-group + .upd-set-group { margin-top: 14px; }
+.upd-set-label {
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  padding: 0 2px 6px; letter-spacing: 0.02em;
+}
+.upd-set-options { display: flex; flex-direction: column; gap: 3px; }
+.upd-set-opt {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border: 1px solid transparent;
+  border-radius: calc(var(--maarm-radius-sm) - 1px);
+  background: transparent; color: var(--maarm-foreground-secondary);
+  font-family: var(--maarm-font-sans); font-size: 12px; font-weight: 500;
+  text-align: left; cursor: pointer;
+}
+.upd-set-opt:hover, .upd-set-opt:focus-visible {
+  background: var(--maarm-surface-hover); color: var(--maarm-foreground); outline: none;
+}
+.upd-set-opt.is-active {
+  color: var(--maarm-primary); font-weight: 600;
+  background: color-mix(in srgb, var(--maarm-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--maarm-primary) 24%, transparent);
+}
+.upd-set-opt img, .upd-set-opt svg { width: 14px; height: 14px; flex-shrink: 0; }
+.upd-set-check { margin-left: auto; visibility: hidden; }
+.upd-set-opt.is-active .upd-set-check { visibility: visible; }
+/* 后台自动检查：开关行与选项同高，勾选框用主色（不受「不再提示」那块的分隔线影响） */
+.upd-set-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: calc(var(--maarm-radius-sm) - 1px);
+  font-size: 12px; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.upd-set-toggle:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.upd-set-toggle input {
+  width: 14px; height: 14px; margin: 0; cursor: pointer;
+  accent-color: var(--maarm-primary); flex-shrink: 0;
+}
+.upd-set-note {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--maarm-border-light);
+  font-size: 11px; line-height: 1.5; color: var(--maarm-foreground-muted);
+}
+/* 关于页彩蛋：点击「开发中」标签掉落文字 / 连点 10 次打开员工守则 / 1% 乱码解码。
+   min-width 锁住标签宽度：乱码时字符在 ASCII 与中文之间换，不锁会让旁边的
+   「Apache-2.0」跟着左右跳。 */
+#about-dev-tag {
+  cursor: pointer; user-select: none;
+  display: inline-block; min-width: 3em; text-align: center;
+}
+
+/* 关于页彩蛋：点击版本号掉落的文字 */
+.falling-text {
+  position: fixed; left: 0; top: 0; z-index: 9999;
+  pointer-events: none; user-select: none;
+  font-family: var(--maarm-font-mono); font-size: 16px; font-weight: 700;
+  color: var(--maarm-primary);
+  text-shadow: 0 2px 10px color-mix(in srgb, var(--maarm-primary) 35%, transparent);
+  /* 0.5s 淡出与 app.js spawnFallingText 的 setTimeout(500) 配对，不套用时长 token */
+  will-change: transform, opacity; transition: opacity 0.5s ease;
+}
+
+/* 通用模态弹窗（js/modal.js openModal）：WinUI 原生风格弹出/退出动画。
+   结构与配色全部落在 maarm-modal-* 类；JS 只设动态值（--maarm-modal-max-width 与标题色）。 */
+.maarm-modal-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  animation: modal-overlay-in var(--maarm-duration-fast) ease-out both;
+}
+.maarm-modal-overlay--closing { animation: modal-overlay-out var(--maarm-duration-fast) ease-in both; }
+.maarm-modal-card {
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-xl); padding: 22px 24px;
+  max-width: var(--maarm-modal-max-width, 420px); width: 92%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  display: flex; flex-direction: column; max-height: 86vh;
+}
+/* 进场动画单独成类：JS 在 animationend 后摘掉它（保留卡片布局类），让卡片回归主文档光栅化 */
+.maarm-modal-card--enter { animation: modal-card-in var(--maarm-duration-base) cubic-bezier(0.1, 0.9, 0.2, 1) both; }
+.maarm-modal-card--closing { animation: modal-card-out var(--maarm-duration-fast) ease-in both; }
+@keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-overlay-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes modal-card-in { from { opacity: 0; transform: scale(1.06); } to { opacity: 1; transform: scale(1); } }
+@keyframes modal-card-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.05); } }
+.maarm-modal-title { margin: 0 0 10px; font-size: 15px; flex-shrink: 0; color: var(--maarm-foreground); }
+/* 内容区滚动：标题/按钮固定，超出 86vh 只滚 body；长串（注册表路径等）强制断行防溢出 */
+.maarm-modal-body { overflow-y: auto; min-height: 0; word-break: break-word; }
+.maarm-modal-actions {
+  display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+  margin-top: 14px; flex-shrink: 0;
+}
+.maarm-modal-btn {
+  cursor: pointer; border-radius: var(--maarm-radius-md); font-size: 13px; padding: 8px 16px;
+  border: 1px solid var(--maarm-border); background: transparent;
+  color: var(--maarm-foreground-secondary); font-family: var(--maarm-font-sans);
+}
+.maarm-modal-btn--primary {
+  border: none; background: var(--maarm-primary); color: var(--maarm-primary-foreground);
+}
+.maarm-modal-link { font-size: 12px; color: var(--maarm-info); }
+/* 弹窗正文内容类（各场景 bodyHtml 用） */
+.maarm-modal-text { margin: 0 0 8px; font-size: 13px; line-height: 1.6; color: var(--maarm-foreground); }
+.maarm-modal-text--flush { margin: 0; }
+.maarm-modal-text--sub { margin: 0; font-size: 12px; line-height: 1.6; color: var(--maarm-foreground-secondary); }
+.maarm-modal-error { margin: 0; font-size: 12px; color: var(--maarm-danger); }
+/* 手柄须知：多段说明文字 */
+.maarm-modal-notice { font-size: 13px; line-height: 1.7; color: var(--maarm-foreground); }
+.maarm-modal-notice p { margin: 0 0 10px; }
+.maarm-modal-notice p.maarm-modal-notice-hint { margin: 0; color: var(--maarm-foreground-secondary); }
+/* 员工守则：图标 + 规则列表 */
+.maarm-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
+.maarm-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }
+.maarm-modal-rules-list { flex: 1; min-width: 0; max-height: 56vh; overflow-y: auto; padding-right: 4px;
+  scrollbar-width: none; }
+.maarm-modal-rules-list::-webkit-scrollbar { display: none; }
+.maarm-modal-rule {
+  display: flex; gap: 10px; margin: 0 0 10px;
+  font-size: 13px; line-height: 1.7; color: var(--maarm-foreground);
+}
+.maarm-modal-rule-num { flex-shrink: 0; color: var(--maarm-primary); }
+/* 员工守则效果：逐条渐现（延迟由内联 animation-delay 控制）+ meta/末条变体 + 标题呼吸 */
+.maarm-modal-rule { opacity: 0; transform: translateY(5px); animation: maarm-rule-in 0.5s ease forwards; }
+@keyframes maarm-rule-in { to { opacity: 1; transform: none; } }
+.maarm-modal-rule--ghost { color: var(--maarm-foreground-muted); }
+.maarm-modal-rule--ghost .maarm-modal-rule-num, .maarm-modal-rule--ghost .maarm-modal-rule-secret {
+  opacity: 0; transition: opacity var(--maarm-duration-base) ease; }
+.maarm-modal-rule--ghost.revealed .maarm-modal-rule-num, .maarm-modal-rule--ghost.revealed .maarm-modal-rule-secret {
+  opacity: 1; }
+.maarm-modal-title--egg { animation: maarm-egg-breathe 6s ease-in-out infinite; }
+@keyframes maarm-egg-breathe { 0%, 100% { letter-spacing: 2px; } 50% { letter-spacing: 3.4px; } }
+/* DodgeField 离开按钮（app.js wireEggDodge）：位移走 transform，will-change 限守则弹层按钮 */
+.maarm-modal-btn--egg { will-change: transform; }
+.falling-text--egg { color: var(--maarm-danger); border-color: transparent; }
+/* 关闭守则后的回响：状态栏绿点连闪两下（呼应第 5 条） */
+.maarm-dot-blink { animation: maarm-dot-blink 0.3s ease 2; }
+@keyframes maarm-dot-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .maarm-modal-rule { animation: none; opacity: 1; transform: none; }
+  .maarm-modal-title--egg { animation: none; }
+}
+/* 升级进度条：轨道 + 单色内条，宽度由 JS 按快照百分比写入 */
+.update-progress-track {
+  flex: 1; height: 6px; border-radius: 3px; overflow: hidden;
+  background: color-mix(in srgb, var(--maarm-primary) 12%, transparent);
+}
+.update-progress-bar {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: var(--maarm-primary);
+  transition: width 0.3s ease;
+}
+.spinner {
+  width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid var(--maarm-border-strong); border-top-color: var(--maarm-info);
+  animation: maarm-spin 0.8s linear infinite; /* 0.8s 为 keyframes 周期，非过渡时长，不套用 token */
+}
+@keyframes maarm-spin { to { transform: rotate(360deg); } }
+
+/* 公告卡 */
+.about-announce {
+  display: flex; gap: 12px; padding: 12px 14px; border-radius: var(--maarm-radius-md);
+  border: 1px solid var(--maarm-border-light);
+}
+.about-announce + .about-announce { margin-top: 10px; }
+.about-announce--info { background: var(--maarm-info-bg); border-color: color-mix(in srgb, var(--maarm-info) 18%, transparent); }
+.about-announce--warn { background: var(--maarm-warning-bg); border-color: color-mix(in srgb, var(--maarm-warning) 25%, transparent); }
+.about-announce-badge {
+  flex-shrink: 0; height: 20px; padding: 0 8px; border-radius: 4px; font-size: 11px; font-weight: 500;
+  display: inline-flex; align-items: center; color: #fff;
+}
+.about-announce--info .about-announce-badge { background: var(--maarm-info); }
+.about-announce--warn .about-announce-badge { background: var(--maarm-warning); }
+.about-announce-main { flex: 1; min-width: 0; }
+.about-announce-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
+.about-announce-date { font-size: 11px; color: var(--maarm-foreground-dim); }
+.about-announce-body { font-size: 12px; color: var(--maarm-foreground-secondary); margin-top: 3px; white-space: pre-line; }
+.about-announce-link {
+  font-size: 12px; color: var(--maarm-info); font-weight: 500; cursor: pointer; background: none;
+  border: none; padding: 0; font-family: var(--maarm-font-sans); margin-top: 6px;
+}
+.about-announce-link:hover { text-decoration: underline; }
+.about-announce-empty { font-size: 12px; color: var(--maarm-foreground-dim); padding: 4px 0; }
+
+.tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tech-item {
+  display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--maarm-radius-sm);
+  transition: background-color var(--maarm-duration-fast) ease;
+}
+.tech-item:hover { background: var(--maarm-surface-hover); }
+.tech-icon {
+  width: 32px; height: 32px; border-radius: var(--maarm-radius-sm); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.tech-icon svg { width: 16px; height: 16px; }
+.tech-name { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
+.tech-sub { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 2px; }
+
+.about-links { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 8px; }
+.about-links .maarm-btn { width: auto; height: 36px; padding: 0 16px; }
+.about-links .maarm-btn svg { width: 16px; height: 16px; }
+
+/* ============ 底部操作栏 ============ */
+footer {
+  height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+  background: var(--maarm-surface); border-top: 1px solid var(--maarm-border);
+  padding: 0 16px;
+}
+.status { display: flex; align-items: center; gap: 8px; }
+.maarm-status-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--maarm-foreground-muted); }
+.maarm-status-dot--ready { background: var(--maarm-success); }
+.maarm-status-dot--running { background: var(--maarm-success); }
+.maarm-status-dot--stopping { background: var(--maarm-warning); }
+.maarm-status-dot--error { background: var(--maarm-danger); }
+/* 运行态指示：点本体呼吸辉光 + 双层回声环按半周期相位差向外扩散消散（两环错相，始终有其一在途中）。
+   环用伪元素实现，不依赖额外 DOM。2s 为 keyframes 周期，非过渡时长，不套用 token */
+.maarm-status-dot--pulse { animation: maarm-dot-glow 2s ease-in-out infinite; }
+.maarm-status-dot--pulse::before,
+.maarm-status-dot--pulse::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 1px solid var(--maarm-success);
+  animation: maarm-dot-echo 2s cubic-bezier(0.17, 0.67, 0.4, 1) infinite;
+}
+.maarm-status-dot--pulse::after { animation-delay: -1s; }
+@keyframes maarm-dot-echo {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  75%  { transform: scale(2.3); opacity: 0; }
+  100% { transform: scale(2.3); opacity: 0; }
+}
+@keyframes maarm-dot-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50%      { box-shadow: 0 0 4px 0 color-mix(in srgb, var(--maarm-success) 35%, transparent); }
+}
+/* 减弱动效偏好：环隐藏、辉光静止（旧脉冲无此降级，顺带补齐） */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-status-dot--pulse::before,
+  .maarm-status-dot--pulse::after { display: none; }
+  .maarm-status-dot--pulse { animation: none; }
+}
+.status-text { font-size: 11px; color: var(--maarm-foreground-secondary); }
+
+/* ---------- 底栏状态球 ----------
+   一个会看人、会眨眼的小球，承担运行状态指示；动效逻辑见 js/status-orb.js。
+   上面那套 .maarm-status-dot（8px 圆点）保留：PEEP 悬浮窗（peep.html）仍在用。
+
+   球体：没有描边、没有外发光。球本身就是一块径向填充——中心浓、边缘淡；
+   运行中四档一起拉满变成实心，另有内部渐变中心缓慢游走表示「在流转」。
+   变化全部发生在球体内部，不向外扩。
+
+   眼睛与表情：白色线条，无描边。线条不是矩形，而是沿球面采样连成的弧，
+   形状与粗细都由 status-orb.js 每帧按投影写入；四种状态共用同一套球面几何，
+   只换张开方向——竖（睁眼）、横（停止 --）、斜交叉（错误 ××）。
+   所以表情同样会随球面转动、变窄、被球轮廓裁切。
+
+   几何比例取自效果规格（球半径归一化为 1）：
+     眼宽 0.108 R、眼高 0.364 R、眼中心距 0.608 R、眼中心高于球心 0.076 R。
+   18px 上原始比例只有 1px 宽、会糊成半透明线，所以默认乘 1.8 补偿。
+
+   尺寸由 --orb-size 控制；viewBox 固定 40×40，改大小只改 --orb-size。 */
+
+.maarm-orb {
+  --orb-size: 18px;
+  /* 球体色相：由状态覆写。默认取就绪态，避免首帧无色 */
+  --orb-hue: var(--maarm-success, #10B981);
+  /* 眼睛：纯白，不描边 */
+  --orb-eye: #FFFFFF;
+  --orb-eye-ring: transparent;
+  /* 径向填充的四档颜色：中心 → 中段 → 近边 → 最外。
+     运行态靠这四档的饱和度差做出「一片更绿的亮在球里游走」，
+     不透明度保持 1，所以球始终是实心的 */
+  --orb-c-in: color-mix(in srgb, var(--orb-hue) 62%, #FFFFFF);
+  --orb-c-mid: color-mix(in srgb, var(--orb-hue) 62%, #FFFFFF);
+  --orb-c-edge: color-mix(in srgb, var(--orb-hue) 62%, #FFFFFF);
+  --orb-c-out: color-mix(in srgb, var(--orb-hue) 62%, #FFFFFF);
+  /* 径向填充的四档不透明度：中心 → 中段 → 近边 → 最外。
+     就绪态边缘几乎透明，球自己化开；运行中四档一起拉满，变成实心 */
+  --orb-a-in: 0.55;
+  --orb-a-mid: 0.48;
+  --orb-a-edge: 0.30;
+  --orb-a-out: 0.06;
+  position: relative;
+  width: var(--orb-size);
+  height: var(--orb-size);
+  flex-shrink: 0;
+}
+
+.maarm-orb__svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+/* 球的填充由骨架内联指定（url(#该球的渐变)），不在 CSS 里写：
+   每个球要引用自己那份渐变定义，写死一个 id 会让其余球丢失填充 */
+.maarm-orb__sphere {
+  transition: opacity 340ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 渐变各档：颜色跟 --orb-hue 走，透明度跟状态走。
+   stop-opacity 可过渡，所以就绪↔运行中的「虚→实」是渐变的，不是跳变 */
+.maarm-orb__s-in,
+.maarm-orb__s-mid,
+.maarm-orb__s-edge,
+.maarm-orb__s-out {
+  transition: stop-opacity 340ms cubic-bezier(0.4, 0, 0.2, 1),
+              stop-color 340ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.maarm-orb__s-in { stop-color: var(--orb-c-in); stop-opacity: var(--orb-a-in); }
+.maarm-orb__s-mid { stop-color: var(--orb-c-mid); stop-opacity: var(--orb-a-mid); }
+.maarm-orb__s-edge { stop-color: var(--orb-c-edge); stop-opacity: var(--orb-a-edge); }
+.maarm-orb__s-out { stop-color: var(--orb-c-out); stop-opacity: var(--orb-a-out); }
+
+/* 眼睛与表情：路径只提供脊线，粗细即笔画宽（由 status-orb.js 写入） */
+.maarm-orb__eye,
+.maarm-orb__eye-halo {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.maarm-orb__eye-halo { stroke: var(--orb-eye-ring); }
+.maarm-orb__eye { stroke: var(--orb-eye); }
+
+/* 眼睛整体：位置与形状都来自路径本身，这里不承载任何变形 */
+.maarm-orb__eye-wrap { transform-box: fill-box; transform-origin: center; }
+
+/* 眨眼层：沿局部 y 压扁。眼睛是竖着的，压扁即闭眼 */
+.maarm-orb__blink {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 100ms ease;
+}
+.maarm-orb__blink.is-blinking { transform: scaleY(0.06); }
+
+/* ---------- 状态 ---------- */
+.maarm-orb[data-state="ready"],
+.maarm-orb[data-state="running"] { --orb-hue: var(--maarm-success, #10B981); }
+.maarm-orb[data-state="stopping"] { --orb-hue: var(--maarm-warning, #F59E0B); }
+.maarm-orb[data-state="error"] { --orb-hue: var(--maarm-danger, #EF4444); }
+
+/* 就绪：与运行同一颗实心球，只是内部没有流转。区别全交给流转和回声环，
+   不靠颜色深浅——两个状态之间切换时球体本身不跳色 */
+.maarm-orb[data-state="ready"] {
+  --orb-a-in: 1;
+  --orb-a-mid: 1;
+  --orb-a-edge: 1;
+  --orb-a-out: 0.96;
+}
+/* 运行中：实心。绿色一口气占满整颗球，边缘也不再软化——
+   从就绪到运行就是「色彩从三成涨到六成、边缘从软变硬」，
+   视觉重量和抢眼度一起变大 */
+.maarm-orb[data-state="running"] {
+  --orb-c-in: color-mix(in srgb, var(--orb-hue) 90%, #FFFFFF);
+  --orb-c-mid: color-mix(in srgb, var(--orb-hue) 66%, #FFFFFF);
+  --orb-c-edge: color-mix(in srgb, var(--orb-hue) 54%, #FFFFFF);
+  --orb-c-out: color-mix(in srgb, var(--orb-hue) 50%, #FFFFFF);
+  --orb-a-in: 1;
+  --orb-a-mid: 1;
+  --orb-a-edge: 1;
+  --orb-a-out: 0.96;
+}
+/* 停止中 / 错误：实心，颜色保持足够辨识度（这两个状态需要警示） */
+.maarm-orb[data-state="stopping"],
+.maarm-orb[data-state="error"] {
+  --orb-a-in: 1;
+  --orb-a-mid: 1;
+  --orb-a-edge: 1;
+  --orb-a-out: 0.96;
+}
+
+/* 运行态回声环：两环错半周期，始终有其一在途中。
+   球体本身不做呼吸——「活着」由眼睛承担，球再动就成了果冻。 */
+.maarm-orb__ring {
+  fill: none;
+  stroke: var(--maarm-success, #10B981);
+  stroke-width: 1.1;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.maarm-orb[data-state="running"] .maarm-orb__ring {
+  animation: maarm-orb-echo 2.4s cubic-bezier(0.17, 0.67, 0.4, 1) infinite;
+}
+.maarm-orb[data-state="running"] .maarm-orb__ring--lag { animation-delay: -1.2s; }
+@keyframes maarm-orb-echo {
+  0%   { transform: scale(1.03); opacity: 0.55; }
+  70%  { transform: scale(1.5);  opacity: 0; }
+  100% { transform: scale(1.5);  opacity: 0; }
+}
+
+/* 减弱动效：自动播放的（回声、漂移、眨眼）全停，只保留表情与配色。
+   填充过渡保留——它不产生位移，属于状态变化的必要反馈。 */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-orb[data-state="running"] .maarm-orb__ring { animation: none; }
+  .maarm-orb__ring { opacity: 0; }
+  .maarm-orb__blink { transition: none; }
+}
+footer .spacer { flex: 1; }
+.maarm-btn {
+  height: 28px; border-radius: var(--maarm-radius-sm); font-size: 12px; font-weight: 500;
+  font-family: var(--maarm-font-sans);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer;
+  border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground-secondary);
+  padding: 0 12px;
+  transition: background var(--maarm-duration-fast) ease, border-color var(--maarm-duration-fast) ease, color var(--maarm-duration-fast) ease, box-shadow var(--maarm-duration-fast) ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.maarm-btn:hover:not(:disabled) { background: var(--maarm-surface-hover); border-color: var(--maarm-border-strong); }
+.maarm-btn:active:not(:disabled) { background: var(--maarm-surface-active); }
+/* 主按钮必须排在 .maarm-btn 之后：同权重后写者胜，提前定义会被基础按钮的
+   背景 / 文字 / 边框覆盖，只剩一层红阴影。hover/active 补齐 :not(:disabled)
+   以匹配基础规则的权重。 */
+.maarm-btn--primary {
+  background: var(--maarm-primary); color: var(--maarm-primary-foreground);
+  border: none; box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent);
+}
+.maarm-btn--primary:hover:not(:disabled) { background: var(--maarm-primary-hover); }
+.maarm-btn--primary:active:not(:disabled) { background: var(--maarm-primary-active); }
+.maarm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.maarm-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+#btn-stop {
+  width: 100px; background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  color: var(--maarm-foreground-secondary);
+}
+#btn-stop:disabled { opacity: 0.5; cursor: not-allowed; }
+#btn-start {
+  width: 120px; padding: 0; display: inline-grid;
+  /* 双层滚动必须裁在按钮圆角内：出层上移 18px + 弹簧曲线回弹会过冲，不裁则文字越界浮到按钮外 */
+  overflow: hidden;
+  background: var(--maarm-primary); color: var(--maarm-primary-foreground);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 20%, transparent);
+  transition: background-color var(--maarm-duration-slow) cubic-bezier(0.34, 1.3, 0.64, 1),
+              color var(--maarm-duration-slow) ease,
+              transform var(--maarm-duration-fast) ease;
+}
+#btn-start:hover:not(.maarm-start--counting) { background: var(--maarm-primary-hover); }
+#btn-start:active:not(:disabled) { background: var(--maarm-primary-active); transform: scale(0.97); }
+#btn-start:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 开始按钮双层内容：闲置层 / armed 层是两个完整组合，grid 同格堆叠、各自独立双轴居中；
+   切换 = 整层纵向滚动互换（出层上滚+模糊，入层自下滚入），纯 y 轴、零回流。
+   armed 态同色系降饱和（实底→浅底红字），滚动弹簧曲线为字面量（易摔感，不套时长 token 表） */
+#btn-start.maarm-start--counting {
+  background: color-mix(in srgb, var(--maarm-primary) 12%, var(--maarm-surface));
+  color: var(--maarm-primary);
+}
+.maarm-start-layer {
+  grid-area: 1 / 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: transform var(--maarm-duration-slow) cubic-bezier(0.34, 1.3, 0.64, 1),
+              opacity var(--maarm-duration-slow) ease, filter var(--maarm-duration-slow) ease;
+}
+.maarm-start-layer--armed { transform: translateY(18px); opacity: 0; filter: blur(2px); pointer-events: none; }
+.maarm-start--counting .maarm-start-layer--idle { transform: translateY(-18px); opacity: 0; filter: blur(2px); }
+.maarm-start--counting .maarm-start-layer--armed { transform: translateY(0); opacity: 1; filter: blur(0); }
+/* armed 层内数字列：纯 CSS 逐格滚动（每秒一格，tabular-nums 防抖动）。
+   3s 周期与 run.js 倒计时 setTimeout(3000) 配对，改一处必须同步另一处 */
+.maarm-start-digits { width: 10px; height: 16px; overflow: hidden; flex-shrink: 0; }
+.maarm-start-digit-col {
+  display: flex; flex-direction: column; align-items: center;
+  font-size: 12px; font-weight: 600; line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.maarm-start-digit-col span { height: 16px; }
+.maarm-start--counting .maarm-start-digit-col { animation: maarm-start-digit-roll 3s linear forwards; }
+@keyframes maarm-start-digit-roll {
+  0%, 32.5%    { transform: translateY(0); }
+  33.4%, 65.8% { transform: translateY(-16px); }
+  66.7%, 100%  { transform: translateY(-32px); }
+}
+/* 减弱动效偏好：层切换瞬切去模糊，数字保留逐格步进（steps 去平滑） */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-start-layer { transition: none; filter: none; }
+  .maarm-start--counting .maarm-start-digit-col { animation-timing-function: steps(1, end); }
+}
+
+/* 隐藏滚动条（保留滚动能力） */
+::-webkit-scrollbar { display: none; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-thumb { display: none; }
+* { scrollbar-width: none; scrollbar-color: transparent transparent; }
+
+/* 错误 toast */
+#error-toast {
+  position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+  background: var(--maarm-surface); border: 1px solid var(--maarm-danger); color: var(--maarm-danger);
+  border-radius: var(--maarm-radius-sm); padding: 6px 14px; font-size: 12px;
+  display: none; z-index: 99; box-shadow: var(--maarm-shadow-md); max-width: 80vw;
+}
+
+/* 分段选择控件（目标场次：实习/专家/大师） */
+.maarm-segmented {
+  display: flex;
+  padding: 3px;
+  gap: 3px;
+  background: var(--maarm-surface-hover);
+  border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-sm);
+  height: 36px;
+  user-select: none;
+}
+.maarm-segmented .seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  border-radius: calc(var(--maarm-radius-sm) - 1px);
+  background: transparent;
+  color: var(--maarm-foreground-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--maarm-font-sans);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 8px;
+  transition: all var(--maarm-duration-fast) ease;
+}
+.maarm-segmented .seg-btn:hover {
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground);
+}
+.maarm-segmented .seg-btn--selected {
+  background: var(--maarm-primary);
+  color: var(--maarm-primary-foreground);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--maarm-primary) 15%, transparent);
+}
+.maarm-segmented .seg-btn--selected:hover {
+  background: var(--maarm-primary-hover);
+  color: var(--maarm-primary-foreground);
+}
+/* 场次色点：绿 / 蓝 / 金 */
+.seg-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
+}
+.seg-dot--intern { background: var(--maarm-success); }      /* 实习场：翠绿 */
+.seg-dot--expert { background: var(--maarm-info); }      /* 专家场：深蓝 */
+.seg-dot--master { background: linear-gradient(135deg,var(--maarm-warning),#FCD34D); }  /* 大师场：金渐变 */
+.seg-btn--selected .seg-dot {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35), 0 0 0 1px rgba(0,0,0,0.08);
+}
+/* 选项徽章：缺模型等外部状态标记（不占选项文字宽度） */
+.seg-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  background: var(--maarm-surface-hover);
+  color: var(--maarm-foreground-secondary);
+  box-shadow: inset 0 0 0 1px var(--maarm-border);
+}
+.seg-badge--warn {
+  background: color-mix(in srgb, var(--maarm-warning) 18%, transparent);
+  color: var(--maarm-warning-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--maarm-warning) 45%, transparent);
+}
+.seg-badge--error {
+  background: color-mix(in srgb, var(--maarm-danger) 16%, transparent);
+  color: var(--maarm-danger-strong);
+}
+.seg-btn--selected .seg-badge {
+  background: rgba(255,255,255,0.92);
+  color: var(--maarm-primary);
+  box-shadow: none;
+}
+/* 字段内联提示：原因 + 固定动作（下载 / 打开数据目录） */
+.field-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--maarm-radius-sm);
+  border: 1px solid var(--maarm-border);
+  background: var(--maarm-surface-hover);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--maarm-foreground-secondary);
+}
+.field-notice--warn {
+  border-color: color-mix(in srgb, var(--maarm-warning) 40%, var(--maarm-border));
+  background: color-mix(in srgb, var(--maarm-warning) 8%, var(--maarm-surface-hover));
+  color: var(--maarm-warning-strong);
+}
+.field-notice--error {
+  border-color: color-mix(in srgb, var(--maarm-danger) 40%, var(--maarm-border));
+  background: color-mix(in srgb, var(--maarm-danger) 8%, var(--maarm-surface-hover));
+  color: var(--maarm-danger-strong);
+}
+.field-notice-text { flex: 1 1 220px; min-width: 0; }
+.field-notice-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.field-notice-btn {
+  border: 1px solid var(--maarm-border);
+  border-radius: var(--maarm-radius-sm);
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground);
+  font-family: var(--maarm-font-sans);
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background var(--maarm-duration-fast) ease, border-color var(--maarm-duration-fast) ease;
+}
+.field-notice-btn:hover {
+  background: var(--maarm-surface-hover);
+  border-color: var(--maarm-border-strong);
+}
+
+/* ============ 环境中心（settings.js openOptimizerCenter / optimizerItemHtml） ============ */
+/* 顶部汇总条：待优化/已优化/无需处理三档计数 + 一键全部优化 */
+.opt-summary {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; margin-bottom: 12px;
+  background: var(--maarm-sidebar); border: 1px solid var(--maarm-border-light);
+  border-radius: var(--maarm-radius-md);
+}
+.opt-summary-text { flex: 1; min-width: 0; font-size: 12px; color: var(--maarm-foreground-secondary); }
+.opt-summary-text b { font-weight: 600; color: var(--maarm-foreground); }
+.opt-summary-text .opt-num--todo { color: var(--maarm-warning); }
+.opt-summary-text .opt-num--done { color: var(--maarm-success); }
+
+/* 行式卡片：左侧状态色条 + 标题/一句话/折叠细节，底部状态 pill 与操作按钮同行紧邻 */
+.opt-item {
+  border: 1px solid var(--maarm-border); border-left: 3px solid var(--maarm-border-strong);
+  border-radius: var(--maarm-radius-md); padding: 12px 14px; margin-bottom: 10px;
+  background: var(--maarm-surface);
+}
+.opt-item:last-child { margin-bottom: 0; }
+.opt-item--todo { border-left-color: var(--maarm-warning); background: var(--maarm-warning-bg); }
+.opt-item--done { border-left-color: var(--maarm-success); }
+.opt-item--na { border-left-color: var(--maarm-border-strong); }
+.opt-item-title { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); line-height: 1.4; }
+.opt-item-effect { font-size: 12px; color: var(--maarm-foreground-secondary); line-height: 1.5; margin-top: 3px; }
+.opt-item-note { font-size: 11px; color: var(--maarm-foreground-muted); line-height: 1.5; margin-top: 6px; }
+
+/* 技术细节折叠（值/可选值/注册表路径/后果），默认收起，降认知负荷 */
+.opt-details { margin-top: 8px; }
+.opt-details > summary {
+  cursor: pointer; font-size: 11px; color: var(--maarm-foreground-muted);
+  list-style: none; user-select: none; display: inline-flex; align-items: center; gap: 5px;
+}
+.opt-details > summary::-webkit-details-marker { display: none; }
+.opt-details > summary::before { content: '▸'; font-size: 9px; transition: transform var(--maarm-duration-fast) ease; }
+.opt-details[open] > summary::before { transform: rotate(90deg); }
+.opt-details-body {
+  margin-top: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.7;
+  color: var(--maarm-foreground-secondary); background: var(--maarm-sidebar);
+  border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-sm);
+}
+.opt-details-body p { margin: 0 0 5px; }
+.opt-details-body p:last-child { margin-bottom: 0; }
+.opt-details-body .opt-path { word-break: break-all; font-family: var(--maarm-font-mono); color: var(--maarm-foreground-muted); }
+
+.opt-item-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.opt-pill {
+  font-size: 11px; font-weight: 500; padding: 2px 9px; border-radius: 10px;
+  white-space: nowrap; display: inline-flex; align-items: center;
+}
+.opt-pill--todo { background: color-mix(in srgb, var(--maarm-warning) 15%, transparent); color: var(--maarm-warning-strong); }
+.opt-pill--done { background: var(--maarm-success-bg); color: var(--maarm-success); }
+.opt-pill--na { background: var(--maarm-surface-hover); color: var(--maarm-foreground-muted); }
+.opt-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.opt-btn {
+  cursor: pointer; border-radius: var(--maarm-radius-sm); font-size: 12px; padding: 5px 12px;
+  font-family: var(--maarm-font-sans); white-space: nowrap;
+  transition: background var(--maarm-duration-fast) ease, border-color var(--maarm-duration-fast) ease, color var(--maarm-duration-fast) ease;
+}
+.opt-btn--primary { border: none; background: var(--maarm-primary); color: var(--maarm-primary-foreground); }
+.opt-btn--primary:hover:not(:disabled) { background: var(--maarm-primary-hover); }
+.opt-btn--primary:active:not(:disabled) { background: var(--maarm-primary-active); }
+.opt-btn--ghost { border: 1px solid var(--maarm-border); background: transparent; color: var(--maarm-foreground-secondary); }
+.opt-btn--ghost:hover:not(:disabled) { background: var(--maarm-surface-hover); border-color: var(--maarm-border-strong); }
+.opt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 环境中心 tab 条：视觉语言对齐顶部导航（文字 + 激活主色下划线），双 tab 切换 */
+.env-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--maarm-border-light); margin-bottom: 12px; }
+.env-tab {
+  appearance: none; background: none; border: none; cursor: pointer;
+  font-family: var(--maarm-font-sans); font-size: 13px; padding: 7px 12px 8px;
+  color: var(--maarm-foreground-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.env-tab:hover { color: var(--maarm-foreground); }
+.env-tab--on { color: var(--maarm-primary); font-weight: 600; border-bottom-color: var(--maarm-primary); }
+.env-pane { display: none; }
+.env-pane--on { display: block; }
+
+/* 可选依赖 tab 顶部说明条：收录原则的一句话用户版 */
+.dep-note {
+  font-size: 11px; color: var(--maarm-foreground-muted); line-height: 1.6;
+  padding: 8px 12px; margin-bottom: 12px; background: var(--maarm-sidebar);
+  border: 1px solid var(--maarm-border-light); border-radius: var(--maarm-radius-md);
+}
+
+/* 圆角形状放在文件末尾：它是「覆盖层」——.log-section / .maarm-modal-card 的定义在
+   上面更靠后的位置，同特异性下后写的规则才生效，放中间会被基础半径顶掉。 */
+/* ---------- 圆角形状（corner-shape，作用于所有「面」） ---------- */
+/* 现状：全站圆角都是 border-radius 的圆弧。圆弧与直边相切，但曲率在切点从 0 直接跳到
+   1/r，观感是「到这里突然开始转」。
+
+   **半径要按「等效圆」补，不能按几何跨度补。** 超椭圆拐角会贴着边收，肉眼看到的圆润
+   程度远小于它的 border-radius。实测（同一半径下，用拐角缺口面积折算成等效圆半径）：
+
+   | 取值 | 等效圆半径 / border-radius |
+   |---|---|
+   | round（圆弧） | 1.00 |
+   | squircle | 0.69 |
+   | superellipse(2.5) | 0.54 |
+   | superellipse(3) | 0.43 |
+
+   前两版就是踩了这个：`superellipse(3)` + 12px 实际只相当于 5.2px 的圆弧，比原来的 8px
+   还小，所以「越改越方」。现在改用 squircle（非圆弧里最圆的一档），并按 1/0.69 ≈ 1.45
+   补半径：16px ≈ 等效 11px、20px ≈ 等效 14px——都比原来的 8/12 更圆。
+
+   覆盖面是**全部卡片面**（页面卡片、关于页头卡、任务卡、日志卡、弹窗）：它们会同屏出现，
+   只改一处必然「各有各的样子」。日志卡是卡片里嵌的小条目，半径按 12（等效 8.3）收一档，
+   形成内外两级、不抢主卡。按钮 / 输入框 / 徽章仍是圆弧（小尺寸下差异不明显，等验收后再定）。
+
+   为什么整块包在 @supports 里：corner-shape 仍是实验特性（Chromium 139+ 起提供）。
+   不支持的引擎根本不解析这一块，所有面继续走上面的 border-radius 圆弧——降级自动生效，
+   不需要另写一套覆盖规则。校验条件写成要用的那个取值本身：属性名存在但取值不认识时
+   同样落到降级分支，不会出现「解析了但画不出」的半吊子状态。 */
+@supports (corner-shape: squircle) {
+  .card,
+  .about-hero,
+  .task-item { border-radius: 16px; corner-shape: var(--maarm-corner-shape); }
+  .log-section { border-radius: 12px; corner-shape: var(--maarm-corner-shape); }
+  .maarm-modal-card { border-radius: 20px; corner-shape: var(--maarm-corner-shape); }
+  /* 选卡卡片：半径由 --gal-radius 给（20px，与原来的 G2@10 轮廓等效），这里只补形状。
+     描边仍是自算路径（见 js/gallery-shape.js），但轮廓、照片裁切、边框都已回到原生。 */
+  .task-gallery-cell { corner-shape: var(--maarm-corner-shape); }
+}
+
+/* ============================================================================
+   成就解锁提示条（灵动岛）
+   ----------------------------------------------------------------------------
+   三态：圆点入场 → 胶囊（标题 + 描述）→ 详情卡；多条堆叠、队首 5 秒串行推进。
+   四档落在整条外圈描边上（普通/稀有/珍贵/隐藏），隐藏档色环旋转 + 彩虹标题。
+   层级：成就管理页（9000）之上、模态（9999）之下——解锁提示是全局通知，
+   在成就页里也必须在最上层，否则会被页面挡住；错误 toast 在 bottom:56px，
+   本岛抬到 100px 以免同屏重叠。
+   ============================================================================ */
+
+#ach-fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* 全窗画布：绝不能吃鼠标事件 */
+  z-index: 9400;
+}
+
+#ach-island {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 100px;
+  height: 0;
+  pointer-events: none;   /* 空白区域不吃鼠标事件，单条自己开 auto */
+  z-index: 9500;
+}
+
+.maarm-ach {
+  --ach-h: 56px;          /* 紧凑态直径 / 胶囊高度 */
+  --ach-ring-w: 2.5px;    /* 档位描边宽度 */
+  --ach-ring: #1F2328;    /* 档位色，落在整条外圈描边 */
+  --dy: 0px;              /* 堆叠上移量 */
+
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin: 0 auto;         /* 水平居中用外边距，不靠 transform */
+  bottom: var(--dy);      /* 堆叠位置也用布局属性 */
+  width: var(--ach-h);
+  height: var(--ach-h);
+  /* 圆角取高度一半：胶囊端头成立，且胶囊 → 详情卡的圆角变化看得出来 */
+  border-radius: calc(var(--ach-h) / 2);
+  /* 双背景描边：内层铺底色，外层铺档位色，四档几何完全一致 */
+  border: var(--ach-ring-w) solid transparent;
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--ach-ring) border-box;
+  box-shadow: 0 12px 32px rgba(16, 18, 24, 0.16), 0 2px 6px rgba(16, 18, 24, 0.06);
+  overflow: hidden;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transform: scale(0.18); /* 只在入场那一下用，入场结束回到 none */
+  /* 静态态不保留 transform、不写 will-change：留在合成层会让文字抗锯齿退化成灰度 */
+  transition:
+    width 460ms cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    height 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    bottom 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 240ms ease,
+    transform 280ms cubic-bezier(0.2, 0.9, 0.25, 1.05);
+}
+.maarm-ach.is-shown { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] { border-radius: 18px; }
+
+.maarm-ach__face {
+  display: flex;
+  align-items: center;
+  height: calc(var(--ach-h) - var(--ach-ring-w) * 2);
+  transition: opacity 200ms ease;
+}
+.maarm-ach__badge {
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+.maarm-ach__badge svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: var(--maarm-foreground);
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.maarm-ach__text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 20px 0 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition:
+    opacity 220ms ease 100ms,
+    transform 320ms cubic-bezier(0.2, 0.9, 0.25, 1) 80ms;
+}
+.maarm-ach__title { font-size: 15px; font-weight: 600; line-height: 1.25; color: var(--maarm-foreground); }
+.maarm-ach__sub { font-size: 12px; line-height: 1.2; color: var(--maarm-foreground-muted); }
+
+.maarm-ach[data-state="stacked"] .maarm-ach__text,
+.maarm-ach[data-state="detail"] .maarm-ach__text { opacity: 1; transform: none; }
+.maarm-ach[data-state="detail"] .maarm-ach__face { opacity: 0; }
+
+/* 详情卡：绝对定位铺满，不参与尺寸计算 */
+.maarm-ach__detail {
+  position: absolute;
+  inset: 0;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 240ms ease,
+    transform 300ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach[data-state="detail"] .maarm-ach__detail { opacity: 1; transform: none; }
+
+.maarm-ach__detail-head { display: flex; align-items: center; gap: 8px; }
+.maarm-ach__detail-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.maarm-ach__tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--maarm-border-light);
+  color: var(--maarm-foreground-secondary);
+}
+.maarm-ach__tier::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ach-dot, var(--ach-ring));
+}
+.maarm-ach__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach__detail-desc { font-size: 13px; line-height: 1.45; color: var(--maarm-foreground-secondary); }
+.maarm-ach__detail-cond {
+  margin-top: auto;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--maarm-foreground-muted);
+  border-top: 1px solid var(--maarm-border-light);
+  padding-top: 8px;
+}
+
+/* 档位：整条胶囊的描边（值来自后端载荷的 tier，第四档由 hidden 承担） */
+.maarm-ach[data-tier="normal"] { --ach-ring: #1F2328; }
+.maarm-ach[data-tier="rare"] { --ach-ring: #38BDF8; }
+.maarm-ach[data-tier="precious"] { --ach-ring: var(--maarm-primary); }
+
+@property --maarm-ach-spin {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes maarm-ach-spin { to { --maarm-ach-spin: 360deg; } }
+/* 隐藏档：色环走元素自身的 border-box 背景，与其它三档同一套几何
+   （伪元素画环会被 overflow:hidden 在 padding-box 处裁掉） */
+.maarm-ach[data-tier="hidden"] {
+  --ach-ring: conic-gradient(from var(--maarm-ach-spin) in oklch longer hue,
+    oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  /* 档位小圆点单独给静态色环，避免依赖正在旋转的 --maarm-ach-spin */
+  --ach-dot: conic-gradient(in oklch longer hue, oklch(0.72 0.16 0deg), oklch(0.72 0.16 360deg));
+  animation: maarm-ach-spin 3.2s linear infinite;
+}
+.maarm-ach[data-tier="hidden"] .maarm-ach__title,
+.maarm-ach[data-tier="hidden"] .maarm-ach__detail-title { --maarm-scan-cycle: 3.2s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .maarm-ach {
+    transition: opacity 150ms ease, width 150ms ease, height 150ms ease !important;
+    transform: none !important;
+  }
+  .maarm-ach[data-tier="hidden"] { animation: none !important; }
+}
+
+/* ============================================================================
+   成就管理（设置 → 快捷工具进入的子页）
+   ----------------------------------------------------------------------------
+   位置：标题栏之下、底栏之上（顶栏与底栏常驻，窗口按钮与拖动区照旧可用）。
+   布局：左列按「核心 / 各模块」分组、随窗口拉伸；右列总览 / 提示开关 / 进度数据
+   固定宽度并随滚动钉住——与主控页、数据页同一条栏目习惯。
+   卡片三态（已解锁 / 未解锁 / 隐藏遮蔽）；已解锁的卡带指针跟随的镜面反光，
+   未解锁保持哑光。存档来自更高版本时进冻结态：顶部警示条 + 进度显示不可用 +
+   导入/重置置灰。
+   ============================================================================ */
+
+.maarm-ach-sheet {
+  position: fixed;
+  top: 52px;                      /* 标题栏高度 */
+  bottom: 44px;                   /* 底栏高度 */
+  left: 0;
+  right: 0;
+  z-index: 9000;                  /* 正文之上、模态（9999）之下 */
+  background: var(--maarm-background);
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--maarm-duration-base) ease,
+              transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.maarm-ach-sheet[hidden] { display: none; }
+.maarm-ach-sheet.is-open { opacity: 1; transform: none; }
+
+/* ---------- 页头：返回 + 面包屑 + 筛选（贴右） ---------- */
+.maarm-ach-head {
+  flex: 0 0 53px;                 /* 与通用卡头等高 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;                /* 与正文卡片的 12px 页边对齐：筛选右缘正对卡片右缘 */
+  background: var(--maarm-surface);
+  border-bottom: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-back {
+  width: 28px; height: 28px;
+  border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--maarm-foreground-secondary);
+  display: grid; place-items: center; cursor: pointer;
+}
+.maarm-ach-back:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground); }
+.maarm-ach-back svg {
+  width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.maarm-ach-crumb { display: flex; align-items: baseline; gap: 7px; }
+.maarm-ach-crumb__up, .maarm-ach-crumb__sep { font-size: 12px; color: var(--maarm-foreground-muted); }
+.maarm-ach-crumb__cur { font-size: 14px; font-weight: 600; color: var(--maarm-foreground); }
+
+.maarm-ach-seg {
+  display: flex; gap: 2px; padding: 2px;
+  margin-left: auto;
+  border-radius: 8px;
+  background: var(--maarm-surface-active);
+}
+.maarm-ach-filter {
+  font: inherit; font-size: 12px;
+  padding: 4px 12px; border: 0; border-radius: 6px;
+  background: none; color: var(--maarm-foreground-secondary); cursor: pointer;
+}
+.maarm-ach-filter:hover { color: var(--maarm-foreground); }
+.maarm-ach-filter.is-active {
+  background: var(--maarm-surface);
+  color: var(--maarm-foreground);
+  font-weight: 600;
+  box-shadow: var(--maarm-shadow-sm);
+}
+
+.maarm-ach-banner {
+  flex: 0 0 auto;
+  margin: 12px 12px 0;
+  padding: 10px 14px;
+  border-radius: var(--maarm-radius-md);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #8A5A00;
+  background: #FFF7E6;
+  border: 1px solid #F3DFB8;
+}
+.maarm-ach-banner[hidden] { display: none; }
+
+/* ---------- 正文：左分组拉伸、右栏固定 ---------- */
+.maarm-ach-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; }
+.maarm-ach-inner {
+  max-width: var(--maarm-page-max); margin: 0 auto;
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.maarm-ach-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.maarm-ach-aside {
+  /* 固定宽度但不许被内容撑开：min-width:0 让 flex 项的自动最小尺寸失效，
+     否则一条长路径就能把整栏顶宽、把左边分组挤窄 */
+  flex: 0 0 340px;
+  min-width: 0;
+  position: sticky; top: 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+/* 总览 */
+.maarm-ach-meta { font-size: 12px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums; }
+.maarm-ach-sum { display: flex; align-items: baseline; gap: 4px; }
+.maarm-ach-sum__num { display: flex; align-items: baseline; gap: 3px; }
+.maarm-ach-sum__num b { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.maarm-ach-sum__num span { font-size: 14px; color: var(--maarm-foreground-muted); }
+.maarm-ach-sum__pct { margin-left: auto; font-size: 12px; color: var(--maarm-foreground-muted); }
+.maarm-ach-sum__track {
+  height: 6px; border-radius: 3px; margin-top: 10px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-sum__fill {
+  height: 100%; border-radius: 3px;
+  background: var(--maarm-foreground);
+  transition: width var(--maarm-duration-slow) ease;
+}
+.maarm-ach-sum__tiers {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px;
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--maarm-border-light);
+}
+.maarm-ach-tier-stat { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--maarm-foreground-muted); }
+.maarm-ach-tier-stat__name { display: flex; align-items: center; gap: 5px; }
+.maarm-ach-tier-stat__name::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--tier-color, #1F2328);
+}
+.maarm-ach-tier-stat__val {
+  margin-left: auto; font-size: 13px; font-weight: 600;
+  color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
+}
+.maarm-ach-tier-stat__val em {
+  font-style: normal; font-weight: 400; font-size: 11px;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-ach-hint {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--maarm-border-light);
+  font-size: 11.5px; line-height: 1.5; color: var(--maarm-foreground-muted);
+  overflow-wrap: anywhere;        /* 兜底：万一还有长串进来，换行而不是撑栏 */
+}
+/* 操作结果（如导出成功带文件名）：一行放不下就省略，完整路径在 title 里 */
+.maarm-ach-hint.is-result { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 解锁提示开关行 */
+.maarm-ach-row { display: flex; align-items: flex-start; gap: 12px; }
+.maarm-ach-row__main { flex: 1; min-width: 0; }
+.maarm-ach-row__title { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
+.maarm-ach-row__desc { margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--maarm-foreground-secondary); }
+
+.maarm-ach-switch {
+  position: relative; flex: 0 0 auto;
+  width: 40px; height: 24px; border-radius: 12px;
+  border: 0; padding: 0; cursor: pointer;
+  background: var(--maarm-border-strong);
+  transition: background var(--maarm-duration-base) ease;
+}
+.maarm-ach-switch i {
+  position: absolute; top: 2px; left: 2px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--maarm-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  transition: transform var(--maarm-duration-base) ease;
+}
+.maarm-ach-switch.is-on { background: var(--maarm-primary); }
+.maarm-ach-switch.is-on i { transform: translateX(16px); }
+.maarm-ach-switch:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 进度数据：竖排按钮 */
+.maarm-ach-actions { display: flex; flex-direction: column; gap: 10px; }
+.maarm-ach-actions .maarm-btn { width: 100%; height: 30px; }
+.maarm-ach-danger:hover:not(:disabled) {
+  border-color: #F3C9CA; color: var(--maarm-primary); background: #FFF7F7;
+}
+
+/* ---------- 分组卡 ---------- */
+.maarm-ach-group__meta { display: flex; align-items: center; gap: 10px; }
+.maarm-ach-group__count { font-size: 12px; color: var(--maarm-foreground-muted); font-variant-numeric: tabular-nums; }
+.maarm-ach-group__bar {
+  flex: 0 0 84px; height: 4px; border-radius: 2px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-group__bar i { display: block; height: 100%; border-radius: 2px; background: var(--maarm-foreground-secondary); }
+.maarm-ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(222px, 1fr)); gap: 10px; }
+
+/* ---------- 成就卡：档位色 + 镜面反光 ---------- */
+.maarm-ach-card {
+  --tier: #1F2328;
+  --mx: 50%; --my: 50%; --ang: 118deg; --glare: 0; --hue: 0deg;
+  position: relative;
+  display: flex; flex-direction: column;
+  min-height: 116px;
+  /* 倾斜与翻面合进同一个 rotateY：转的是这张卡，不是卡里的内容。
+     全部角度由 js 的弹簧逐帧写进变量（见成就页「卡片动效」段），这里不设 transition，
+     否则 CSS 缓动会和弹簧叠成二次延迟。preserve-3d 是翻面的前提：只有三维上下文里，
+     子面的背面朝向才会被 backface-visibility 判定（塌平后正面会一直朝前，翻过去是镜像字）。 */
+  transform: perspective(800px) translate3d(0, var(--lift, 0px), 0)
+             rotateX(var(--rx, 0deg))
+             rotateY(calc(var(--ry, 0deg) + var(--flip, 0deg)))
+             scale(var(--scale, 1));
+  transform-style: preserve-3d;
+  transition: box-shadow var(--maarm-duration-fast) ease;
+}
+
+/* 卡面：底、描边、内边距、圆角、裁切都在面上——卡本身只是一层透明的三维舞台，
+   这样翻面时框和内容一起转，而扫光仍被圆角裁掉。 */
+.maarm-ach-card__face {
+  position: relative;
+  display: flex; flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid transparent;
+  border-radius: var(--maarm-radius-md);
+  overflow: hidden;                       /* 反向补偿的光带会略微超出，裁掉 */
+  background:
+    linear-gradient(var(--maarm-surface), var(--maarm-surface)) padding-box,
+    var(--edge, var(--maarm-border)) border-box;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.maarm-ach-card[data-tier="normal"]   { --tier: #1F2328; }
+.maarm-ach-card[data-tier="rare"]     { --tier: #38BDF8; }
+.maarm-ach-card[data-tier="precious"] { --tier: var(--maarm-primary); }
+.maarm-ach-card[data-tier="hidden"]   { --tier: #C9B6F2; }
+
+/* 未解锁：哑光，不倾斜、不反光——没到手的东西不该比到手更亮（弹簧目标恒为 0，见 js） */
+.maarm-ach-card.is-locked .maarm-ach-card__face {
+  background:
+    linear-gradient(#FBFCFE, #FBFCFE) padding-box,
+    var(--maarm-border) border-box;
+}
+.maarm-ach-card.is-locked .maarm-ach-card__face::before,
+.maarm-ach-card.is-locked .maarm-ach-card__face::after { display: none; }
+
+/* 已解锁：一层极淡的档位色箔底（白卡上没有可反的光，一点色偏才有东西可反） */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face {
+  --edge: color-mix(in srgb, var(--tier) 28%, var(--maarm-border));
+  background:
+    linear-gradient(160deg,
+      color-mix(in srgb, var(--tier) 5%, #FFFFFF),
+      color-mix(in srgb, var(--tier) 2%, #FAFBFF)) padding-box,
+    var(--edge) border-box;
+}
+
+/* 光源：指针一侧染一层档位色，对侧轻压暗 */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face::before {
+  content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+  pointer-events: none; opacity: var(--glare); transition: opacity 200ms ease;
+  background:
+    radial-gradient(150% 130% at var(--mx) var(--my),
+      color-mix(in srgb, var(--tier) 18%, #FFFFFF) 0%,
+      rgba(255, 255, 255, 0) 56%,
+      rgba(31, 35, 40, 0.055) 100%);
+}
+/* 镜面光带：不跟卡片一起转（略过补偿），视角一动就相对卡面滑开一截 */
+.maarm-ach-card.is-unlocked .maarm-ach-card__face::after {
+  content: ""; position: absolute; inset: 0; z-index: 0; border-radius: inherit;
+  pointer-events: none; opacity: var(--glare); transition: opacity 200ms ease;
+  transform: rotateX(calc(var(--rx, 0deg) * -1.25)) rotateY(calc(var(--ry, 0deg) * -1.25)) scale(1.14);
+  transform-origin: 50% 50%;
+  background: linear-gradient(var(--ang),
+    rgba(255, 255, 255, 0) 38%,
+    rgba(255, 255, 255, 0.28) 44%,
+    rgba(255, 255, 255, 0.82) 48.5%,
+    rgba(255, 255, 255, 1) 50.5%,
+    rgba(255, 255, 255, 0.82) 52.5%,
+    rgba(255, 255, 255, 0.28) 57%,
+    rgba(255, 255, 255, 0) 62%);
+}
+/* 面内的文字要压在光带之上（伪元素 z-index: 0，内容包一层自己的层） */
+.maarm-ach-card__front > *, .maarm-ach-card__back > * { position: relative; z-index: 1; }
+.maarm-ach-card.is-unlocked:hover .maarm-ach-card__face {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 24px color-mix(in srgb, var(--tier) 14%, rgba(16, 18, 24, 0.10));
+  --edge: conic-gradient(from calc(var(--ang) - 90deg),
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 0%,
+    #FFFFFF 18%,
+    color-mix(in srgb, var(--tier) 30%, #EAF2FF) 34%,
+    #FFFFFF 52%,
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 68%,
+    #FFFFFF 84%,
+    color-mix(in srgb, var(--tier) 45%, #FFFFFF) 100%);
+}
+
+/* 隐藏档已解锁：七彩镭射——底色与描边是常亮的整片光谱，扫光换成光谱带并走叠加混合 */
+.maarm-ach-card[data-tier="hidden"].is-unlocked .maarm-ach-card__face {
+  --edge: conic-gradient(from var(--hue) in oklch longer hue,
+    oklch(0.80 0.15 0deg), oklch(0.80 0.15 60deg), oklch(0.80 0.15 120deg),
+    oklch(0.80 0.15 180deg), oklch(0.80 0.15 240deg), oklch(0.80 0.15 300deg),
+    oklch(0.80 0.15 360deg));
+  background:
+    linear-gradient(150deg in oklch longer hue,
+      oklch(0.995 0.010 calc(var(--hue) * 0.4)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 72deg)),
+      oklch(0.995 0.010 calc(var(--hue) * 0.4 + 144deg)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 216deg)),
+      oklch(0.995 0.010 calc(var(--hue) * 0.4 + 288deg)),
+      oklch(0.988 0.022 calc(var(--hue) * 0.4 + 360deg))) padding-box,
+    var(--edge) border-box;
+}
+.maarm-ach-card[data-tier="hidden"].is-unlocked .maarm-ach-card__face::after {
+  mix-blend-mode: overlay;        /* 只改明暗、不替换卡面颜色 */
+  background: linear-gradient(var(--ang) in oklch longer hue,
+    rgba(255, 255, 255, 0) 42%,
+    oklch(0.70 0.20 calc(200deg + var(--hue) * 0.3) / 0.75) 45.5%,
+    oklch(0.82 0.17 calc(255deg + var(--hue) * 0.3)) 48.5%,
+    rgba(255, 255, 255, 1) 50.5%,
+    oklch(0.82 0.17 calc(305deg + var(--hue) * 0.3)) 52.5%,
+    oklch(0.70 0.20 calc(20deg + var(--hue) * 0.3) / 0.75) 55.5%,
+    rgba(255, 255, 255, 0) 59%);
+}
+.maarm-ach-card[data-tier="hidden"].is-unlocked:hover .maarm-ach-card__face {
+  --edge: conic-gradient(from calc(var(--ang) - 90deg) in oklch longer hue,
+    oklch(0.80 0.15 0deg), oklch(0.80 0.15 90deg), oklch(0.80 0.15 180deg),
+    oklch(0.80 0.15 270deg), oklch(0.80 0.15 360deg));
+}
+
+/* ---------- 翻面：点一下卡看触发条件 ----------
+   翻的是卡本身（角度来自 --flip，与倾斜合进同一个 rotateY）；两面各自
+   backface-visibility: hidden，转到 90° 时正面消失、背面接上。 */
+.maarm-ach-card { cursor: pointer; }
+/* 悬停放大幅度会越过 10px 网格缝：提一层，保证放大的卡压在邻卡之上而不是被后画的邻卡盖边 */
+.maarm-ach-card:hover { z-index: 1; }
+.maarm-ach-card:focus-visible { outline: 2px solid var(--maarm-primary); outline-offset: 2px; }
+.maarm-ach-card__front { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+/* 背面：一张与正面同尺寸、预先转 180° 的面；卡转到 180° 时它正好正对观众。
+   内容一行居中——卡只有 220 来像素宽，标签缩小一号压在条件上方，
+   挤成「标签：条件」会先断行，看着像两段。 */
+.maarm-ach-card__back {
+  position: absolute; inset: 0;
+  transform: rotateY(180deg);
+  align-items: center; justify-content: center;
+  gap: 3px;
+  padding: 0 8px;
+  text-align: center;
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card__cond-tag {
+  font-size: 9.5px; letter-spacing: 0.12em;
+  color: var(--maarm-foreground-muted);
+}
+.maarm-ach-card__cond { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+/* 卡内容 */
+.maarm-ach-card__head { display: flex; align-items: center; gap: 8px; }
+.maarm-ach-card__badge {
+  flex: 0 0 auto;
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--maarm-surface-hover);
+  color: var(--maarm-foreground-secondary);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__badge { color: #B9C0CE; }
+.maarm-ach-card.is-unlocked .maarm-ach-card__badge {
+  background: color-mix(in srgb, var(--tier) 12%, var(--maarm-surface));
+  color: var(--tier);
+}
+.maarm-ach-card__badge svg {
+  width: 15px; height: 15px;
+  fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.maarm-ach-card__tier { margin-left: auto; font-size: 11px; color: var(--maarm-foreground-muted); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__tier {
+  color: color-mix(in srgb, var(--tier) 65%, var(--maarm-foreground));
+}
+.maarm-ach-card__title {
+  margin-top: 9px;
+  font-size: 13.5px; font-weight: 600; line-height: 1.3;
+  color: var(--maarm-foreground);
+}
+.maarm-ach-card.is-locked .maarm-ach-card__title { font-weight: 500; color: var(--maarm-foreground-secondary); }
+.maarm-ach-card__masked { letter-spacing: 0.18em; color: var(--maarm-foreground-muted); }
+.maarm-ach-card__desc {
+  margin-top: 4px;
+  font-size: 11.5px; line-height: 1.5; color: var(--maarm-foreground-muted);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.maarm-ach-card__foot {
+  margin-top: auto; padding-top: 9px;
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; color: var(--maarm-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maarm-ach-card__bar {
+  flex: 1 1 auto; height: 4px; border-radius: 2px;
+  background: var(--maarm-border-light); overflow: hidden;
+}
+.maarm-ach-card__bar i { display: block; height: 100%; border-radius: 2px; background: var(--maarm-foreground-secondary); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot { color: var(--maarm-success-strong); }
+.maarm-ach-card.is-unlocked .maarm-ach-card__foot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--maarm-success);
+}
+/* 隐藏档已解锁：彩虹标题（复用页首扫光） */
+.maarm-ach-card__title.is-rainbow { --maarm-scan-cycle: 6s; }
+
+/* 冻结态：进度区压暗，界面上以「不可用」占位，不谎报 0/1 */
+.maarm-ach-sheet.is-frozen .maarm-ach-card__foot,
+.maarm-ach-sheet.is-frozen .maarm-ach-sum { opacity: 0.45; }
+
+.maarm-ach-empty {
+  padding: 40px 0; text-align: center;
+  font-size: 13px; color: var(--maarm-foreground-muted);
+}
+
+/* 减弱动效：不出倾斜（js 里目标恒为 0），翻面照常但走临界阻尼、快进快出 */
+@media (prefers-reduced-motion: reduce) {
+  .maarm-ach-card.is-unlocked .maarm-ach-card__face::after { transform: scale(1.14); }
+}

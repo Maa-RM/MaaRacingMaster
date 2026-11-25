@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MaaRM</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="tour.css">
+<script src="mock-backend.js"></script>
+<script>
+  // 冷启动才显示预热遮罩：壳在冷态下以 ?warmup=1 打开页面；热启动没有这个参数，
+  // 这里在首次绘制前就给根元素加类把遮罩隐藏，避免出现一闪而过的加载页。
+  if (!/[?&]warmup=1(?:&|$)/.test(location.search)) {
+    document.documentElement.classList.add('boot-skip');
+  }
+</script>
+</head>
+<body>
+  <!-- ===== 启动预热遮罩（冷启动专用，见 app.js runBootWarmup） ===== -->
+  <div class="boot-overlay" id="boot-overlay" role="status" aria-live="polite">
+    <div class="boot-mark"><img src="logo.png" alt=""></div>
+    <div class="boot-title">正在预热界面</div>
+    <p class="boot-desc">首次启动要编译一次界面渲染，完成后不会再出现</p>
+    <div class="boot-bar"><i></i></div>
+    <div class="boot-step">准备中…</div>
+  </div>
+  <!-- ===== 顶部标题栏（Draggable 空白区 / Passthrough 交互区由 C# InputNonClientPointerSource 管理；窗口控制按钮为 HTML 自绘） ===== -->
+  <header id="titlebar">
+    <div class="brand">
+      <img class="brand-logo" src="logo.png" alt="MaaRM">
+      <span class="brand-title">MaaRM</span>
+      <span class="brand-version" id="app-version"></span>
+    </div>
+    <nav class="tabs">
+      <span class="tab-slider" id="tab-slider"></span>
+      <button class="maarm-tab maarm-tab--active" data-tab="control">主控</button>
+      <button class="maarm-tab" data-tab="data">数据</button>
+      <button class="maarm-tab" data-tab="settings">设置</button>
+      <button class="maarm-tab" data-tab="about">
+        <span class="maarm-tab-label">关于<span class="maarm-tab-dot" id="about-tab-dot" aria-hidden="true"></span></span>
+      </button>
+    </nav>
+    <div class="win-controls" id="win-controls">
+      <button class="win-btn" id="btn-win-min" type="button" aria-label="最小化" title="最小化">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5H9"/></svg>
+      </button>
+      <button class="win-btn" id="btn-win-max" type="button" aria-label="最大化" title="最大化">
+        <svg class="icon-max" viewBox="0 0 10 10" aria-hidden="true"><rect x="2" y="2" width="6" height="6"/></svg>
+        <svg class="icon-restore" viewBox="0 0 10 10" aria-hidden="true"><rect x="3" y="2" width="5" height="5"/><path d="M2 3V8H7"/></svg>
+      </button>
+      <button class="win-btn win-btn--close" id="btn-win-close" type="button" aria-label="关闭" title="关闭">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2L8 8M8 2L2 8"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== 主体：四个 tab 页 ===== -->
+  <main>
+    <!-- ===== 主控 ===== -->
+    <section class="page" id="page-control">
+      <!-- 两列包一层内容高度容器：日志卡 sticky 的包含块必须与左列内容等高
+           （直接挂在 .page 下时包含块只有视口高，滚动时日志卡没有行程可钉住） -->
+      <div class="control-cols">
+        <div class="col-left">
+          <div class="card card-flex task-card">
+            <div class="card-head">
+              <h3>运行任务</h3>
+              <button class="icon-btn" id="btn-manage" title="管理模块（加入 / 移出）">
+                <i data-icon="settings"></i>
+              </button>
+            </div>
+            <!-- 任务列表：每模块一张行卡（拖拽手柄 / 启用勾选 / 摘要 / 展开），由 js/run.js 渲染；
+                 列表里有哪些模块由设置按钮的选卡弹窗管理，顺序即执行顺序 -->
+            <ul id="task-list"></ul>
+          </div>
+        </div>
+        <div class="col-right">
+          <div class="card card-flex log-card">
+            <div class="card-head">
+              <h3>运行日志</h3>
+              <div class="log-head-actions">
+                <button class="icon-btn" id="btn-log-clear" title="清空">
+                  <i data-icon="trash"></i>
+                </button>
+                <button class="icon-btn" id="btn-log-copy" title="复制">
+                  <morph-icon reduced-motion="user"></morph-icon>
+                </button>
+              </div>
+            </div>
+            <div class="log-area" id="log-area"></div>
+            <!-- 回顶按钮：随滚动位置换向——贴底时去最旧（顶部），翻上去时回最新（底部）；
+                 内容不溢出时隐藏。图标两枚，CSS 按 --down 类切换。 -->
+            <button class="log-top-btn" id="btn-log-top" hidden aria-label="回到顶部（最旧日志）">
+              <svg class="log-top-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+              <svg class="log-top-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 数据（卡片由 JS 按当前模块渲染，见 app.js renderModulePages） ===== -->
+    <section class="page hidden" id="page-data"></section>
+
+    <!-- ===== 设置（卡片由 JS 按当前模块渲染，见 app.js renderModulePages） ===== -->
+    <section class="page hidden" id="page-settings"></section>
+
+    <!-- ===== 关于 ===== -->
+    <section class="page page-about hidden" id="page-about">
+      <div class="about-container">
+        <div class="about-hero">
+          <div class="about-hero-inner">
+            <div class="about-icon"><img src="logo.png" alt="MaaRacingMaster"></div>
+            <div class="about-hero-text">
+              <h1 class="about-title">MaaRacingMaster</h1>
+              <p class="about-subtitle">模块化游戏自动化平台 —— MAA Framework × YOLOv8 × vgamepad</p>
+              <div class="about-tags">
+                <span class="about-tag about-tag--warn" id="about-dev-tag">开发中</span>
+                <span class="about-tag about-tag--plain">Apache-2.0</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>版本与更新</h3>
+            <button class="maarm-btn upd-gear" id="btn-update-settings" type="button"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="update-settings-popover"
+                    title="更新设置">
+              <i data-icon="settings"></i>
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="upd-row">
+              <span class="upd-icon" id="upd-icon"></span>
+              <div class="upd-text" id="upd-text" role="status" aria-live="polite">
+                <div class="upd-title" id="upd-title"></div>
+                <div class="upd-meta" id="upd-meta"></div>
+              </div>
+              <button class="maarm-btn" id="btn-update-action" type="button">
+                <i id="btn-update-action-icon"></i>
+                <span id="btn-update-action-label">检查更新</span>
+              </button>
+            </div>
+            <div class="upd-detail" id="upd-detail" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>公告</h3></div>
+          <div class="card-body" id="about-announce-body"></div>
+        </div>
+
+        <div class="about-links">
+          <button class="maarm-btn" data-link="home">
+            <i data-icon="github"></i>
+            项目主页
+          </button>
+          <button class="maarm-btn" data-link="issue">
+            <i data-icon="bot"></i>
+            报告问题
+          </button>
+          <button class="maarm-btn" data-link="docs">
+            <i data-icon="book-open"></i>
+            使用文档
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== 底部操作栏 ===== -->
+  <footer>
+    <div class="status">
+      <!-- 状态球：造型与动效见 js/status-orb.js 与 style.css「底栏状态球」。
+           状态由 data-state 驱动（ready / running / stopping / error），旁边有文字同步说明，
+           故对读屏隐藏，避免同一个状态被念两遍。 -->
+      <div class="maarm-orb" id="status-dot" data-state="ready" aria-hidden="true">
+        <svg class="maarm-orb__svg" viewBox="0 0 40 40">
+          <defs>
+            <clipPath id="status-orb-clip"><circle cx="20" cy="20" r="17"/></clipPath>
+            <radialGradient class="maarm-orb__grad" id="status-orb-grad">
+              <stop offset="0" class="maarm-orb__s-in"/>
+              <stop offset="0.6" class="maarm-orb__s-mid"/>
+              <stop offset="0.88" class="maarm-orb__s-edge"/>
+              <stop offset="1" class="maarm-orb__s-out"/>
+            </radialGradient>
+          </defs>
+          <g class="maarm-orb__rings">
+            <circle class="maarm-orb__ring" cx="20" cy="20" r="17"/>
+            <circle class="maarm-orb__ring maarm-orb__ring--lag" cx="20" cy="20" r="17"/>
+          </g>
+          <g class="maarm-orb__body">
+            <circle class="maarm-orb__sphere" cx="20" cy="20" r="17" fill="url(#status-orb-grad)"/>
+            <g clip-path="url(#status-orb-clip)">
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--l">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
+                </g>
+              </g>
+              <g class="maarm-orb__eye-wrap maarm-orb__eye-wrap--r">
+                <g class="maarm-orb__blink">
+                  <path class="maarm-orb__eye-halo"/>
+                  <path class="maarm-orb__eye"/>
+                </g>
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
+      <span class="status-text" id="status-text">系统就绪</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="maarm-btn" id="btn-stop" disabled>
+      <i data-icon="media-stop"></i>
+      停止
+    </button>
+    <button class="maarm-btn maarm-btn--start" id="btn-start">
+      <span class="maarm-start-layer maarm-start-layer--idle">
+        <i data-icon="media-play"></i>
+        开始运行
+      </span>
+      <span class="maarm-start-layer maarm-start-layer--armed" aria-hidden="true">
+        <i data-icon="x"></i>
+        再点取消
+        <span class="maarm-start-digits" aria-hidden="true"><span class="maarm-start-digit-col"><span>3</span><span>2</span><span>1</span></span></span>
+      </span>
+    </button>
+  </footer>
+
+  <div id="error-toast"></div>
+
+  <!-- 更新设置浮窗：固定定位，挂 body 下避免被卡片 overflow 裁切 -->
+  <div class="update-settings-popover" id="update-settings-popover" role="dialog"
+       aria-label="更新设置" hidden>
+    <div class="upd-set-group">
+      <div class="upd-set-label">下载源</div>
+      <div class="upd-set-options" id="upd-source-options">
+        <button class="upd-set-opt is-active" type="button" data-source="cnb" aria-pressed="true">
+          <img src="cnb.svg" alt=""><span>CNB</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+        <button class="upd-set-opt" type="button" data-source="github" aria-pressed="false">
+          <i data-icon="github-solid"></i><span>GitHub</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+      </div>
+    </div>
+    <div class="upd-set-group">
+      <div class="upd-set-label">版本渠道</div>
+      <div class="upd-set-options" id="upd-channel-options">
+        <button class="upd-set-opt is-active" type="button" data-channel="stable" aria-pressed="true">
+          <span>稳定版</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+        <button class="upd-set-opt" type="button" data-channel="preview" aria-pressed="false">
+          <span>测试版</span>
+          <i data-icon="check" class="upd-set-check"></i>
+        </button>
+      </div>
+    </div>
+    <div class="upd-set-group">
+      <div class="upd-set-label">后台自动检查</div>
+      <label class="upd-set-toggle">
+        <input type="checkbox" id="upd-auto-check">
+        <span>启动后自动检查更新，常开时每小时一次</span>
+      </label>
+    </div>
+    <div class="upd-set-note" id="upd-set-note">切换版本渠道立即重新检查；切换下载源自下次检查起作为首选</div>
+  </div>
+
+  <!-- ===== 成就解锁提示条挂点（灵动岛 + 礼花画布，层级见 style.css 成就节） ===== -->
+  <canvas id="ach-fx" aria-hidden="true"></canvas>
+  <div id="ach-island" role="status" aria-live="polite"></div>
+
+  <!-- ===== 成就管理（设置 → 快捷工具进入；在标题栏之下展开，保留顶栏与底栏） =====
+       结构与文案见 style.css「成就管理」与 js/achievement.js；计数、筛选结果由脚本填。 -->
+  <section class="maarm-ach-sheet" id="ach-sheet" hidden aria-hidden="true">
+    <div class="maarm-ach-head">
+      <button class="maarm-ach-back" id="ach-back" type="button" aria-label="返回设置">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <div class="maarm-ach-crumb">
+        <span class="maarm-ach-crumb__up">设置</span>
+        <span class="maarm-ach-crumb__sep">/</span>
+        <span class="maarm-ach-crumb__cur">成就管理</span>
+      </div>
+      <div class="maarm-ach-seg" role="group" aria-label="筛选成就">
+        <button class="maarm-ach-filter is-active" type="button" data-filter="all">全部</button>
+        <button class="maarm-ach-filter" type="button" data-filter="locked">未解锁</button>
+        <button class="maarm-ach-filter" type="button" data-filter="unlocked">已解锁</button>
+      </div>
+    </div>
+    <div class="maarm-ach-banner" id="ach-banner" hidden></div>
+    <div class="maarm-ach-body">
+      <div class="maarm-ach-inner">
+        <!-- 左：按「核心 / 各模块」分组，随窗口拉伸 -->
+        <div class="maarm-ach-main" id="ach-groups"></div>
+        <!-- 右：总览 / 提示开关 / 进度数据，宽度固定、滚动时常驻 -->
+        <aside class="maarm-ach-aside">
+          <div class="card">
+            <div class="card-head"><h3>总览</h3><span class="maarm-ach-meta" id="ach-meta"></span></div>
+            <div class="card-body">
+              <div class="maarm-ach-sum">
+                <div class="maarm-ach-sum__num"><b id="ach-sum-done">0</b><span>/ <span id="ach-sum-all">0</span></span></div>
+                <div class="maarm-ach-sum__pct" id="ach-sum-pct">0%</div>
+              </div>
+              <div class="maarm-ach-sum__track"><div class="maarm-ach-sum__fill" id="ach-sum-fill"></div></div>
+              <div class="maarm-ach-sum__tiers" id="ach-sum-tiers"></div>
+              <p class="maarm-ach-hint" id="ach-status">解锁后永久保留，不随模块移出或重装丢失</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>解锁提示</h3></div>
+            <div class="card-body">
+              <div class="maarm-ach-row">
+                <button class="maarm-ach-switch is-on" id="ach-notify" type="button" role="switch" aria-pressed="true"><i></i></button>
+                <div class="maarm-ach-row__main">
+                  <div class="maarm-ach-row__title">解锁时弹提示条</div>
+                  <p class="maarm-ach-row__desc">解锁瞬间浮出提示卡，5 秒后自动收回</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>进度数据</h3></div>
+            <div class="card-body maarm-ach-actions">
+              <button class="maarm-btn" id="ach-export" type="button">导出备份</button>
+              <button class="maarm-btn" id="ach-import" type="button">导入备份</button>
+              <button class="maarm-btn maarm-ach-danger" id="ach-reset" type="button">重置全部进度</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <script src="icons.js"></script>
+  <script src="vendor.morphicons.js"></script>
+  <script src="peep-consumer.js"></script>
+  <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
+       app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
+  <script src="js/rpc.js"></script>
+  <script src="js/about-update.js"></script>
+  <script src="js/achievement-toast.js"></script>
+  <script src="js/modal.js"></script>
+  <script src="js/achievement.js"></script>
+  <script src="js/log.js"></script>
+  <script src="js/preview.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/env-center.js"></script>
+  <script src="js/config-panel-state.js"></script>
+  <script src="js/config-panel.js"></script>
+  <script src="js/gallery-shape.js"></script>
+  <script src="js/status-orb.js"></script>
+  <script src="js/status-label.js"></script>
+  <script src="js/run.js"></script>
+  <script src="js/perf-card.js"></script>
+  <script src="app.js"></script>
+  <script src="tour.js"></script>
+</body>
+</html>

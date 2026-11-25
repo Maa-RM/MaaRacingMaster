@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>首次使用引导 · 聚光灯 demo</title>
+<link rel="stylesheet" href="onboarding.css">
+</head>
+<body>
+
+<!-- ============ 应用骨架 ============ -->
+<div class="app" id="app">
+  <header class="titlebar">
+    <div class="brand"><i class="brand-mark"></i>MaaRacingMaster <span class="brand-ver">v1.0.0</span></div>
+    <nav class="tabs">
+      <button class="tab is-active" type="button" data-tab="control">主控</button>
+      <button class="tab" type="button" data-tab="data">数据</button>
+      <button class="tab" type="button" data-tab="settings">设置</button>
+      <button class="tab" type="button" data-tab="about">关于</button>
+    </nav>
+    <div class="win-controls" aria-hidden="true"><i></i><i></i><i class="close"></i></div>
+  </header>
+
+  <main class="main">
+    <section class="page" id="page-control">
+      <div class="cols">
+        <div class="col-main">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>运行任务</h2>
+              <button class="icon-btn" id="btn-manage" type="button" title="管理模块" aria-label="管理模块">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <ul class="task-list" id="task-list"></ul>
+          </section>
+        </div>
+        <aside class="col-side">
+          <section class="panel">
+            <div class="panel-head"><h2>运行日志</h2></div>
+            <div class="log-body">
+              <div class="log-line"><span class="log-time">--:--:--</span><span class="log-tag">INFO</span><span>等待开始</span></div>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <section class="page" id="page-settings" hidden>
+      <div class="cols">
+        <div class="col-main">
+          <section class="panel">
+            <div class="panel-head"><h2>快捷工具</h2></div>
+            <div class="tool-row">
+              <button class="tool-btn" id="btn-env" type="button">
+                <span class="tool-name">运行环境</span>
+                <span class="tool-desc">模型、驱动与系统权限</span>
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span class="status-dot" id="status-dot"></span>
+    <span class="status-text" id="status-text">系统就绪</span>
+    <div class="status-actions">
+      <button class="btn btn-ghost" type="button" disabled>停止</button>
+      <button class="btn btn-primary" type="button" id="live-start">开始</button>
+    </div>
+  </footer>
+</div>
+
+<!-- ============ 模块管理弹窗 ============ -->
+<div class="sheet-layer" id="sheet-manage" hidden>
+  <div class="sheet-mask"></div>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2>管理模块</h2>
+      <button class="sheet-close" type="button" data-close="manage" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="mod-grid">
+        <button class="mod-card" type="button" data-mod="start_game">
+          <span class="mod-name">启动游戏</span>
+          <span class="mod-desc">内置步骤 · 打开游戏并等待进入大厅</span>
+          <span class="mod-add"></span>
+        </button>
+        <button class="mod-card" type="button" data-mod="close_game">
+          <span class="mod-name">关闭游戏</span>
+          <span class="mod-desc">内置步骤 · 运行结束后退出游戏进程</span>
+          <span class="mod-add"></span>
+        </button>
+        <button class="mod-card" type="button" data-mod="infinite_drive">
+          <span class="mod-name">无限驾驶</span>
+          <span class="mod-desc">模块 · 需要先安装车道线模型</span>
+          <span class="mod-add"></span>
+        </button>
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <span class="sheet-count" id="manage-count">已添加 0 项</span>
+      <button class="btn btn-primary" type="button" id="manage-done">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 环境中心 ============ -->
+<div class="sheet-layer" id="sheet-env" hidden>
+  <div class="sheet-mask"></div>
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2>运行环境</h2>
+      <button class="sheet-close" type="button" data-close="env" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="env-row">
+        <div class="env-main">
+          <b>车道线模型</b>
+          <p>发布包不含模型权重，不安装时无限驾驶无法运行。</p>
+          <div class="env-bar"><i id="model-bar"></i></div>
+        </div>
+        <span class="env-state" id="model-state">未安装</span>
+        <button class="btn btn-small" type="button" id="btn-install">安装</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 声明门：纯色、无其他界面元素 ============ -->
+<div class="gate" id="gate" hidden>
+  <div class="gate-inner">
+    <div class="gate-brand">MaaRacingMaster</div>
+    <h1>使用声明</h1>
+    <div class="gate-text">
+      <p>本程序仅用于个人学习与技术研究，禁止任何形式的商业使用，包括但不限于售卖、租赁、付费代跑与商业展示。</p>
+      <p>使用本程序即表示你已了解：自动化操作可能违反游戏服务条款，账号风险与由此产生的后果由使用者自行承担。</p>
+      <p>本程序按「现状」提供，不对可用性、稳定性或特定用途适用性作任何明示或暗示的担保。</p>
+      <p>程序内使用的开源组件、字体与图标依其各自许可分发，完整清单见「关于」页的第三方许可说明。</p>
+      <p class="gate-note">继续前请确认：你已年满法定年龄，并自行判断所在地区的法律与服务条款要求。</p>
+    </div>
+    <div class="gate-actions">
+      <button class="btn-text" type="button" id="gate-decline">不同意并退出</button>
+      <button class="btn btn-primary" type="button" id="gate-accept" disabled>
+        <span id="gate-accept-label">请阅读 5 秒</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 聚光灯引导 ============ -->
+<div class="tour" id="tour" hidden>
+  <div class="tour-block" data-block="top"></div>
+  <div class="tour-block" data-block="left"></div>
+  <div class="tour-block" data-block="right"></div>
+  <div class="tour-block" data-block="bottom"></div>
+  <div class="tour-ring" id="tour-ring"></div>
+  <div class="tour-bubble" id="tour-bubble" role="dialog" aria-live="polite">
+    <div class="bubble-step" id="bubble-step"></div>
+    <h3 id="bubble-title"></h3>
+    <p id="bubble-body"></p>
+    <div class="bubble-actions">
+      <button class="btn-text" type="button" id="tour-skip-step">跳过本步</button>
+      <button class="btn-text" type="button" id="tour-exit">退出引导</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 退出屏 ============ -->
+<div class="exit" id="exit" hidden>
+  <div class="exit-inner">
+    <h2>已退出</h2>
+    <p>未同意使用声明，程序无法继续。你可以重新打开演示，模拟下一次启动。</p>
+    <button class="btn btn-primary" type="button" id="exit-restart">重新打开</button>
+  </div>
+</div>
+
+<!-- ============ 演示控制（不属于正式设计） ============ -->
+<aside class="demo-dock" id="demo-dock">
+  <span class="dock-title">演示控制</span>
+  <button type="button" data-demo="reopen">重开引导</button>
+  <button type="button" data-demo="reset">重置演示</button>
+  <button type="button" data-demo="revise">声明改版</button>
+  <button type="button" data-demo="skip-count">跳过 5 秒</button>
+  <button type="button" data-demo="next">下一步</button>
+</aside>
+
+<script src="onboarding.js"></script>
+</body>
+</html>
