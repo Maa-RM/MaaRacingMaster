@@ -12,6 +12,8 @@
   // Tab/Shift+Tab 在卡内首尾回环不逃逸，关闭后焦点归还触发元素；
   // 卡片带 role=dialog + aria-modal + aria-labelledby（指向标题）。
   let _modalTitleSeq = 0;
+  // 打开中的弹窗句柄：预热收尾要把「自己打开、还没来得及关」的窗统一收掉。
+  const openDialogs = new Set();
   function openModal(opts) {
     const prevFocus = document.activeElement; // 关闭后焦点归还目标
     const overlay = document.createElement('div');
@@ -65,6 +67,7 @@
     function close() {
       if (overlay._closing) return;
       overlay._closing = true;
+      openDialogs.delete(modal);
       document.removeEventListener('keydown', onKeydown);
       // 关闭回调（可选）：三条关闭路径（按钮/空白/Esc）都会走到这里，只触发一次
       if (typeof opts.onClose === 'function') opts.onClose();
@@ -99,6 +102,7 @@
     }
     overlay.appendChild(card);
     document.body.appendChild(overlay);
+    openDialogs.add(modal);
     overlay.addEventListener('click', (ev) => {
       // closeOnOverlay: false = 点空白不关（员工守则弹层堵逃课出口用）；默认 true
       if (ev.target === overlay && opts.closeOnOverlay !== false) modal.close();
@@ -128,6 +132,11 @@
     });
   }
 
+  /// 一次性关掉当前所有弹窗（预热收尾专用：遮罩撤下时不该还挂着预热开的窗）。
+  function closeAllModals() {
+    Array.from(openDialogs).forEach((modal) => modal.close());
+  }
+
   // ---------- 导出到 window.MaaRM ----------
-  Object.assign(window.MaaRM, { openModal, showGamepadNotice });
+  Object.assign(window.MaaRM, { openModal, showGamepadNotice, closeAllModals });
 })();

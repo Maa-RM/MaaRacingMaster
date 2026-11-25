@@ -88,3 +88,23 @@ def test_warmup_closes_only_its_own_dialogs():
     assert "openDataUsage" in files["js/settings.js"]
     assert "openOptimizerCenter" in files["js/env-center.js"]
     assert "showVigemDialog" in files["app.js"]
+
+
+def test_warmup_blocks_tab_switch_and_releases_dialogs():
+    """遮罩期间键盘也能点 tab：切页会与预热抢页面状态，顶栏与内容会错位；放行时
+    也不能留着预热自己开的窗——否则弹窗晚于遮罩关闭、在已经可用的界面上抢焦点。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "if (!_bootReleased) return;" in app, "预热期间未拦住切页"
+    assert app.count("window.MaaRM.closeAllModals()") >= 2, "两条放行路径都要收掉预热弹窗"
+    modal = (SHELL / "frontend" / "js" / "modal.js").read_text(encoding="utf-8-sig")
+    assert "closeAllModals" in modal and "openDialogs" in modal, "弹窗层缺少统一收口"
+    env = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
+    assert "warmupReleased()" in env, "环境中心开窗前未检查遮罩是否已放行"
+
+
+def test_cold_detection_requires_shader_cache_entries():
+    """字节数不能单独作判据：清掉条目后 data_* 块仍可能超过 512KB 阈值，
+    会把真正的冷启动判成热启动（跳过预热，首访继续卡）。"""
+    warm = WARMUP.read_text(encoding="utf-8-sig")
+    assert "MinGpuCacheEntries" in warm, "冷态判据缺少条目数下限"
+    assert 'StartsWith("f_"' in warm, "条目统计未按 f_* 目录条目识别"

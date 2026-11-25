@@ -412,6 +412,8 @@
     label: '环境中心',
     order: 30,
     async run() {
+      // 遮罩已被总时限放行：不再开窗。开完再检查会留下一张「用户眼前自己关掉」的窗
+      if (window.MaaRM.warmupReleased && window.MaaRM.warmupReleased()) return null;
       const modal = openOptimizerCenter();
       if (!modal) return false;
       try {

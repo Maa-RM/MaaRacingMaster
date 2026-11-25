@@ -17,6 +17,10 @@ public static class RenderWarmup
     // 着色器缓存低于这个量级就当作冷态（用户清过缓存或刚安装）：512KB 远低于正常
     // 预热后的数 MB，同时能容忍缓存目录里只有索引文件的空壳。
     private const long MinGpuCacheBytes = 512 * 1024;
+    // 但字节数不能单独作判据：磁盘缓存的 data_* 块可以在一条有效条目都没有时仍占几百
+    // KB，只看字节数会把「清过缓存、只剩空壳块」判成热启动（实测：仅剩 ShaderCache 的
+    // data_0..3 + index 时已超过上面的阈值）。所以再要求条目文件够数。
+    private const int MinGpuCacheEntries = 8;
 
     /// <summary>是否需要显示启动预热遮罩（找不到标记、版本变化、缓存过小都算冷启动）。</summary>
     public static bool IsCold(string? udf, string? runtimeVersion, string? appVersion)
@@ -24,7 +28,8 @@ public static class RenderWarmup
         if (string.IsNullOrWhiteSpace(udf)) return false;
         try
         {
-            if (GpuCacheBytes(udf) < MinGpuCacheBytes) return true;
+            var cacheBytes = GpuCacheBytes(udf, out var cacheEntries);
+            if (cacheEntries < MinGpuCacheEntries || cacheBytes < MinGpuCacheBytes) return true;
             var marker = Path.Combine(udf, MarkerName);
             if (!File.Exists(marker)) return true;
             using var doc = JsonDocument.Parse(File.ReadAllText(marker));
@@ -68,16 +73,19 @@ public static class RenderWarmup
         return string.Equals(value.GetString(), expected ?? "", StringComparison.Ordinal);
     }
 
-    // GPU 着色器缓存总量：GrShaderCache（Skia 程序）与 ShaderCache（ANGLE 程序）两处。
-    private static long GpuCacheBytes(string udf)
+    // GPU 着色器缓存总量与条目数：GrShaderCache（Skia 程序）与 ShaderCache（ANGLE 程序）
+    // 两处。条目是 f_* 文件；data_* / index 只是块与索引，清过条目后仍会留下。
+    private static long GpuCacheBytes(string udf, out int entries)
     {
         long total = 0;
+        var count = 0;
         foreach (var name in new[] { "GrShaderCache", "ShaderCache" })
         {
             var dir = Path.Combine(udf, "EBWebView", name);
             if (!Directory.Exists(dir)) continue;
             foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
             {
+                if (Path.GetFileName(file).StartsWith("f_", StringComparison.Ordinal)) count++;
                 try
                 {
                     total += new FileInfo(file).Length;
@@ -88,6 +96,7 @@ public static class RenderWarmup
                 }
             }
         }
+        entries = count;
         return total;
     }
 }

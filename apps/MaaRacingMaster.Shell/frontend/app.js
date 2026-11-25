@@ -78,6 +78,9 @@
   const TAB_ORDER = ['control', 'data', 'settings', 'about'];
   let _curTabIdx = 0; // 初始即主控 tab（HTML 默认激活），防止首次点当前 tab 误触发切换动画
   function switchTab(name) {
+    // 预热遮罩期间不接受切页：遮罩挡住鼠标但拦不住键盘，用户误触会把 tab 状态
+    // 与预热自己翻的页面搅乱（收尾只切回主控页，顶栏却还停在别的 tab）。
+    if (!_bootReleased) return;
     const nextIdx = TAB_ORDER.indexOf(name);
     if (nextIdx === _curTabIdx) return; // 点击当前激活 tab：不重播切换动画
     const prevIdx = _curTabIdx >= 0 ? _curTabIdx : nextIdx;
@@ -1135,6 +1138,8 @@
       if (_bootReleased) return;
       _bootCutShort = true;
       _bootReleased = true;
+      // 遮罩撤下时不该还挂着预热开的窗：收掉它，别让弹窗在已经放行的界面上抢焦点
+      if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
       const stepEl = overlay.querySelector('.boot-step');
       if (stepEl) stepEl.textContent = '启动较慢，先进入界面';
       overlay.classList.add('boot-overlay--done');
@@ -1206,6 +1211,7 @@
     stepEl.textContent = ok ? '完成' : '未完成，下次启动再试';
     await delay(200);
     _bootReleased = true;
+    if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
     overlay.classList.add('boot-overlay--done');
     setTimeout(() => { overlay.hidden = true; }, 260);
     // 只有全部步骤都画完才通知壳落标记：失败或超时留在冷态，下次启动重来
