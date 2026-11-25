@@ -4,12 +4,13 @@
 
 更新程序/覆盖安装不影响历史数据；APPDATA 缺失时回退到包根旁 data/（源码运行场景）。
 
-目录结构（五类各归其位）：
+目录结构（各归其位）：
     config/     配置类（profile.json、maa_option.json）
     data/       运行时数据与用户资产（data/treasure/ 业务库、data/speedrush/macros/ 用户宏、模型权重）
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace/ + perf.jsonl，共用「日志记录」开关）
     framework/  MAA 框架自产物（debug/maafw.log、debug/on_error 失败截图，跟随两项调试开关）
     debug/      调试产物与录制语料（debug/<会话>/<模块>/<行为>/，会话优先布局 v5）
+    webview2/   壳的浏览器数据（资料分区、运行时组件、GPU 着色器缓存、崩溃转储），只由壳写入
 
 会话编号（logs/ 与 debug/ 同一规则）：`<YYYYMMDD_HHMMSS>[_<序号>]`，进程启动时
 生成一次，与两个开关无关。同一场运行的日志目录与调试目录同名，排查时两边一眼
@@ -77,3 +78,12 @@ def framework_dir() -> Path:
 def debug_dir() -> Path:
     """调试产物根：`debug/<会话>/<模块>/<行为>/`（会话编号由 logger 持有）。"""
     return user_data_dir() / "debug"
+
+
+def webview2_dir() -> Path:
+    """壳的 WebView2 浏览器数据根：资料分区、GPU 着色器缓存、崩溃转储。
+
+    只由壳（`apps/MaaRacingMaster.Shell`）创建与维护；sidecar 只读取占用统计，不写这里。
+    分区选择、着色器缓存上限与崩溃转储保留策略见壳 README「WebView2 渲染与编译缓存」。
+    """
+    return user_data_dir() / "webview2"

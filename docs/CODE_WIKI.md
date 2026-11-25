@@ -76,4 +76,4 @@ MaaRacingMaster.exe（薄 Launcher → app\ 下 Shell；exe manifest 自动 UAC 
 ## 导航说明
 
 - **文件级清单不在此维护**——目录是重构中最易失效的镜像。要找某个模块/类，用 `core/CODE_WIKI.md` 的类索引或直接 grep 代码。
-- 运行期数据（自动生成，gitignore）不住仓库：`%APPDATA%/MaaRacingMaster/` 下 `config/`、`data/`、`logs/`、`framework/`、`debug/` 五目录，见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md)。
+- 运行期数据（自动生成，gitignore）不住仓库：落在 `%APPDATA%/MaaRacingMaster/` 下，目录清单与各自含义见 [core/CODE_WIKI.md](../maaracing_master/core/CODE_WIKI.md)「用户数据目录」。

@@ -52,6 +52,11 @@
   --maarm-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
   --maarm-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
 
+  /* 双列页面（主控/数据/设置）与成就页的内容版心：窄窗口仍是 12px 页边，
+     宽窗口内容居中、不再拉满。关于页是单列长文，单列自己的宽度另算（见 .about-container） */
+  --maarm-page-max: 1440px;
+  --maarm-rail-width: 420px;   /* 双列页右栏固定宽度（数据/设置/主控共用） */
+
   /* 圆角 */
   --maarm-radius-sm: 6px;
   --maarm-radius-md: 8px;
@@ -91,6 +96,37 @@ body {
   user-select: none;
 }
 
+/* ============ 启动预热遮罩（冷启动专用） ============ */
+/* 显隐由 index.html 头部脚本按 ?warmup=1 决定：热启动首帧前就有 .boot-skip、不会闪；
+   冷启动由 app.js 的预热流程收尾加 .boot-overlay--done 淡出。 */
+.boot-skip .boot-overlay { display: none; }
+.boot-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: var(--maarm-background);
+  opacity: 1; transition: opacity 220ms ease;
+}
+.boot-overlay--done { opacity: 0; pointer-events: none; }
+.boot-mark {
+  width: 88px; height: 88px; border-radius: 22px; margin-bottom: 6px;
+  display: grid; place-items: center;
+  background: var(--maarm-surface); border: 1px solid var(--maarm-border);
+  box-shadow: var(--maarm-shadow-sm);
+}
+.boot-mark img { width: 54px; height: 54px; object-fit: contain; }
+.boot-title { font-size: 15px; font-weight: 600; color: var(--maarm-foreground); }
+.boot-desc { font-size: 12px; color: var(--maarm-foreground-muted); }
+.boot-bar {
+  width: 280px; height: 4px; margin-top: 8px;
+  border-radius: 2px; background: var(--maarm-border-light); overflow: hidden;
+}
+.boot-bar i {
+  display: block; width: 0; height: 100%; border-radius: 2px;
+  background: var(--maarm-primary);
+  transition: width 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.boot-step { font-size: 11px; color: var(--maarm-foreground-dim); font-variant-numeric: tabular-nums; }
+
 /* 键盘焦点环（全站唯一规则）：:focus-visible 只在键盘/程序化导航聚焦时命中，
    鼠标点击不出环——因此各控件的 outline:none 抑制声明已删除，新增交互元素零成本继承。
    窗控按钮贴屏幕边缘，环内收防裁切（见 .win-btn:focus-visible）。 */
@@ -121,10 +157,12 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 }
 .maarm-tab:hover { color: var(--maarm-foreground); }
 .maarm-tab--active { font-weight: 600; color: var(--maarm-foreground); }
-/* 唯一滑块：JS 计算激活 tab 位置并平移到对应位置（缓动），替代旧"各自内置小条" */
+/* 唯一滑块：JS 计算激活 tab 位置并平移到对应位置（缓动），替代旧"各自内置小条"。
+   bottom:-1px 让滑块盖住标题栏的 1px 下边框：贴着边框时抗锯齿会把 2px 的条底边
+   和灰线混在一起，两端看起来像被削掉一角。 */
 .tab-slider {
-  position: absolute; bottom: 0; left: 0; height: 2px;
-  background: var(--maarm-primary); border-radius: 1px 1px 0 0;
+  position: absolute; bottom: -1px; left: 0; height: 2px;
+  background: var(--maarm-primary);
   transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
@@ -186,18 +224,20 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   overflow-y: auto; overflow-x: hidden; align-items: flex-start;
 }
 .page.hidden { display: none; }
+/* 双列页面的内容版心：数据/设置页由模板包一层；主控页 .control-cols 与成就页
+   .maarm-ach-inner 引用同一个 --maarm-page-max，避免出现第二份宽度数字。 */
+.page-inner,
+#page-control .control-cols {
+  width: 100%; max-width: var(--maarm-page-max); margin: 0 auto;
+  display: flex; gap: 12px; min-height: 100%;
+}
+.page-inner { align-items: flex-start; }
 .page-about { overflow-y: auto; display: block; }
 .page-about.hidden { display: none; }
 
-/* Tab 切换滑动（缓动曲线）：仅对新页做单次滑入，方向由 JS 的 --slide-from 决定 */
-.page-slide-in {
-  animation: page-slide var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, opacity;
-}
-@keyframes page-slide {
-  from { transform: translateX(var(--slide-from, 42px)); opacity: 0; }
-  to   { transform: translateX(0); opacity: 1; }
-}
+/* Tab 切换的分块进场动画由 app.js 用 rAF 逐帧写样式驱动，这里不设规则：
+   CSS 的 transform 动画会被合成器接管，运动期间按低分辨率位图平移、停下再重绘，
+   观感是「尾部突然变清」；主线程逐帧改样式每帧都按设备像素重绘，全程锐利。 */
 
 /* ============ 通用卡片 ============ */
 .card {
@@ -303,14 +343,16 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 100%; }
 /* 数据页布局：右栏固定宽度（预览区 16:9 尺寸稳定、不随窗口缩放），左栏自由变换 */
 #page-data .col-left { flex: 1 1 auto; }
-#page-data .col-right { flex: 0 0 420px; }
+#page-data .col-right { flex: 0 0 var(--maarm-rail-width); }
+/* 设置页与主控/数据同一横向骨架：左列自适应、右栏固定 420。
+   62% / 38% 的比例分栏会让设置页在宽窗口下比其他两页多出一大截右栏，观感割裂。 */
+#page-settings .col-left { flex: 1 1 auto; }
+#page-settings .col-right { flex: 0 0 var(--maarm-rail-width); }
 
 /* 主控页两列装进 .control-cols（内容高度容器，高度跟随左列内容、窗口够高时撑满）：
    日志卡要 sticky 钉在视口上，其包含块必须与左列内容等高——直接挂在 .page 下时
-   包含块只有视口高，滚动时没有行程可钉。 */
-#page-control .control-cols {
-  display: flex; gap: 12px; align-items: stretch; width: 100%; min-height: 100%;
-}
+   包含块只有视口高，滚动时没有行程可钉。宽度/版心/间距由上面的双列骨架共用。 */
+#page-control .control-cols { align-items: stretch; }
 #page-control .col-left { flex: 1 1 auto; min-height: 0; }
 /* 日志列钉住跟随滚动：高度 = 视口 − 顶栏 52 − 底栏 44 − 页面上下 padding 24。
    top 写 0 而非 12：Chromium 的 sticky 判定基线是滚动容器内容盒顶缘（已含页面
@@ -318,7 +360,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
    min-height:0 覆盖基础规则的 min-height:100%（那会把钉住的列重新撑到与左列
    内容等高，sticky 行程归零） */
 #page-control .col-right {
-  flex: 0 0 420px; align-self: flex-start;
+  flex: 0 0 var(--maarm-rail-width); align-self: flex-start;
   position: sticky; top: 0;
   height: calc(100vh - 120px); min-height: 0;
 }
@@ -1361,7 +1403,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 #page-data .preview-card .icon-pause { display: none; }
 #page-data .preview-card .preview-wrap { flex: 1; }
 /* 实时预览：放大态（撑满数据页整块区域、画面随窗口自动适配、居中）
-   不复用 position:fixed——数据页带 .page-slide-in 的 will-change 会命中 containing-block 陷阱；
+   不复用 position:fixed——卡片在切换动画里带 filter/transform 会成为 fixed 的包含块；
    改为隐藏其它卡片，让预览卡在文档流里撑满整页。 */
 .preview-card--fullscreen {
   border-radius: var(--maarm-radius-md);
@@ -1376,9 +1418,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: 8px;
 }
 /* 数据页放大态：隐藏左栏（性能监控）与右栏其它卡片（今日看板），预览卡独占整页 */
-#page-data.preview-fs-active > .col-left { display: none; }
-#page-data.preview-fs-active .col-right { flex: 1 1 auto; align-self: stretch; }
-#page-data.preview-fs-active .col-right > .card:not(.preview-card--fullscreen) { display: none; }
+/* 两列被 .page-inner 包了一层：选择器要穿过它，否则全屏时左栏（性能监控）仍占位 */
+#page-data.preview-fs-active .page-inner > .col-left { display: none; }
+#page-data.preview-fs-active .page-inner > .col-right { flex: 1 1 auto; align-self: stretch; }
+#page-data.preview-fs-active .page-inner > .col-right > .card:not(.preview-card--fullscreen) { display: none; }
 .preview-legend { display: flex; align-items: center; gap: 12px; }
 .legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--maarm-foreground-muted); }
 .legend-box { width: 12px; height: 12px; border-radius: 2px; }
@@ -1403,7 +1446,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-tool-btn--block { width: 100%; }
 
 /* ============ 调试数据占用面板（设置页「调试文件夹」） ============ */
-/* 五类目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
+/* 各目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
 .space-body {
   display: flex; align-items: center; gap: 22px;
   --maarm-usage-debug: var(--maarm-primary);
@@ -1411,6 +1454,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   --maarm-usage-framework: var(--maarm-warning);
   --maarm-usage-logs: var(--maarm-success);
   --maarm-usage-config: var(--maarm-foreground-dim);
+  --maarm-usage-webview2: #8B5CF6;
 }
 .space-root {
   font-family: var(--maarm-font-mono); font-size: 11px;
@@ -1444,6 +1488,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .space-dot--framework { background: var(--maarm-usage-framework); }
 .space-dot--logs { background: var(--maarm-usage-logs); }
 .space-dot--config { background: var(--maarm-usage-config); }
+.space-dot--webview2 { background: var(--maarm-usage-webview2); }
 .space-dot--unknown { background: var(--maarm-border-strong); }
 .space-main { flex: 1; min-width: 0; }
 .space-name {
@@ -2541,7 +2586,7 @@ footer .spacer { flex: 1; }
 /* ---------- 正文：左分组拉伸、右栏固定 ---------- */
 .maarm-ach-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px; }
 .maarm-ach-inner {
-  max-width: 1440px; margin: 0 auto;
+  max-width: var(--maarm-page-max); margin: 0 auto;
   display: flex; gap: 12px; align-items: flex-start;
 }
 .maarm-ach-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -2778,6 +2823,8 @@ footer .spacer { flex: 1; }
    翻的是卡本身（角度来自 --flip，与倾斜合进同一个 rotateY）；两面各自
    backface-visibility: hidden，转到 90° 时正面消失、背面接上。 */
 .maarm-ach-card { cursor: pointer; }
+/* 悬停放大幅度会越过 10px 网格缝：提一层，保证放大的卡压在邻卡之上而不是被后画的邻卡盖边 */
+.maarm-ach-card:hover { z-index: 1; }
 .maarm-ach-card:focus-visible { outline: 2px solid var(--maarm-primary); outline-offset: 2px; }
 .maarm-ach-card__front { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 /* 背面：一张与正面同尺寸、预先转 180° 的面；卡转到 180° 时它正好正对观众。

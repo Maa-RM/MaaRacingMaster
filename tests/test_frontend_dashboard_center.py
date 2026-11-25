@@ -19,7 +19,7 @@ from pathlib import Path
 from maaracing_master.core.dashboard_contract import BLOCK_TYPES
 
 REPO = Path(__file__).resolve().parent.parent
-SETTINGS_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "settings.js"
+SETTINGS_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "dashboard.js"
 
 
 def _js_function_body(src: str, signature: str) -> str:
@@ -57,6 +57,19 @@ def test_data_page_uses_unified_dashboard_route():
     body = _js_function_body(src, "async function loadDashboard() {")
     assert "'get_module_dashboard'" in body, "看板内容必须走统一的 get_module_dashboard 路由"
     assert "module_id" in body, "读看板必须点名模块，不能依赖隐式的当前模块"
+
+
+def test_dashboard_polling_reuses_inflight_request():
+    """3 秒轮询不得把慢回包作废：同一看板复用同一在途请求。"""
+    src = SETTINGS_JS.read_text(encoding="utf-8")
+    body = _js_function_body(src, "async function loadDashboard() {")
+    assert "_dashInflight" in body, "同一看板的在途请求必须被复用"
+    assert "_dashInflight.id === mod.id" in body
+    assert "return _dashInflight.promise" in body
+    assert "_dashInflight.body === body" in body, (
+        "数据页重建换掉 #dash-body 后，旧节点的在途请求必须作废重发")
+    assert body.count("++_dashReqSeq") == 1, (
+        "请求序号只在新请求开始时递增；轮询复用不得让在途响应失效")
 
 
 def test_list_renderer_supports_parts_groups_and_paging():

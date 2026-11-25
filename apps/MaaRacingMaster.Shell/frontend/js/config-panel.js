@@ -813,8 +813,9 @@
       await refreshInstall(entry);
     } catch (e) {
       if (!ST.isAlive(entry, generation)) return;
+      // 落点必须是文字节点：传整行容器会把「一键安装 / 取消」按钮一起 textContent 清掉
       MaaRM.reportError('inline', label + '安装操作失败: ' + (e.message || e),
-        { el: entry.nodes && entry.nodes.install });
+        { el: entry.nodes && entry.nodes.installText });
     }
   }
 

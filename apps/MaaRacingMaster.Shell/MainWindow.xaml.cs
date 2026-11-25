@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -24,6 +25,20 @@ public sealed partial class MainWindow : Window
     // 最小窗口尺寸（DIP，逻辑像素）
     private const int MinWindowWidth = 1000;
     private const int MinWindowHeight = 700;
+
+    // 首次预热遮罩的旁路信息：标记写回时要用同一个目录与运行时版本
+    private string? _warmupUdf;
+    private string? _warmupRuntimeVersion;
+
+    /// <summary>壳版本戳：进入预热标记，程序更新后自动重新预热一次。</summary>
+    private static string ShellVersionStamp()
+    {
+        var asm = typeof(MainWindow).Assembly;
+        var info = asm.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>();
+        if (info is not null && !string.IsNullOrWhiteSpace(info.InformationalVersion))
+            return info.InformationalVersion;
+        return asm.GetName().Version?.ToString() ?? "unknown";
+    }
 
     /// <summary>读安装树内随包的更新源配置（壳 exe 同目录 update-source.txt，发行时写入）。
     /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随受管树整体替换，受信任。</summary>
@@ -386,19 +401,23 @@ public sealed partial class MainWindow : Window
     private async Task InitializeWebViewAsync()
     {
         var env = await WebView2Runtime.GetOrCreateAsync();
-        // 隐私模式（评审裁决）：界面浏览数据不落盘——持久化目录不再累积几十 MB 缓存；
-        // 站点偏好无真实消费者（业务偏好住后端 config），丢失无影响。
+        // 常规资料分区：InPrivate 分区拿到的是内存版 GPU 缓存，首访编译的着色器程序跨启动
+        // 不命中，每次启动都要重付 100–250ms 的冷编译停顿；常规分区下 GrShaderCache /
+        // ShaderCache 落盘并在下次启动复用（数据页首访最大帧间隔 ~100ms → 22ms，模块管理
+        // 弹窗 244ms → 33ms）。代价是资料分区落盘：目录体积以 WebView2 运行时组件为主
+        // （约 60MB，随运行时版本一次性下载），GPU 缓存按类封顶，常态启动只改写 KB 级状态。
+        // 机理与数据见 shell README「WebView2 渲染与编译缓存」。
         try
         {
             if (env is null)
                 throw new InvalidOperationException("自定义环境不可用");
             var options = env.CreateCoreWebView2ControllerOptions();
-            options.IsInPrivateModeEnabled = true;
+            options.IsInPrivateModeEnabled = false;
             await web.EnsureCoreWebView2Async(env, options);
         }
         catch (Exception ex)
         {
-            ShellLog.Append($"[webview2] 隐私模式初始化失败，回落共享环境: {ex.Message}");
+            ShellLog.Append($"[webview2] 控制选项初始化失败，回落共享环境: {ex.Message}");
             try
             {
                 await web.EnsureCoreWebView2Async(env);
@@ -420,8 +439,16 @@ public sealed partial class MainWindow : Window
         var indexPath = ResolveRepoAssetPath("apps", "MaaRacingMaster.Shell", "frontend", "index.html");
         if (indexPath is not null)
         {
-            // 绝对 windows 路径按文件 URI 解析（auto file:/// scheme），WebView 本地加载
-            web.Source = new Uri(indexPath);
+            // 首次启动预热：冷态（换版本 / 换运行时 / 着色器缓存被清）才显示启动遮罩，
+            // 由前端在遮罩后把各页面与重弹窗先画一遍，把着色器编译提前吃掉。
+            _warmupRuntimeVersion = env?.BrowserVersionString;
+            var cold = RenderWarmup.IsCold(WebView2Runtime.UserDataFolder, _warmupRuntimeVersion,
+                ShellVersionStamp());
+            _warmupUdf = WebView2Runtime.UserDataFolder;
+            // 绝对 windows 路径按文件 URI 解析（auto file:/// scheme），WebView 本地加载；
+            // 冷启动追加 warmup=1，index.html 头部脚本据此决定是否保留遮罩。
+            var pageUri = new Uri(indexPath);
+            web.Source = cold ? new Uri(pageUri, "index.html?warmup=1") : pageUri;
         }
     }
 
@@ -529,6 +556,12 @@ public sealed partial class MainWindow : Window
             {
                 // RPC 转发已抽到 RpcBridge（与 PEEP 悬浮窗共用同一实现，回发按 sender 定位）
                 RpcBridge.TryHandleCall(sender, root);
+            }
+            else if (msgType == "warmup-done")
+            {
+                // 前端预热完成后落标记：同版本下次启动不再显示遮罩
+                RenderWarmup.MarkDone(_warmupUdf, _warmupRuntimeVersion, ShellVersionStamp());
+                ShellLog.Append("[warmup] 界面首次预热完成，已记录标记");
             }
         }
         catch (Exception ex)

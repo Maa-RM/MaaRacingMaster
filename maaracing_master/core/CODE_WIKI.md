@@ -825,13 +825,14 @@ API 签名、参数名与高频误用清单的权威版见 [MAAFW\_GUIDE §9「�
 4. **断点调试**：GUI 断点列表双击选择起始阶段，跳过前面的导航步骤
 5. **MPE Studio**：`tools/pipeline/studio.cmd` 起工作台（MPE 画布编辑节点 JSON + Studio 回放 / ROI 两页），见 [tools/pipeline/README.md](../../tools/pipeline/README.md)
 
-**用户数据目录**（`%APPDATA%/MaaRacingMaster/`，`user_data_dir()` 五目录，[paths.py](./paths.py)）：
+**用户数据目录**（`%APPDATA%/MaaRacingMaster/`，路径真源 [paths.py](./paths.py)）：
 
 - `config/`：`profile.json`（用户偏好）、`maa_option.json`
 - `data/`：运行时数据与用户资产（各活动的业务库、`data/infinite_drive/macros/` 用户录制的宏、模型权重等）。插件自有资产统一使用 `data/<module_id>/`；`paths.module_data_dir()` 按 manifest.ID 授予目录并拒绝越界子路径。插件的资产安装入口由 manifest 的 `ASSET_INSTALLER` 声明（配合 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 文案），core 只按声明加载与转发，不硬编码模块实现；安装与游戏 worker、升级冻结在同层双向准入互斥（`sidecar.install_asset_*`、`start`、`prepare_update`）
 - `logs/`：会话记录 `logs/<会话>/`——运行日志 `MaaRM_<会话>.log`（含 DEBUG 级全量）、`perf.jsonl` 与 `trace/<模块>.jsonl`（共用「日志记录」开关）
 - `framework/`：MAA 框架自产物（`debug/maafw.log`、`debug/on_error/` 失败截图）——落盘策略由 [maa_option.py](./maa_option.py) 固定为「文本日志开（含 7 天回收、备份上限 256MB）、失败截图关」，与界面开关解耦
 - `debug/`：会话优先的取证布局 `debug/<会话>/<模块>/<行为>/`（行为目录内 `manifest.json` + `frames.jsonl`；会话根 `index.jsonl` 只记段/阶段/开关）。会话编号进程启动即存在，日志与调试两个开关只决定有没有文件
+- `webview2/`：壳的 WebView2 浏览器数据（常规资料分区、`GrShaderCache` / `ShaderCache` 着色器缓存、Crashpad 转储、`.render-warmup.json` 首次预热标记），只由壳创建与维护，sidecar 只读取占用统计。分区选择、缓存上限、转储保留与首次预热见 [壳 README](../../apps/MaaRacingMaster.Shell/README.md)「WebView2 渲染与编译缓存」
 
 **会话编号契约**（[session_layout.py](./session_layout.py) 单点）：格式 `%Y%m%d_%H%M%S`，同秒撞名一律**换名**追加 `_2`、`_3`（不复用、不叠后缀），人类可读标签到秒并把撞名序号显式写出。任何按时刻命名的落盘目录（`logs/`、`debug/`、宏组、局产物）都取用它的 `fresh_session_dir()` / `session_token_label()`，不各自再写一套防撞规则——换名这件事发生在调用方，日志级别与归属也由调用方定。
 

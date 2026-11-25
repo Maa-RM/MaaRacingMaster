@@ -4,8 +4,23 @@
 <meta charset="UTF-8">
 <title>MaaRM</title>
 <link rel="stylesheet" href="style.css">
+<script>
+  // 冷启动才显示预热遮罩：壳在冷态下以 ?warmup=1 打开页面；热启动没有这个参数，
+  // 这里在首次绘制前就给根元素加类把遮罩隐藏，避免出现一闪而过的加载页。
+  if (!/[?&]warmup=1(?:&|$)/.test(location.search)) {
+    document.documentElement.classList.add('boot-skip');
+  }
+</script>
 </head>
 <body>
+  <!-- ===== 启动预热遮罩（冷启动专用，见 app.js runBootWarmup） ===== -->
+  <div class="boot-overlay" id="boot-overlay" role="status" aria-live="polite">
+    <div class="boot-mark"><img src="logo.png" alt=""></div>
+    <div class="boot-title">正在预热界面</div>
+    <p class="boot-desc">首次启动要编译一次界面渲染，完成后不会再出现</p>
+    <div class="boot-bar"><i></i></div>
+    <div class="boot-step">准备中…</div>
+  </div>
   <!-- ===== 顶部标题栏（Draggable 空白区 / Passthrough 交互区由 C# InputNonClientPointerSource 管理；窗口控制按钮为 HTML 自绘） ===== -->
   <header id="titlebar">
     <div class="brand">
@@ -348,12 +363,15 @@
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>
   <script src="js/settings.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/env-center.js"></script>
   <script src="js/config-panel-state.js"></script>
   <script src="js/config-panel.js"></script>
   <script src="js/gallery-shape.js"></script>
   <script src="js/status-orb.js"></script>
   <script src="js/status-label.js"></script>
   <script src="js/run.js"></script>
+  <script src="js/perf-card.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

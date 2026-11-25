@@ -16,7 +16,7 @@
   // 共享物导入（js/ 各模块已先行加载）
   const {
     maarm, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
-    openModal, setPreviewFloating, peepConsumer,
+    openModal, setPreviewFloating, peepConsumer, waitFor, twoFrames, delay,
     renderModulePages, checkRegistryOptimizations, pollDashboard,
     renderTaskList, pollStatus, setStatus, pollLogs,
   } = window.MaaRM;
@@ -28,7 +28,8 @@
   // VIGEM_DL_URL 是本仓库静态常量（非远程数据），只用于弹框里的 <a> 与后端失败兜底。
   const VIGEM_DL_URL = 'https://github.com/nefarius/ViGEmBus/releases/latest';
   function showVigemDialog(detailMsg) {
-    openModal({
+    void detailMsg;
+    return openModal({
       title: '缺少 ViGEmBus 驱动',
       titleColor: 'var(--maarm-danger,#ef4444)',
       bodyHtml:
@@ -52,16 +53,34 @@
         { text: '暂不', onClick: (modal) => modal.close() },
       ],
     });
-    void detailMsg;
   }
   // run.js 的 _doStart 先于本文件加载，经 MaaRM 延迟取用
   Object.assign(window.MaaRM, { showVigemDialog });
+
+  // 本模块拥有的预热面：ViGEmBus 引导弹窗。其余预热面由各自模块登记，入口只跑一遍。
+  window.MaaRM.registerWarmup({
+    label: '驱动引导',
+    order: 50,
+    async run() {
+      const modal = showVigemDialog('');
+      if (!modal) return false;
+      try {
+        await twoFrames();
+        return true;
+      } finally {
+        modal.close();
+      }
+    },
+  });
 
   // ---------- Tab 切换 ----------
   const tabButtons = Array.from(document.querySelectorAll('.maarm-tab'));
   const TAB_ORDER = ['control', 'data', 'settings', 'about'];
   let _curTabIdx = 0; // 初始即主控 tab（HTML 默认激活），防止首次点当前 tab 误触发切换动画
   function switchTab(name) {
+    // 预热遮罩期间不接受切页：遮罩挡住鼠标但拦不住键盘，用户误触会把 tab 状态
+    // 与预热自己翻的页面搅乱（收尾只切回主控页，顶栏却还停在别的 tab）。
+    if (!_bootReleased) return;
     const nextIdx = TAB_ORDER.indexOf(name);
     if (nextIdx === _curTabIdx) return; // 点击当前激活 tab：不重播切换动画
     const prevIdx = _curTabIdx >= 0 ? _curTabIdx : nextIdx;
@@ -89,28 +108,103 @@
     slider.style.left = (btn.offsetLeft + Math.round((btn.offsetWidth - w) / 2)) + 'px';
     slider.style.width = w + 'px';
   }
-  // 只对新页做单次滑入（缓动曲线），跨多 tab 也只在本页与当前视觉间播放，不逐页遍历
+  // 分块进场：新页的每个面板各自从 tab 方向滑入 + 对焦收清，起步时间按对角位置错开。
+  // 前进（切到右边的 tab）从右滑入、从右列起；后退反之——和 tab 的左右顺序一致。
+  // 位移走 rAF 逐帧写样式，不用 CSS animation：CSS 的 transform 动画会被合成器接管，
+  // 运动期间按低分辨率位图平移、停下重新栅格，观感是「尾部突然变清」；主线程逐帧改样式
+  // 则每帧都按设备像素重绘，全程锐利（实测同位移下 46% vs 101%）。
+  // 页面本身不做变换：整页一变形，全屏文字会同时被降分辨率重绘。
+  const ENTER_DURATION_MS = 420;
+  const ENTER_SPREAD_MS = 200;  // 对角首尾块的起步差
+  const ENTER_SHIFT_PX = 28;    // 单块滑动距离
+  const ENTER_BLUR_PX = 4;      // 起始模糊：与参考组件同值，进场时明显对焦
+  // cubic-bezier(0.22, 1, 0.36, 1)：先快后缓，收尾无回弹
+  const ENTER_EASE = (() => {
+    const [x1, y1, x2, y2] = [0.22, 1, 0.36, 1];
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const sx = (t) => ((ax * t + bx) * t + cx) * t;
+    const sy = (t) => ((ay * t + by) * t + cy) * t;
+    const dx = (t) => (3 * ax * t + 2 * bx) * t + cx;
+    return (x) => {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      let t = x;
+      for (let i = 0; i < 5; i++) {
+        const d = dx(t);
+        if (Math.abs(d) < 1e-6) break;
+        t -= (sx(t) - x) / d;
+      }
+      return sy(Math.min(1, Math.max(0, t)));
+    };
+  })();
+  let _enterRaf = 0;
+  let _enterPrev = []; // 上一轮正在动的元素，切页打断时要收回内联样式
+
   function animatePageIn(page, fromRight) {
     if (!page) return;
-    page.classList.remove('page-slide-in');
-    void page.offsetWidth; // 强制 reflow 重置动画
-    page.style.setProperty('--slide-from', fromRight ? '42px' : '-42px');
-    page.classList.add('page-slide-in');
-    // 动画结束/被打断后立即摘掉动画类：页面回归主文档光栅化。
-    // 合成层提升窗口严格限定在动画期间；残留类会让页面停留在合成层路径，
-    // 非整数 DPI（150%）下文字发虚。animationName 过滤避免子元素动画误触发。
-    const detach = () => {
-      page.removeEventListener('animationend', onEnd);
-      page.removeEventListener('animationcancel', detach);
-      if (page.classList.contains('page-slide-in'))
-        page.classList.remove('page-slide-in');
+    // 打断上一轮：取消帧循环并把内联样式收干净，否则旧页会带着 transform 进后台
+    if (_enterRaf) cancelAnimationFrame(_enterRaf);
+    _enterRaf = 0;
+    for (const item of _enterPrev) item.el.style.cssText = item.saved;
+    _enterPrev = [];
+    // 只取最外层块，避免卡片套卡片重复播动画；没有卡片时退化为整页一块
+    const all = Array.from(page.querySelectorAll('.card, .dash-panel, .about-hero'));
+    const blocks = all.filter((el) => !all.some((other) => other !== el && other.contains(el)));
+    const targets = blocks.length ? blocks : [page];
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // 对角排序：水平权重是垂直的两倍——进场方向是横向的。等权时左列首行与右列末行
+    // 会算出同一个对角值（数据页左栏整列高，正好是这个格局），两块就会同时起步。
+    const rects = targets.map((el) => el.getBoundingClientRect());
+    const minTop = Math.min(...rects.map((r) => r.top));
+    const minLeft = Math.min(...rects.map((r) => r.left));
+    const spanTop = Math.max(1, Math.max(...rects.map((r) => r.top)) - minTop);
+    const spanLeft = Math.max(1, Math.max(...rects.map((r) => r.left)) - minLeft);
+    const shift = fromRight ? ENTER_SHIFT_PX : -ENTER_SHIFT_PX;
+    const diags = targets.map((el, i) => {
+      const xRatio = (rects[i].left - minLeft) / spanLeft;
+      const yRatio = (rects[i].top - minTop) / spanTop;
+      return (fromRight ? 1 - xRatio : xRatio) + 0.5 * yRatio;
+    });
+    // 起步时间按名次等距摊开，不按对角值比例：对角值仍可能撞车（同列不同行、行列互补
+    // 等），撞车的块会同一帧起步；按名次摊开保证任意两块都错开。
+    const order = targets.map((el, i) => i).sort((a, b) => (
+      diags[a] - diags[b] || rects[a].top - rects[b].top || rects[a].left - rects[b].left
+    ));
+    const step = order.length > 1 ? ENTER_SPREAD_MS / (order.length - 1) : 0;
+    const items = order.map((idx, rank) => ({
+      el: targets[idx],
+      saved: targets[idx].style.cssText,
+      delay: Math.round(rank * step),
+    }));
+    _enterPrev = items;
+    const start = performance.now();
+    const apply = (item, local) => {
+      const p = local <= 0 ? 0 : local >= 1 ? 1 : ENTER_EASE(local);
+      const el = item.el;
+      el.style.transform = 'translateX(' + (shift * (1 - p)).toFixed(2) + 'px)';
+      el.style.opacity = p.toFixed(3);
+      el.style.filter = 'blur(' + (ENTER_BLUR_PX * (1 - p)).toFixed(2) + 'px)';
     };
-    const onEnd = (e2) => {
-      if (e2.animationName !== 'page-slide') return;
-      detach();
+    // 首帧先压到起始态，避免延迟块先以终态闪一下
+    for (const item of items) apply(item, 0);
+    const frame = (now) => {
+      const t = now - start;
+      let done = true;
+      for (const item of items) {
+        const local = (t - item.delay) / ENTER_DURATION_MS;
+        apply(item, local);
+        if (local < 1) done = false;
+      }
+      if (!done) {
+        _enterRaf = requestAnimationFrame(frame);
+        return;
+      }
+      _enterRaf = 0;
+      for (const item of items) item.el.style.cssText = item.saved;
+      _enterPrev = [];
     };
-    page.addEventListener('animationend', onEnd);
-    page.addEventListener('animationcancel', detach);
+    _enterRaf = requestAnimationFrame(frame);
   }
   tabButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -120,6 +214,10 @@
     });
   });
   moveTabSlider('control'); // 初始：主控 tab 默认激活，滑块落地到首项
+  // 字体异步加载完成后 tab 宽度会变，滑块按旧宽度算的位置/长度会错位：就绪后重算一次
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => moveTabSlider(TAB_ORDER[_curTabIdx]));
+  }
   // 关于页底部跳转按钮（data-link 值即逻辑目标名，经 sidecar 用默认浏览器打开）
   document.querySelectorAll('[data-link]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -984,17 +1082,188 @@
         || (state.modules[0] && state.modules[0].id) || '';
       renderModulePages(initialMid);
       if (!data.model_ok) setStatus('插件资源缺失', 'error');
+      _initOk = true;
     } catch (e) {
       console.error(e);
       reportError('toast', '初始化失败: ' + e.message);
     }
-    checkRegistryOptimizations(); // 注册表权限体检（独立于初始化成败，内部自捕获异常）
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
     setInterval(pollDashboard, 3000); // 看板中心（仅数据页可见时刷新当前看板）
     peepConsumer.start(500);           // PEEP 预览轮询（peep 开启 + 数据页可见 + 未脱离悬浮窗时 ~10fps）
   }
 
+  // ---------- 首次启动：界面预热（只有冷启动会看到遮罩） ----------
+  // GPU 光栅下，首访的绘制组合要现场编译着色器（100–250ms 的帧停顿），Chromium 不提供
+  // 全量预编译或「待编译清单」接口，只能把界面真实画一遍。冷启动时遮罩盖住界面，
+  // 在遮罩后逐个打开页面与弹窗、等异步内容渲染完再关闭，把编译集中到遮罩期间。
+  // 热启动由 index.html 头部脚本直接隐藏遮罩，这里直接返回、不产生任何等待。
+  // 进度是「预热步骤」的完成度，不是着色器条数。
+  // 预热面由各功能在自己的模块里登记（window.MaaRM.registerWarmup），这里只按 order 跑一遍。
+  // 漏登记只影响该弹窗首次打开的流畅度。
+  const BOOT_MIN_MS = 1200;   // 保底时长：预热再快也让遮罩停留一会儿，不闪一下
+  const BOOT_FILL = 0.92;     // 步骤走完先到 92%，保底时长结束时再补满
+  // 总时限：从脚本开始执行算起，到必须释放界面的上限。正常冷启动约 3–4 秒；
+  // 超时只保证界面可用，本次不写完成标记（下次冷启动重试预热）。
+  const BOOT_TOTAL_MS = 12000;
+  const BOOT_T0 = performance.now();
+  // 遮罩已经放过（正常收尾或时限兜底）。热启动根本没有遮罩（首帧就 boot-skip）：
+  // 必须从一开始就算放行，否则切页与其他「放行后才该发生」的事情全被挡住。
+  let _bootReleased = document.documentElement.classList.contains('boot-skip');
+  let _bootCutShort = false;   // 时限兜底先放行了界面：本次预热不算完成
+  let _bootFinalized = false;  // 收尾只许发生一次：时限兜底与正常收尾不得各跑一遍
+  let _initOk = false;         // 初始化是否成功：失败时预热没有意义，也不得写完成标记
+  // 遮罩期间的键盘隔离：遮罩挡得住鼠标，拦不住 Tab——焦点会落到被遮住的「开始」等
+  // 按钮上，回车就把任务启动了。inert 把顶栏/正文/底栏一起移出焦点序列，收尾再放开。
+  function setShellInert(on) {
+    [document.getElementById('titlebar'), document.querySelector('main'), document.querySelector('footer')]
+      .forEach((el) => { if (el) el.inert = on; });
+  }
+  // 热启动没有遮罩，不该禁任何东西
+  if (!_bootReleased) setShellInert(true);
+  // 预热面在收到回包后才开窗的，开窗前问一句：遮罩若已被时限兜底放行，
+  // 迟到的回包不该再弹一张自己会关的窗到用户眼前抢焦点。
+  window.MaaRM.warmupReleased = () => _bootReleased;
+
+  function showOnlyPage(name) {
+    TAB_ORDER.forEach((p) => {
+      $('page-' + p).classList.toggle('hidden', p !== name);
+    });
+  }
+
+  // 给单步套上总时限：到点即拒绝，避免某一步的等待（如看板查询）拖住遮罩
+  function withDeadline(promise, deadline) {
+    const remain = deadline - performance.now();
+    if (remain <= 0) return Promise.reject(new Error('超出启动时限'));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('超出启动时限')), remain);
+      promise.then(
+        (v) => { clearTimeout(timer); resolve(v); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  }
+
+  // 收尾只发生一次：正常走完与时限兜底是两条路径，谁先到谁收尾，另一条直接退出——
+  // 否则晚到的初始化会再开一张启动体检，还会把用户已经打开的弹窗顺手收掉。
+  function finishBoot(completed) {
+    if (_bootFinalized) return;
+    _bootFinalized = true;
+    _bootReleased = true;
+    // 遮罩撤下时不该还挂着预热开的窗：收掉它，别让弹窗在已经放行的界面上抢焦点
+    if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
+    // 启动体检放在遮罩撤下之后：它开的是给用户看的弹窗，埋在遮罩下面既看不见，
+    // 也会被上面的 closeAllModals 顺手收掉
+    checkRegistryOptimizations();
+    setShellInert(false); // 界面已可用：焦点序列恢复
+    const overlay = $('boot-overlay');
+    if (!overlay) return;
+    overlay.classList.add('boot-overlay--done');
+    setTimeout(() => { overlay.hidden = true; }, 260);
+    // 只有全部步骤都画完才通知壳落标记：失败、初始化失败或超时留在冷态，下次启动重来
+    if (completed && window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage({ type: 'warmup-done' });
+    } else if (!completed) {
+      console.warn('[warmup] 本次预热未完成，不写完成标记');
+    }
+  }
+
+  // 独立的时限兜底：即使初始化请求挂住、预热根本没开始，到点也必须放出界面。
+  // 只放行界面，不写完成标记——没画完的预热下次启动还要重来。
+  function armBootDeadline() {
+    const overlay = $('boot-overlay');
+    if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
+    setTimeout(() => {
+      if (_bootReleased) return;
+      _bootCutShort = true;
+      const stepEl = overlay.querySelector('.boot-step');
+      if (stepEl) stepEl.textContent = '启动较慢，先进入界面';
+      console.warn('[warmup] 超出启动时限，先释放界面；本次不写完成标记');
+      finishBoot(false);
+    }, BOOT_TOTAL_MS);
+  }
+
+  async function runBootWarmup() {
+    const overlay = $('boot-overlay');
+    if (!overlay || document.documentElement.classList.contains('boot-skip')) {
+      checkRegistryOptimizations(); // 热启动没有遮罩：启动体检现在就跑
+      return;
+    }
+    // 时限兜底已经收过尾（初始化回来得太晚）：不再翻页、开弹窗或重开体检
+    if (_bootFinalized) return;
+    // 初始化失败：界面数据没到位，预热没有意义，也不能算画完——放出界面，下次重来
+    if (!_initOk) {
+      finishBoot(false);
+      return;
+    }
+    const bar = overlay.querySelector('.boot-bar i');
+    const stepEl = overlay.querySelector('.boot-step');
+    const started = performance.now();
+    const deadline = BOOT_T0 + BOOT_TOTAL_MS;
+    let done = 0;
+    const steps = [
+      ['主控页', async () => { showOnlyPage('control'); await twoFrames(); return true; }],
+      ['数据页', async () => {
+        showOnlyPage('data');
+        await twoFrames();
+        // 看板内容只在页面可见时拉取（见 loadDashboard），这里等它真正画出来再走，
+        // 否则冷启动后第一次点数据页仍会为看板内容付一次首访编译。
+        // 回包失败（false）算本次预热未完成；没有候选看板（null）不算失败。
+        const drawn = await pollDashboard();
+        await twoFrames();
+        await delay(80);
+        return drawn !== false;
+      }],
+      ['设置页', async () => { showOnlyPage('settings'); await twoFrames(); await delay(80); return true; }],
+      ['关于页', async () => { showOnlyPage('about'); await twoFrames(); await delay(80); return true; }],
+      ...window.MaaRM.warmupSurfaces
+        .slice()
+        .sort((a, b) => (a.order || 0) - (b.order || 0))
+        .map((s) => [s.label, () => s.run()]),
+    ];
+    const total = steps.length;
+    const advance = (label) => {
+      done += 1;
+      bar.style.width = (done / total * BOOT_FILL * 100).toFixed(1) + '%';
+      stepEl.textContent = label + '（' + done + ' / ' + total + '）';
+    };
+    // 任何一步抛出、返回 false（尝试了但没画出来）或超出总时限，都算本次预热未完成：
+    // 界面照常释放，但不写完成标记，下次冷启动重试。
+    let ok = true;
+    for (const [label, run] of steps) {
+      // 遮罩已被时限兜底放行、或已到总时限：不再启动新的一步。
+      // 否则同步开窗的预热面会在用户已经看到界面时再闪一张弹窗。
+      if (_bootReleased || performance.now() >= deadline) {
+        ok = false;
+        console.warn('[warmup] 遮罩已释放或超出总时限，跳过剩余步骤');
+        break;
+      }
+      try {
+        const ready = await withDeadline(run(), deadline);
+        if (ready === false) ok = false;
+      } catch (e) {
+        // 单步失败不阻断后续预热与收尾（遮罩不能因此卡住）
+        ok = false;
+        console.error('[warmup]', e);
+      }
+      advance(label);
+    }
+    // 兜底已经收过尾：下面的翻页、文案与收尾一律不动，别打断用户刚接手的界面
+    if (_bootFinalized) return;
+    if (_bootCutShort) ok = false;
+    showOnlyPage('control'); // 预热完回到启动时的主控页
+    await twoFrames();
+    const remain = BOOT_MIN_MS - (performance.now() - started);
+    if (remain > 0) await delay(remain);
+    // 等待期间可能正好撞上时限兜底：它已经收尾并放行，这里不能再改文案/再收一遍
+    if (_bootFinalized) return;
+    bar.style.width = '100%';
+    stepEl.textContent = ok ? '完成' : '未完成，下次启动再试';
+    await delay(200);
+    finishBoot(ok && !_bootCutShort);
+  }
+
   // ---------- 启动 ----------
-  init();
+  armBootDeadline(); // 独立兜底：初始化请求挂住也要按时放出界面（且不写完成标记）
+  init().then(runBootWarmup, runBootWarmup);
 })();

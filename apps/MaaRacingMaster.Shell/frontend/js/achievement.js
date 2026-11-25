@@ -11,7 +11,7 @@
   'use strict';
 
   // 共享物：rpc.js / modal.js 已先行加载（见 index.html 脚本序）
-  const { maarm, openModal, showError } = window.MaaRM;
+  const { maarm, openModal, showError, waitFor, twoFrames } = window.MaaRM;
 
   const TIERS = [
     { id: 'normal', label: '普通', color: '#1F2328' },
@@ -365,17 +365,21 @@
   // 而且连合成层都不给它建（提层会让文字从次像素抗锯齿退化成灰度，看着像抖了一像素）。
   //
   // 数值与积分方式照 reactbits TiltedCard 的实现：二阶弹簧 v += (ω²(target−x) − 2ζω·v)·h，
-  // 240Hz 子步防大 dt 失稳。三组参数也照它——tilt ω=20·0.2^smoothness、ζ=1−0.3·smoothness
-  // （默认 smoothness 0.6 → 7.62 / 0.82），翻转 ω=9.5、ζ=0.72（略欠阻尼，到位轻轻回弹），
-  // 按压 ω=26、ζ=0.8。翻面与倾斜合进同一个 rotateY，转的是卡本身，不是卡里的图。
+  // 240Hz 子步防大 dt 失稳。倾斜/翻转/按压三组参数也照它——tilt ω=20·0.2^smoothness、
+  // ζ=1−0.3·smoothness（默认 smoothness 0.6 → 7.62 / 0.82），翻转 ω=9.5、ζ=0.72
+  // （略欠阻尼，到位轻轻回弹），按压 ω=26、ζ=0.8。
+  // 浮起（缩放 + 抬升）单走一组更快的弹簧：悬停需要立刻有回应，跟倾斜同速会显得拖沓。
+  // 翻面与倾斜合进同一个 rotateY，转的是卡本身，不是卡里的图。
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-  const TILT_X = 5.5;             // 上下倾斜上限（度）
-  const TILT_Y = 7;               // 左右倾斜上限（度）
-  const HOVER_SCALE = 1.03;       // 悬停放大
+  const TILT_X = 9;               // 上下倾斜上限（度）
+  const TILT_Y = 12;              // 左右倾斜上限（度）
+  const HOVER_SCALE = 1.06;       // 悬停放大
   const PRESS_SCALE = 0.02;       // 按下缩小量（参考实现同值）
   const PRESS_MOVE_PX = 6;        // 按下后位移超过它 = 拖动，不算点击（同参考实现）
   const OMEGA_TILT = 20 * Math.pow(0.2, 0.6);
   const ZETA_TILT = 1 - 0.3 * 0.6;
+  const OMEGA_LIFT = 24;
+  const ZETA_LIFT = 0.9;
   const OMEGA_FLIP = 9.5;
   const ZETA_FLIP = 0.72;
   const OMEGA_PRESS = 26;
@@ -440,7 +444,7 @@
       let moving = false;
       moving = spring(st, 'rx', rm ? 0 : st.trx, OMEGA_TILT, ZETA_TILT, dt) || moving;
       moving = spring(st, 'ry', rm ? 0 : st.tryY, OMEGA_TILT, ZETA_TILT, dt) || moving;
-      moving = spring(st, 'lift', st.tlift, OMEGA_TILT, Math.max(ZETA_TILT, 0.85), dt) || moving;
+      moving = spring(st, 'lift', st.tlift, OMEGA_LIFT, ZETA_LIFT, dt) || moving;
       moving = spring(st, 'press', st.tpress, OMEGA_PRESS, ZETA_PRESS, dt) || moving;
       moving = spring(st, 'flip', st.tflip, rm ? 18 : OMEGA_FLIP, rm ? 1 : ZETA_FLIP, dt) || moving;
       paint(node, st);
@@ -458,12 +462,15 @@
     }
   }
 
-  // 镜面高光：位置与角度仍跟着指针即时走，倾斜则由弹簧带过去
-  function paintGlare(node, px, py) {
+  // 镜面高光：位置与角度仍跟着指针即时走，倾斜则由弹簧带过去。
+  // 看背面时卡整体绕 Y 转了 180°，面的本地 x 与观感左右相反：光斑位置与光带角度
+  // 按镜像折算，指针在视觉右侧时光仍落在视觉右侧。
+  function paintGlare(node, px, py, mirrored) {
     node.style.setProperty('--glare', '1');
-    node.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
+    node.style.setProperty('--mx', ((mirrored ? 1 - px : px) * 100).toFixed(1) + '%');
     node.style.setProperty('--my', (py * 100).toFixed(1) + '%');
-    node.style.setProperty('--ang', (100 + px * 55).toFixed(0) + 'deg');
+    const ang = 100 + px * 55;
+    node.style.setProperty('--ang', (mirrored ? 180 - ang : ang).toFixed(0) + 'deg');
     node.style.setProperty('--hue', (px * 300).toFixed(0) + 'deg');
   }
 
@@ -493,14 +500,14 @@
         || Math.abs(e.clientY - st.downY) > PRESS_MOVE_PX)) {
       st.moved = true;          // 拖着走不算点击，松手不翻面
     }
-    // 未解锁的卡保持哑光；看背面的卡不再跟着倾斜（文字歪着读不划算）
-    if (node.classList.contains('is-unlocked') && !node.classList.contains('is-flipped')) {
+    // 未解锁的卡保持哑光；正反面都跟着倾斜（背面读条件时同样有立体感）
+    if (node.classList.contains('is-unlocked')) {
       const r = node.getBoundingClientRect();
       const px = clamp01((e.clientX - r.left) / Math.max(1, r.width));
       const py = clamp01((e.clientY - r.top) / Math.max(1, r.height));
       st.trx = (0.5 - py) * TILT_X;
       st.tryY = (px - 0.5) * TILT_Y;
-      paintGlare(node, px, py);
+      paintGlare(node, px, py, node.classList.contains('is-flipped'));
     }
     // 未解锁的卡不倾斜也不放大（只有按下时的回弹）——它不该比到手的更显眼
     st.tlift = node.classList.contains('is-unlocked') ? 1 : 0;
@@ -547,7 +554,6 @@
     st.tflip = on ? 180 : 0;
     node.classList.toggle('is-flipped', on);
     node.setAttribute('aria-expanded', on ? 'true' : 'false');
-    if (on) { st.trx = 0; st.tryY = 0; }   // 背面不倾斜
     wake(node);
   }
 
@@ -573,25 +579,54 @@
   }
 
   // ---------- 开关 ----------
+  let returnFocus = null; // 打开成就管理前的焦点：关闭时还给它
+  // Tab/Shift+Tab 圈在整页层内：层下面仍是被覆盖的设置页，不拦就会把焦点送出去
+  const SHEET_FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled),'
+    + ' select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+  function trapSheetTab(e) {
+    if (e.key !== 'Tab') return;
+    const sheet = $('ach-sheet');
+    if (!sheet || sheet.hidden) return;
+    if (document.querySelector('.maarm-modal-overlay')) return; // 弹窗自己管焦点
+    const items = Array.prototype.filter.call(
+      sheet.querySelectorAll(SHEET_FOCUSABLE), (el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const inside = sheet.contains(document.activeElement);
+    if (e.shiftKey) {
+      if (!inside || document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else if (!inside || document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
   function open() {
     const sheet = $('ach-sheet');
     if (!sheet) return;
+    returnFocus = document.activeElement;
     sheet.hidden = false;
     sheet.setAttribute('aria-hidden', 'false');
     requestAnimationFrame(() => sheet.classList.add('is-open'));
     status('');
     refresh();
+    // 整页层接管焦点：不把焦点请进来，Tab 会先穿过被它盖住的设置页
+    const back = $('ach-back');
+    if (back) back.focus();
+    document.addEventListener('keydown', trapSheetTab);
   }
 
   function close() {
     const sheet = $('ach-sheet');
     if (!sheet || sheet.hidden) return;
+    document.removeEventListener('keydown', trapSheetTab);
     if (hot) leaveCard(hot);
     clearFlip();                 // 下次进来从正面开始
     // 关闭前把焦点移出：否则 aria-hidden 会盖住仍在页内的焦点元素（读屏与浏览器都会告警）
     if (sheet.contains(document.activeElement)) document.activeElement.blur();
     sheet.classList.remove('is-open');
     sheet.setAttribute('aria-hidden', 'true');
+    if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
+    returnFocus = null;
     setTimeout(() => {
       if (!sheet.classList.contains('is-open')) sheet.hidden = true;
     }, 240);
@@ -673,4 +708,18 @@
   });
 
   window.MaaRM.achievements = { open, close, refresh };
+
+  // 本模块拥有的预热面：成就管理整页覆盖层。
+  window.MaaRM.registerWarmup({
+    label: '成就页',
+    order: 40,
+    async run() {
+      open();
+      const shown = await waitFor(() => document.querySelector('#ach-sheet .maarm-ach-card'), 1000);
+      await twoFrames();
+      close();
+      await waitFor(() => document.getElementById('ach-sheet').hidden, 700);
+      return shown;
+    },
+  });
 })();
