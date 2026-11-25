@@ -95,7 +95,8 @@ PERFORMANCE OF THIS SOFTWARE.
 
 morphicons 为 MIT 许可，许可原文随代码副本携带于 `frontend/vendor.morphicons.js` 文件头注释块。
 
-React Bits 许可原文（MIT + Commons Clause License Condition v1.0，摘要）：
+React Bits 许可原文（MIT + Commons Clause License Condition v1.0，取自上游修订
+`ed33ebe4acfe29e60fb759bcccc70a138ce2dcef`，全文）：
 
 ```
 MIT + Commons Clause License Condition v1.0
@@ -114,17 +115,35 @@ copies or substantial portions of the Software.
 ## Commons Clause Restriction
 
 You may use this Software, including for any commercial purpose, so long as
-you do not sell, sublicense, or redistribute the components themselves —
-whether alone, in a bundle, or as a ported version. The same restriction
-covers the React Bits tools and the sounds in the sound library.
+you do not sell, sublicense, or redistribute the components themselves-whether
+alone, in a bundle, or as a ported version.
+
+The same restriction covers the React Bits tools (Background Studio, Texture
+Lab, Shape Magic, Center Stage, Sound Lab and any tools added later) and the
+sounds in the sound library. You may not sell, sublicense, or redistribute the
+tools or the sounds themselves, or offer the tools or a substantially similar
+copy of them as a hosted service-whether alone, in a bundle, or as a ported
+version.
+
+What you make with the tools is yours to use. You can use exported code, images,
+videos, and audio files in any personal or commercial application, website, or
+product, including paid ones. You may not sell or redistribute the exports on
+their own, either individually or as the product itself, such as a sound,
+texture, background, or template pack.
 
 ## No Warranty
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 本项目只把该着色器作为界面效果随程序一起使用，不单独售卖、再许可或分发组件本体；
-完整条款见上游 <https://github.com/DavidHDev/react-bits/blob/main/LICENSE.md>。
+完整条款见上游 <https://github.com/DavidHDev/react-bits/blob/ed33ebe4acfe29e60fb759bcccc70a138ce2dcef/LICENSE.md>。
 
 ---
 
