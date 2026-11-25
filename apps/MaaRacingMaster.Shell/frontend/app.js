@@ -96,7 +96,7 @@
     moveTabSlider(name);
     if (name === 'data') pollDashboard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
     if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
-    glitchVersionEgg(); // 1% 概率版本号乱码（彩蛋，详见 glitchVersionEgg 注释）
+    glitchDevTag(); // 1% 概率「开发中」标签乱码（彩蛋，详见 glitchDevTag 注释）
   }
   // 滑块缓动平移到目标 tab 底部（用 offsetLeft/offsetWidth，不逐页遍历）
   // 宽度取 tab 的 85%，并在 tab 内水平居中
@@ -877,18 +877,19 @@
     return timer;
   }
 
-  // 1% 概率：切到关于页时版本号套一次乱码解码（与第 10 条同款手法，同源世界观）。
+  // 1% 概率：切页时给关于页的「开发中」标签套一次乱码解码（与第 10 条同款手法，
+  // 同源世界观）。落点只在这个标签上——标题栏版本号是全局可见的，不参与彩蛋。
   // 概率常量放在这里：想预览效果临时改成 1 即可。reduced-motion 下不出。
-  const EGG_VERSION_GLITCH_P = 0.01;
-  let versionScrTimer = null;
-  function glitchVersionEgg() {
-    if (Math.random() >= EGG_VERSION_GLITCH_P) return;
+  const EGG_TAG_GLITCH_P = 0.01;
+  let tagScrTimer = null;
+  function glitchDevTag() {
+    if (Math.random() >= EGG_TAG_GLITCH_P) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const n = $('about-version');
+    const n = $('about-dev-tag');
     if (!n || !n.textContent) return;
-    if (versionScrTimer) clearInterval(versionScrTimer);
-    // 捕获触发时的文本作为落定值；期间若被更新检查重写，下一次重写会覆盖回来
-    versionScrTimer = scrambleNumber(n, n.textContent);
+    if (tagScrTimer) clearInterval(tagScrTimer);
+    // 捕获触发时的文本作为落定值：解码过程只改 textContent，标签本身没有别的写入方
+    tagScrTimer = scrambleNumber(n, n.textContent);
   }
 
   function showRulesDialog() {

@@ -1575,7 +1575,13 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .ver-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
 .ver-label { font-size: 12px; color: var(--maarm-foreground-muted); width: 64px; flex-shrink: 0; }
 .ver-value { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); font-family: var(--maarm-font-mono); }
-#about-version { cursor: pointer; user-select: none; }
+/* 关于页彩蛋：点击「开发中」标签掉落文字 / 连点 10 次打开员工守则 / 1% 乱码解码。
+   min-width 锁住标签宽度：乱码时字符在 ASCII 与中文之间换，不锁会让旁边的
+   「Apache-2.0」跟着左右跳。 */
+#about-dev-tag {
+  cursor: pointer; user-select: none;
+  display: inline-block; min-width: 3em; text-align: center;
+}
 
 /* 关于页彩蛋：点击版本号掉落的文字 */
 .falling-text {
