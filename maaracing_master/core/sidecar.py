@@ -102,6 +102,20 @@ _STDERR = cast(TextIO, sys.__stderr__)
 # 只写/读本程序自己管理的键；文件里出现未知类/键一律忽略，绝不因此崩溃。
 # --------------------------------------------------------------------------
 _PROFILE_FILENAME = "profile.json"
+
+# ---------- 首次引导状态 ----------
+# 声明文案版本：文案变更时递增，旧版本同意记录失效，下次启动重新弹声明。
+_ONBOARDING_TERMS_VERSION = "2026-11-A"
+# 引导步骤 id：与前端引导步骤一一对应。前端增删步骤必须同步本表，
+# 未知 id 的写入会被拒绝（避免拼错的步骤悄悄写进 profile）。
+_ONBOARDING_STEPS = (
+    "manage",
+    "add_start_game",
+    "add_close_game",
+    "confirm",
+    "open_settings",
+    "open_env",
+)
 # 默认选中模块：**不硬编码任何具体模块 id**——预选注册顺序里第一个仍在有效期内的模块，
 # 全部不可用时不预选（GUI「（空）」承担该状态）。写死某个活动会把该活动固化成特权模块，
 # 且它退役后常量即悬空；core 也不得出现模块 id 字面量。
@@ -379,13 +393,14 @@ def _save_profile(partial: dict) -> None:
             for _ in range(5):
                 try:
                     tmp.replace(path)           # 原子替换，防半写文件
-                    return
+                    return True
                 except PermissionError as exc:
                     last = exc
                     time.sleep(0.05)
             raise last if last else RuntimeError("replace failed")
         except Exception as exc:  # noqa: BLE001
             logger.log(f"[sidecar] 偏好落盘失败: {exc!r}", "WARNING")
+            return False
         finally:
             if tmp is not None:
                 try:
@@ -527,6 +542,8 @@ HANDLERS = frozenset({
     # 生命周期与模块
     "get_initial_state", "set_run_queue", "set_start_from", "get_status",
     "start", "stop", "close", "shutdown",
+    # 首次引导（声明 / 过渡页 / 步骤完成）
+    "get_onboarding", "onboarding_event",
     # 升级准备冻结（壳宿主经管道直调，前端不可调；测试 SHELL_ONLY 锁定）
     "prepare_update", "cancel_update_freeze",
     # 模块配置
@@ -960,6 +977,76 @@ class SidecarService:
         logger.log(
             "旧「运行结束后」开关已迁移到任务列表: " + ("、".join(migrated) if migrated else "（原本都关着）")
         )
+
+    def _onboarding_state(self) -> dict:
+        """读取并规范化 onboarding 段：无效步骤 id 丢弃，缺字段补空值。"""
+        raw = _load_profile().get("onboarding")
+        state = raw if isinstance(raw, dict) else {}
+        done = state.get("steps_done")
+        if not isinstance(done, list):
+            done = []
+        done = [s for s in done if isinstance(s, str) and s in _ONBOARDING_STEPS]
+        return {
+            "terms_version": state.get("terms_version") or "",
+            "terms_accepted_at": state.get("terms_accepted_at"),
+            "launch_seen_at": state.get("launch_seen_at"),
+            "steps_done": done,
+            "finished_at": state.get("finished_at"),
+        }
+
+    def _is_existing_user(self) -> bool:
+        """升级上来的老用户：profile 已有业务数据，但还没有 onboarding 段。
+
+        老用户只补声明、不补引导；全新安装的 profile 里这些段都不存在。
+        """
+        profile = _load_profile()
+        if "onboarding" in profile:
+            return False
+        return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
+
+    def get_onboarding(self, params):
+        """首次引导状态：声明、过渡页、步骤完成集合与完成时间。"""
+        state = self._onboarding_state()
+        version = state["terms_version"]
+        return (True, {
+            "terms_version": _ONBOARDING_TERMS_VERSION,
+            # 文案版本不一致 = 声明改过，需要重新同意
+            "terms_accepted": version == _ONBOARDING_TERMS_VERSION and bool(state["terms_accepted_at"]),
+            "terms_accepted_at": state["terms_accepted_at"],
+            "launch_seen": bool(state["launch_seen_at"]),
+            "steps_done": state["steps_done"],
+            "finished_at": state["finished_at"],
+            "existing_user": self._is_existing_user(),
+            "steps": list(_ONBOARDING_STEPS),
+        }, None)
+
+    def onboarding_event(self, params):
+        """逐事件写入引导状态：每次变更立即落盘，强杀后最多丢一个事件。
+
+        事件幂等：重复的 step_done / finish 不会产生重复数据；未知事件与未知
+        步骤 id 一律拒绝，前端拼错时能立刻看见。
+        """
+        kind = params.get("type")
+        state = self._onboarding_state()
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        if kind == "accept_terms":
+            state["terms_version"] = _ONBOARDING_TERMS_VERSION
+            state["terms_accepted_at"] = now
+        elif kind == "seen_launch":
+            state["launch_seen_at"] = state["launch_seen_at"] or now
+        elif kind == "step_done":
+            sid = params.get("id")
+            if sid not in _ONBOARDING_STEPS:
+                return (False, None, f"未知引导步骤: {sid}")
+            if sid not in state["steps_done"]:
+                state["steps_done"].append(sid)
+        elif kind == "finish":
+            state["finished_at"] = now
+        else:
+            return (False, None, f"未知引导事件: {kind}")
+        if not _save_profile({"onboarding": state}):
+            return (False, None, "引导状态保存失败，请重试")
+        return (True, state, None)
 
     def get_initial_state(self, params):
         return (True, {
