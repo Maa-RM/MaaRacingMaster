@@ -45,7 +45,6 @@ from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
-    first_available_module_id,
     get_module_info,
     load_plugin_ref,
     module_expired,
@@ -54,7 +53,6 @@ from maaracing_master.core.registry import (
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
     CloseGameStep,
-    LaunchGameStep,
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.config_ui_contract import (
@@ -424,19 +422,6 @@ def _legacy_user_from_profile(profile: dict) -> bool:
     if isinstance(raw, dict) and "existing_user" in raw:
         return bool(raw.get("existing_user"))
     return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
-
-
-def _legacy_default_queue() -> tuple[list[str], dict[str, bool]]:
-    """升级前版本的默认编排：启动游戏 → 活动模块 → 关闭游戏。
-
-    只给没有队列存档的老用户补回，避免升级后任务列表被清空；新装用户不预置。
-    """
-    order = [LaunchGameStep.ID, *MODULE_REGISTRY, CloseGameStep.ID]
-    enabled = {LaunchGameStep.ID: True, CloseGameStep.ID: True}
-    first = first_available_module_id()
-    if first:
-        enabled[first] = True
-    return order, enabled
 
 
 def _apply_framework_policy() -> None:
@@ -936,8 +921,8 @@ class SidecarService:
             if kept:
                 slots[mid] = kept
         self._module_config_cache = slots
-        # 3) 运行任务列表：存档里有 order（哪怕是空列表）就以存档为准；没有存档时
-        #    升级上来的老用户补回旧版默认编排（不能把升级前的列表清空），新装保持空。
+        # 3) 运行任务列表：存档里有 order（哪怕是空列表）就按存档恢复；没有存档就
+        #    保持空列表，由用户自己挑选任务——新装与升级用户同一口径。
         rq = data.get("run_queue")
         if isinstance(rq, dict) and isinstance(rq.get("order"), list):
             seen: set[str] = set()
@@ -952,8 +937,6 @@ class SidecarService:
                 k: bool(v) for k, v in en.items()
                 if isinstance(k, str) and k in _step_ids()
             } if isinstance(en, dict) else {})
-        elif _legacy_user_from_profile(data):
-            self._queue_order, self._queue_enabled = _legacy_default_queue()
         # 4) 旧「运行结束后」开关迁移（跑一次即清键）
         self._migrate_legacy_shutdown(data.get("debug"))
 

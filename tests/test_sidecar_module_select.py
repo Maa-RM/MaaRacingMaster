@@ -81,19 +81,17 @@ def _init_service(monkeypatch, profile):
     return SidecarService(None)
 
 
-def test_legacy_queue_seeded_when_missing(monkeypatch):
-    """升级上来的老用户没有队列存档：补回旧版默认编排，不清空列表。"""
+def test_legacy_queue_not_seeded_when_missing(monkeypatch):
+    """老用户没有队列存档也是空列表：任务由用户自己挑选，不补旧版默认。"""
     svc = _init_service(monkeypatch, {
         "module_config": {"launch_game": {"args": "-nosound"}},
     })
-    assert svc._queue_order[0] == "launch_game"
-    assert svc._queue_order[-1] == "close_game"
-    assert svc._queue_enabled.get("launch_game") is True
-    assert svc._queue_enabled.get("close_game") is True
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
 
 
-def test_saved_empty_queue_wins_over_legacy_default(monkeypatch):
-    """用户显式清空过的队列（存档为空列表）必须原样恢复。"""
+def test_saved_empty_queue_restores_empty(monkeypatch):
+    """存档里明确是空队列：恢复后仍是空，不被任何默认值顶掉。"""
     svc = _init_service(monkeypatch, {
         "onboarding": {"existing_user": True},
         "run_queue": {"order": [], "enabled": {}},
