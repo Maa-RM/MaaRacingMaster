@@ -331,7 +331,8 @@
       setTimeout(function () {
         gate.remove();
         setShellInert(false);
-        startTour(state.tourIndex || 0, true);
+        if (state.tourIndex > 0) startTour(state.tourIndex, true);
+        else showLaunch();
       }, 260);
     });
     $('#onb-decline').addEventListener('click', function () {
@@ -686,6 +687,66 @@
     void b.offsetWidth;
     b.classList.add('is-nudge');
     setTimeout(function () { b.classList.remove('is-nudge'); }, 340);
+  }
+
+  // ---------- 初次教学过渡页 ----------
+  // 声明之后、第一步之前：纯色底，大号状态球居中作主体；点「开始」后球缩到引导位置，
+  // 背景同时淡出，直接接上第一步。
+  function showLaunch() {
+    var orb = ensureGuideOrb();
+    if (!orb) { startTour(0, true); return; }
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var big = 170;
+
+    // 先无过渡落到屏幕中央，再启用位移过渡
+    orb.el.style.transition = 'none';
+    orb.el.style.width = big + 'px';
+    orb.el.style.height = big + 'px';
+    orb.el.style.left = (vw / 2 - big / 2) + 'px';
+    orb.el.style.top = (vh / 2 - big / 2 - 48) + 'px';
+    orb.el.classList.add('is-active');
+    orb.started = true;
+    void orb.el.offsetWidth;
+    orb.el.classList.add('is-launch');
+    orb.el.style.transition = '';
+
+    var launch = document.createElement('div');
+    launch.className = 'onb-launch';
+    launch.id = 'onb-launch';
+    launch.innerHTML =
+      '<div class="onb-launch-copy">'
+      + '<h1>第一次使用</h1>'
+      + '<p>接下来用几步，带你认识主界面。</p>'
+      + '<button class="tour-btn tour-btn--primary" type="button" id="onb-launch-start">开始</button>'
+      + '</div>';
+    document.body.appendChild(launch);
+
+    $('#onb-launch-start').addEventListener('click', function () {
+      if (launch.dataset.leaving) return;
+      launch.dataset.leaving = '1';
+      launch.classList.add('is-leaving');
+
+      var target = document.querySelector(STEPS[0].target);
+      var r = target ? target.getBoundingClientRect() : null;
+      var size = 30;
+      var pad = 10;
+      var x = r ? r.left - size - pad : vw / 2 - size / 2;
+      var y = r ? r.top - 6 : vh / 2 - size / 2;
+      if (r && x < 8) x = r.right + pad;
+      if (y < 8) y = 8;
+      if (y + size > vh - 8) y = vh - size - 8;
+      orb.el.style.width = size + 'px';
+      orb.el.style.height = size + 'px';
+      orb.el.style.left = x + 'px';
+      orb.el.style.top = y + 'px';
+
+      setTimeout(function () {
+        launch.remove();
+        orb.el.classList.remove('is-launch');
+        startTour(0, true);
+      }, 720);
+    });
   }
 
   function startTour(from, restorePrereq) {

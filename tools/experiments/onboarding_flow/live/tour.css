@@ -116,15 +116,34 @@
 }
 .tour-toast.is-out { opacity: 0; transition: opacity .4s ease; }
 
+/* ============ 初次教学过渡页 ============ */
+.onb-launch {
+  position: fixed; inset: 0; z-index: 10300;
+  background: var(--maarm-background);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding: 0 24px 16vh;
+  transition: opacity .5s ease;
+}
+.onb-launch.is-leaving { opacity: 0; }
+.onb-launch-copy { text-align: center; }
+.onb-launch-copy h1 { font-size: 22px; font-weight: 600; margin-bottom: 10px; }
+.onb-launch-copy p { font-size: 13px; color: var(--maarm-foreground-secondary); margin-bottom: 22px; }
+
 /* ============ 状态球向导 ============ */
 .tour-orb {
+  --orb-size: 30px;
   position: fixed; z-index: 10250; pointer-events: none;
   opacity: 0;
   transition: opacity .2s ease;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .16));
 }
 .tour-orb.is-active { opacity: 1; }
-.tour-orb .maarm-orb { --orb-size: 30px; width: 30px; height: 30px; }
+.tour-orb.is-launch {
+  z-index: 10310;
+  transition: left .68s cubic-bezier(.4,0,.2,1), top .68s cubic-bezier(.4,0,.2,1),
+              width .68s cubic-bezier(.4,0,.2,1), height .68s cubic-bezier(.4,0,.2,1);
+}
+.tour-orb .maarm-orb { --orb-size: 100%; width: 100%; height: 100%; }
 /* 引导球要压过遮罩，就绪态也保持实心，眼睛才读得出来 */
 .tour-orb .maarm-orb[data-state="ready"],
 .tour-orb .maarm-orb[data-state="running"] {
