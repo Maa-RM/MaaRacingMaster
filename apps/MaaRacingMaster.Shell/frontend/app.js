@@ -211,6 +211,10 @@
     });
   });
   moveTabSlider('control'); // 初始：主控 tab 默认激活，滑块落地到首项
+  // 字体异步加载完成后 tab 宽度会变，滑块按旧宽度算的位置/长度会错位：就绪后重算一次
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => moveTabSlider(TAB_ORDER[_curTabIdx]));
+  }
   // 关于页底部跳转按钮（data-link 值即逻辑目标名，经 sidecar 用默认浏览器打开）
   document.querySelectorAll('[data-link]').forEach((btn) => {
     btn.addEventListener('click', async () => {

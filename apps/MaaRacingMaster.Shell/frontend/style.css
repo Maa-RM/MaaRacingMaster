@@ -157,10 +157,12 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 }
 .maarm-tab:hover { color: var(--maarm-foreground); }
 .maarm-tab--active { font-weight: 600; color: var(--maarm-foreground); }
-/* 唯一滑块：JS 计算激活 tab 位置并平移到对应位置（缓动），替代旧"各自内置小条" */
+/* 唯一滑块：JS 计算激活 tab 位置并平移到对应位置（缓动），替代旧"各自内置小条"。
+   bottom:-1px 让滑块盖住标题栏的 1px 下边框：贴着边框时抗锯齿会把 2px 的条底边
+   和灰线混在一起，两端看起来像被削掉一角。 */
 .tab-slider {
-  position: absolute; bottom: 0; left: 0; height: 2px;
-  background: var(--maarm-primary); border-radius: 1px 1px 0 0;
+  position: absolute; bottom: -1px; left: 0; height: 2px;
+  background: var(--maarm-primary);
   transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
