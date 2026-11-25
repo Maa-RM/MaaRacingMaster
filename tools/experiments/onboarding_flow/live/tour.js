@@ -327,13 +327,12 @@
       countdown.active = false;
       cancelAnimationFrame(countdown.raf);
       if (hero) hero.stop();
-      gate.classList.add('is-leaving');
       setTimeout(function () {
         gate.remove();
         setShellInert(false);
         if (state.tourIndex > 0) startTour(state.tourIndex, true);
         else showLaunch();
-      }, 260);
+      }, 180);
     });
     $('#onb-decline').addEventListener('click', function () {
       countdown.active = false;
@@ -695,32 +694,34 @@
   function showLaunch() {
     var orb = ensureGuideOrb();
     if (!orb) { startTour(0, true); return; }
-    var vw = window.innerWidth;
-    var vh = window.innerHeight;
-    var big = 170;
-
-    // 先无过渡落到屏幕中央，再启用位移过渡
-    orb.el.style.transition = 'none';
-    orb.el.style.width = big + 'px';
-    orb.el.style.height = big + 'px';
-    orb.el.style.left = (vw / 2 - big / 2) + 'px';
-    orb.el.style.top = (vh / 2 - big / 2 - 48) + 'px';
-    orb.el.classList.add('is-active');
-    orb.started = true;
-    void orb.el.offsetWidth;
-    orb.el.classList.add('is-launch');
-    orb.el.style.transition = '';
 
     var launch = document.createElement('div');
     launch.className = 'onb-launch';
     launch.id = 'onb-launch';
     launch.innerHTML =
-      '<div class="onb-launch-copy">'
-      + '<h1>第一次使用</h1>'
+      '<div class="onb-launch-stage">'
+      + '<div class="onb-launch-spacer" id="onb-launch-spacer"></div>'
+      + '<div class="onb-launch-copy">'
+      + '<h1>第一次使用？</h1>'
       + '<p>接下来用几步，带你认识主界面。</p>'
       + '<button class="tour-btn tour-btn--primary" type="button" id="onb-launch-start">开始</button>'
+      + '</div>'
       + '</div>';
     document.body.appendChild(launch);
+
+    // 球放在占位块的位置，文案紧跟其下，整体作为一组居中
+    var sp = $('#onb-launch-spacer').getBoundingClientRect();
+    var big = Math.round(sp.width);
+    orb.el.style.transition = 'none';
+    orb.el.style.width = big + 'px';
+    orb.el.style.height = big + 'px';
+    orb.el.style.left = sp.left + 'px';
+    orb.el.style.top = sp.top + 'px';
+    orb.el.classList.add('is-active');
+    orb.started = true;
+    void orb.el.offsetWidth;
+    orb.el.classList.add('is-launch');
+    orb.el.style.transition = '';
 
     $('#onb-launch-start').addEventListener('click', function () {
       if (launch.dataset.leaving) return;
@@ -729,6 +730,8 @@
 
       var target = document.querySelector(STEPS[0].target);
       var r = target ? target.getBoundingClientRect() : null;
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
       var size = 30;
       var pad = 10;
       var x = r ? r.left - size - pad : vw / 2 - size / 2;
@@ -831,6 +834,11 @@
       state.terms = { version: TERMS_VERSION, acceptedAt: null };
       state.tourDone = false; state.tourIndex = 0;
       save();
+    } else if (view === 'launch') {
+      state.terms = { version: TERMS_VERSION, acceptedAt: new Date().toISOString() };
+      state.tourDone = false;
+      state.tourIndex = 0;
+      save();
     } else if (view === 'tour') {
       state.terms = { version: TERMS_VERSION, acceptedAt: new Date().toISOString() };
       state.tourDone = false;
@@ -859,6 +867,10 @@
     renderDock();
     if (!termsAccepted()) {
       showGate();
+      return;
+    }
+    if (readQuery().get('view') === 'launch') {
+      showLaunch();
       return;
     }
     if (!state.tourDone) {

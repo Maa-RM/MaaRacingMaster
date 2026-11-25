@@ -120,14 +120,22 @@
 .onb-launch {
   position: fixed; inset: 0; z-index: 10300;
   background: var(--maarm-background);
-  display: flex; align-items: flex-end; justify-content: center;
-  padding: 0 24px 16vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 24px;
   transition: opacity .5s ease;
 }
 .onb-launch.is-leaving { opacity: 0; }
+.onb-launch-stage {
+  display: flex; flex-direction: column; align-items: center;
+  gap: clamp(16px, 2.4vh, 26px);
+}
+.onb-launch-spacer {
+  width: clamp(160px, 32vh, 250px);
+  height: clamp(160px, 32vh, 250px);
+}
 .onb-launch-copy { text-align: center; }
-.onb-launch-copy h1 { font-size: 22px; font-weight: 600; margin-bottom: 10px; }
-.onb-launch-copy p { font-size: 13px; color: var(--maarm-foreground-secondary); margin-bottom: 22px; }
+.onb-launch-copy h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+.onb-launch-copy p { font-size: 13.5px; color: var(--maarm-foreground-secondary); margin-bottom: 20px; }
 
 /* ============ 状态球向导 ============ */
 .tour-orb {
@@ -140,6 +148,7 @@
 .tour-orb.is-active { opacity: 1; }
 .tour-orb.is-launch {
   z-index: 10310;
+  filter: drop-shadow(0 18px 38px rgba(16, 185, 129, .24));
   transition: left .68s cubic-bezier(.4,0,.2,1), top .68s cubic-bezier(.4,0,.2,1),
               width .68s cubic-bezier(.4,0,.2,1), height .68s cubic-bezier(.4,0,.2,1);
 }
