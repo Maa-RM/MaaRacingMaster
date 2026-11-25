@@ -580,6 +580,26 @@
 
   // ---------- 开关 ----------
   let returnFocus = null; // 打开成就管理前的焦点：关闭时还给它
+  // Tab/Shift+Tab 圈在整页层内：层下面仍是被覆盖的设置页，不拦就会把焦点送出去
+  const SHEET_FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled),'
+    + ' select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+  function trapSheetTab(e) {
+    if (e.key !== 'Tab') return;
+    const sheet = $('ach-sheet');
+    if (!sheet || sheet.hidden) return;
+    if (document.querySelector('.maarm-modal-overlay')) return; // 弹窗自己管焦点
+    const items = Array.prototype.filter.call(
+      sheet.querySelectorAll(SHEET_FOCUSABLE), (el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const inside = sheet.contains(document.activeElement);
+    if (e.shiftKey) {
+      if (!inside || document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else if (!inside || document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  }
   function open() {
     const sheet = $('ach-sheet');
     if (!sheet) return;
@@ -592,11 +612,13 @@
     // 整页层接管焦点：不把焦点请进来，Tab 会先穿过被它盖住的设置页
     const back = $('ach-back');
     if (back) back.focus();
+    document.addEventListener('keydown', trapSheetTab);
   }
 
   function close() {
     const sheet = $('ach-sheet');
     if (!sheet || sheet.hidden) return;
+    document.removeEventListener('keydown', trapSheetTab);
     if (hot) leaveCard(hot);
     clearFlip();                 // 下次进来从正面开始
     // 关闭前把焦点移出：否则 aria-hidden 会盖住仍在页内的焦点元素（读屏与浏览器都会告警）

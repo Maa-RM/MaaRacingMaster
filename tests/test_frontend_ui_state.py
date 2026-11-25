@@ -51,13 +51,24 @@ def test_install_failure_writes_to_text_not_the_row():
 
 def test_achievement_sheet_takes_and_returns_focus():
     """成就管理是整页覆盖层：打开要把焦点请进去（否则 Tab 先穿过背后的设置页），
-    关闭要把焦点还给打开它的那个按钮（否则落在 body）。"""
+    关闭要把焦点还给打开它的那个按钮（否则落在 body）。Tab/Shift+Tab 必须在层内回环，
+    否则第二次 Shift+Tab 就会走进被覆盖的设置页。"""
     src = _read(FRONTEND / "js" / "achievement.js")
     start = src.index("function open()")
     body = src[start:start + 900]
     assert "returnFocus = document.activeElement" in body, "打开时未记录焦点来源"
     assert "'ach-back'" in body and ".focus()" in body, "打开后未把焦点移进层内"
+    assert "trapSheetTab" in body, "打开后未接管 Tab 焦点环"
 
     close_start = src.index("function close()")
     close_body = src[close_start:close_start + 800]
     assert "returnFocus.focus()" in close_body, "关闭后未归还焦点"
+    assert "removeEventListener('keydown', trapSheetTab)" in close_body, (
+        "关闭后未解绑 Tab 焦点环")
+
+    trap = src[src.index("function trapSheetTab(e)"):]
+    trap = trap[:trap.index("\n  }\n") + 4]
+    assert "e.shiftKey" in trap and "last.focus()" in trap, "Shift+Tab 未回环到末尾"
+    assert "first.focus()" in trap, "Tab 未回环到开头"
+    assert "sheet.contains(document.activeElement)" in trap, (
+        "焦点已跑到层外时未收回层内")
