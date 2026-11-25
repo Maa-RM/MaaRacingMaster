@@ -295,7 +295,7 @@
       '<div class="onb-gate-inner">'
       + '<div class="onb-hero">'
       + '<canvas class="onb-hero-canvas" id="onb-hero-canvas"></canvas>'
-      + '<div class="onb-hero-mark"><img src="maarm_icon.png" alt=""><span>MaaRM</span></div>'
+      + '<div class="onb-hero-mark"><img src="../../../assets/maarm_icon.png" alt=""><span>MaaRM</span></div>'
       + '</div>'
       + '<h1>使用声明</h1>'
       + '<div class="onb-gate-text">'
