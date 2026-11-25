@@ -97,7 +97,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 |---|---|
 | 任务栏进度 | `ITaskbarList3`：轮次开始置不确定进度，轮次结束/后端退出/进入关窗即熄灭；不设百分比。初始化失败整体降级；运行中单次设置失败只记诊断，不改变轮次状态 |
 | 系统通知 | Windows 老版 Toast 通道（两行文本，首行加粗）。应用身份由 `HKCU\Software\Classes\AppUserModelId\MaaRacingMaster.Shell`（显示名/图标）+ 进程级 AUMID 承载；不建开始菜单快捷方式 |
-| 通知口径 | 正常完成、运行失败、后端进程异常退出提示；用户主动停止、主动关窗不提示；启动前校验失败不提示（工作线程未启动，没有轮次事件） |
+| 通知口径 | 正常完成、运行失败、需要更新（非用户点击的收停）、后端进程异常退出提示；用户主动停止、主动关窗不提示；启动前校验失败不提示（工作线程未启动，没有轮次事件） |
 | 点击通知 | 不唤起主窗口：通知标为 `background` 激活、不写 `launch`、不注册后台任务/激活器；身份注册不产生可启动目标 |
 | 提权形态 | 壳以管理员权限运行；Windows App SDK 的通知接口在提权进程下被禁用，故改用老版 Toast（其显示路径不含该闸门） |
 | 自动退出 | 收到 `auto_exit` 后延迟约 1.8s 再关窗，给通知投递留时间；用户主动点关闭仍立即关闭 |
@@ -241,7 +241,7 @@ node .\apps\MaaRacingMaster.Shell\tools\gui-debug.cjs compare <端口> data
 | 事件 | 负载 | 壳侧动作 |
 |---|---|---|
 | `round_started` | `{total, first_step}` | 任务栏置不确定进度，轮次状态 → `Running` |
-| `round_ended` | `{outcome: completed\|failed\|stopped, step, title, body}` | 任务栏熄灭，状态 → `Settled`；完成/失败弹通知，停止只灭不弹 |
+| `round_ended` | `{outcome: completed\|failed\|needs_action\|stopped, step, title, body}` | 任务栏熄灭，状态 → `Settled`；完成/失败/需要更新弹通知，用户主动停止只灭不弹 |
 | `auto_exit` | — | 进入 `Closing`，延迟约 1.8s 关窗 |
 
 - 事件负载是 `data` 字段；取用时必须 `Clone()`（解析文档在 reader 循环末释放）。

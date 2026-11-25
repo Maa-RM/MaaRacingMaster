@@ -166,8 +166,12 @@ class LaunchGameStep(BuiltinStep):
             return False
         else:
             verdict = self._launcher_gate(cfg, exe, stop_event, log)
-            if verdict == "needs_manual":
+            if verdict == "needs_update":
                 self.last_outcome = "needs_update"
+                return False
+            if verdict == "check_failed":
+                # 检查没得出结论不是「按设计收停」：按失败收，壳侧才会发通知
+                self.last_outcome = "failed"
                 return False
             if verdict == "stopped":
                 self.last_outcome = "stopped"
@@ -205,7 +209,8 @@ class LaunchGameStep(BuiltinStep):
         壳以管理员运行（app.manifest requireAdministrator），拉起同样要求管理员的
         启动器零 UAC，检查每次启动都做、不做缓存。返回 fresh=可直启 /
         updated=补丁刚装好 / updated_game=启动器已代拉游戏 /
-        needs_manual=留启动器页面待人工（结局 needs_update，本轮干净收停）/
+        needs_update=发现更新但未开自动更新，留启动器页面待人工（本轮干净收停）/
+        check_failed=检查没得出结论或代点更新失败，留启动器页面待人工（按失败收）/
         unavailable=检查不可用（跳过，不影响直启）/ stopped=被停止。
         """
         if os.environ.get("MAARM_APP_LAUNCHER_CHECK", "").strip().lower() in (
@@ -214,6 +219,12 @@ class LaunchGameStep(BuiltinStep):
         launcher = game_process.detect_launcher_exe()
         if launcher is None:
             log("未找到官方启动器，跳过版本检查，沿用直启", "WARNING")
+            return "unavailable"
+        if game_process.game_running(launcher.name):
+            # 玩家先手动开了启动器：此时再拉的那份不写本轮日志（真机 2026-11-25 复现：
+            # 启动器已在运行时版本检查必然超时），日志增量里等不到结论。已在运行就不动它。
+            log("官方启动器已在运行，跳过版本检查（再拉一份读不到结论），直接启动游戏",
+                "WARNING")
             return "unavailable"
         log("拉起官方启动器做版本检查（无更新时会在它出窗前静默关闭）…")
         if not game_process.spawn_launcher(launcher):
@@ -224,9 +235,10 @@ class LaunchGameStep(BuiltinStep):
             game_process.close_launcher()
             return "stopped"
         if result is None:
-            # 结论没按期落地：窗口可能已经在路上，不硬关，留给人处理
-            log("版本检查未按期出结果，保留启动器页面交人工处理", "WARNING")
-            return "needs_manual"
+            # 结论没按期落地：窗口可能已经在路上，不硬关，留给人处理。
+            # 检查本身没完成不是「按设计收停」，按失败收（壳侧会发通知）
+            log("版本检查未按期出结果，保留启动器页面交人工处理", "ERROR")
+            return "check_failed"
         if not result["update_needed"]:
             if game_process.close_launcher() == "left_running":
                 log("启动器无法由本程序关闭（权限不足），窗口留给你手动关闭", "WARNING")
@@ -236,7 +248,7 @@ class LaunchGameStep(BuiltinStep):
         if not bool(cfg.get("auto_update")):
             log(f"游戏需要更新（约 {size_mb:.0f} MB）：已保留启动器页面，请手动点"
                 "「更新游戏」，本轮到此为止；更新完成后重新运行任务即可", "WARNING")
-            return "needs_manual"
+            return "needs_update"
         log(f"游戏需要更新（约 {size_mb:.0f} MB），已开启自动更新：等启动器出窗后"
             "代点「更新游戏」…")
         hwnd = game_process.wait_for_window(game_process.LAUNCHER_EXE_NAME,
@@ -244,11 +256,11 @@ class LaunchGameStep(BuiltinStep):
         if stop_event is not None and stop_event.is_set():
             return "stopped"
         if not hwnd:
-            log("启动器主窗口未出现，无法代点更新；请手动操作", "WARNING")
-            return "needs_manual"
+            log("启动器主窗口未出现，无法代点更新；请手动操作", "ERROR")
+            return "check_failed"
         if not game_process.click_launcher_update_button(hwnd):
-            log("更新按钮点击投递失败，请手动点击「更新游戏」", "WARNING")
-            return "needs_manual"
+            log("更新按钮点击投递失败，请手动点击「更新游戏」", "ERROR")
+            return "check_failed"
         log("已投递「更新游戏」点击；若启动器迟迟未开始下载，请手动补点一次")
         outcome = game_process.wait_launcher_ready(stop_event, self._PATCH_TIMEOUT_S, log)
         if stop_event is not None and stop_event.is_set():
@@ -266,11 +278,15 @@ class LaunchGameStep(BuiltinStep):
             return "updated_game"
         log(f"{self._PATCH_TIMEOUT_S:.0f}s 内补丁未完成，保留启动器页面交人工处理",
             "ERROR")
-        return "needs_manual"
+        return "check_failed"
 
     def _launch_and_wait(self, cfg: dict, exe: Path, timeout_s: float,
                          stop_event, log) -> int:
-        """直启主程序并等窗口；超时改走官方启动器再等一轮。返回 hwnd（0 = 没拿到）。"""
+        """直启主程序并等窗口；超时改走官方启动器再等一轮。返回 hwnd（0 = 没拿到）。
+
+        启动器已在运行时不再拉第二份（单实例，新进程不写日志也不出主窗口）：
+        提示玩家在其中点「启动游戏」，本步骤继续等窗口。
+        """
         args = _split_args(str(cfg.get("args") or ""))
         try:
             proc = game_process.spawn(exe, args)
@@ -287,9 +303,13 @@ class LaunchGameStep(BuiltinStep):
             if launcher is None:
                 log("未找到官方启动器，无法回退", "WARNING")
             else:
-                log(f"等窗口超时，改走官方启动器（会先做版本校验与更新）: {launcher}")
-                if not game_process.spawn_launcher(launcher):
-                    log("启动器拉起失败（管理员授权被拒？）", "ERROR")
+                if game_process.game_running(launcher.name):
+                    log("官方启动器已在运行，不再拉第二份：请在其中点「启动游戏」，"
+                        "本步骤继续等窗口", "WARNING")
+                else:
+                    log(f"等窗口超时，改走官方启动器（会先做版本校验与更新）: {launcher}")
+                    if not game_process.spawn_launcher(launcher):
+                        log("启动器拉起失败（管理员授权被拒？）", "ERROR")
                 hwnd = game_process.wait_for_window(exe.name, timeout_s, stop_event)
         return hwnd
 

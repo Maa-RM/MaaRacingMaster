@@ -685,8 +685,8 @@ public sealed partial class MainWindow : Window
         _taskbar?.Clear();
 
         var outcome = TryGetString(data, "outcome");
-        // 停止是用户主动行为：只灭任务栏，不弹通知
-        if (outcome is not ("completed" or "failed")) return;
+        // 只有用户本轮主动按停止不弹通知；需要更新这类非点击收停仍要提示
+        if (outcome is not ("completed" or "failed" or "needs_action")) return;
         var title = TryGetString(data, "title");
         if (string.IsNullOrEmpty(title)) return;
         App.Notifications?.Show(title!, TryGetString(data, "body") ?? string.Empty);

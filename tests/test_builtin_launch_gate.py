@@ -4,11 +4,12 @@
 
 判定表：
   闸门关（环境开关）→ 不查，沿用直启；
-  无启动器 / 拉起失败 → unavailable，直启照旧；
+  无启动器 / 拉起失败 / 启动器已在运行 → unavailable，直启照旧；
   无需更新 → 关启动器、直启；
   需要更新 + 开关关 → 不拉游戏、留启动器页面，结局 needs_update；
   需要更新 + 开关开 → 出窗后代点、等装好、关启动器、直启；
-  启动器自行拉起游戏（updated_game）→ 接管现有窗口，不起第二份。
+  启动器自行拉起游戏（updated_game）→ 接管现有窗口，不起第二份；
+  检查超时 / 代点失败 / 补丁超时 → 留启动器页面，按失败收（壳侧发通知）。
 
 conftest 的 autouse 夹具默认置 MAARM_APP_LAUNCHER_CHECK=0；本文件各用例显式
 打开并打桩，不碰真启动器。
@@ -151,12 +152,13 @@ def test_update_with_toggle_clicks_updates_then_launches(gate_on):
     assert any("补丁安装完成" in m for _lv, m in logs)
 
 
-def test_update_toggle_window_missing_goes_manual(gate_on, monkeypatch):
+def test_update_toggle_window_missing_is_failure(gate_on, monkeypatch):
+    """代点更新所需的启动器窗口没等到：留页面待人工，但这是检查失败不是干净收停。"""
     gate_on["check"] = {"update_needed": True, "size": 200_000_000, "files": 2}
     monkeypatch.setattr(gp, "wait_for_window",
                         lambda name, timeout, stop: 0)  # 启动器窗口一直没出
     ok, step, _logs, _app = _run({"auto_update": True})
-    assert ok is False and step.last_outcome == "needs_update"
+    assert ok is False and step.last_outcome == "failed"
     assert gate_on["clicked"] == []
 
 
@@ -184,3 +186,33 @@ def test_no_launcher_found_goes_direct(gate_on, monkeypatch):
     assert ok is True
     assert gate_on["launcher_pids"] == []
     assert any(lv == "WARNING" and "跳过版本检查" in m for lv, m in logs)
+
+
+def test_launcher_already_running_skips_check_and_launches(gate_on, monkeypatch):
+    """玩家先手动开了启动器：再拉的那份不写本轮日志（检查只会等超时），跳过检查直启。"""
+    monkeypatch.setattr(
+        gp, "game_running",
+        lambda name: name.lower() == gp.LAUNCHER_EXE_NAME.lower())
+    ok, step, logs, _app = _run()
+    assert ok is True and step.last_outcome == "completed"
+    assert gate_on["launcher_pids"] == []          # 没有再拉一份启动器
+    assert gate_on["game_pids"] == ["g112-Win64-Shipping.exe"]
+    assert any(lv == "WARNING" and "已在运行" in m for lv, m in logs)
+
+
+def test_check_timeout_is_failure_not_clean_stop(gate_on, monkeypatch):
+    """检查时限内没拿到结论：留启动器页面，但按失败收（壳侧据此发通知）。"""
+    monkeypatch.setattr(gp, "wait_launcher_check",
+                        lambda stop_event, timeout_s: None)
+    ok, step, logs, _app = _run()
+    assert ok is False and step.last_outcome == "failed"
+    assert gate_on["closed"] == 0                  # 启动器可能正出窗，不硬关
+    assert any(lv == "ERROR" and "版本检查未按期出结果" in m for lv, m in logs)
+
+
+def test_patch_timeout_is_failure(gate_on):
+    gate_on["check"] = {"update_needed": True, "size": 200_000_000, "files": 2}
+    gate_on["ready"] = "timeout"
+    ok, step, logs, _app = _run({"auto_update": True})
+    assert ok is False and step.last_outcome == "failed"
+    assert any(lv == "ERROR" for lv, _m in logs)

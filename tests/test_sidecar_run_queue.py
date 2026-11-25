@@ -4,7 +4,8 @@
 判定表（每一项结束后）：
   - 抛异常 / natural=False → 该项 fail，中止整轮；
   - manual_stop=True → 该项 stopped，中止整轮（用户停止）；
-  - 内置步骤 needs_update（发现更新且未开自动更新）→ 该项 stopped，中止整轮（干净收停）；
+  - 内置步骤 needs_update（发现更新且未开自动更新）→ 该项 stopped，中止整轮；
+    轮次结局报 needs_action（非用户点击的收停要提示）；
   - 内置步骤请求退出本程序 → 该项 ok，剩余项 skip；
   - 自然跑完（含模块到限自动停止）→ ok，继续下一个。
   中止时剩余项标 skip。轮次开始/结束事件在 worker 线程内发出；auto_exit 只在
@@ -362,8 +363,9 @@ def test_event_best_effort_does_not_swallow_cleanup_failure(monkeypatch):
         svc._worker_main([{"kind": "module", "id": "a", "start_from": None, "config": None}])
 
 
-def test_step_needs_update_stops_round_without_fail():
-    """发现更新且未开自动更新：记「已停止」不记「失败」，整轮收停、剩余 skip。"""
+def test_step_needs_update_stops_round_and_notifies():
+    """发现更新且未开自动更新：队列记「已停止」不记「失败」，但轮次结局是
+    needs_action——用户可能早忘了自己关过更新开关，这类非点击收停必须提示。"""
     controller = _FakeController({"launch_game": "needs_update"})
     svc, sent = _svc(controller)
     t = _spawn(svc, [
@@ -373,8 +375,10 @@ def test_step_needs_update_stops_round_without_fail():
     _wait(t)
     assert svc._round_result == {"launch_game": "stopped", "a": "skip"}
     assert _event_names(sent) == ["round_started", "round_ended"]
-    assert sent[1]["data"]["outcome"] == "stopped"
+    assert sent[1]["data"]["outcome"] == "needs_action"
     assert sent[1]["data"]["step"] == "launch_game"
+    assert "更新" in sent[1]["data"]["title"]
+    assert "启动游戏" in sent[1]["data"]["body"]
 
 
 def test_step_skipped_continues_round_and_is_not_reported_ok():

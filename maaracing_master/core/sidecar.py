@@ -523,13 +523,23 @@ def _step_display_name(step_id: str) -> str:
         return step_id
 
 
-def _round_ended_payload(results: dict[str, str]) -> dict:
-    """把本轮结局归约为壳侧可直接展示的通知文案（失败 > 停止 > 完成）。"""
+def _round_ended_payload(results: dict[str, str], needs_action: str | None = None) -> dict:
+    """把本轮结局归约为壳侧可直接展示的通知文案（失败 > 需更新 > 停止 > 完成）。
+
+    「需更新」在队列里记「已停止」，但它不是用户本轮点停止——玩家可能早就忘了
+    自己关过自动更新，这条必须提示；只有用户主动按停止（stopped 且无 needs_action）
+    才不弹。
+    """
     failed = next((sid for sid, state in results.items() if state == "fail"), None)
     if failed is not None:
         name = _step_display_name(failed)
         return {"outcome": "failed", "step": failed,
                 "title": "运行失败", "body": f"「{name}」执行失败"}
+    if needs_action is not None:
+        name = _step_display_name(needs_action)
+        return {"outcome": "needs_action", "step": needs_action,
+                "title": "需要更新游戏",
+                "body": f"「{name}」发现游戏需要更新：启动器已打开，更新完成后重新运行"}
     stopped = next((sid for sid, state in results.items() if state == "stopped"), None)
     if stopped is not None:
         name = _step_display_name(stopped)
@@ -1588,6 +1598,8 @@ class SidecarService:
         判定表（每一项结束后）：
           - 抛异常 / 自然完成不成立 → 该项 fail，中止（报错退出）；
           - manual_stop=True → 该项 stopped，中止（用户停止）；
+          - 内置步骤 needs_update → 该项 stopped，中止（非点击收停：轮次结局报
+            needs_action，壳侧照样发通知）；
           - 步骤请求退出本程序（「关闭游戏」里的选项）→ 该项 ok，剩余项 skip；
           - 其余（自然跑完，含模块到限自动停止）→ ok，继续下一个。
         注意不能在启动下一项**之后**才查停止信号——启动入口会清 stop_event，
@@ -1596,6 +1608,7 @@ class SidecarService:
         """
         results: dict[str, str] = {}
         all_natural = True
+        needs_action_step: str | None = None  # 步骤要求人工处理（如发现更新待手动更新）
         total = len(plan)
         # 运行边界：清手动停止/退出请求/停止信号，并获取运行级全局性质（静音）
         try:
@@ -1653,6 +1666,7 @@ class SidecarService:
                 if (item["kind"] == "builtin"
                         and self._controller.last_step_outcome == "needs_update"):
                     results[step_id] = "stopped"
+                    needs_action_step = step_id
                     all_natural = False
                     break
                 if not self._controller.last_run_natural:
@@ -1679,7 +1693,7 @@ class SidecarService:
                 self._queue_run = None
                 self._round_result = results
             # 轮次结束先于自动退出：壳侧拿到结局后再进入关窗，避免通知被关窗流程吞掉。
-            ended = _round_ended_payload(results)
+            ended = _round_ended_payload(results, needs_action_step)
             ended.update({"run_id": run_id, "ts_wall_ns": time.time_ns(),
                           "ts_mono_ns": time.monotonic_ns()})
             self._send_event_best_effort({

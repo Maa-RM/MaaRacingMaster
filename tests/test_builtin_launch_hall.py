@@ -191,6 +191,27 @@ def test_window_timeout_falls_back_to_launcher(monkeypatch):
     assert any("改走官方启动器" in m for _lv, m in logs)
 
 
+def test_window_timeout_fallback_keeps_running_launcher(monkeypatch):
+    """启动器已在运行：回退不再拉第二份，提示在其中点开始并继续等窗口。"""
+    launched: list = []
+    monkeypatch.setattr(bs.game_process, "detect_game_exe",
+                        lambda: Path("g112-Win64-Shipping.exe"))
+    monkeypatch.setattr(bs.game_process, "game_running",
+                        lambda name: name.lower() == "launcher.exe")
+    monkeypatch.setattr(bs.game_process, "spawn",
+                        lambda exe, args: launched.append(exe.name) or types.SimpleNamespace(pid=1))
+    monkeypatch.setattr(bs.game_process, "detect_launcher_exe", lambda: Path("Launcher.exe"))
+    monkeypatch.setattr(bs.game_process, "spawn_launcher",
+                        lambda exe: launched.append("launcher-spawned") or 4321)
+    remaining = [0, 4321]  # 第一轮超时，第二轮拿到窗口
+    monkeypatch.setattr(bs.game_process, "wait_for_window",
+                        lambda name, timeout, stop: remaining.pop(0))
+    ok, _step, _s, logs = _run({})
+    assert ok is True
+    assert launched == ["g112-Win64-Shipping.exe"]   # 没有再拉一份启动器
+    assert any("已在运行" in m for _lv, m in logs)
+
+
 def test_intent_mode_reports_skipped_not_completed(window_ready):
     """仅显示意图：不会确认，也就没验证大厅——结果必须是「跳过」。"""
     ok, step, session, logs = _run({}, app=_App(intent=True))
