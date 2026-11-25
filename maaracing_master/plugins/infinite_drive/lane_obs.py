@@ -1371,6 +1371,20 @@ class LineTracker:
         # 作为 trace 的「本拍不是新测量」标记，不再单独撤位置权威。
         usable = (self.state == "TRACK" and self.locked >= LINE_LOCK_TICKS
                   and bool(good) and (both or self.lock_strong))
+        # 不可用原因（诊断）：与上面 usable 判据逐条对应，改动判据时同步改这里，
+        # 避免消费端自己推原因与真值漂移。
+        if usable:
+            reason = "ok"
+        elif self.state != "TRACK":
+            reason = f"state_{self.state}"
+        elif self.locked < LINE_LOCK_TICKS:
+            reason = "lock"
+        elif not good:
+            reason = "no_good"
+        elif not both and not self.lock_strong:
+            reason = "sides"
+        else:
+            reason = "unknown"
         return {"state": self.state, "x": x, "theta": self.last_theta,
                 "gross_reanchor": int(self.gross_reanchor),
                 "n_locked": int(n_locked), "relock_src": relock_src,
@@ -1384,7 +1398,8 @@ class LineTracker:
                 "theta_src_ts_ns": self.theta_src_ts_ns,
                 "theta_updated": bool(self.theta_updated),
                 "theta_n_sources": int(self.theta_n_src),
-                "usable": bool(usable), "locked": int(self.locked)}
+                "usable": bool(usable), "locked": int(self.locked),
+                "usable_reason": reason}
 
     def predict(self, dt: float, v_lat: float = 0.0) -> dict:
         """非检测帧：只推进横位；上一帧线保留但标 pred，不再参与绝对位。"""
@@ -1404,6 +1419,7 @@ class LineTracker:
                     "lost": int(self.lost),
                     "anchor_src": self.anchor_src,
                     "usable": False, "locked": int(self.locked),
+                    "usable_reason": "pred",
                     # hold 只表示「检测拍横位被步长门限速」；预测拍不是 hold，
                     # 它是 pred（没有横位测量）。两者从此不混用一个字段。
                     "hold": False,
@@ -1417,6 +1433,7 @@ class LineTracker:
                 "grid_reject": self.grid_reject,
                 "side_reject": self.side_reject, "lost": int(self.lost),
                 "anchor_src": "none", "usable": False,
+                "usable_reason": "pred",
                 "locked": int(self.locked), "hold": False,
                 "theta_src_fid": self.theta_src_fid,
                 "theta_src_ts_ns": self.theta_src_ts_ns,
@@ -1792,6 +1809,7 @@ class LaneObsWorker:
                 "gross_reanchor": int(res.get("gross_reanchor", 0)),
                 "side_reject": res["side_reject"],
                 "usable": bool(res.get("usable", False)),
+                "usable_reason": res.get("usable_reason"),
                 "locked": int(res.get("locked", 0)),
                 "focal": None if self._focal is None
                 else round(self._focal, 1),

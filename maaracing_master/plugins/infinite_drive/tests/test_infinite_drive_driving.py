@@ -27,6 +27,38 @@ def test_heading_control_reuses_measurement_without_reintegrating() -> None:
     assert controller.update(0.02, 0.0, 2_000_000_000) == 0.0
 
 
+def test_steer_command_is_smoothed_by_lowpass_and_rate_limit() -> None:
+    """执行链平滑：首拍不给满、相邻拍变化不超过上限、随后逼近稳态。"""
+    from maaracing_master.plugins.infinite_drive import driving as d
+
+    controller = d.HeadingControl(3.5)
+    t = 1_000_000_000
+    first = controller.update(-0.5, 0.0, t, preview_m=12.0)
+    # 未滤波的命令饱和到 -0.45；首拍只出一部分。
+    assert -0.25 < first < 0.0
+    prev = first
+    for i in range(1, 25):
+        out = controller.update(-0.5, 0.0, t + i * 50_000_000, preview_m=12.0)
+        assert abs(out - prev) <= d._STEER_STEP_MAX + 1e-9
+        prev = out
+    assert prev == pytest.approx(-0.45, abs=0.02)
+
+
+def test_sustain_boost_grows_on_persistent_error_and_decays() -> None:
+    """浅杆补偿：持续同向偏差抬升杆值，偏差消失后按时间常数衰减。"""
+    from maaracing_master.plugins.infinite_drive import driving as d
+
+    controller = d.HeadingControl(3.5)
+    t = 1_000_000_000
+    for i in range(30):
+        controller.update(0.4, 0.0, t + i * 50_000_000)
+    held = controller.boost
+    assert held == pytest.approx(d._BOOST_MAX, abs=1e-6)
+    for i in range(30, 60):
+        controller.update(0.0, 0.0, t + i * 50_000_000)
+    assert abs(controller.boost) < held * 0.5
+
+
 def test_lane_drive_constructs_without_street_model(monkeypatch) -> None:
     from maaracing_master.plugins.infinite_drive import PERCEPTION_MODEL_REL, model_assets
     from maaracing_master.plugins.infinite_drive.driving import LaneDrive

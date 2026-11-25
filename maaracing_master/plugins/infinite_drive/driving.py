@@ -21,6 +21,18 @@ _DRIVE_HUD = (
 )
 _MAX_HEADING_AGE_S = 0.22
 _FRAME_GAP_S = 0.8
+# 执行链平滑（自 v1 下发链搬来的最小集，2026-11-25）：
+# - 杆值一阶低通（v1 tau_steer_s=0.1）：去掉逐拍阶跃，让执行延迟吃掉突变；
+# - 每拍变化上限（v1 rate_limit_raw=22000/32767≈0.67 归一化）：满行程约 3 拍，
+#   本侧杆幅上限只有 0.45，同比例取 0.30；
+# - 浅杆段补偿：v1 按「命令车头角 − 观测车头角」缺口积分。本侧观测是线角
+#   （含道路方向，无慢基线，见 lane_obs `theta` 定义），直接积分会把曲率积进去，
+#   故改为对持续横位偏差积分，目的相同（补浅杆段响应不足），上限保守。
+_STEER_TAU_S = 0.10
+_STEER_STEP_MAX = 0.30
+_BOOST_GAIN = 0.8          # 杆/(道·s)
+_BOOST_MAX = 0.12          # 杆
+_BOOST_DECAY_S = 1.0
 # 擦边点位：三条白线两侧各偏 0.2 道共六个横向维持点。0.2 道偏置使本车与
 # 相邻车道居中车的横向中心距 ≈2.45m，落入极限超车判定阈（两车半宽和 +
 # 0.8m ≈ 2.6m，RULES §2.1）——贴线保持本身就是擦边超车姿态，点位只在
@@ -104,6 +116,9 @@ class HeadingControl:
         self.yaw_rate = 0.0
         self.desired_heading = 0.0
         self._steer = 0.0
+        self._out = 0.0          # 上一拍下发值（低通与变化限幅的起点）
+        self._boost = 0.0        # 浅杆补偿量
+        self.boost = 0.0         # 只读诊断
 
     def update(self, lateral_error_lane: float, heading: float, ts_ns: int, *,
                preview_m: float | None = None) -> float:
@@ -116,15 +131,34 @@ class HeadingControl:
         else:
             self.yaw_rate = 0.0
         self._ts_ns, self._heading = ts_ns, heading
+        # 可用拍之间可能隔着不可用拍，步长按控制拍兜底，避免低通/积分吃进长空窗。
+        dt_eff = dt if 0.0 < dt <= 0.10 else 0.05
 
         # 空间预瞄生成温和的目标角，D 项只看测得的角速度，目标更新不踢杆。
         lookahead = 45.0 if preview_m is None else preview_m
         desired = math.atan2(lateral_error_lane * self._lane_w_m, lookahead)
         self.desired_heading = max(-0.10, min(0.10, desired))
-        steer = 3.5 * (self.desired_heading - heading) - 0.18 * self.yaw_rate
-        # 小指令归真零，留给游戏自己的回正。限幅避开卡牌触发的满杆换道。
+
+        # 浅杆补偿：对持续横位偏差慢速积分，偏差消失后按时间常数衰减。
+        self._boost += _BOOST_GAIN * lateral_error_lane * dt_eff
+        self._boost *= math.exp(-dt_eff / _BOOST_DECAY_S)
+        self._boost = max(-_BOOST_MAX, min(_BOOST_MAX, self._boost))
+        self.boost = self._boost
+
+        raw = 3.5 * (self.desired_heading - heading) - 0.18 * self.yaw_rate + self._boost
+        # 小指令归真零，留给游戏自己的回正。死区放在低通**之前**：低通首拍只
+        # 给到 39%，若先低通再判死区，正常修正会被首拍衰减吞掉（杆幅上限
+        # 0.45、死区 0.05，占比远大于 v1 的 0.008）。
         deadzone = 0.10 if preview_m is None else 0.05
-        self._steer = 0.0 if abs(steer) < deadzone else max(-0.45, min(0.45, steer))
+        cmd = 0.0 if abs(raw) < deadzone else raw
+        # 杆值低通 → 每拍变化上限：执行链上的两道平滑，再进杆幅限幅。
+        alpha = 1.0 - math.exp(-dt_eff / _STEER_TAU_S)
+        smooth = self._out + alpha * (cmd - self._out)
+        step = max(self._out - _STEER_STEP_MAX,
+                   min(self._out + _STEER_STEP_MAX, smooth))
+        # 限幅避开卡牌触发的满杆换道。
+        self._out = max(-0.45, min(0.45, step))
+        self._steer = self._out
         return self._steer
 
 
@@ -149,8 +183,12 @@ class LaneDrive:
                 car_error = repr(exc)
         if perception is None:
             logger.log(f"[无限驾驶] 街车模型不可用，本次只保持车道：{car_error}", "WARNING")
+        # hz=0：按控制拍提交（此前按 10Hz 节流，控制拍 20Hz 下一半拍拿不到新
+        # 检测，是可用率的大头）。单帧预算见 tools/experiments/lane_obs_dml：
+        # DML+FP16 前向约 4~6ms、后处理约 5ms；是否跟得上以 trace 的弃帧计数为准。
         self._lines = LaneObsWorker(LaneObsConfig(
-            enabled=True, provider="dml", weights=LANE_MODEL_REL, weights_fp16=LANE_FP16_MODEL_REL,
+            enabled=True, provider="dml", weights=LANE_MODEL_REL,
+            weights_fp16=LANE_FP16_MODEL_REL, hz=0.0,
         ), drive_observations=True, perception=perception)
         self._trace = get_trace_sink("infinite_drive")
         self.begin()
@@ -296,6 +334,27 @@ class LaneDrive:
             "half_lanes": ROAD_HALF_LANES,
         }
 
+        # 本拍不可用原因（诊断）：与 usable 的判定顺序逐条对应，便于离线把
+        # 「没出杆」拆成 预测拍/超龄/保持拍/未锁/单侧/角度旧 六类。
+        if not fresh:
+            reason = "stale_det"
+        elif lane.get("hold"):
+            reason = "hold"
+        elif x is None:
+            reason = "no_x"
+        elif not lane.get("usable"):
+            reason = lane.get("usable_reason") or "unknown"
+        elif not usable:
+            reason = "theta"
+        else:
+            reason = "ok"
+        line_meta = [
+            {key: ln.get(key) for key in
+             ("k", "L", "resid", "accepted", "reject", "side", "color", "n")
+             if ln.get(key) is not None}
+            for ln in (lane.get("lines") or []) if isinstance(ln, dict)
+        ]
+
         self._trace.append({"fid": fid, "ts_ns": ts_ns,
                             "ego_lane": x, "target_lane": target, "heading_rad": heading,
                             "edge_event": edge_event, "walled": walled,
@@ -306,5 +365,16 @@ class LaneDrive:
                             "lane_fid": lane.get("det_fid"), "lane_ms": lane.get("ms"),
                             "lane_state": lane.get("state"), "lane_locked": lane.get("n_locked"),
                             "heading_fid": heading_fid, "heading_ts_ns": heading_ns or None,
-                            "usable": bool(usable), "steer": steer})
+                            "usable": bool(usable), "steer": steer,
+                            "boost": self._control.boost,
+                            "usable_reason": reason, "pred": lane.get("pred"),
+                            "hold": lane.get("hold"), "lock_count": lane.get("locked"),
+                            "det_age_ms": (round((now_ns - det_ns) / 1e6, 1)
+                                           if det_ns else None),
+                            "queue_ms": lane.get("queue_ms"), "cap_ms": lane.get("cap_ms"),
+                            "slot_ms": lane.get("slot_wait_ms"),
+                            "busy_skips": lane.get("busy_skips"),
+                            "slot_skips": lane.get("slot_skips"),
+                            "run_ms": lane.get("hold_ms"),
+                            "line_meta": line_meta})
         return steer
