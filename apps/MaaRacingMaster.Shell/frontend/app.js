@@ -1082,6 +1082,7 @@
         || (state.modules[0] && state.modules[0].id) || '';
       renderModulePages(initialMid);
       if (!data.model_ok) setStatus('插件资源缺失', 'error');
+      _initOk = true;
     } catch (e) {
       console.error(e);
       reportError('toast', '初始化失败: ' + e.message);
@@ -1110,6 +1111,16 @@
   // 必须从一开始就算放行，否则切页与其他「放行后才该发生」的事情全被挡住。
   let _bootReleased = document.documentElement.classList.contains('boot-skip');
   let _bootCutShort = false;   // 时限兜底先放行了界面：本次预热不算完成
+  let _bootFinalized = false;  // 收尾只许发生一次：时限兜底与正常收尾不得各跑一遍
+  let _initOk = false;         // 初始化是否成功：失败时预热没有意义，也不得写完成标记
+  // 遮罩期间的键盘隔离：遮罩挡得住鼠标，拦不住 Tab——焦点会落到被遮住的「开始」等
+  // 按钮上，回车就把任务启动了。inert 把顶栏/正文/底栏一起移出焦点序列，收尾再放开。
+  function setShellInert(on) {
+    [document.getElementById('titlebar'), document.querySelector('main'), document.querySelector('footer')]
+      .forEach((el) => { if (el) el.inert = on; });
+  }
+  // 热启动没有遮罩，不该禁任何东西
+  if (!_bootReleased) setShellInert(true);
   // 预热面在收到回包后才开窗的，开窗前问一句：遮罩若已被时限兜底放行，
   // 迟到的回包不该再弹一张自己会关的窗到用户眼前抢焦点。
   window.MaaRM.warmupReleased = () => _bootReleased;
@@ -1133,6 +1144,30 @@
     });
   }
 
+  // 收尾只发生一次：正常走完与时限兜底是两条路径，谁先到谁收尾，另一条直接退出——
+  // 否则晚到的初始化会再开一张启动体检，还会把用户已经打开的弹窗顺手收掉。
+  function finishBoot(completed) {
+    if (_bootFinalized) return;
+    _bootFinalized = true;
+    _bootReleased = true;
+    // 遮罩撤下时不该还挂着预热开的窗：收掉它，别让弹窗在已经放行的界面上抢焦点
+    if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
+    // 启动体检放在遮罩撤下之后：它开的是给用户看的弹窗，埋在遮罩下面既看不见，
+    // 也会被上面的 closeAllModals 顺手收掉
+    checkRegistryOptimizations();
+    setShellInert(false); // 界面已可用：焦点序列恢复
+    const overlay = $('boot-overlay');
+    if (!overlay) return;
+    overlay.classList.add('boot-overlay--done');
+    setTimeout(() => { overlay.hidden = true; }, 260);
+    // 只有全部步骤都画完才通知壳落标记：失败、初始化失败或超时留在冷态，下次启动重来
+    if (completed && window.chrome && window.chrome.webview) {
+      window.chrome.webview.postMessage({ type: 'warmup-done' });
+    } else if (!completed) {
+      console.warn('[warmup] 本次预热未完成，不写完成标记');
+    }
+  }
+
   // 独立的时限兜底：即使初始化请求挂住、预热根本没开始，到点也必须放出界面。
   // 只放行界面，不写完成标记——没画完的预热下次启动还要重来。
   function armBootDeadline() {
@@ -1141,17 +1176,10 @@
     setTimeout(() => {
       if (_bootReleased) return;
       _bootCutShort = true;
-      _bootReleased = true;
-      // 遮罩撤下时不该还挂着预热开的窗：收掉它，别让弹窗在已经放行的界面上抢焦点
-      if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
-      // 启动体检放在遮罩撤下之后：它开的是给用户看的弹窗，埋在遮罩下面既看不见，
-      // 也会被上面的 closeAllModals 顺手收掉
-      checkRegistryOptimizations();
       const stepEl = overlay.querySelector('.boot-step');
       if (stepEl) stepEl.textContent = '启动较慢，先进入界面';
-      overlay.classList.add('boot-overlay--done');
-      setTimeout(() => { overlay.hidden = true; }, 260);
       console.warn('[warmup] 超出启动时限，先释放界面；本次不写完成标记');
+      finishBoot(false);
     }, BOOT_TOTAL_MS);
   }
 
@@ -1161,9 +1189,11 @@
       checkRegistryOptimizations(); // 热启动没有遮罩：启动体检现在就跑
       return;
     }
-    // 时限兜底已经放过界面（或初始化太久）：不再在用户眼前翻页开弹窗
-    if (_bootReleased) {
-      checkRegistryOptimizations();
+    // 时限兜底已经收过尾（初始化回来得太晚）：不再翻页、开弹窗或重开体检
+    if (_bootFinalized) return;
+    // 初始化失败：界面数据没到位，预热没有意义，也不能算画完——放出界面，下次重来
+    if (!_initOk) {
+      finishBoot(false);
       return;
     }
     const bar = overlay.querySelector('.boot-bar i');
@@ -1218,25 +1248,19 @@
       }
       advance(label);
     }
+    // 兜底已经收过尾：下面的翻页、文案与收尾一律不动，别打断用户刚接手的界面
+    if (_bootFinalized) return;
     if (_bootCutShort) ok = false;
     showOnlyPage('control'); // 预热完回到启动时的主控页
     await twoFrames();
     const remain = BOOT_MIN_MS - (performance.now() - started);
     if (remain > 0) await delay(remain);
+    // 等待期间可能正好撞上时限兜底：它已经收尾并放行，这里不能再改文案/再收一遍
+    if (_bootFinalized) return;
     bar.style.width = '100%';
     stepEl.textContent = ok ? '完成' : '未完成，下次启动再试';
     await delay(200);
-    _bootReleased = true;
-    if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
-    checkRegistryOptimizations(); // 遮罩已撤下：启动体检现在开窗（内部自捕获异常）
-    overlay.classList.add('boot-overlay--done');
-    setTimeout(() => { overlay.hidden = true; }, 260);
-    // 只有全部步骤都画完才通知壳落标记：失败或超时留在冷态，下次启动重来
-    if (ok && !_bootCutShort && window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage({ type: 'warmup-done' });
-    } else if (!ok) {
-      console.warn('[warmup] 本次预热未完成，不写完成标记');
-    }
+    finishBoot(ok && !_bootCutShort);
   }
 
   // ---------- 启动 ----------

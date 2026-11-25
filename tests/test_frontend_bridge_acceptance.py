@@ -11,7 +11,9 @@
 4. slowdash    —— 看板查询慢于轮询周期时，同一看板复用同一个在途请求，内容最终落地；
 5. dashfail    —— 看板回错时不得写完成标记（预热失败就是失败）；
 6. envfail     —— 环境中心三个页签回错时不得写完成标记（错误文案不当内容已就绪）；
-7. rebuilddash —— 慢看板在途时数据页被重建，回包不得写进已移除的节点，新页要重新取数。
+7. rebuilddash —— 慢看板在途时数据页被重建，回包不得写进已移除的节点，新页要重新取数；
+8. slowinit    —— 初始化晚于总时限才回包：只能收尾一次（不得二次体检、不得再关用户弹窗）；
+9. initfail    —— 初始化直接报错：不得写完成标记。
 
 浏览器用本机已有的 Edge/Chrome（Windows）或 CI runner 自带的 Chrome/Chromium；
 都没有时本地跳过、CI 直接失败（不再静默跳过）。不引入任何第三方依赖。
@@ -56,6 +58,7 @@ _STUB = r"""
   var scen = window.__SCEN || 'normal';
   window.__sent = [];
   window.__dashCalls = 0;
+  window.__regCalls = 0;
   window.__native = null;
   function reply(msg, data, delay) {
     setTimeout(function () {
@@ -107,6 +110,11 @@ _STUB = r"""
         if (!msg || msg.type !== 'call') return;
         if (scen === 'noreply') return;
         var method = msg.method;
+        if (method === 'get_initial_state') {
+          if (scen === 'initfail') { replyErr(msg, 'stub init failure', 0); return; }
+          if (scen === 'slowinit') { reply(msg, payloads.get_initial_state, 13000); return; }
+        }
+        if (method === 'get_registry_optimizations') window.__regCalls += 1;
         if (method === 'get_module_dashboard') {
           window.__dashCalls += 1;
           if (scen === 'dashfail') { replyErr(msg, 'stub dashboard failure', 0); return; }
@@ -115,7 +123,7 @@ _STUB = r"""
           return;
         }
         if (method === 'get_data_usage') {
-          reply(msg, { root: 'C:/stub', total: 10, dirs: [{ key: 'logs', label: '日志', bytes: 10 }] },
+          reply(msg, { root: 'stub-root', total: 10, dirs: [{ key: 'logs', label: '日志', bytes: 10 }] },
                 scen === 'latepopup' ? 13000 : 0);
           return;
         }
@@ -142,6 +150,21 @@ _PROBE = r"""
   var rebuildAt = 0;
   var rebuildDoneAt = 0;
   var loadedAt = 0;
+  var bootFocus = null;
+  // 遮罩期间键盘隔离：焦点不得落到被遮住的「开始」上（inert 生效时 focus 会被拒绝）
+  setTimeout(function () {
+    var start = document.getElementById('btn-start');
+    var main = document.querySelector('main');
+    var header = document.getElementById('titlebar');
+    var overlay = document.getElementById('boot-overlay');
+    if (start) start.focus();
+    bootFocus = {
+      overlayUp: !!(overlay && !overlay.hidden),
+      inertMain: !!(main && main.inert),
+      inertHeader: !!(header && header.inert),
+      activeId: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : ''
+    };
+  }, 300);
   var watch = setInterval(function () {
     var o = document.getElementById('boot-overlay');
     var hidden = !o || o.hidden === true || getComputedStyle(o).display === 'none';
@@ -196,6 +219,9 @@ _PROBE = r"""
       rebuildDoneAt: rebuildDoneAt,
       loadedAt: loadedAt,
       tabOk: tabOk,
+      bootFocus: bootFocus,
+      finalInert: !!(document.querySelector('main') && document.querySelector('main').inert),
+      regCalls: window.__regCalls || 0,
       logs: (window.__logs || []).slice(-12)
     };
     var pre = document.createElement('pre');
@@ -272,6 +298,7 @@ def test_normal_startup_completes_and_marks_done(tmp_path):
     assert out["hiddenAt"] < 10000, f"正常启动不应拖到接近总时限：{out['hiddenAt']}ms"
     assert out["modalsAfterHidden"] is False, "遮罩撤下后不得再冒出预热弹窗"
     assert out["tabOk"] is True, "遮罩撤下后点击关于 tab 未切页（放行标志没生效）"
+    assert out["finalInert"] is False, "遮罩放行后没有恢复顶栏/正文/底栏的焦点序列"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
@@ -281,6 +308,34 @@ def test_hot_start_keeps_tabs_clickable(tmp_path):
     out = _run(tmp_path, "normal", warmup=False)
     assert out["display"] == "none", f"热启动不该显示预热遮罩：display={out['display']}"
     assert out["tabOk"] is True, "热启动后点击关于 tab 未切页"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_late_init_finalizes_once_and_blocks_keyboard(tmp_path):
+    """初始化晚于总时限才回包：兜底已经收过尾，晚到的初始化不得再收一遍
+    （二次体检、关掉用户弹窗），也不得借遮罩期间的键盘焦点启动任务。"""
+    out = _run(tmp_path, "slowinit")
+    assert out["hidden"] is True, "兜底后遮罩必须收起"
+    assert out["warmupDone"] is False, "初始化未及时到位，不得写完成标记"
+    assert out["step"] == "启动较慢，先进入界面", f"兜底文案被二次收尾改写：{out['step']!r}"
+    assert out["regCalls"] == 1, (
+        f"启动体检应只跑一次（晚到初始化又收了一遍尾）：{out['regCalls']} 次")
+    assert out["modalsAfterHidden"] is False, "二次收尾不得在放行后再开弹窗"
+    bf = out["bootFocus"] or {}
+    assert bf.get("overlayUp") is True, "300ms 时遮罩应仍在"
+    assert bf.get("inertMain") is True and bf.get("inertHeader") is True, (
+        "遮罩期间正文/顶栏未从焦点序列隔离")
+    assert bf.get("activeId") != "btn-start", "焦点落到了被遮住的「开始」按钮"
+    assert out["finalInert"] is False, "收尾后未恢复焦点序列"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_init_failure_releases_without_marking_done(tmp_path):
+    """初始化直接报错：预热没有意义，放出界面但不得写完成标记（否则下次不再预热）。"""
+    out = _run(tmp_path, "initfail")
+    assert out["hidden"] is True, "初始化失败也必须放出界面"
+    assert out["warmupDone"] is False, "初始化失败时不得写完成标记"
+    assert out["hiddenAt"] < 5000, f"初始化失败应立即放行：{out['hiddenAt']}ms"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")

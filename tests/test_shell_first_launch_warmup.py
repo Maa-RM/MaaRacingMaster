@@ -62,10 +62,25 @@ def test_marker_only_written_when_warmup_complete():
     assert "BOOT_TOTAL_MS" in app, "冷启动必须有从脚本开始算的总时限"
     assert "withDeadline(" in app, "单步等待必须受总时限约束"
     assert "armBootDeadline()" in app, "初始化本身可能挂住，必须有不依赖它的兜底放行"
-    assert "if (ok && !_bootCutShort" in app, \
+    assert "finishBoot(ok && !_bootCutShort)" in app, \
         "通知壳落标记必须被「全部成功」条件包住"
     assert "_bootCutShort = true" in app
+    assert "_initOk = true" in app and "if (!_initOk)" in app, (
+        "初始化失败时预热没有意义，也不得写完成标记")
     assert "本次不写完成标记" in app, "超时兜底只放行界面，不得写标记"
+
+
+def test_boot_release_runs_exactly_once():
+    """时限兜底与正常收尾是两条路径：晚到的初始化不得再收一遍尾（会重开体检弹窗、
+    并把用户已经打开的弹窗顺手关掉）。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert app.count("function finishBoot(completed)") == 1, "收尾入口应只有一个"
+    start = app.index("function finishBoot(completed)")
+    body = app[start:start + 500]
+    assert "if (_bootFinalized) return;" in body, "收尾入口缺少一次性守卫"
+    assert "_bootFinalized = true" in body, "收尾入口未置位"
+    assert "if (_bootFinalized) return;" in app[app.index("async function runBootWarmup"):], (
+        "预热主流程在放行后必须停下，不得继续翻页/改文案/二次收尾")
 
 
 def test_env_center_placeholder_is_not_treated_as_ready():
@@ -105,11 +120,24 @@ def test_warmup_blocks_tab_switch_and_releases_dialogs():
     也不能留着预热自己开的窗——否则弹窗晚于遮罩关闭、在已经可用的界面上抢焦点。"""
     app = APP.read_text(encoding="utf-8-sig")
     assert "if (!_bootReleased) return;" in app, "预热期间未拦住切页"
-    assert app.count("window.MaaRM.closeAllModals()") >= 2, "两条放行路径都要收掉预热弹窗"
+    # 两条放行路径共用同一个收尾入口：closeAllModals 只在 finishBoot 里出现一次
+    assert app.count("window.MaaRM.closeAllModals()") == 1, (
+        "预热弹窗收口应集中在唯一收尾入口，避免两条路径各收一遍")
     modal = (SHELL / "frontend" / "js" / "modal.js").read_text(encoding="utf-8-sig")
     assert "closeAllModals" in modal and "openDialogs" in modal, "弹窗层缺少统一收口"
     env = (SHELL / "frontend" / "js" / "env-center.js").read_text(encoding="utf-8-sig")
     assert "warmupReleased()" in env, "环境中心开窗前未检查遮罩是否已放行"
+
+
+def test_overlay_blocks_keyboard_focus_to_hidden_ui():
+    """遮罩挡得住鼠标但拦不住 Tab：焦点会落在被遮住的「开始」上，回车就启动任务。
+    遮罩期间把顶栏/正文/底栏设为 inert，收尾再放开。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert "setShellInert(true)" in app and "setShellInert(false)" in app, (
+        "遮罩期间未隔离键盘焦点，收尾也未恢复")
+    body = app[app.index("function setShellInert(on)"):][:400]
+    assert "inert = on" in body, "inert 未落到顶栏/正文/底栏"
+    assert "document.querySelector('main')" in body, "正文未纳入键盘隔离"
 
 
 def test_cold_detection_requires_shader_cache_entries():
