@@ -579,14 +579,19 @@
   }
 
   // ---------- 开关 ----------
+  let returnFocus = null; // 打开成就管理前的焦点：关闭时还给它
   function open() {
     const sheet = $('ach-sheet');
     if (!sheet) return;
+    returnFocus = document.activeElement;
     sheet.hidden = false;
     sheet.setAttribute('aria-hidden', 'false');
     requestAnimationFrame(() => sheet.classList.add('is-open'));
     status('');
     refresh();
+    // 整页层接管焦点：不把焦点请进来，Tab 会先穿过被它盖住的设置页
+    const back = $('ach-back');
+    if (back) back.focus();
   }
 
   function close() {
@@ -598,6 +603,8 @@
     if (sheet.contains(document.activeElement)) document.activeElement.blur();
     sheet.classList.remove('is-open');
     sheet.setAttribute('aria-hidden', 'true');
+    if (returnFocus && typeof returnFocus.focus === 'function') returnFocus.focus();
+    returnFocus = null;
     setTimeout(() => {
       if (!sheet.classList.contains('is-open')) sheet.hidden = true;
     }, 240);

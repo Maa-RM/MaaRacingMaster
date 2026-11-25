@@ -341,6 +341,7 @@
       MaaRM.panelModuleId = '';
       const dataHost = $('page-data');
       const settingsHost = $('page-settings');
+      if (MaaRM.resetPreviewState) MaaRM.resetPreviewState();
       if (dataHost) dataHost.innerHTML = EMPTY_MODULE_HTML;
       if (settingsHost) settingsHost.innerHTML = EMPTY_MODULE_HTML;
       return;
@@ -357,9 +358,12 @@
     MaaRM.panelModuleId = moduleId;
     const dataPage = $('page-data');
     const settingsPage = $('page-settings');
+    // 预览卡会被整体替换：先把放大态收掉，否则 #page-data 上的 preview-fs-active 残留
+    if (MaaRM.resetPreviewState) MaaRM.resetPreviewState();
     if (dataPage) dataPage.innerHTML = defaultDataCards(moduleId);
     if (settingsPage) settingsPage.innerHTML = defaultSettingsCards(moduleId);
     bindModulePages(moduleId);
+    if (MaaRM.applyPreviewState) MaaRM.applyPreviewState();
     refreshDebugState();
   }
 
