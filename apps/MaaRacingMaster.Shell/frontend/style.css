@@ -1775,6 +1775,11 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .about-links { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 8px; }
 .about-links .maarm-btn { width: auto; height: 36px; padding: 0 16px; }
 .about-links .maarm-btn svg { width: 16px; height: 16px; }
+.about-license {
+  margin: 2px auto 18px; max-width: 620px; text-align: center;
+  color: var(--maarm-foreground-muted); font-size: 11.5px; line-height: 1.7;
+}
+.about-license code { font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--maarm-surface); }
 
 /* ============ 底部操作栏 ============ */
 footer {
