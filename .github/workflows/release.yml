@@ -118,7 +118,7 @@ jobs:
       - name: 创建 GitHub Release（草稿）
         # 先建草稿：资产未上传前页面不可见，构建失败只留草稿不留「没有下载包的发布页」。
         # 公开动作在 win-build 的资产上传完成后自动完成（见下方「公开校验」）。
-        uses: softprops/action-gh-release@v2.6.2
+        uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: v${{ steps.version.outputs.version }}
@@ -284,7 +284,7 @@ jobs:
       - name: 补传 zip + 模型包到 Release
         # 故意不传 draft：上传完两个资产后，action 把草稿转为公开（finalize）——
         # 这是「页面公开时下载包已就位」的唯一保证点。改回 draft: true 会把草稿永久留在不可见状态。
-        uses: softprops/action-gh-release@v2.6.2
+        uses: softprops/action-gh-release@v3.0.4
         with:
           tag_name: ${{ env.TAGNAME }}
           overwrite: false
