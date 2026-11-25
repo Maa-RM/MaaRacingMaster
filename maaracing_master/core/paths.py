@@ -10,7 +10,7 @@
     logs/       会话记录（logs/<会话>/MaaRM_*.log + trace/ + perf.jsonl，共用「日志记录」开关）
     framework/  MAA 框架自产物（debug/maafw.log、debug/on_error 失败截图，跟随两项调试开关）
     debug/      调试产物与录制语料（debug/<会话>/<模块>/<行为>/，会话优先布局 v5）
-    webview2/   壳的浏览器数据（资料分区、GPU 着色器缓存、崩溃转储），只由壳写入
+    webview2/   壳的浏览器数据（资料分区、运行时组件、GPU 着色器缓存、崩溃转储），只由壳写入
 
 会话编号（logs/ 与 debug/ 同一规则）：`<YYYYMMDD_HHMMSS>[_<序号>]`，进程启动时
 生成一次，与两个开关无关。同一场运行的日志目录与调试目录同名，排查时两边一眼
