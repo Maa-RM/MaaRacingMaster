@@ -30,8 +30,7 @@ POPUP_SCREEN = {
     "startup.popup.claim_daily": "popup_daily",
     "startup.popup.claim_signin": "popup_signin",
     "startup.popup.continue": "popup_continue",
-    "startup.popup.close_reward": "popup_close_reward",
-    "startup.popup.close_marketing": "popup_close_marketing",
+    "startup.popup.close_x": "popup_close_x",
 }
 
 

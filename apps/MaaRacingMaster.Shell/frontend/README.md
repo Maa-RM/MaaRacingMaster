@@ -197,7 +197,7 @@ Chromium 不提供待编译清单，漏登记只影响该弹窗首次打开的�
 `queue_run.current_name` 下发）。返回空串才落到「停止中...」——那是「有活干却取不到标签」的分支。
 
 - **不显示调试流归属**：`debug_stage` 是导航图此刻在试的节点名（如
-  `startup.popup.close_marketing`），读作「在匹配哪个控件」，界面上没有含义；它仍在 PEEP
+  `startup.popup.close_x`），读作「在匹配哪个控件」，界面上没有含义；它仍在 PEEP
   画面底带与调试索引 `index.jsonl` 里。
 - 内置步骤本来就没有阶段，卡片里已写明「这一步没有细分阶段」，状态行给步骤名即可。
 - 回归锁：`tests/js/status_label.test.mjs`（node --test）。
