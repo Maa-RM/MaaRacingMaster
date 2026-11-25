@@ -230,15 +230,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .page-about { overflow-y: auto; display: block; }
 .page-about.hidden { display: none; }
 
-/* Tab 切换滑动（缓动曲线）：仅对新页做单次滑入，方向由 JS 的 --slide-from 决定 */
-.page-slide-in {
-  animation: page-slide var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform, opacity;
-}
-@keyframes page-slide {
-  from { transform: translateX(var(--slide-from, 42px)); opacity: 0; }
-  to   { transform: translateX(0); opacity: 1; }
-}
+/* Tab 切换的分块进场动画由 app.js 用 rAF 逐帧写样式驱动，这里不设规则：
+   CSS 的 transform 动画会被合成器接管，运动期间按低分辨率位图平移、停下再重绘，
+   观感是「尾部突然变清」；主线程逐帧改样式每帧都按设备像素重绘，全程锐利。 */
 
 /* ============ 通用卡片 ============ */
 .card {
@@ -1407,7 +1401,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 #page-data .preview-card .icon-pause { display: none; }
 #page-data .preview-card .preview-wrap { flex: 1; }
 /* 实时预览：放大态（撑满数据页整块区域、画面随窗口自动适配、居中）
-   不复用 position:fixed——数据页带 .page-slide-in 的 will-change 会命中 containing-block 陷阱；
+   不复用 position:fixed——卡片在切换动画里带 filter/transform 会成为 fixed 的包含块；
    改为隐藏其它卡片，让预览卡在文档流里撑满整页。 */
 .preview-card--fullscreen {
   border-radius: var(--maarm-radius-md);

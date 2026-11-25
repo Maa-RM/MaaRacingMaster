@@ -89,28 +89,103 @@
     slider.style.left = (btn.offsetLeft + Math.round((btn.offsetWidth - w) / 2)) + 'px';
     slider.style.width = w + 'px';
   }
-  // 只对新页做单次滑入（缓动曲线），跨多 tab 也只在本页与当前视觉间播放，不逐页遍历
+  // 分块进场：新页的每个面板各自从 tab 方向滑入 + 对焦收清，起步时间按对角位置错开。
+  // 前进（切到右边的 tab）从右滑入、从右列起；后退反之——和 tab 的左右顺序一致。
+  // 位移走 rAF 逐帧写样式，不用 CSS animation：CSS 的 transform 动画会被合成器接管，
+  // 运动期间按低分辨率位图平移、停下重新栅格，观感是「尾部突然变清」；主线程逐帧改样式
+  // 则每帧都按设备像素重绘，全程锐利（实测同位移下 46% vs 101%）。
+  // 页面本身不做变换：整页一变形，全屏文字会同时被降分辨率重绘。
+  const ENTER_DURATION_MS = 420;
+  const ENTER_SPREAD_MS = 200;  // 对角首尾块的起步差
+  const ENTER_SHIFT_PX = 28;    // 单块滑动距离
+  const ENTER_BLUR_PX = 4;      // 起始模糊：与参考组件同值，进场时明显对焦
+  // cubic-bezier(0.22, 1, 0.36, 1)：先快后缓，收尾无回弹
+  const ENTER_EASE = (() => {
+    const [x1, y1, x2, y2] = [0.22, 1, 0.36, 1];
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const sx = (t) => ((ax * t + bx) * t + cx) * t;
+    const sy = (t) => ((ay * t + by) * t + cy) * t;
+    const dx = (t) => (3 * ax * t + 2 * bx) * t + cx;
+    return (x) => {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      let t = x;
+      for (let i = 0; i < 5; i++) {
+        const d = dx(t);
+        if (Math.abs(d) < 1e-6) break;
+        t -= (sx(t) - x) / d;
+      }
+      return sy(Math.min(1, Math.max(0, t)));
+    };
+  })();
+  let _enterRaf = 0;
+  let _enterPrev = []; // 上一轮正在动的元素，切页打断时要收回内联样式
+
   function animatePageIn(page, fromRight) {
     if (!page) return;
-    page.classList.remove('page-slide-in');
-    void page.offsetWidth; // 强制 reflow 重置动画
-    page.style.setProperty('--slide-from', fromRight ? '42px' : '-42px');
-    page.classList.add('page-slide-in');
-    // 动画结束/被打断后立即摘掉动画类：页面回归主文档光栅化。
-    // 合成层提升窗口严格限定在动画期间；残留类会让页面停留在合成层路径，
-    // 非整数 DPI（150%）下文字发虚。animationName 过滤避免子元素动画误触发。
-    const detach = () => {
-      page.removeEventListener('animationend', onEnd);
-      page.removeEventListener('animationcancel', detach);
-      if (page.classList.contains('page-slide-in'))
-        page.classList.remove('page-slide-in');
+    // 打断上一轮：取消帧循环并把内联样式收干净，否则旧页会带着 transform 进后台
+    if (_enterRaf) cancelAnimationFrame(_enterRaf);
+    _enterRaf = 0;
+    for (const item of _enterPrev) item.el.style.cssText = item.saved;
+    _enterPrev = [];
+    // 只取最外层块，避免卡片套卡片重复播动画；没有卡片时退化为整页一块
+    const all = Array.from(page.querySelectorAll('.card, .dash-panel, .about-hero'));
+    const blocks = all.filter((el) => !all.some((other) => other !== el && other.contains(el)));
+    const targets = blocks.length ? blocks : [page];
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // 对角排序：水平权重是垂直的两倍——进场方向是横向的。等权时左列首行与右列末行
+    // 会算出同一个对角值（数据页左栏整列高，正好是这个格局），两块就会同时起步。
+    const rects = targets.map((el) => el.getBoundingClientRect());
+    const minTop = Math.min(...rects.map((r) => r.top));
+    const minLeft = Math.min(...rects.map((r) => r.left));
+    const spanTop = Math.max(1, Math.max(...rects.map((r) => r.top)) - minTop);
+    const spanLeft = Math.max(1, Math.max(...rects.map((r) => r.left)) - minLeft);
+    const shift = fromRight ? ENTER_SHIFT_PX : -ENTER_SHIFT_PX;
+    const diags = targets.map((el, i) => {
+      const xRatio = (rects[i].left - minLeft) / spanLeft;
+      const yRatio = (rects[i].top - minTop) / spanTop;
+      return (fromRight ? 1 - xRatio : xRatio) + 0.5 * yRatio;
+    });
+    // 起步时间按名次等距摊开，不按对角值比例：对角值仍可能撞车（同列不同行、行列互补
+    // 等），撞车的块会同一帧起步；按名次摊开保证任意两块都错开。
+    const order = targets.map((el, i) => i).sort((a, b) => (
+      diags[a] - diags[b] || rects[a].top - rects[b].top || rects[a].left - rects[b].left
+    ));
+    const step = order.length > 1 ? ENTER_SPREAD_MS / (order.length - 1) : 0;
+    const items = order.map((idx, rank) => ({
+      el: targets[idx],
+      saved: targets[idx].style.cssText,
+      delay: Math.round(rank * step),
+    }));
+    _enterPrev = items;
+    const start = performance.now();
+    const apply = (item, local) => {
+      const p = local <= 0 ? 0 : local >= 1 ? 1 : ENTER_EASE(local);
+      const el = item.el;
+      el.style.transform = 'translateX(' + (shift * (1 - p)).toFixed(2) + 'px)';
+      el.style.opacity = p.toFixed(3);
+      el.style.filter = 'blur(' + (ENTER_BLUR_PX * (1 - p)).toFixed(2) + 'px)';
     };
-    const onEnd = (e2) => {
-      if (e2.animationName !== 'page-slide') return;
-      detach();
+    // 首帧先压到起始态，避免延迟块先以终态闪一下
+    for (const item of items) apply(item, 0);
+    const frame = (now) => {
+      const t = now - start;
+      let done = true;
+      for (const item of items) {
+        const local = (t - item.delay) / ENTER_DURATION_MS;
+        apply(item, local);
+        if (local < 1) done = false;
+      }
+      if (!done) {
+        _enterRaf = requestAnimationFrame(frame);
+        return;
+      }
+      _enterRaf = 0;
+      for (const item of items) item.el.style.cssText = item.saved;
+      _enterPrev = [];
     };
-    page.addEventListener('animationend', onEnd);
-    page.addEventListener('animationcancel', detach);
+    _enterRaf = requestAnimationFrame(frame);
   }
   tabButtons.forEach((btn) => {
     btn.addEventListener('click', () => {

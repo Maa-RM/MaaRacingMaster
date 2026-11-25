@@ -104,7 +104,7 @@
       if (ev.target === overlay && opts.closeOnOverlay !== false) modal.close();
     });
     (focusables()[0] || card).focus(); // 开卡即把焦点请进卡内（陷阱的起点）
-    // 进场动画结束后摘动画类：卡片回归主文档光栅化，避免非整数 DPI 下文字发虚（同 page-slide-in 手法）
+    // 进场动画结束后摘动画类：卡片回归主文档光栅化，避免非整数 DPI 下文字发虚
     card.addEventListener('animationend', (ev) => {
       if (ev.animationName === 'modal-card-in') card.classList.remove('maarm-modal-card--enter');
     });

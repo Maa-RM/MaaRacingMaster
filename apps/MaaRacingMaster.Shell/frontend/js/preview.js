@@ -49,7 +49,7 @@
   }
 
   // ---------- 实时预览：放大（撑满数据页整块区域、深色预览区四周留白、居中）
-  //  不复用 position:fixed——数据页带 .page-slide-in 的 will-change 会命中 containing-block 陷阱，
+  //  不复用 position:fixed——卡片在切换动画里带 filter/transform 会成为 fixed 的包含块，
   //  改为切换 .preview-fs-active 让预览卡在文档流里撑满整页。 ----------
   let _previewFsCard = null; // 当前放大的预览卡
   const PREVIEW_FS_PAD = 32; // 深色预览区四周留白
