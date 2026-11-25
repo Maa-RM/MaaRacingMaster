@@ -66,6 +66,8 @@
 
 /* ============ 聚光灯 ============ */
 .tour-layer { position: fixed; inset: 0; z-index: 10200; pointer-events: none; }
+.tour-layer.is-leaving { opacity: 0; transition: opacity .32s ease; }
+.tour-layer.is-leaving * { pointer-events: none !important; }
 .tour-block {
   position: fixed; background: rgba(17, 20, 26, .52);
   pointer-events: auto; cursor: not-allowed;
@@ -155,6 +157,29 @@
   transition: left .68s cubic-bezier(.4,0,.2,1), top .68s cubic-bezier(.4,0,.2,1),
               width .68s cubic-bezier(.4,0,.2,1), height .68s cubic-bezier(.4,0,.2,1);
 }
+.tour-orb.is-returning {
+  transition: left .58s cubic-bezier(.4,0,.2,1), top .58s cubic-bezier(.4,0,.2,1),
+              width .58s cubic-bezier(.4,0,.2,1), height .58s cubic-bezier(.4,0,.2,1);
+}
+
+/* 结束语：贴在状态球上方的小气泡 */
+.tour-speech {
+  position: fixed; z-index: 10260;
+  max-width: 280px; padding: 11px 13px;
+  background: var(--maarm-surface);
+  border: 1px solid var(--maarm-border);
+  border-radius: 12px;
+  font-size: 12.5px; line-height: 1.7; color: var(--maarm-foreground-secondary);
+  box-shadow: var(--maarm-shadow-md);
+  animation: onb-speech-in .3s ease both;
+}
+.tour-speech::after {
+  content: ''; position: absolute; left: 17px; bottom: -5px;
+  width: 10px; height: 10px; background: var(--maarm-surface);
+  border-right: 1px solid var(--maarm-border); border-bottom: 1px solid var(--maarm-border);
+  transform: rotate(45deg);
+}
+.tour-speech.is-out { opacity: 0; transform: translateY(4px); transition: opacity .3s ease, transform .3s ease; }
 .tour-orb .maarm-orb { --orb-size: 100%; width: 100%; height: 100%; }
 /* 引导球要压过遮罩，就绪态也保持实心，眼睛才读得出来 */
 .tour-orb .maarm-orb[data-state="ready"],
@@ -184,6 +209,7 @@
 .tour-dock button:hover { background: var(--maarm-surface-hover); color: var(--maarm-foreground-secondary); }
 
 /* ============ 动画 ============ */
+@keyframes onb-speech-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes onb-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes onb-fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes onb-bubble-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

@@ -487,6 +487,8 @@
       if (x < 8) x = r.right + pad;
       if (y < 8) y = 8;
       if (y + size > window.innerHeight - 8) y = window.innerHeight - size - 8;
+      orb.el.style.width = size + 'px';
+      orb.el.style.height = size + 'px';
       orb.el.style.left = x + 'px';
       orb.el.style.top = y + 'px';
     }
@@ -497,19 +499,46 @@
     place();
   }
 
-  function orbLeave() {
+  function orbLeave(completed) {
     var orb = guideOrb;
-    if (!orb) { hideStatusChrome(false); return; }
+    if (!orb) {
+      hideStatusChrome(false);
+      if (completed) speech('好了，就这些。需要调系统权限或驱动时，在设置里找运行环境。');
+      return;
+    }
     var src = document.getElementById('status-dot');
     if (src) {
       var r = src.getBoundingClientRect();
-      orb.el.style.left = (r.left - 6) + 'px';
-      orb.el.style.top = (r.top - 6) + 'px';
+      orb.el.classList.add('is-returning');
+      orb.el.style.width = r.width + 'px';
+      orb.el.style.height = r.height + 'px';
+      orb.el.style.left = r.left + 'px';
+      orb.el.style.top = r.top + 'px';
     }
     setTimeout(function () {
-      if (guideOrb) guideOrb.el.style.display = 'none';
+      if (guideOrb) {
+        guideOrb.el.style.display = 'none';
+        guideOrb.el.classList.remove('is-returning');
+      }
       hideStatusChrome(false);
-    }, 560);
+      if (completed) speech('好了，就这些。需要调系统权限或驱动时，在设置里找运行环境。');
+    }, 620);
+  }
+
+  // 结束语贴在状态球上方，像球在说话
+  function speech(text) {
+    var dot = document.getElementById('status-dot');
+    if (!dot) return toast(text);
+    var r = dot.getBoundingClientRect();
+    var el = document.createElement('div');
+    el.className = 'tour-speech';
+    el.textContent = text;
+    document.body.appendChild(el);
+    var left = Math.max(12, Math.min(r.left - 8, window.innerWidth - el.offsetWidth - 12));
+    el.style.left = left + 'px';
+    el.style.bottom = (window.innerHeight - r.top + 12) + 'px';
+    setTimeout(function () { el.classList.add('is-out'); }, 3800);
+    setTimeout(function () { el.remove(); }, 4300);
   }
 
   function layout(el) {
@@ -762,6 +791,12 @@
   function startTour(from, restorePrereq) {
     if (state.tourDone) return;
     tourIndex = Math.max(0, from || 0);
+    // 从过渡页接过来时，球可能还带着大尺寸 / 高层级
+    if (guideOrb) {
+      guideOrb.el.classList.remove('is-launch');
+      guideOrb.el.style.width = '30px';
+      guideOrb.el.style.height = '30px';
+    }
     hideStatusChrome(true);
     if (restorePrereq) restorePrerequisites(tourIndex);
     showStep(tourIndex);
@@ -776,12 +811,17 @@
   function finish(completed) {
     tourActive = false;
     var layer = $('#onb-layer');
-    if (layer) layer.hidden = true;
-    orbLeave();
+    if (layer) {
+      layer.classList.add('is-leaving');
+      setTimeout(function () {
+        layer.hidden = true;
+        layer.classList.remove('is-leaving');
+      }, 300);
+    }
+    orbLeave(completed);
     state.tourDone = true;
     state.tourIndex = STEPS.length;
     save();
-    if (completed) toast('引导结束。要调系统权限或驱动时，再来运行环境。');
   }
 
   function toast(text) {
