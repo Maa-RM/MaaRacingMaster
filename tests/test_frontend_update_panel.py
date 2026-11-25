@@ -116,7 +116,16 @@ def test_unmanaged_install_offers_manual_entry(app_src: str):
     view = _js_function_body(app_src, "function describe(snapshot)")
     branch = _case(view, "unavailable")
     assert "前往下载" in branch, "非受管安装缺少手动下载入口"
-    assert "openTarget('download')" in branch, "手动下载按钮未绑定前往下载动作"
+    assert "openDownloadPage" in branch, "手动下载按钮未绑定前往下载动作"
+
+
+def test_download_entry_passes_source_and_channel_enums(app_src: str):
+    """下载页按当前源/渠道计算：只传两个枚举，地址仍由后端给出。"""
+    body = _js_function_body(app_src, "function openDownloadPage()")
+    assert "openTarget('download'" in body, "下载入口未指向 download 目标"
+    assert "source: updateSource" in body, "下载入口未带当前下载源"
+    assert "channel: updateChannel" in body, "下载入口未带当前版本渠道"
+    assert "url" not in body, "下载入口不得携带 URL"
 
 
 def test_progress_render_is_text_only(app_src: str):
@@ -185,7 +194,7 @@ def test_unmanaged_or_unconfigured_falls_back_to_manual_download(app_src: str):
     branch = _case(_js_function_body(app_src, "function describe(snapshot)"), "idle")
     assert "snapshot.managed === false" in branch, "未按 managed 判非受管"
     assert "未配置" in branch, "未按「来源未配置」判手动入口"
-    assert "前往下载" in branch and "openTarget('download')" in branch, "缺少手动下载动作"
+    assert "前往下载" in branch and "openDownloadPage" in branch, "缺少手动下载动作"
 
 
 def test_version_arrival_rerenders_the_card(app_src: str):

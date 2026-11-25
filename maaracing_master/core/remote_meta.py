@@ -26,8 +26,10 @@ from urllib.parse import urlparse
 #: 仓库 slug。官方地址表、远程链接白名单、更新源 URL 共用这一处定义（sidecar 引用它，
 #: 不再自留副本）——两处各写一遍，改一处漏一处就是白名单静默失效。
 GITHUB_REPO = "Maa-RM/MaaRacingMaster"
-# CNB 是本仓库的镜像，项目名按构造等于仓库名——不另抄一个字面量。
-_CNB_PROJECT = GITHUB_REPO.split("/")[-1]
+# CNB 镜像的站点路径（组织/仓库）：GitHub 是 Maa-RM/MaaRacingMaster，CNB 落在
+# MaaRacingMaster/MAIN。两者不同源，不能按仓库名推导；sidecar 的 raw 地址也取这里。
+CNB_REPO = "MaaRacingMaster/MAIN"
+_CNB_ORG = CNB_REPO.split("/")[0]
 
 # --------------------------------------------------------------------------
 # 官方地址
@@ -40,6 +42,8 @@ EXTERNAL_TARGETS: dict[str, str] = {
     "issue": f"https://github.com/{GITHUB_REPO}/issues",
     "docs": f"https://github.com/{GITHUB_REPO}/blob/master/docs/CODE_WIKI.md",
     "release": f"https://github.com/{GITHUB_REPO}/releases/latest",
+    "release_all": f"https://github.com/{GITHUB_REPO}/releases",
+    "release_cnb": f"https://cnb.cool/{CNB_REPO}/-/releases",
     "vigembus": "https://github.com/nefarius/ViGEmBus/releases/latest",
     "noto_font": "https://fonts.google.com/noto/specimen/Noto+Sans+SC",
     "webview2": "https://developer.microsoft.com/microsoft-edge/webview2/",
@@ -49,7 +53,7 @@ EXTERNAL_TARGETS: dict[str, str] = {
 # 只收本项目自有页面——远程数据能把用户带去任意站点，等价于把「打开外链」交了出去。
 _REMOTE_URL_PATHS: dict[str, tuple[str, ...]] = {
     "github.com": (f"/{GITHUB_REPO}",),
-    "cnb.cool": (f"/{_CNB_PROJECT}",),
+    "cnb.cool": (f"/{_CNB_ORG}",),
 }
 
 
@@ -94,6 +98,28 @@ def is_openable_url(url: str) -> bool:
     if url in EXTERNAL_TARGETS.values():
         return True
     return is_official_url(url)
+
+
+# --------------------------------------------------------------------------
+# 手动下载页（按用户选择的下载源 / 渠道计算）
+# --------------------------------------------------------------------------
+
+_DOWNLOAD_SOURCES = ("cnb", "github")
+_DOWNLOAD_CHANNELS = ("stable", "preview")
+
+
+def resolve_download_page(source: object = None, channel: object = None) -> str:
+    """「前往下载」的目标：按下载源与版本渠道给出官方发布页。
+
+    非法/缺失值按默认（cnb / stable）处理——与壳侧偏好默认值一致，人工入口
+    不因参数畸形而打不开。CNB 的发布列表同时包含正式版与预发布，渠道不改变
+    目标；GitHub 的 `releases/latest` 只收正式版，测试渠道改指全量列表。
+    """
+    src = source if source in _DOWNLOAD_SOURCES else "cnb"
+    ch = channel if channel in _DOWNLOAD_CHANNELS else "stable"
+    if src == "cnb":
+        return EXTERNAL_TARGETS["release_cnb"]
+    return EXTERNAL_TARGETS["release_all"] if ch == "preview" else EXTERNAL_TARGETS["release"]
 
 
 # --------------------------------------------------------------------------

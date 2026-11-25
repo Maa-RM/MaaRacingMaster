@@ -148,10 +148,16 @@
     }
   }
 
-  // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
-  function openTarget(target) {
+  // 打开外部目标：地址由 sidecar 侧白名单给出（前端不传 URL）。下载页额外带上
+  // 当前选择的源 / 渠道两个枚举——目标页由后端按它们计算，前端仍不持有地址。
+  function openTarget(target, extra) {
     if (!target) return;
-    maarm.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
+    const params = Object.assign({ target }, extra || {});
+    maarm.call('open_external_url', params).catch((e) => showError('打开链接失败: ' + e.message));
+  }
+
+  function openDownloadPage() {
+    openTarget('download', { source: updateSource, channel: updateChannel });
   }
 
   // ---------- 卡片：元素 ----------
@@ -194,7 +200,7 @@
           icon: 'alert', tone: 'err',
           title: '自动升级当前不可用',
           meta: snapshot.error || '非受管安装，请使用手动下载入口',
-          action: { label: '前往下载', icon: 'arrow-up-right', run: () => openTarget('download') },
+          action: { label: '前往下载', icon: 'arrow-up-right', run: openDownloadPage },
         };
       case 'idle':
         if (snapshot.error) {
@@ -204,7 +210,7 @@
           return manual
             ? {
                 icon: 'alert', tone: 'err', title: '自动升级当前不可用', meta: snapshot.error,
-                action: { label: '前往下载', icon: 'arrow-up-right', run: () => openTarget('download') },
+                action: { label: '前往下载', icon: 'arrow-up-right', run: openDownloadPage },
               }
             : {
                 icon: 'alert', tone: 'err', title: '检查更新失败', meta: snapshot.error,

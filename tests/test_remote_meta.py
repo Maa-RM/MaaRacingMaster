@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
 from maaracing_master.core.remote_meta import (
+    CNB_REPO,
     EXTERNAL_TARGETS,
     is_date,
     is_expired,
@@ -28,6 +30,7 @@ from maaracing_master.core.remote_meta import (
     is_openable_url,
     parse_announcement,
     parse_release,
+    resolve_download_page,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -99,6 +102,33 @@ def test_openable_accepts_vigembus_target_only_as_static_target():
     vigem = EXTERNAL_TARGETS["vigembus"]
     assert is_openable_url(vigem)
     assert not is_official_url(vigem)
+
+
+def test_resolve_download_page_follows_source_and_channel():
+    """手动下载页随用户选择走：CNB 不区分渠道；GitHub 稳定用 latest、测试用全量列表。"""
+    assert resolve_download_page("cnb", "stable") == EXTERNAL_TARGETS["release_cnb"]
+    assert resolve_download_page("cnb", "preview") == EXTERNAL_TARGETS["release_cnb"]
+    assert resolve_download_page("github", "stable") == EXTERNAL_TARGETS["release"]
+    assert resolve_download_page("github", "preview") == EXTERNAL_TARGETS["release_all"]
+
+
+@pytest.mark.parametrize("source,channel,expected", [
+    (None, None, "release_cnb"),
+    ("evil", "preview", "release_cnb"),
+    ("github", "beta", "release"),      # 渠道非法只回默认渠道，不丢弃合法的源
+    ({}, [], "release_cnb"),
+])
+def test_resolve_download_page_defaults_on_invalid_values(source, channel, expected):
+    """畸形/缺失参数按字段回默认偏好，人工入口不因参数问题打不开。"""
+    assert resolve_download_page(source, channel) == EXTERNAL_TARGETS[expected]
+
+
+def test_cnb_repo_constant_matches_published_marker():
+    """CNB 站点路径是常量，发布标记里的地址必须仍在同一路径下——镜像搬家时先红。"""
+    marker = json.loads(LATEST_RELEASE.read_text(encoding="utf-8"))
+    assert CNB_REPO in (urlparse(marker["download_url"]).path or ""), (
+        "发布标记的 CNB 地址与 CNB_REPO 常量漂移"
+    )
 
 
 # --------------------------------------------------------------------------
