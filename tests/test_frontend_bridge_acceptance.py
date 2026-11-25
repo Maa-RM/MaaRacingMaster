@@ -5,7 +5,8 @@
 「页面真的能走完」。这里用一份临时副本 + `window.chrome.webview` 桥桩，在真实
 渲染路径上验证：
 
-1. normal      —— 正常回包时预热走完、遮罩收起、通知宿主落完成标记；
+1. normal      —— 正常回包时预热走完、遮罩收起、通知宿主落完成标记；关于页渲染出
+                  版本/更新/公告，并真的点一次「检查更新」发出宿主动作；
 2. noreply     —— 后端完全不回包时，总时限兜底放出界面，且不写完成标记；
 3. latepopup   —— 弹窗回包晚于总时限时，迟到的回包不再开窗（遮罩撤下后不得冒弹窗）；
 4. slowdash    —— 看板查询慢于轮询周期时，同一看板复用同一个在途请求，内容最终落地；
@@ -13,7 +14,9 @@
 6. envfail     —— 环境中心三个页签回错时不得写完成标记（错误文案不当内容已就绪）；
 7. rebuilddash —— 慢看板在途时数据页被重建，回包不得写进已移除的节点，新页要重新取数；
 8. slowinit    —— 初始化晚于总时限才回包：只能收尾一次（不得二次体检、不得再关用户弹窗）；
-9. initfail    —— 初始化直接报错：不得写完成标记。
+9. initfail    —— 初始化直接报错：不得写完成标记；
+10. announcefail —— 启动公告拉取失败、网络恢复后切进关于页要能补拉出公告；
+11. remindfocus —— 勾选「本次更新不再提示」后焦点仍留在同一个复选框上。
 
 浏览器用本机已有的 Edge/Chrome（Windows）或 CI runner 自带的 Chrome/Chromium；
 都没有时本地跳过、CI 直接失败（不再静默跳过）。不引入任何第三方依赖。
@@ -59,6 +62,7 @@ _STUB = r"""
   window.__sent = [];
   window.__dashCalls = 0;
   window.__regCalls = 0;
+  window.__announceCalls = 0;
   window.__native = null;
   function reply(msg, data, delay) {
     setTimeout(function () {
@@ -100,7 +104,17 @@ _STUB = r"""
       }]
     },
     update_status: { revision: 1, phase: 'idle', source: 'cnb', channel: 'stable', auto_check: true },
+    update_check: { revision: 2, phase: 'idle', source: 'cnb', channel: 'stable', auto_check: true },
     fetch_announcement: { level: 'none' }
+  };
+  // 发现更新相位：用于验证「本次更新不再提示」勾选后的焦点保持
+  var availableStatus = {
+    revision: 1, phase: 'available', source: 'cnb', channel: 'stable', auto_check: true,
+    target_version: '9.9.10', dismissed_version: null
+  };
+  var availableDismissed = {
+    revision: 2, phase: 'available', source: 'cnb', channel: 'stable', auto_check: true,
+    target_version: '9.9.10', dismissed_version: '9.9.10'
   };
   window.chrome = {
     webview: {
@@ -115,6 +129,28 @@ _STUB = r"""
           if (scen === 'slowinit') { reply(msg, payloads.get_initial_state, 13000); return; }
         }
         if (method === 'get_registry_optimizations') window.__regCalls += 1;
+        if (scen === 'remindfocus' && method === 'update_status') {
+          reply(msg, availableStatus, 0);
+          return;
+        }
+        if (scen === 'remindfocus' && method === 'update_set_dismissed') {
+          reply(msg, availableDismissed, 0);
+          return;
+        }
+        if (method === 'fetch_announcement') {
+          window.__announceCalls += 1;
+          // 启动那次拉取失败，之后（网络恢复）返回真实公告：验证切页补拉的出口
+          if (scen === 'announcefail' && window.__announceCalls === 1) {
+            replyErr(msg, 'stub announcement offline', 0);
+            return;
+          }
+          if (scen === 'announcefail') {
+            reply(msg, {
+              level: 'info', title: '网络恢复后的公告', body: '', date: '2026-11-25'
+            }, 0);
+            return;
+          }
+        }
         if (method === 'get_module_dashboard') {
           window.__dashCalls += 1;
           if (scen === 'dashfail') { replyErr(msg, 'stub dashboard failure', 0); return; }
@@ -151,6 +187,7 @@ _PROBE = r"""
   var rebuildDoneAt = 0;
   var loadedAt = 0;
   var bootFocus = null;
+  var remindFocus = null;
   // 遮罩期间键盘隔离：焦点不得落到被遮住的「开始」上（inert 生效时 focus 会被拒绝）
   setTimeout(function () {
     var start = document.getElementById('btn-start');
@@ -165,6 +202,36 @@ _PROBE = r"""
       activeId: document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : ''
     };
   }, 300);
+  // 勾选「本次更新不再提示」后，焦点必须还留在同一个复选框节点上
+  if (scen === 'remindfocus') {
+    setTimeout(function () {
+      var about = document.querySelector('.maarm-tab[data-tab="about"]');
+      if (about) about.click(); // 关于页在后台是 display:none，先切过去才能聚焦
+      setTimeout(function () {
+        var cb = document.querySelector('#upd-detail input[type="checkbox"]');
+        remindFocus = { found: !!cb, focusKept: null, hint: '' };
+        if (!cb) return;
+        cb.focus();
+        cb.click();
+        setTimeout(function () {
+          var live = document.querySelector('#upd-detail input[type="checkbox"]');
+          remindFocus.focusKept = document.activeElement === cb && live === cb;
+          remindFocus.hint = (document.querySelector('.upd-remind-hint') || {}).textContent || '';
+        }, 400);
+      }, 200);
+    }, 9000);
+  }
+  // 启动公告拉取失败后网络恢复：切进关于页应补拉出来
+  if (scen === 'announcefail') {
+    setTimeout(function () {
+      var about = document.querySelector('.maarm-tab[data-tab="about"]');
+      if (about) about.click();
+      setTimeout(function () {
+        var control = document.querySelector('.maarm-tab[data-tab="control"]');
+        if (control) control.click();
+      }, 300);
+    }, 8000);
+  }
   var watch = setInterval(function () {
     var o = document.getElementById('boot-overlay');
     var hidden = !o || o.hidden === true || getComputedStyle(o).display === 'none';
@@ -191,6 +258,28 @@ _PROBE = r"""
       }
     }
   }, 100);
+  if (scen === 'normal') {
+    setTimeout(function () {
+      // 顺手点一次「检查更新」：验证关于页更新卡真的接上了宿主动作（不只是渲染静态文本）
+      var action = document.getElementById('btn-update-action');
+      if (action) action.click();
+    }, 13500);
+  }
+  var announceBeforeSwitch = 0;
+  setTimeout(function () {
+    // 切页链路：公告刷新绑在更新检查上，来回切关于页不得再打 fetch_announcement
+    announceBeforeSwitch = countCalls('fetch_announcement');
+    var about = document.querySelector('.maarm-tab[data-tab="about"]');
+    var control = document.querySelector('.maarm-tab[data-tab="control"]');
+    if (about) about.click();
+    setTimeout(function () { if (control) control.click(); }, 120);
+    setTimeout(function () { if (about) about.click(); }, 240);
+  }, 14000);
+  function countCalls(method) {
+    return (window.__sent || []).filter(function (m) {
+      return m.type === 'call' && m.method === method;
+    }).length;
+  }
   var tabOk = null;
   setTimeout(function () {
     // 遮罩撤下后 tab 必须可点：热启动没有遮罩，若「已放行」标志没初始化，切页会被一直挡住
@@ -212,16 +301,26 @@ _PROBE = r"""
       modals: document.querySelectorAll('.maarm-modal-overlay').length,
       modalsAfterHidden: modalsAfterHidden,
       warmupDone: (window.__sent || []).some(function (m) { return m.type === 'warmup-done'; }),
+      updateCheckCalls: (window.__sent || []).filter(function (m) {
+        return m.type === 'call' && m.method === 'update_check';
+      }).length,
       dashCalls: window.__dashCalls || 0,
       dashLoaded: body ? (body.dataset.loadedFor || '') : '',
       dashText: body ? body.textContent.trim() : '',
       rebuildAt: rebuildAt,
       rebuildDoneAt: rebuildDoneAt,
       loadedAt: loadedAt,
+      version: (document.getElementById('app-version') || {}).textContent || '',
+      updTitle: (document.getElementById('upd-title') || {}).textContent || '',
+      updateLabel: (document.getElementById('btn-update-action-label') || {}).textContent || '',
+      announce: (document.getElementById('about-announce-body') || {}).textContent || '',
       tabOk: tabOk,
       bootFocus: bootFocus,
       finalInert: !!(document.querySelector('main') && document.querySelector('main').inert),
       regCalls: window.__regCalls || 0,
+      remindFocus: remindFocus,
+      announceCalls: countCalls('fetch_announcement'),
+      announceBeforeSwitch: announceBeforeSwitch,
       logs: (window.__logs || []).slice(-12)
     };
     var pre = document.createElement('pre');
@@ -296,18 +395,19 @@ def test_normal_startup_completes_and_marks_done(tmp_path):
     assert out["warmupDone"] is True, "预热完成必须通知宿主落标记"
     assert out["modals"] == 0, "预热收尾后不应留下自己打开的弹窗"
     assert out["hiddenAt"] < 10000, f"正常启动不应拖到接近总时限：{out['hiddenAt']}ms"
+    # 关于页的更新与公告已拆到独立模块：这几个字段证明它完成加载、订阅并渲染了快照
+    assert out["version"] == "v9.9.9", f"关于页版本未落地：{out['version']!r}"
+    assert out["updateLabel"] == "检查更新", f"更新卡主按钮未按快照渲染：{out['updateLabel']!r}"
+    assert out["announce"] == "暂无公告", f"公告卡未渲染：{out['announce']!r}"
+    assert out["announceCalls"] == 2, (
+        f"公告该在启动与手动检查收尾各拉一次，实际 {out['announceCalls']} 次")
+    assert out["announceBeforeSwitch"] == out["announceCalls"], (
+        "来回切关于页又重拉公告了：刷新应跟随更新检查")
+    assert out["updateCheckCalls"] == 1, "点击「检查更新」必须真的发出宿主动作"
+    assert out["updateLabel"] == "检查更新", "检查回包后主按钮应回到可再次点击的态"
     assert out["modalsAfterHidden"] is False, "遮罩撤下后不得再冒出预热弹窗"
     assert out["tabOk"] is True, "遮罩撤下后点击关于 tab 未切页（放行标志没生效）"
     assert out["finalInert"] is False, "遮罩放行后没有恢复顶栏/正文/底栏的焦点序列"
-
-
-@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
-def test_hot_start_keeps_tabs_clickable(tmp_path):
-    """热启动没有遮罩（首帧 boot-skip），切页不能被「已放行」标志挡住——
-    否则第二次启动起四个 tab 全部点不动。"""
-    out = _run(tmp_path, "normal", warmup=False)
-    assert out["display"] == "none", f"热启动不该显示预热遮罩：display={out['display']}"
-    assert out["tabOk"] is True, "热启动后点击关于 tab 未切页"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
@@ -336,6 +436,36 @@ def test_init_failure_releases_without_marking_done(tmp_path):
     assert out["hidden"] is True, "初始化失败也必须放出界面"
     assert out["warmupDone"] is False, "初始化失败时不得写完成标记"
     assert out["hiddenAt"] < 5000, f"初始化失败应立即放行：{out['hiddenAt']}ms"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_announcement_retries_on_about_tab_after_network_recovery(tmp_path):
+    """普通 ZIP 没有后台检查：启动公告拉取失败后，切进关于页要能补拉出公告。"""
+    out = _run(tmp_path, "announcefail")
+    assert "网络恢复后的公告" in out["announce"], (
+        f"切进关于页没有补拉公告：{out['announce']!r}")
+    assert out["announceCalls"] == 2, (
+        f"公告应只在启动失败后补拉一次，实际 {out['announceCalls']} 次")
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_dismiss_checkbox_keeps_focus_after_rerender(tmp_path):
+    """勾选「本次更新不再提示」会回一张新快照：原地更新，焦点不得从复选框掉到 body。"""
+    out = _run(tmp_path, "remindfocus")
+    rf = out["remindFocus"] or {}
+    assert rf.get("found") is True, "发现更新相位未渲染提醒复选框"
+    assert rf.get("focusKept") is True, "勾选后复选框被重建，键盘焦点丢失"
+    assert "下个版本会重新提示" in (rf.get("hint") or ""), (
+        f"勾选后的说明没有就地更新：{rf.get('hint')!r}")
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_hot_start_keeps_tabs_clickable(tmp_path):
+    """热启动没有遮罩（首帧 boot-skip），切页不能被「已放行」标志挡住——
+    否则第二次启动起四个 tab 全部点不动。"""
+    out = _run(tmp_path, "normal", warmup=False)
+    assert out["display"] == "none", f"热启动不该显示预热遮罩：display={out['display']}"
+    assert out["tabOk"] is True, "热启动后点击关于 tab 未切页"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")

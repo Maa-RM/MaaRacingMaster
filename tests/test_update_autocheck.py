@@ -26,7 +26,7 @@ AUTO = SHELL / "UpdateAutoCheck.cs"
 PREFS = SHELL / "UpdatePreferences.cs"
 RPC = SHELL / "RpcBridge.cs"
 MAINWINDOW = SHELL / "MainWindow.xaml.cs"
-APP_JS = SHELL / "frontend" / "app.js"
+APP_JS = SHELL / "frontend" / "js" / "about-update.js"
 PROBE = SHELL / "tools" / "ShellContractProbe" / "Program.cs"
 PROBE_PROJ = SHELL / "tools" / "ShellContractProbe" / "ShellContractProbe.csproj"
 

@@ -66,6 +66,7 @@ window.MaaRM = (function () {
   const $ = (id) => document.getElementById(id);
   const state = {
     is_running: false,
+    version: '',              // 壳版本（get_initial_state 下发）：标题栏与关于页更新卡共用
     // get_initial_state 返回的模块列表（含 expired / valid_until：任务卡徽章与
     // 模块管理弹窗的数据源；stages 供展开面板的细分阶段列表使用）
     modules: [],
