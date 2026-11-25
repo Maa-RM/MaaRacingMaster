@@ -451,16 +451,12 @@ ClearType 式次像素抗锯齿，文字转灰度渲染；字号越小越明显�
   固定下载源、验签先于执行、启动体检不纳入）；RPC 白名单三方一致性由
   `tests/test_rpc_allowlist.py` 锁。
 
-## 关于页彩蛋（「开发中」标签掉落 + 员工守则）
+## 关于页彩蛋（版本号掉落 + 员工守则）
 
-- **入口只有一处**：关于页 hero 的「开发中」标签（`#about-dev-tag`）。标题栏版本号不挂任何
-  彩蛋——它是全局可见的，动它等于让每次切页都可能抖一下版本号。
-- **掉落文字**：连点该标签触发物理掉落（`app.js` `spawnFallingText`）。每第 5 次
-  混入怪谈短语池 `FALLING_EGG_TEXTS`（红字变体 `.falling-text--egg`），其余掉标签自身的文字。
-- **标签乱码**：每次切页掷 1% 概率（`EGG_TAG_GLITCH_P`，reduced-motion 跳过），命中时标签
-  套一次乱码解码（`glitchDevTag` → 与第 10 条同款 `scrambleNumber`）——大部分时间它只是「开发中」。
-- **标签乱码**：每次切页掷 1% 概率（`EGG_TAG_GLITCH_P`，reduced-motion 跳过），命中时标签
-  套一次乱码解码（`glitchDevTag` → 与第 10 条同款 `scrambleNumber`）——大部分时间它只是「开发中」。
+- **掉落文字**：连点关于页版本号触发物理掉落（`app.js` `spawnFallingText`）。每第 5 次
+  混入怪谈短语池 `FALLING_EGG_TEXTS`（红字变体 `.falling-text--egg`），其余掉当前版本号。
+- **版本号乱码**：每次切到关于页掷 1% 概率（`EGG_VERSION_GLITCH_P`，reduced-motion 跳过），
+  命中时版本号套用同款乱码解码动画（`glitchVersionEgg`）——大部分时间它看起来只是个版本号。
 - **员工守则**：连点 10 次（2s 内）弹出。结构 = 池 12 条每次抽 8（编号 1-8）+ 第 9 条固定
   （修订声明，给抽样一个"官方解释"）+ 第 10 条幽灵行——**每次打开条目不同**。条目逐条
   渐现（内联 animation-delay，reduced-motion 退化直显）；标题字距呼吸
