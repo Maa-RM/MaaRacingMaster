@@ -112,58 +112,41 @@
               <h1 class="about-title">MaaRacingMaster</h1>
               <p class="about-subtitle">模块化游戏自动化平台 —— MAA Framework × YOLOv8 × vgamepad</p>
               <div class="about-tags">
-                <span class="about-tag about-tag--plain" id="about-version">--</span>
-                <span class="about-tag about-tag--warn">开发中</span>
+                <span class="about-tag about-tag--warn" id="about-dev-tag">开发中</span>
                 <span class="about-tag about-tag--plain">Apache-2.0</span>
               </div>
-              <p class="about-footer-note">主打巅峰鉴宝全链路自动化 · 仅供技术研究 / 教学演示</p>
             </div>
           </div>
         </div>
 
         <div class="card">
-          <div class="card-head"><h3>版本与更新</h3>
-            <div class="ver-head-actions">
-              <button class="maarm-btn update-settings-trigger" id="btn-update-settings" type="button"
-                      aria-haspopup="dialog" aria-expanded="false" aria-controls="update-settings-popover"
-                      title="更新设置">
-                <i data-icon="settings"></i>
-              </button>
+          <div class="card-head">
+            <h3>版本与更新</h3>
+            <button class="maarm-btn upd-gear" id="btn-update-settings" type="button"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="update-settings-popover"
+                    title="更新设置">
+              <i data-icon="settings"></i>
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="upd-row">
+              <span class="upd-icon" id="upd-icon"></span>
+              <div class="upd-text" id="upd-text" role="status" aria-live="polite">
+                <div class="upd-title" id="upd-title"></div>
+                <div class="upd-meta" id="upd-meta"></div>
+              </div>
               <button class="maarm-btn" id="btn-update-action" type="button">
-                <i data-icon="rotate-cw"></i>
+                <i id="btn-update-action-icon"></i>
                 <span id="btn-update-action-label">检查更新</span>
               </button>
             </div>
-          </div>
-          <div class="card-body">
-            <div class="ver-row"><span class="ver-label">当前版本</span><span class="ver-value" id="about-ver-current">--</span></div>
-            <div class="ver-status" id="about-update-status"></div>
-            <div class="upd-remind-row" id="upd-remind-row" hidden>
-              <label class="upd-remind-opt">
-                <input type="checkbox" id="upd-remind-check">
-                <span>本次更新不再提示</span>
-              </label>
-              <span class="upd-remind-hint" id="upd-remind-hint"></span>
-            </div>
-            <div class="new-release" id="about-new-release" style="display:none;"></div>
+            <div class="upd-detail" id="upd-detail" hidden></div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-head"><h3>公告</h3></div>
           <div class="card-body" id="about-announce-body"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><h3>使用说明</h3></div>
-          <div class="card-body">
-            <div class="usage-steps">
-              <div class="usage-step"><div class="usage-num">1</div><p class="usage-text">需以<strong>管理员权限</strong>运行（窗口截图要求）</p></div>
-              <div class="usage-step"><div class="usage-num">2</div><p class="usage-text">游戏窗口分辨率设置为 <strong>1280×720</strong></p></div>
-              <div class="usage-step"><div class="usage-num">3</div><p class="usage-text">运行前请<strong>断开所有物理手柄</strong></p></div>
-              <div class="usage-step"><div class="usage-num">4</div><p class="usage-text">推荐使用<strong>独立显卡</strong>加速 YOLO 推理</p></div>
-            </div>
-          </div>
         </div>
 
         <div class="about-links">
@@ -357,6 +340,7 @@
   <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
        app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
   <script src="js/rpc.js"></script>
+  <script src="js/about-update.js"></script>
   <script src="js/achievement-toast.js"></script>
   <script src="js/modal.js"></script>
   <script src="js/achievement.js"></script>

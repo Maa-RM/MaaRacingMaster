@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """「远程数据 → WebView → RPC」信任边界的静态锁。
 
-**为什么是静态锁**：前端没有 DOM 测试设施（无 node 测试链），但这条边界的回归是
-**可机检**的——远程字段名与 `innerHTML` 出现在同一处、外链 RPC 又收回了调用方传的
-URL，这两件事都能从源码文本判定。因此不引第三方依赖，直接用源码断言锁死。
+**为什么是静态锁**：页面装载验收（`tests/test_frontend_bridge_acceptance.py`）覆盖启动时序，
+但不覆盖渲染转义与外链参数形状；这两类契约仍可从源码文本稳定判定，且回归是可机检的——
+远程字段名与 `innerHTML` 出现在同一处、外链 RPC 又收回了调用方传的 URL，都能在 CI 即红。
+因此不引第三方依赖，直接用源码断言锁死。
 
 **局限（必须写明，免得当成运行时保证）**：正则/切片只能证明「写法没退回旧样式」，
 不能证明运行时行为。真正的结构保证来自两处实现本身——渲染走 `textContent`（DOM API
@@ -20,6 +21,7 @@ from maaracing_master.core.remote_meta import EXTERNAL_TARGETS
 
 REPO = Path(__file__).resolve().parent.parent
 APP_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "app.js"
+ABOUT_JS = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "js" / "about-update.js"
 INDEX_HTML = REPO / "apps" / "MaaRacingMaster.Shell" / "frontend" / "index.html"
 SIDECAR = REPO / "maaracing_master" / "core" / "sidecar.py"
 
@@ -75,10 +77,10 @@ def test_render_paths_contain_no_innerHTML():
     （文件里其他 innerHTML 属本地数据渲染，不在本锁范围；远程渲染路径上唯一允许的
     innerHTML 是 appendIcon，它只喂本仓库静态 SVG 串。）
     """
-    src = APP_JS.read_text(encoding="utf-8")
+    src = ABOUT_JS.read_text(encoding="utf-8")
     cases = (
         ("async function checkUpdate()", "'update_check'"),
-        ("async function fetchAnnouncement()", "'fetch_announcement'"),
+        ("async function fetchAnnouncement(opts)", "'fetch_announcement'"),
     )
     for signature, anchor in cases:
         body = _js_function_body(src, signature)
@@ -91,7 +93,7 @@ def test_render_paths_contain_no_innerHTML():
 def test_update_source_defaults_to_cnb_and_settings_stay_pure():
     """来源选择：默认 CNB、记忆与设置浮窗保留（镜像语义由发布索引接入后生效）；
     更新主流程只发固定意图——来源/路径/URL 不得由前端拼进请求。"""
-    src = APP_JS.read_text(encoding="utf-8")
+    src = ABOUT_JS.read_text(encoding="utf-8")
     assert "let updateSource = 'cnb'" in src
     body = _js_function_body(src, "async function checkUpdate()")
     assert "source:" not in body, "更新主流程不得携带来源参数（固定意图）"
@@ -110,22 +112,31 @@ def test_update_source_defaults_to_cnb_and_settings_stay_pure():
 def test_no_remote_field_interpolated_into_html():
     """全文件兜底：任何一处 innerHTML 都不得与远程字段出现在同一行。"""
     offenders = []
-    for lineno, line in enumerate(APP_JS.read_text(encoding="utf-8").splitlines(), 1):
-        if "innerHTML" in line and any(f in line for f in REMOTE_FIELDS):
-            offenders.append(f"app.js:{lineno}: {line.strip()}")
+    for path in (APP_JS, ABOUT_JS):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "innerHTML" in line and any(f in line for f in REMOTE_FIELDS):
+                offenders.append(f"{path.name}:{lineno}: {line.strip()}")
     assert not offenders, "远程字段进了 HTML 拼接：" + "; ".join(offenders)
 
 
 def test_open_external_url_callers_pass_target_not_url():
     """前端调用外链 RPC 时只能给逻辑目标名，不得再传 URL。"""
-    src = APP_JS.read_text(encoding="utf-8")
-    calls = re.findall(r"maarm\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
+    srcs = (APP_JS.read_text(encoding="utf-8"), ABOUT_JS.read_text(encoding="utf-8"))
+    calls = [
+        args
+        for src in srcs
+        for args in re.findall(r"maarm\.call\(\s*'open_external_url'\s*,\s*\{([^}]*)\}", src)
+    ]
     assert calls, "未抽到任何 open_external_url 调用点，静态锁会空过"
     for args in calls:
         assert "target" in args, f"open_external_url 调用未给逻辑目标名: {{{args.strip()}}}"
         assert "url" not in args, f"open_external_url 调用又传了 URL: {{{args.strip()}}}"
 
-    vigem = re.findall(r"maarm\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
+    vigem = [
+        args
+        for src in srcs
+        for args in re.findall(r"maarm\.call\(\s*'open_vigembus_download'\s*,\s*\{([^}]*)\}", src)
+    ]
     assert vigem, "未抽到 open_vigembus_download 调用点，静态锁会空过"
     for args in vigem:
         assert "url" not in args, f"open_vigembus_download 调用又传了 URL: {{{args.strip()}}}"
@@ -136,7 +147,7 @@ def test_frontend_target_names_exist_in_sidecar_map():
 
     与 RPC 方法白名单同理：名字对不上时按钮点了没反应，属「静默失效」，让它在 CI 就红。
     """
-    used = set(re.findall(r"openTarget\(\s*'([a-z_]+)'\s*\)", APP_JS.read_text(encoding="utf-8")))
+    used = set(re.findall(r"openTarget\(\s*'([a-z_]+)'\s*\)", ABOUT_JS.read_text(encoding="utf-8")))
     used |= set(re.findall(r'data-link="([a-z_]+)"', INDEX_HTML.read_text(encoding="utf-8")))
     assert used, "未抽到任何外部目标名，静态锁会空过"
     unknown = used - TARGET_NAMES

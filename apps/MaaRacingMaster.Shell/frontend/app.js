@@ -1,15 +1,9 @@
 // MaaRM shell 前端 —— 启动装配入口（在 index.html 中最后加载）。
-// 职责：tab 切换、窗口控制、模块下拉、关于页、init 装配与全局事件绑定入口。
-// 通信层与共享 state 在 js/rpc.js；弹窗在 js/modal.js；日志在 js/log.js；预览在
-// js/preview.js；模块选项/优化中心/模块页面在 js/settings.js；运行控制在 js/run.js。
+// 职责：tab 切换、窗口控制、ViGEmBus 引导、init 装配与全局事件绑定入口。
+// 通信层与共享 state 在 js/rpc.js；关于页的更新与公告在 js/about-update.js；
+// 弹窗在 js/modal.js；日志在 js/log.js；预览在 js/preview.js；
+// 模块页面与看板在 js/settings.js，环境中心在 js/env-center.js；运行控制在 js/run.js。
 // 共享物一律经 window.MaaRM 传递（下方导入清单）。
-//
-// 关于页「检查更新 / 公告」与 ViGEmBus 引导弹窗保留在本文件：
-// tests/test_frontend_remote_render.py 静态锁按函数签名从本文件抽取
-// checkUpdate / fetchAnnouncement 的函数体（且抽取锚点要求签名串的首个出现位置
-// 即函数定义，故本注释不得写出完整签名文本），并断言本文件存在
-// open_external_url / open_vigembus_download / openTarget 调用点——迁出会让 CI 即红
-//（该锁的看护范围调整需另行修改 Python 测试，不在本次拆分范围）。
 (function () {
   'use strict';
 
@@ -95,8 +89,10 @@
     animatePageIn($('page-' + name), fromRight);
     moveTabSlider(name);
     if (name === 'data') pollDashboard(); // 切回数据页立即补拉一次看板，不等下一个 3s 轮询拍
-    if (name === 'about') fetchAnnouncement(); // 切到关于页重拉公告，避免停留在启动时的旧缓存
-    glitchVersionEgg(); // 1% 概率版本号乱码（彩蛋，详见 glitchVersionEgg 注释）
+    // 公告主刷新跟随更新检查；切进关于页再补一次（受最小间隔约束）。普通 ZIP 没有
+    // 后台检查推送，启动时网络不通就没有第二次机会，切页重试是它唯一的出口。
+    if (name === 'about' && window.MaaRM.fetchAnnouncement) window.MaaRM.fetchAnnouncement();
+    glitchDevTag(); // 1% 概率「开发中」标签乱码（彩蛋，详见 glitchDevTag 注释）
   }
   // 滑块缓动平移到目标 tab 底部（用 offsetLeft/offsetWidth，不逐页遍历）
   // 宽度取 tab 的 85%，并在 tab 内水平居中
@@ -230,477 +226,6 @@
       }
     });
   });
-
-  // ---------- 关于页：检查更新 / 公告 ----------
-  // 渠道/下载源的真源是 update_status 快照（偏好由壳存用户数据根、随升级保留）；
-  // 前端只在点击后即时高亮，收到快照即以快照校正。
-  // 两个下载地址指向同一发行货架：切源只换首选（下次检查生效），切渠道才清空重查。
-  let updateSource = 'cnb';
-  let updateChannel = 'stable';
-  let autoCheckEnabled = true; // 后台自动检查开关回显（真源是快照）
-
-  function applySettingsSnapshot(snapshot) {
-    if (!snapshot) return;
-    if (snapshot.source === 'cnb' || snapshot.source === 'github') updateSource = snapshot.source;
-    if (snapshot.channel === 'stable' || snapshot.channel === 'preview') updateChannel = snapshot.channel;
-    if (typeof snapshot.auto_check === 'boolean') autoCheckEnabled = snapshot.auto_check;
-    renderUpdateSettings();
-  }
-
-  function renderUpdateSettings() {
-    document.querySelectorAll('#upd-source-options .upd-set-opt').forEach((item) => {
-      const active = item.dataset.source === updateSource;
-      item.classList.toggle('is-active', active);
-      item.setAttribute('aria-pressed', String(active));
-    });
-    document.querySelectorAll('#upd-channel-options .upd-set-opt').forEach((item) => {
-      const active = item.dataset.channel === updateChannel;
-      item.classList.toggle('is-active', active);
-      item.setAttribute('aria-pressed', String(active));
-    });
-    const note = $('upd-set-note');
-    if (note) {
-      note.textContent = '切换版本渠道立即重新检查；切换下载源自下次检查起作为首选';
-    }
-    const autoCheck = $('upd-auto-check');
-    if (autoCheck) autoCheck.checked = autoCheckEnabled;
-  }
-
-  function closeUpdateSettings() {
-    const pop = $('update-settings-popover');
-    const trigger = $('btn-update-settings');
-    if (pop) pop.hidden = true;
-    if (trigger) trigger.setAttribute('aria-expanded', 'false');
-  }
-
-  function openUpdateSettings() {
-    const pop = $('update-settings-popover');
-    const trigger = $('btn-update-settings');
-    if (!pop || !trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    pop.style.top = Math.round(rect.bottom + 6) + 'px';
-    pop.style.right = Math.max(8, Math.round(window.innerWidth - rect.right)) + 'px';
-    renderUpdateSettings();
-    pop.hidden = false;
-    trigger.setAttribute('aria-expanded', 'true');
-  }
-
-  async function setUpdateSource(source) {
-    const value = source === 'github' ? 'github' : 'cnb';
-    updateSource = value; // 即时回显；真源以 RPC 返回的快照为准
-    renderUpdateSettings();
-    closeUpdateSettings();
-    try {
-      // 回包要同时刷新版本卡与提醒点（切源会前进修订号），不只刷设置高亮
-      renderSnapshot(await maarm.call('update_set_source', { value }));
-    } catch (e) {
-      showError('切换下载源失败：' + e.message);
-      await refreshUpdateStatus(); // 失败回退到后端真实状态
-    }
-  }
-
-  async function setUpdateChannel(channel) {
-    const value = channel === 'preview' ? 'preview' : 'stable';
-    updateChannel = value;
-    renderUpdateSettings();
-    closeUpdateSettings();
-    try {
-      // 切渠道会取消旧索引并当场重查，回包是新渠道的结果；经同一渲染入口落到版本卡
-      renderSnapshot(await maarm.call('update_set_channel', { value }));
-    } catch (e) {
-      showError('切换渠道失败：' + e.message);
-      await refreshUpdateStatus();
-    }
-  }
-
-  // 打开外部目标：只传逻辑目标名，地址由 sidecar 侧白名单给出（前端不传 URL）。
-  function openTarget(target) {
-    if (!target) return;
-    maarm.call('open_external_url', { target }).catch((e) => showError('打开链接失败: ' + e.message));
-  }
-
-  // 渲染「版本与更新」卡状态：cls 决定配色，text 只作纯文本落地。
-  // 入参是字符串而不是 HTML——调用点会喂远程文案（latest_tag）与异常信息，一旦拼接
-  // 就等于把远程数据交给 HTML 解析器。
-  function renderUpdateStatus(statusEl, cls, text, opts) {
-    statusEl.className = 'ver-status ' + cls;
-    statusEl.textContent = '';
-    if (opts && opts.spinner) statusEl.appendChild(mkEl('span', 'spinner'));
-    statusEl.appendChild(document.createTextNode(text));
-  }
-
-  // ---------- 版本与更新卡（宿主更新协调器驱动） ----------
-  // 主流程只发固定意图（update_* 宿主动作；不携带来源/路径/目标版本组合——来源由
-  // 壳从安装树随包配置读取）。下载任务在壳内协调器：跨页面切换不中断，关于页重开
-  // 时用 update_status 恢复快照；进度渲染带修订守卫（revision 只前进才渲染，旧响应
-  // 不回退进度）。升级操作区动态文案一律 textContent 落地，不进 HTML 解析。
-
-  let lastUpdateRevision = -1;
-  let updatePollTimer = null;
-
-  // 后台自动检查的推送：壳在检查提交成功后主动发快照（不必等用户打开关于页）。
-  // 与轮询/回包共用 renderSnapshot 的修订守卫；页面初始化的 update_status 查询
-  // 可补回导航间错过的推送。
-  maarm.onNativeMessage((msg) => {
-    if (!msg || msg.type !== 'update-status') return;
-    renderSnapshot(msg.data);
-  });
-
-  function updateElements() {
-    return {
-      actionBtn: $('btn-update-action'),
-      actionLabel: $('btn-update-action-label'),
-      statusEl: $('about-update-status'),
-      releaseEl: $('about-new-release'),
-      remindRow: $('upd-remind-row'),
-      remindCheck: $('upd-remind-check'),
-      remindHint: $('upd-remind-hint'),
-      tabDot: $('about-tab-dot'),
-    };
-  }
-
-  // 卡头主按钮「吸收」检查/下载/重启升级：按钮留在原位，按相位改文字与处理器。
-  // 图标随动作类别切换（检查=旋转箭头、下载/升级=右上箭头）；primary=false 用白色。
-  function setMainAction(label, handler, icon, primary) {
-    const { actionBtn, actionLabel } = updateElements();
-    if (!actionBtn || !actionLabel) return;
-    actionLabel.textContent = label;
-    actionBtn.onclick = handler || null;
-    actionBtn.disabled = !handler;
-    actionBtn.classList.toggle('maarm-btn--primary', primary !== false);
-    const iconEl = actionBtn.querySelector('i[data-icon]');
-    if (iconEl && icon) iconEl.setAttribute('data-icon', icon);
-  }
-
-  // 卡体次按钮：取消下载 / 稍后 这类辅助动作，不走主按钮。
-  function secondaryAction(label, handler) {
-    const btn = mkEl('button', 'maarm-btn', label);
-    btn.type = 'button';
-    btn.addEventListener('click', handler);
-    return btn;
-  }
-
-  function stopUpdatePolling() {
-    if (updatePollTimer) {
-      clearInterval(updatePollTimer);
-      updatePollTimer = null;
-    }
-  }
-
-  function startUpdatePolling() {
-    if (updatePollTimer) return;
-    updatePollTimer = setInterval(async () => {
-      try {
-        const d = await maarm.call('update_status');
-        renderSnapshot(d);
-      } catch (e) {
-        // 状态轮询失败不打断下载任务本身，下一拍重试
-      }
-    }, 500);
-  }
-
-  function setupManualDownloadAction() {
-    setMainAction('前往下载', () => openTarget('download'), 'arrow-up-right');
-  }
-
-  function clearReleaseArea() {
-    const { releaseEl } = updateElements();
-    releaseEl.textContent = '';
-    releaseEl.style.display = 'none';
-  }
-
-  // 关于标签上的更新提醒点：只在「发现可更新目标且本次未选择不再提示」时亮起。
-  // 位置锚在文字外框（.maarm-tab-label）上，不随按钮内边距漂移。
-  function renderUpdateDot(snapshot) {
-    const { tabDot } = updateElements();
-    const tab = document.querySelector('.maarm-tab[data-tab="about"]');
-    if (!tabDot || !tab) return;
-    const target = snapshot ? snapshot.target_version : null;
-    const on = !!(snapshot && snapshot.phase === 'available'
-      && target && snapshot.dismissed_version !== target);
-    tabDot.classList.toggle('is-on', on);
-    if (on) {
-      tab.title = '发现新版本 v' + target;
-      tab.setAttribute('aria-label', '关于，发现新版本 v' + target);
-    } else {
-      tab.removeAttribute('title');
-      tab.removeAttribute('aria-label');
-    }
-  }
-
-  // 「本次更新不再提示」只在发现可更新目标时出现；勾选状态回显自快照。
-  function renderRemindRow(snapshot) {
-    const { remindRow, remindCheck, remindHint } = updateElements();
-    if (!remindRow || !remindCheck || !remindHint) return;
-    const target = snapshot ? snapshot.target_version : null;
-    const active = !!(snapshot && snapshot.phase === 'available' && target);
-    remindRow.hidden = !active;
-    if (!active) return;
-    const dismissed = snapshot.dismissed_version === target;
-    remindCheck.checked = dismissed;
-    remindHint.textContent = dismissed
-      ? '「关于」上的提醒点已隐藏，下个版本会重新提示'
-      : '仅对 v' + target + ' 生效';
-  }
-
-  // 快照 → 状态行 + 卡头主按钮 + 卡体次动作区。主按钮吸收检查/下载/重启升级，
-  // 卡体只留进度条与取消/稍后这类辅助动作。error 如实显示且保留恢复入口。
-  function renderSnapshot(snapshot) {
-    if (!snapshot || typeof snapshot.revision !== 'number') return;
-    if (snapshot.revision < lastUpdateRevision) return; // 修订守卫：旧响应不回退进度
-    lastUpdateRevision = snapshot.revision;
-    applySettingsSnapshot(snapshot); // 渠道/源真源来自后端快照
-    const { statusEl, releaseEl } = updateElements();
-    if (!statusEl || !releaseEl) return;
-    const phase = snapshot.phase;
-    const target = snapshot.target_version ? ' v' + snapshot.target_version : '';
-
-    if (phase !== 'downloading') stopUpdatePolling();
-
-    clearReleaseArea();
-    renderUpdateDot(snapshot);
-    renderRemindRow(null); // 默认收起，available 分支再按快照展开
-    switch (phase) {
-      case 'unavailable':
-        renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '自动升级不可用');
-        setupManualDownloadAction();
-        break;
-      case 'idle':
-        // 全源失败/来源未配置都以 idle + error 返回：失败用错误色，不能伪装成绿色「就绪」
-        renderUpdateStatus(statusEl, snapshot.error ? 'ver-status--err' : 'ver-status--ok',
-          snapshot.error || '');
-        setMainAction('检查更新', checkUpdate, 'rotate-cw', false);
-        break;
-      case 'checking':
-        renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
-        setMainAction('检查中…', null, 'rotate-cw');
-        break;
-      case 'up_to_date':
-        // 从测试轨切回且稳定版尚未追上时如实说明，不假装「已是最新版本」。
-        renderUpdateStatus(statusEl, 'ver-status--ok',
-          snapshot.awaiting_stable ? '当前版本高于稳定渠道，等待下一稳定版' : '已是最新版本');
-        setMainAction('检查更新', checkUpdate, 'rotate-cw', false);
-        break;
-      case 'available':
-        // error 只可能来自「旧界面点击被拒」：目标已重新确认过，提示玩家重新操作
-        renderUpdateStatus(statusEl, 'ver-status--new',
-          snapshot.error ? '发现新版本' + target + '：' + snapshot.error : '发现新版本' + target);
-        setMainAction('下载更新', downloadUpdate, 'arrow-up-right');
-        renderRemindRow(snapshot);
-        break;
-      case 'downloading': {
-        renderUpdateStatus(statusEl, 'ver-status--checking',
-          '下载中 ' + snapshot.progress + '%', { spinner: true });
-        setMainAction('下载中…', null, 'arrow-up-right');
-        releaseEl.style.display = 'flex';
-        const track = mkEl('div', 'update-progress-track');
-        const bar = mkEl('div', 'update-progress-bar');
-        bar.style.width = snapshot.progress + '%';
-        track.appendChild(bar);
-        releaseEl.appendChild(track);
-        releaseEl.appendChild(secondaryAction('取消下载', cancelDownload));
-        startUpdatePolling();
-        break;
-      }
-      case 'ready':
-        renderUpdateStatus(statusEl, 'ver-status--ok',
-          snapshot.error ? '下载完成，但上一次提交未成功：' + snapshot.error
-                         : '已就绪，可升级到' + target);
-        setMainAction('重启升级', applyUpdate, 'arrow-up-right');
-        releaseEl.style.display = 'flex';
-        releaseEl.appendChild(secondaryAction('稍后', () => {
-          // 稍后：保留下载结果，收起次动作区；重开关于页可再次恢复
-          clearReleaseArea();
-          renderUpdateStatus(statusEl, 'ver-status--ok',
-            '已就绪' + target + '，可在关于页随时重启升级');
-        }));
-        break;
-      case 'preparing':
-      case 'applying':
-        // 提交临界区：主按钮禁用显示进度语义，不提供取消（虚假取消）
-        renderUpdateStatus(statusEl, 'ver-status--checking',
-          phase === 'applying' ? '即将关闭并完成升级…' : '正在准备升级（释放任务与文件占用）…',
-          { spinner: true });
-        setMainAction(phase === 'applying' ? '正在升级…' : '准备中…', null, 'arrow-up-right');
-        break;
-      default:
-        renderUpdateStatus(statusEl, 'ver-status--err', snapshot.error || '未知状态');
-        setMainAction('检查更新', checkUpdate, 'rotate-cw');
-    }
-  }
-
-  async function refreshUpdateStatus() {
-    // 关于页初始化/重开时恢复快照（下载任务在壳内跨页面持续）
-    try {
-      const d = await maarm.call('update_status');
-      renderSnapshot(d);
-    } catch (e) {
-      // 协调器不可用（极端情况）：状态行静默、主按钮保持初始的检查更新态
-    }
-  }
-
-  async function checkUpdate() {
-    const { statusEl } = updateElements();
-    if (!statusEl) return;
-    closeUpdateSettings();
-    renderUpdateStatus(statusEl, 'ver-status--checking', '正在检查更新…', { spinner: true });
-    // 检查在途：主按钮禁用显示「检查中…」，卡体次动作区清空（慢网络下迟到点击不可靠）
-    clearReleaseArea();
-    setMainAction('检查中…', null, 'rotate-cw');
-    try {
-      const d = await maarm.call('update_check');
-      renderSnapshot(d);
-      // 非受管安装 / 来源未配置时，renderSnapshot 的 unavailable 分支已设手动入口；
-      // 「来源未配置」以 idle+error 返回，这里补一个手动入口（两种路径都不重复）。
-      if (d.phase !== 'unavailable' && d.error && d.error.indexOf('未配置') >= 0) {
-        setupManualDownloadAction();
-      }
-    } catch (e) {
-      console.error(e);
-      // 失败不得把主按钮留在禁用的「检查中…」：先按当前快照恢复按钮与状态行，再覆盖错误文案
-      await refreshUpdateStatus();
-      renderUpdateStatus(statusEl, 'ver-status--err', '检查失败：' + e.message);
-    }
-  }
-
-  async function downloadUpdate() {
-    const { statusEl } = updateElements();
-    try {
-      // 带上玩家看到目标时的修订号：后台已换目标则后端拒绝，不替旧界面下载新版本
-      const d = await maarm.call('update_start_download', { revision: lastUpdateRevision });
-      renderSnapshot(d);
-    } catch (e) {
-      console.error(e);
-      renderUpdateStatus(statusEl, 'ver-status--err', '下载启动失败：' + e.message);
-    }
-  }
-
-  async function cancelDownload() {
-    try {
-      const d = await maarm.call('update_cancel_download');
-      renderSnapshot(d);
-    } catch (e) {
-      console.error(e);
-      const { statusEl } = updateElements();
-      renderUpdateStatus(statusEl, 'ver-status--err', '取消失败：' + e.message);
-    }
-  }
-
-  async function applyUpdate() {
-    const { statusEl } = updateElements();
-    try {
-      const d = await maarm.call('update_apply');
-      if (d.phase === 'preparing' || d.phase === 'applying') {
-        // 提交临界区：壳接管收尾与计划内关窗，界面只如实显示，不提供取消（虚假取消）。
-        // 与异常关闭的区分：applying 相位由壳计划内关闭、更新器随后重启新版。
-        clearReleaseArea();
-        renderUpdateStatus(statusEl, 'ver-status--checking',
-          d.phase === 'applying' ? '即将关闭并完成升级…'
-                                 : '正在准备升级（释放任务与文件占用）…',
-          { spinner: true });
-        setMainAction(d.phase === 'applying' ? '正在升级…' : '准备中…', null, 'arrow-up-right');
-        return;
-      }
-      renderSnapshot(d); // 闸门拒绝：状态回 ready，原因与重启升级入口都保留
-    } catch (e) {
-      console.error(e);
-      renderUpdateStatus(statusEl, 'ver-status--err', '提交失败：' + e.message);
-    }
-  }
-
-  // 拉取并渲染公告（title/date/url_text/body 全部走 textContent）
-  async function fetchAnnouncement() {
-    const bodyEl = $('about-announce-body');
-    if (!bodyEl) return;
-    bodyEl.textContent = '';
-    try {
-      const d = await maarm.call('fetch_announcement');
-      if (!d || d.level === 'none' || !d.title) {
-        bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
-        return;
-      }
-      const cls = d.level === 'warn' ? 'about-announce--warn' : 'about-announce--info';
-      const card = mkEl('div', 'about-announce ' + cls);
-      card.appendChild(mkEl('span', 'about-announce-badge', d.level === 'warn' ? '重要' : '公告'));
-      const main = mkEl('div', 'about-announce-main');
-      const titleRow = mkEl('div', 'about-announce-title', d.title);
-      if (d.date) titleRow.appendChild(mkEl('span', 'about-announce-date', d.date));
-      main.appendChild(titleRow);
-      if (d.body) main.appendChild(mkEl('div', 'about-announce-body', d.body));
-      if (d.url) {
-        const linkBtn = mkEl('button', 'about-announce-link', d.url_text || '查看详情');
-        linkBtn.id = 'btn-announce-link';
-        linkBtn.type = 'button';
-        linkBtn.addEventListener('click', () => openTarget('announcement'));
-        main.appendChild(linkBtn);
-      }
-      card.appendChild(main);
-      bodyEl.appendChild(card);
-    } catch (e) {
-      console.error(e);
-      bodyEl.textContent = '';
-      bodyEl.appendChild(mkEl('div', 'about-announce-empty', '暂无公告'));
-    }
-  }
-
-  function initAbout() {
-    const trigger = $('btn-update-settings');
-    const pop = $('update-settings-popover');
-    if (trigger && pop) {
-      trigger.addEventListener('click', (event) => {
-        event.stopPropagation();
-        if (pop.hidden) openUpdateSettings(); else closeUpdateSettings();
-      });
-      pop.querySelectorAll('#upd-source-options .upd-set-opt').forEach((item) => {
-        item.addEventListener('click', () => setUpdateSource(item.dataset.source));
-      });
-      pop.querySelectorAll('#upd-channel-options .upd-set-opt').forEach((item) => {
-        item.addEventListener('click', () => setUpdateChannel(item.dataset.channel));
-      });
-      pop.addEventListener('click', (event) => event.stopPropagation());
-      document.addEventListener('click', (event) => {
-        if (pop.hidden) return;
-        if (pop.contains(event.target) || trigger.contains(event.target)) return;
-        closeUpdateSettings();
-      });
-      document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && !pop.hidden) closeUpdateSettings();
-      });
-      window.addEventListener('resize', closeUpdateSettings);
-      window.addEventListener('scroll', closeUpdateSettings, true);
-    }
-    renderUpdateSettings();
-    const { remindCheck } = updateElements();
-    if (remindCheck) {
-      remindCheck.addEventListener('change', async () => {
-        const value = remindCheck.checked;
-        try {
-          // 同下载：勾选只对玩家看到的目标版本生效，快照过期就由后端拒绝
-          const d = await maarm.call('update_set_dismissed', { value, revision: lastUpdateRevision });
-          renderSnapshot(d);
-        } catch (e) {
-          remindCheck.checked = !value; // 失败回退到真实状态
-          showError('更新提醒设置失败：' + e.message);
-        }
-      });
-    }
-    const autoCheck = $('upd-auto-check');
-    if (autoCheck) {
-      autoCheck.addEventListener('change', async () => {
-        const value = autoCheck.checked;
-        try {
-          // 开关回包是快照：经同一渲染入口回显，而不是只改本地勾选
-          renderSnapshot(await maarm.call('update_set_auto_check', { value }));
-        } catch (e) {
-          autoCheck.checked = !value; // 失败回退到真实状态
-          showError('自动检查设置失败：' + e.message);
-        }
-      });
-    }
-    refreshUpdateStatus(); // 恢复壳内协调器快照（下载任务跨页面持续，重开关于页不丢状态）
-    fetchAnnouncement(); // 启动拉一次公告（进入关于页即展示）
-  }
-  initAbout();
 
   // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
   // 掉落池：怪谈短语，每第 FALLING_EGG_EVERY 次点击混入一条（其余掉当前版本号）
@@ -877,18 +402,19 @@
     return timer;
   }
 
-  // 1% 概率：切到关于页时版本号套一次乱码解码（与第 10 条同款手法，同源世界观）。
+  // 1% 概率：切页时给关于页的「开发中」标签套一次乱码解码（与第 10 条同款手法，
+  // 同源世界观）。落点只在这个标签上——标题栏版本号是全局可见的，不参与彩蛋。
   // 概率常量放在这里：想预览效果临时改成 1 即可。reduced-motion 下不出。
-  const EGG_VERSION_GLITCH_P = 0.01;
-  let versionScrTimer = null;
-  function glitchVersionEgg() {
-    if (Math.random() >= EGG_VERSION_GLITCH_P) return;
+  const EGG_TAG_GLITCH_P = 0.01;
+  let tagScrTimer = null;
+  function glitchDevTag() {
+    if (Math.random() >= EGG_TAG_GLITCH_P) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const n = $('about-version');
+    const n = $('about-dev-tag');
     if (!n || !n.textContent) return;
-    if (versionScrTimer) clearInterval(versionScrTimer);
-    // 捕获触发时的文本作为落定值；期间若被更新检查重写，下一次重写会覆盖回来
-    versionScrTimer = scrambleNumber(n, n.textContent);
+    if (tagScrTimer) clearInterval(tagScrTimer);
+    // 捕获触发时的文本作为落定值：解码过程只改 textContent，标签本身没有别的写入方
+    tagScrTimer = scrambleNumber(n, n.textContent);
   }
 
   function showRulesDialog() {
@@ -989,7 +515,7 @@
   }
 
   function initVersionEgg() {
-    ['about-version'].forEach((id) => {
+    ['about-dev-tag'].forEach((id) => {
       const n = $(id);
       if (!n) return;
       n.addEventListener('click', (e) => {
@@ -1065,9 +591,9 @@
     try {
       const data = await maarm.call('get_initial_state');
       $('app-version').textContent = 'v' + data.version;
-      $('about-version').textContent = 'v' + data.version;
-      const verCur = $('about-ver-current');
-      if (verCur) verCur.textContent = 'v' + data.version;
+      state.version = data.version; // 关于页更新卡的「当前版本」取这里，不再从 DOM 回捞
+      // 更新卡可能先按空版本渲染过：版本到位后重画一次，别让标题栏有版本、卡片却没有
+      if (window.MaaRM.refreshUpdateCard) window.MaaRM.refreshUpdateCard();
       state.modules = Array.isArray(data.modules) ? data.modules : [];
       state.queue = data.queue || { order: [], enabled: {} };
       state.breakpoints = data.breakpoints || {};
