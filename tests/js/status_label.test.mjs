@@ -15,13 +15,13 @@ test('有阶段：显示阶段名，运行项名不抢位', () => {
 
 test('没有阶段：显示运行项名，不显示导航图节点名', () => {
   // 回归锁：debug_stage 是「此刻在匹配哪个控件」的内部细节，如
-  // startup.popup.close_marketing；它出现在状态行里等于把排障信息当进度报给用户。
+  // startup.popup.close_x；它出现在状态行里等于把排障信息当进度报给用户。
   const d = {
     current_stage: '',
     queue_run: { index: 0, total: 1, current_module: 'launch_game', current_name: '启动游戏' },
     debug_owner: 'nav',
     debug_label: 'startup.boot',
-    debug_stage: 'startup.popup.close_marketing',
+    debug_stage: 'startup.popup.close_x',
   };
   assert.equal(SL.activeLabel(d), '启动游戏');
 });

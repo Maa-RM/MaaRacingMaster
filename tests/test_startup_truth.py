@@ -27,8 +27,6 @@ POPUPS = [
     "startup.popup.claim_daily",
     "startup.popup.claim_signin",
     "startup.popup.continue",
-    "startup.popup.close_reward",
-    "startup.popup.close_marketing",
     "startup.popup.close_x",
 ]
 LOGIN = "startup.login.engine_start"

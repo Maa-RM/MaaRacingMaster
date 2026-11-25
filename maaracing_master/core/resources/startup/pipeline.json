@@ -11,8 +11,6 @@
             "startup.popup.claim_daily",
             "startup.popup.claim_signin",
             "startup.popup.continue",
-            "startup.popup.close_reward",
-            "startup.popup.close_marketing",
             "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.1",
@@ -159,66 +157,6 @@
         "timeout": 500,
         "rate_limit": 0
     },
-    "startup.popup.close_reward": {
-        "attach": {
-            "_label": "签到/奖励页右上角 X（领取完按钮变「前往活动」，只能靠 X 关）"
-        },
-        "recognition": {
-            "type": "Custom",
-            "param": {
-                "custom_recognition": "MaaRM_Template",
-                "custom_recognition_param": {
-                    "mode": "template",
-                    "rect": [0.7734, 0.25, 0.8242, 0.3403],
-                    "templates": ["startup_popup_close_reward.png"],
-                    "threshold": 0.8
-                }
-            }
-        },
-        "action": {
-            "type": "Custom",
-            "param": {
-                "custom_action": "MaaRM_Click",
-                "custom_action_param": {"wait_after_ms": 800}
-            }
-        },
-        "next": ["startup.boot"],
-        "on_error": ["startup.boot"],
-        "pre_delay": 0,
-        "post_delay": 0,
-        "timeout": 500,
-        "rate_limit": 0
-    },
-    "startup.popup.close_marketing": {
-        "attach": {
-            "_label": "营销整屏弹窗右上角 X（位置随弹窗尺寸浮动，靠模板认不写死坐标）"
-        },
-        "recognition": {
-            "type": "Custom",
-            "param": {
-                "custom_recognition": "MaaRM_Template",
-                "custom_recognition_param": {
-                    "mode": "template",
-                    "rect": [0.825, 0.1583, 0.8656, 0.2306],
-                    "templates": ["startup_popup_close_marketing.png"],
-                    "threshold": 0.8
-                }
-            }
-        },
-        "action": {
-            "type": "Custom",
-            "param": {
-                "custom_action": "MaaRM_Click",
-                "custom_action_param": {"wait_after_ms": 800}
-            }
-        },
-        "next": ["startup.boot"],
-        "on_error": ["startup.boot"],
-        "pre_delay": 0,
-        "post_delay": 0,
-        "timeout": 500,
-        "rate_limit": 0
-    },
     "startup.popup.close_x": {
         "attach": {
             "_label": "弹窗右上角关闭叉：两张皮肤共用全局模板目录（深色弹窗白叉 / 白色弹窗深叉）。搜索区取整个右上象限——叉的位置随弹窗尺寸浮动，收窄到某次实测的框会在换皮时失效"
@@ -300,8 +238,6 @@
             "startup.popup.claim_daily",
             "startup.popup.claim_signin",
             "startup.popup.continue",
-            "startup.popup.close_reward",
-            "startup.popup.close_marketing",
             "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.2"
@@ -330,8 +266,6 @@
             "startup.popup.claim_daily",
             "startup.popup.claim_signin",
             "startup.popup.continue",
-            "startup.popup.close_reward",
-            "startup.popup.close_marketing",
             "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.hall.confirm.3"
@@ -360,8 +294,6 @@
             "startup.popup.claim_daily",
             "startup.popup.claim_signin",
             "startup.popup.continue",
-            "startup.popup.close_reward",
-            "startup.popup.close_marketing",
             "startup.popup.close_x",
             "startup.login.engine_start",
             "startup.done"
