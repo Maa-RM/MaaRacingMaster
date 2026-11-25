@@ -16,7 +16,8 @@
 8. slowinit    —— 初始化晚于总时限才回包：只能收尾一次（不得二次体检、不得再关用户弹窗）；
 9. initfail    —— 初始化直接报错：不得写完成标记；
 10. announcefail —— 启动公告拉取失败、网络恢复后切进关于页要能补拉出公告；
-11. remindfocus —— 勾选「本次更新不再提示」后焦点仍留在同一个复选框上。
+11. remindfocus —— 勾选「本次更新不再提示」后焦点仍留在同一个复选框上；
+12. firstrun    —— 首次启动：声明门在预热遮罩撤下后接管界面，不得直接进聚光灯。
 
 浏览器用本机已有的 Edge/Chrome（Windows）或 CI runner 自带的 Chrome/Chromium；
 都没有时本地跳过、CI 直接失败（不再静默跳过）。不引入任何第三方依赖。
@@ -90,6 +91,17 @@ _STUB = r"""
       model_ok: true
     },
     get_status: { is_running: false, model_ok: true },
+    // 往返用户：声明已同意、引导已完成，启动验收只关心主界面
+    get_onboarding: {
+      terms_version: '2026-11-A',
+      terms_accepted: true,
+      terms_accepted_at: '2026-01-01T00:00:00+08:00',
+      launch_seen: true,
+      steps_done: ['manage', 'add_start_game', 'add_close_game', 'confirm', 'open_settings', 'open_env'],
+      finished_at: '2026-01-01T00:10:00+08:00',
+      existing_user: false,
+      steps: ['manage', 'add_start_game', 'add_close_game', 'confirm', 'open_settings', 'open_env']
+    },
     fetch_logs: { lines: [] },
     get_registry_optimizations: { items: [] },
     get_optional_dependencies: { items: [] },
@@ -124,6 +136,14 @@ _STUB = r"""
         if (!msg || msg.type !== 'call') return;
         if (scen === 'noreply') return;
         var method = msg.method;
+        if (method === 'get_onboarding' && scen === 'firstrun') {
+          reply(msg, {
+            terms_version: '2026-11-A', terms_accepted: false, terms_accepted_at: null,
+            launch_seen: false, steps_done: [], finished_at: null, existing_user: false,
+            steps: ['manage', 'add_start_game', 'add_close_game', 'confirm', 'open_settings', 'open_env']
+          }, 0);
+          return;
+        }
         if (method === 'get_initial_state') {
           if (scen === 'initfail') { replyErr(msg, 'stub init failure', 0); return; }
           if (scen === 'slowinit') { reply(msg, payloads.get_initial_state, 13000); return; }
@@ -281,6 +301,25 @@ _PROBE = r"""
     }).length;
   }
   var tabOk = null;
+  // 首次启动：拒签后点「重新打开」，倒计时必须从头开始（同意按钮最终可点）
+  var reopen = null;
+  if (scen === 'firstrun') {
+    setTimeout(function () {
+      var decline = document.getElementById('onb-decline');
+      if (decline) decline.click();
+    }, 4000);
+    setTimeout(function () {
+      var restart = document.getElementById('onb-restart');
+      if (restart) restart.click();
+    }, 4600);
+    setTimeout(function () {
+      var b = document.getElementById('onb-accept');
+      reopen = {
+        gateBack: !!document.getElementById('onb-gate'),
+        acceptDisabled: b ? b.disabled : null
+      };
+    }, 11000);
+  }
   setTimeout(function () {
     // 遮罩撤下后 tab 必须可点：热启动没有遮罩，若「已放行」标志没初始化，切页会被一直挡住
     var tab = document.querySelector('.maarm-tab[data-tab="about"]');
@@ -316,6 +355,13 @@ _PROBE = r"""
       announce: (document.getElementById('about-announce-body') || {}).textContent || '',
       tabOk: tabOk,
       bootFocus: bootFocus,
+      // 首次启动：声明门必须在遮罩撤下后接管界面，且此时还没有任何聚光灯
+      firstRun: {
+        gate: !!document.querySelector('.onb-gate'),
+        inert: !!(document.querySelector('main') && document.querySelector('main').inert),
+        tour: !!document.querySelector('#onb-layer')
+      },
+      reopen: reopen,
       finalInert: !!(document.querySelector('main') && document.querySelector('main').inert),
       regCalls: window.__regCalls || 0,
       remindFocus: remindFocus,
@@ -408,6 +454,21 @@ def test_normal_startup_completes_and_marks_done(tmp_path):
     assert out["modalsAfterHidden"] is False, "遮罩撤下后不得再冒出预热弹窗"
     assert out["tabOk"] is True, "遮罩撤下后点击关于 tab 未切页（放行标志没生效）"
     assert out["finalInert"] is False, "遮罩放行后没有恢复顶栏/正文/底栏的焦点序列"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_first_run_gate_takes_over_after_boot(tmp_path):
+    """首次启动：预热遮罩撤下后由声明门接管，界面隔离，不得直接进聚光灯。"""
+    out = _run(tmp_path, "firstrun")
+    assert out["hidden"] is True, "遮罩撤下后才轮到声明门接管"
+    first = out.get("firstRun") or {}
+    assert first.get("gate") is True, "未同意声明时没有出现声明门"
+    assert first.get("inert") is True, "声明门期间正文没有从焦点序列隔离"
+    assert first.get("tour") is False, "同意声明前不应进入聚光灯步骤"
+    reopen = out.get("reopen") or {}
+    assert reopen.get("gateBack") is True, "拒签后点「重新打开」没有回到声明门"
+    assert reopen.get("acceptDisabled") is False, (
+        "重新打开后同意按钮一直禁用：倒计时状态没有重置")
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")

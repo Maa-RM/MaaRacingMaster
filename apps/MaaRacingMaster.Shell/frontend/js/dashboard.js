@@ -374,10 +374,17 @@
     if ($('dash-card')) renderDashboardChrome();
   }
 
+  // 看板动作白名单（与 core/dashboard_contract.py 的 ACTIONS 对齐）：方法名保持
+  // 字面量，白名单测试才能扫到调用点；新增动作必须同时改这两处。
+  const DASHBOARD_ACTIONS = {
+    open_user_data_folder: () => maarm.call('open_user_data_folder', {}),
+  };
+
   async function onDashboardAction(action) {
-    if (!action) return;
+    const run = DASHBOARD_ACTIONS[action];
+    if (!run) return;
     try {
-      await maarm.call(action, {});
+      await run();
     } catch (e) {
       reportError('toast', '操作失败: ' + (e.message || e));
     }

@@ -71,6 +71,7 @@ AGPL 义务仅挂在对应权重文件本身，本项目其余代码非其衍生
 | Lucide（图标 path 数据） | **ISC** | <https://lucide.dev> / <https://github.com/lucide-icons/lucide>；`icons.js` 的 `LUCIDE` 分区拷贝自 lucide v1.45.0 图标几何数据（`github` 为 lucide 1.x 移除品牌图标前 0.x 版本数据）。ISC 为宽松许可，义务仅为保留版权声明与本许可标识。 |
 | morphicons | **MIT** | <https://github.com/guillermolg00/morphicons>；`vendor.morphicons.js` 为 v1.7.1 上游 dist 的 ESM→经典脚本摊平版（未改函数体），用于图标变形动画。 |
 | Rolling Counter（滚轮计数器交互） | **MIT** | <https://21st.dev/@abushaidislam7/components/rolling-counter>（作者 Syed）；`js/config-panel.js` 的 stepper 渲染器为该组件的 vanilla JS 行为移植（rAF 弹簧滚动、按住加速连滚、拖拽惯性甩动），外观以本仓设计 token 重制，来源与许可随代码注释携带。 |
+| React Bits — Line Waves（声明页背景） | **MIT + Commons Clause v1.0** | <https://github.com/DavidHDev/react-bits>；`js/onboarding.js` 的 WebGL2 着色器为该组件的 vanillajs 移植（仅取线条波动与亮带效果，不接鼠标、不循环配色），作为本程序界面的一部分使用。 |
 
 Lucide 许可原文（ISC）：
 
@@ -93,6 +94,56 @@ PERFORMANCE OF THIS SOFTWARE.
 ```
 
 morphicons 为 MIT 许可，许可原文随代码副本携带于 `frontend/vendor.morphicons.js` 文件头注释块。
+
+React Bits 许可原文（MIT + Commons Clause License Condition v1.0，取自上游修订
+`ed33ebe4acfe29e60fb759bcccc70a138ce2dcef`，全文）：
+
+```
+MIT + Commons Clause License Condition v1.0
+
+Copyright (c) 2026 David Haz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, and distribute the Software as part of
+an application, website, or product, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+## Commons Clause Restriction
+
+You may use this Software, including for any commercial purpose, so long as
+you do not sell, sublicense, or redistribute the components themselves-whether
+alone, in a bundle, or as a ported version.
+
+The same restriction covers the React Bits tools (Background Studio, Texture
+Lab, Shape Magic, Center Stage, Sound Lab and any tools added later) and the
+sounds in the sound library. You may not sell, sublicense, or redistribute the
+tools or the sounds themselves, or offer the tools or a substantially similar
+copy of them as a hosted service-whether alone, in a bundle, or as a ported
+version.
+
+What you make with the tools is yours to use. You can use exported code, images,
+videos, and audio files in any personal or commercial application, website, or
+product, including paid ones. You may not sell or redistribute the exports on
+their own, either individually or as the product itself, such as a sound,
+texture, background, or template pack.
+
+## No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+本项目只把该着色器作为界面效果随程序一起使用，不单独售卖、再许可或分发组件本体；
+完整条款见上游 <https://github.com/DavidHDev/react-bits/blob/ed33ebe4acfe29e60fb759bcccc70a138ce2dcef/LICENSE.md>。
 
 ---
 

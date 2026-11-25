@@ -805,10 +805,14 @@
 
   async function runInstallAction(entry) {
     var active = entry.installStatus && INSTALL_ACTIVE[entry.installStatus.phase];
-    var method = active ? 'install_asset_cancel' : 'install_asset_start';
     var label = (entry.installStatus && entry.installStatus.label) || '资产';
     try {
-      await MaaRM.maarm.call(method, { module_id: entry.mid });
+      // 方法名保持字面量：白名单测试按字面量扫调用点（见 tests/test_rpc_allowlist.py）
+      if (active) {
+        await MaaRM.maarm.call('install_asset_cancel', { module_id: entry.mid });
+      } else {
+        await MaaRM.maarm.call('install_asset_start', { module_id: entry.mid });
+      }
       ensureInstallPolling(entry);
       await refreshInstall(entry);
     } catch (e) {
