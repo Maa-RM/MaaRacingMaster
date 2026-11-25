@@ -301,6 +301,25 @@ _PROBE = r"""
     }).length;
   }
   var tabOk = null;
+  // 首次启动：拒签后点「重新打开」，倒计时必须从头开始（同意按钮最终可点）
+  var reopen = null;
+  if (scen === 'firstrun') {
+    setTimeout(function () {
+      var decline = document.getElementById('onb-decline');
+      if (decline) decline.click();
+    }, 4000);
+    setTimeout(function () {
+      var restart = document.getElementById('onb-restart');
+      if (restart) restart.click();
+    }, 4600);
+    setTimeout(function () {
+      var b = document.getElementById('onb-accept');
+      reopen = {
+        gateBack: !!document.getElementById('onb-gate'),
+        acceptDisabled: b ? b.disabled : null
+      };
+    }, 11000);
+  }
   setTimeout(function () {
     // 遮罩撤下后 tab 必须可点：热启动没有遮罩，若「已放行」标志没初始化，切页会被一直挡住
     var tab = document.querySelector('.maarm-tab[data-tab="about"]');
@@ -342,6 +361,7 @@ _PROBE = r"""
         inert: !!(document.querySelector('main') && document.querySelector('main').inert),
         tour: !!document.querySelector('#onb-layer')
       },
+      reopen: reopen,
       finalInert: !!(document.querySelector('main') && document.querySelector('main').inert),
       regCalls: window.__regCalls || 0,
       remindFocus: remindFocus,
@@ -445,6 +465,10 @@ def test_first_run_gate_takes_over_after_boot(tmp_path):
     assert first.get("gate") is True, "未同意声明时没有出现声明门"
     assert first.get("inert") is True, "声明门期间正文没有从焦点序列隔离"
     assert first.get("tour") is False, "同意声明前不应进入聚光灯步骤"
+    reopen = out.get("reopen") or {}
+    assert reopen.get("gateBack") is True, "拒签后点「重新打开」没有回到声明门"
+    assert reopen.get("acceptDisabled") is False, (
+        "重新打开后同意按钮一直禁用：倒计时状态没有重置")
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
