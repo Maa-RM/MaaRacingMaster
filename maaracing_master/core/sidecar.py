@@ -45,6 +45,7 @@ from maaracing_master.core import process_priority
 from maaracing_master.core.registry import (
     MODULE_REGISTRY,
     check_required_assets,
+    first_available_module_id,
     get_module_info,
     load_plugin_ref,
     module_expired,
@@ -53,6 +54,7 @@ from maaracing_master.core.registry import (
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
     CloseGameStep,
+    LaunchGameStep,
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.config_ui_contract import (
@@ -410,6 +412,31 @@ def _save_profile(partial: dict) -> bool:
                     tmp.unlink(missing_ok=True)
                 except Exception:  # noqa: BLE001
                     pass
+
+
+def _legacy_user_from_profile(profile: dict) -> bool:
+    """这份存档是不是「升级上来的老用户」。
+
+    写进 onboarding 段的结论优先（同意声明时固定，之后存档多出引导段也不翻案）；
+    段里没有结论时，按「有业务数据、没有引导进度」判老用户。
+    """
+    raw = profile.get("onboarding")
+    if isinstance(raw, dict) and "existing_user" in raw:
+        return bool(raw.get("existing_user"))
+    return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
+
+
+def _legacy_default_queue() -> tuple[list[str], dict[str, bool]]:
+    """升级前版本的默认编排：启动游戏 → 活动模块 → 关闭游戏。
+
+    只给没有队列存档的老用户补回，避免升级后任务列表被清空；新装用户不预置。
+    """
+    order = [LaunchGameStep.ID, *MODULE_REGISTRY, CloseGameStep.ID]
+    enabled = {LaunchGameStep.ID: True, CloseGameStep.ID: True}
+    first = first_available_module_id()
+    if first:
+        enabled[first] = True
+    return order, enabled
 
 
 def _apply_framework_policy() -> None:
@@ -909,26 +936,24 @@ class SidecarService:
             if kept:
                 slots[mid] = kept
         self._module_config_cache = slots
-        # 3) 运行任务列表：order 取已知模块 id 的去重序列（未知 id 丢弃），enabled
-        #    只收已知 id 的布尔值。文件里没有该段 → 保留 __init__ 的默认编排。
+        # 3) 运行任务列表：存档里有 order（哪怕是空列表）就以存档为准；没有存档时
+        #    升级上来的老用户补回旧版默认编排（不能把升级前的列表清空），新装保持空。
         rq = data.get("run_queue")
-        if isinstance(rq, dict):
-            order = rq.get("order")
-            if isinstance(order, list):
-                seen: set[str] = set()
-                cleaned: list[str] = []
-                for mid in order:
-                    if isinstance(mid, str) and mid in _step_ids() and mid not in seen:
-                        seen.add(mid)
-                        cleaned.append(mid)
-                if cleaned:
-                    self._queue_order = cleaned
+        if isinstance(rq, dict) and isinstance(rq.get("order"), list):
+            seen: set[str] = set()
+            cleaned: list[str] = []
+            for mid in rq["order"]:
+                if isinstance(mid, str) and mid in _step_ids() and mid not in seen:
+                    seen.add(mid)
+                    cleaned.append(mid)
+            self._queue_order = cleaned
             en = rq.get("enabled")
-            if isinstance(en, dict):
-                self._queue_enabled = {
-                    k: bool(v) for k, v in en.items()
-                    if isinstance(k, str) and k in _step_ids()
-                }
+            self._queue_enabled = ({
+                k: bool(v) for k, v in en.items()
+                if isinstance(k, str) and k in _step_ids()
+            } if isinstance(en, dict) else {})
+        elif _legacy_user_from_profile(data):
+            self._queue_order, self._queue_enabled = _legacy_default_queue()
         # 4) 旧「运行结束后」开关迁移（跑一次即清键）
         self._migrate_legacy_shutdown(data.get("debug"))
 
@@ -994,15 +1019,10 @@ class SidecarService:
     def _is_existing_user(self) -> bool:
         """升级上来的老用户：只补声明、不补引导。
 
-        判定输入有两层：写进 onboarding 段的既有结论优先（同意声明时就把当时的
-        身份固定下来，重启后不会因为 onboarding 段已存在而翻案）；段里没有结论时，
-        说明还没走过同意流程，按「有业务数据、没有引导记录」判为老用户。
+        判定口径见 _legacy_user_from_profile：写进 onboarding 段的既有结论优先，
+        段里没有结论时按「有业务数据、没有引导记录」判为老用户。
         """
-        profile = _load_profile()
-        raw = profile.get("onboarding")
-        if isinstance(raw, dict) and "existing_user" in raw:
-            return bool(raw.get("existing_user"))
-        return bool(profile.get("run_queue") or profile.get("module_config") or profile.get("debug"))
+        return _legacy_user_from_profile(_load_profile())
 
     def get_onboarding(self, params):
         """首次引导状态：声明、过渡页、步骤完成集合与完成时间。"""

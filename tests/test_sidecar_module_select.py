@@ -73,6 +73,44 @@ def test_fresh_install_starts_with_empty_queue(monkeypatch):
     assert not ok and data is None and "没有启用" in err
 
 
+def _init_service(monkeypatch, profile):
+    """跑真实 __init__（含存档恢复），只把控制器换成空壳。"""
+    monkeypatch.setattr(sc, "MaaRacingMasterController", lambda: object())
+    monkeypatch.setattr(sc, "_load_profile", lambda: profile)
+    monkeypatch.setattr(sc, "_save_profile", lambda partial: True)
+    return SidecarService(None)
+
+
+def test_legacy_queue_seeded_when_missing(monkeypatch):
+    """升级上来的老用户没有队列存档：补回旧版默认编排，不清空列表。"""
+    svc = _init_service(monkeypatch, {
+        "module_config": {"launch_game": {"args": "-nosound"}},
+    })
+    assert svc._queue_order[0] == "launch_game"
+    assert svc._queue_order[-1] == "close_game"
+    assert svc._queue_enabled.get("launch_game") is True
+    assert svc._queue_enabled.get("close_game") is True
+
+
+def test_saved_empty_queue_wins_over_legacy_default(monkeypatch):
+    """用户显式清空过的队列（存档为空列表）必须原样恢复。"""
+    svc = _init_service(monkeypatch, {
+        "onboarding": {"existing_user": True},
+        "run_queue": {"order": [], "enabled": {}},
+    })
+    assert svc._queue_order == []
+    assert svc._queue_enabled == {}
+
+
+def test_new_user_queue_not_seeded(monkeypatch):
+    """新用户即便改过模块配置，也不该凭空冒出默认任务。"""
+    svc = _init_service(monkeypatch, {
+        "onboarding": {"existing_user": False, "terms_accepted_at": "2026-11-25T00:00:00+08:00"},
+        "module_config": {"launch_game": {"args": "-nosound"}},
+    })
+    assert svc._queue_order == []
+
+
 # ---------- set_run_queue：运行中守卫 ----------
 
 def test_set_queue_rejected_while_worker_alive(monkeypatch):
