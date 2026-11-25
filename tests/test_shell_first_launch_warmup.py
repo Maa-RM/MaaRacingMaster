@@ -108,3 +108,11 @@ def test_cold_detection_requires_shader_cache_entries():
     warm = WARMUP.read_text(encoding="utf-8-sig")
     assert "MinGpuCacheEntries" in warm, "冷态判据缺少条目数下限"
     assert 'StartsWith("f_"' in warm, "条目统计未按 f_* 目录条目识别"
+
+
+def test_hot_start_seeds_the_release_flag():
+    """热启动没有遮罩，但「已放行」标志必须从一开始为真：否则 switchTab 的遮罩拦截
+    会把四个 tab 一起挡死（标记写入后的第二次启动起必现）。"""
+    app = APP.read_text(encoding="utf-8-sig")
+    assert ("let _bootReleased = document.documentElement.classList.contains('boot-skip');"
+            in app), "放行标志未按 boot-skip 初始化：热启动 tab 会全部点不动"

@@ -1086,7 +1086,6 @@
       console.error(e);
       reportError('toast', '初始化失败: ' + e.message);
     }
-    checkRegistryOptimizations(); // 注册表权限体检（独立于初始化成败，内部自捕获异常）
     setTimeout(pollStatus, 250);
     setTimeout(pollLogs, 300);
     setInterval(pollDashboard, 3000); // 看板中心（仅数据页可见时刷新当前看板）
@@ -1107,7 +1106,9 @@
   // 超时只保证界面可用，本次不写完成标记（下次冷启动重试预热）。
   const BOOT_TOTAL_MS = 12000;
   const BOOT_T0 = performance.now();
-  let _bootReleased = false;   // 遮罩已经放过（正常收尾或时限兜底）
+  // 遮罩已经放过（正常收尾或时限兜底）。热启动根本没有遮罩（首帧就 boot-skip）：
+  // 必须从一开始就算放行，否则切页与其他「放行后才该发生」的事情全被挡住。
+  let _bootReleased = document.documentElement.classList.contains('boot-skip');
   let _bootCutShort = false;   // 时限兜底先放行了界面：本次预热不算完成
 
   function showOnlyPage(name) {
@@ -1140,6 +1141,9 @@
       _bootReleased = true;
       // 遮罩撤下时不该还挂着预热开的窗：收掉它，别让弹窗在已经放行的界面上抢焦点
       if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
+      // 启动体检放在遮罩撤下之后：它开的是给用户看的弹窗，埋在遮罩下面既看不见，
+      // 也会被上面的 closeAllModals 顺手收掉
+      checkRegistryOptimizations();
       const stepEl = overlay.querySelector('.boot-step');
       if (stepEl) stepEl.textContent = '启动较慢，先进入界面';
       overlay.classList.add('boot-overlay--done');
@@ -1150,9 +1154,15 @@
 
   async function runBootWarmup() {
     const overlay = $('boot-overlay');
-    if (!overlay || document.documentElement.classList.contains('boot-skip')) return;
+    if (!overlay || document.documentElement.classList.contains('boot-skip')) {
+      checkRegistryOptimizations(); // 热启动没有遮罩：启动体检现在就跑
+      return;
+    }
     // 时限兜底已经放过界面（或初始化太久）：不再在用户眼前翻页开弹窗
-    if (_bootReleased) return;
+    if (_bootReleased) {
+      checkRegistryOptimizations();
+      return;
+    }
     const bar = overlay.querySelector('.boot-bar i');
     const stepEl = overlay.querySelector('.boot-step');
     const started = performance.now();
@@ -1212,6 +1222,7 @@
     await delay(200);
     _bootReleased = true;
     if (window.MaaRM.closeAllModals) window.MaaRM.closeAllModals();
+    checkRegistryOptimizations(); // 遮罩已撤下：启动体检现在开窗（内部自捕获异常）
     overlay.classList.add('boot-overlay--done');
     setTimeout(() => { overlay.hidden = true; }, 260);
     // 只有全部步骤都画完才通知壳落标记：失败或超时留在冷态，下次启动重来

@@ -126,6 +126,14 @@ _PROBE = r"""
     var hidden = !o || o.hidden === true || getComputedStyle(o).display === 'none';
     if (hidden && !hiddenAt) hiddenAt = Math.round(performance.now() - start);
   }, 100);
+  var tabOk = null;
+  setTimeout(function () {
+    // 遮罩撤下后 tab 必须可点：热启动没有遮罩，若「已放行」标志没初始化，切页会被一直挡住
+    var tab = document.querySelector('.maarm-tab[data-tab="about"]');
+    if (tab) tab.click();
+    var about = document.getElementById('page-about');
+    tabOk = !!(about && !about.classList.contains('hidden'));
+  }, 15000);
   setTimeout(function () {
     clearInterval(watch);
     var o = document.getElementById('boot-overlay');
@@ -140,6 +148,7 @@ _PROBE = r"""
       warmupDone: (window.__sent || []).some(function (m) { return m.type === 'warmup-done'; }),
       dashCalls: window.__dashCalls || 0,
       dashLoaded: body ? (body.dataset.loadedFor || '') : '',
+      tabOk: tabOk,
       logs: (window.__logs || []).slice(-12)
     };
     var pre = document.createElement('pre');
@@ -187,10 +196,10 @@ def _prepare(tmp_path: Path, scenario: str) -> Path:
     return index
 
 
-def _run(tmp_path: Path, scenario: str) -> dict:
+def _run(tmp_path: Path, scenario: str, warmup: bool = True) -> dict:
     index = _prepare(tmp_path, scenario)
     profile = tmp_path / ("profile-" + scenario)
-    url = index.as_uri() + "?warmup=1"
+    url = index.as_uri() + ("?warmup=1" if warmup else "")
     proc = subprocess.run(
         [
             str(BROWSER), "--headless=new", "--disable-gpu", "--no-first-run",
@@ -214,6 +223,17 @@ def test_normal_startup_completes_and_marks_done(tmp_path):
     assert out["warmupDone"] is True, "预热完成必须通知宿主落标记"
     assert out["modals"] == 0, "预热收尾后不应留下自己打开的弹窗"
     assert out["hiddenAt"] < 10000, f"正常启动不应拖到接近总时限：{out['hiddenAt']}ms"
+    assert out["modalsAfterHidden"] is False, "遮罩撤下后不得再冒出预热弹窗"
+    assert out["tabOk"] is True, "遮罩撤下后点击关于 tab 未切页（放行标志没生效）"
+
+
+@pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
+def test_hot_start_keeps_tabs_clickable(tmp_path):
+    """热启动没有遮罩（首帧 boot-skip），切页不能被「已放行」标志挡住——
+    否则第二次启动起四个 tab 全部点不动。"""
+    out = _run(tmp_path, "normal", warmup=False)
+    assert out["display"] == "none", f"热启动不该显示预热遮罩：display={out['display']}"
+    assert out["tabOk"] is True, "热启动后点击关于 tab 未切页"
 
 
 @pytest.mark.skipif(BROWSER is None, reason="未找到 Chromium 内核浏览器")
