@@ -327,12 +327,10 @@
       countdown.active = false;
       cancelAnimationFrame(countdown.raf);
       if (hero) hero.stop();
-      setTimeout(function () {
-        gate.remove();
-        setShellInert(false);
-        if (state.tourIndex > 0) startTour(state.tourIndex, true);
-        else showLaunch();
-      }, 180);
+      // 声明页内容先淡出，过渡页从同色背景上淡入，背景始终不透明
+      gate.classList.add('is-leaving');
+      setShellInert(false);
+      showLaunch(function () { gate.remove(); });
     });
     $('#onb-decline').addEventListener('click', function () {
       countdown.active = false;
@@ -691,12 +689,16 @@
   // ---------- 初次教学过渡页 ----------
   // 声明之后、第一步之前：纯色底，大号状态球居中作主体；点「开始」后球缩到引导位置，
   // 背景同时淡出，直接接上第一步。
-  function showLaunch() {
+  function showLaunch(onShown) {
     var orb = ensureGuideOrb();
-    if (!orb) { startTour(0, true); return; }
+    if (!orb) {
+      if (onShown) onShown();
+      startTour(0, true);
+      return;
+    }
 
     var launch = document.createElement('div');
-    launch.className = 'onb-launch';
+    launch.className = 'onb-launch is-entering';
     launch.id = 'onb-launch';
     launch.innerHTML =
       '<div class="onb-launch-stage">'
@@ -717,11 +719,16 @@
     orb.el.style.height = big + 'px';
     orb.el.style.left = sp.left + 'px';
     orb.el.style.top = sp.top + 'px';
-    orb.el.classList.add('is-active');
     orb.started = true;
     void orb.el.offsetWidth;
     orb.el.classList.add('is-launch');
     orb.el.style.transition = '';
+
+    // 背景淡入
+    setTimeout(function () { launch.classList.remove('is-entering'); }, 24);
+    // 球稍晚一点浮现
+    setTimeout(function () { orb.el.classList.add('is-active'); }, 160);
+    if (onShown) setTimeout(onShown, 460);
 
     $('#onb-launch-start').addEventListener('click', function () {
       if (launch.dataset.leaving) return;

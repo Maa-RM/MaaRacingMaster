@@ -9,7 +9,8 @@
   background: var(--maarm-background);
   animation: onb-fade .3s ease both;
 }
-.onb-gate.is-leaving { animation: onb-fade-out .28s ease both; }
+.onb-gate.is-leaving { animation: none; }
+.onb-gate.is-leaving .onb-gate-inner { opacity: 0; transition: opacity .3s ease; }
 .onb-gate-inner { width: min(620px, 100%); margin: auto 0; }
 .onb-hero {
   position: relative; width: 100%; height: 220px; margin-bottom: 22px;
@@ -118,12 +119,14 @@
 
 /* ============ 初次教学过渡页 ============ */
 .onb-launch {
-  position: fixed; inset: 0; z-index: 10300;
+  position: fixed; inset: 0; z-index: 10301;
   background: var(--maarm-background);
   display: flex; align-items: center; justify-content: center;
   padding: 0 24px;
-  transition: opacity .5s ease;
+  opacity: 1;
+  transition: opacity .42s ease;
 }
+.onb-launch.is-entering { opacity: 0; }
 .onb-launch.is-leaving { opacity: 0; }
 .onb-launch-stage {
   display: flex; flex-direction: column; align-items: center;
