@@ -221,11 +221,16 @@ class LaunchGameStep(BuiltinStep):
             log("未找到官方启动器，跳过版本检查，沿用直启", "WARNING")
             return "unavailable"
         if game_process.game_running(launcher.name):
-            # 玩家先手动开了启动器：此时再拉的那份不写本轮日志（真机 2026-11-25 复现：
-            # 启动器已在运行时版本检查必然超时），日志增量里等不到结论。已在运行就不动它。
-            log("官方启动器已在运行，跳过版本检查（再拉一份读不到结论），直接启动游戏",
-                "WARNING")
-            return "unavailable"
+            # 玩家先手动开了启动器：再拉的那份不写本轮日志（真机 2026-11-25 复现：
+            # 启动器已在运行时版本检查必然超时），日志增量里等不到结论。
+            # 先关掉再重拉一份，新会话的日志才能被本轮读到。
+            log("官方启动器已在运行，先关闭再重拉，刷新日志后做版本检查…", "WARNING")
+            if game_process.close_launcher() == "left_running":
+                log("启动器无法由本程序关闭（权限不足），跳过版本检查沿用直启",
+                    "WARNING")
+                return "unavailable"
+            if stop_event is not None and stop_event.is_set():
+                return "stopped"
         log("拉起官方启动器做版本检查（无更新时会在它出窗前静默关闭）…")
         if not game_process.spawn_launcher(launcher):
             log("启动器拉起失败（管理员授权被拒？），跳过检查沿用直启", "WARNING")

@@ -4,7 +4,8 @@
 
 判定表：
   闸门关（环境开关）→ 不查，沿用直启；
-  无启动器 / 拉起失败 / 启动器已在运行 → unavailable，直启照旧；
+  无启动器 / 拉起失败 / 已在运行但关不掉 → unavailable，直启照旧；
+  已在运行 → 先关再重拉刷新日志，版本检查照常做；
   无需更新 → 关启动器、直启；
   需要更新 + 开关关 → 不拉游戏、留启动器页面，结局 needs_update；
   需要更新 + 开关开 → 出窗后代点、等装好、关启动器、直启；
@@ -188,16 +189,30 @@ def test_no_launcher_found_goes_direct(gate_on, monkeypatch):
     assert any(lv == "WARNING" and "跳过版本检查" in m for lv, m in logs)
 
 
-def test_launcher_already_running_skips_check_and_launches(gate_on, monkeypatch):
-    """玩家先手动开了启动器：再拉的那份不写本轮日志（检查只会等超时），跳过检查直启。"""
+def test_launcher_already_running_restarts_then_checks(gate_on, monkeypatch):
+    """玩家先手动开了启动器：先关再重拉刷新日志，版本检查照常做。"""
     monkeypatch.setattr(
         gp, "game_running",
         lambda name: name.lower() == gp.LAUNCHER_EXE_NAME.lower())
     ok, step, logs, _app = _run()
     assert ok is True and step.last_outcome == "completed"
-    assert gate_on["launcher_pids"] == []          # 没有再拉一份启动器
+    assert gate_on["closed"] == 2                   # 重启关一次 + 检查完关一次
+    assert gate_on["launcher_pids"] == ["Launcher.exe"]  # 重拉了一份做检查
     assert gate_on["game_pids"] == ["g112-Win64-Shipping.exe"]
     assert any(lv == "WARNING" and "已在运行" in m for lv, m in logs)
+
+
+def test_launcher_already_running_unclosable_skips_check(gate_on, monkeypatch):
+    """已在运行但关不掉（权限不足）：不动它，跳过检查沿用直启。"""
+    monkeypatch.setattr(
+        gp, "game_running",
+        lambda name: name.lower() == gp.LAUNCHER_EXE_NAME.lower())
+    monkeypatch.setattr(gp, "close_launcher", lambda: "left_running")
+    ok, step, logs, _app = _run()
+    assert ok is True and step.last_outcome == "completed"
+    assert gate_on["launcher_pids"] == []           # 没再拉第二份
+    assert gate_on["game_pids"] == ["g112-Win64-Shipping.exe"]
+    assert any(lv == "WARNING" and "无法由本程序关闭" in m for lv, m in logs)
 
 
 def test_check_timeout_is_failure_not_clean_stop(gate_on, monkeypatch):
