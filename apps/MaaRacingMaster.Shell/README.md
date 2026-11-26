@@ -29,6 +29,8 @@
 
 PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用 `frontend/peep-consumer.js`。互斥由「数据页是否可见 + 悬浮窗是否打开」决定，同一时刻只有一处真正拉帧；悬浮窗存在期间主界面卡片退化为占位符。悬浮窗不记忆位置/尺寸，随主窗口退出连带销毁。
 
+更新有两条路径：受管安装走 Velopack；ZIP 分发走便携自更新——`UpdateProtocol`（清单与兼容闸门）、`UpdateSourceClient`（来源配置与版本标记）、`UpdateTransport`（HTTP / 本地目录取包）、`UpdateTree`（树摘要）、`UpdateStager`（整包按清单裁剪、增量按旧树应用）、`UpdateLauncher`（事务、交接汇报、健康回执）在壳内完成准备，换目录、回执超时回滚与崩溃残留恢复由原生薄启动器 [`apps/MaaRacingMaster.Launcher`](../MaaRacingMaster.Launcher/launcher.c) 执行。
+
 ## 锁定版本与依赖
 
 | 项 | 取值 | 说明 |
@@ -138,11 +140,24 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- settings
 # 自动检查：调度锚点、并发合并、切渠道取消、单镜像短预算、锁占用短路、修订准入、推送回调
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- auto
+# 便携路径：清单/兼容闸门/树摘要/暂存/差异检测/交接（27 项）
+dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- portable
+# 原生启动器事务演练（换目录 / 无回执超时回滚 / 中断恢复；需管理员）
+scripts\release\update_drill.ps1 -PackageZip <真实包.zip> -StubDir <假壳目录> -WorkRoot <空临时目录>
 ```
 
-静态锁：`tests/test_update_channel_source.py`（渠道/源语义）、`tests/test_update_autocheck.py`（自动检查与并发）、`tests/test_frontend_update_panel.py`（前端入口）。后两者在有 dotnet 的环境里会直接驱动探针对应模式，不做「静态全绿但功能没接线」的假通过。
+静态锁：`tests/test_update_channel_source.py`（渠道/源语义）、`tests/test_update_autocheck.py`（自动检查与并发）、`tests/test_update_artifacts.py`（清单与增量）、`tests/test_frontend_update_panel.py`（前端入口）。后两者在有 dotnet 的环境里会直接驱动探针对应模式，不做「静态全绿但功能没接线」的假通过。
 
-**边界**：首版覆盖主壳运行期间；发行版触发自动检查还依赖受管产物与更新源接入发布链（普通 ZIP 产物不含随包更新源）。
+**受管树实测结论**
+
+- 更新钩子必须是主入口最早执行的一段并支持早退；`SetAutoApplyOnStartup(false)` 让已下载的包在普通启动保持待应用，只有显式提交才替换内容树。
+- 受管模式的根以内容根为唯一权威：`--app-root` 参数与 `MaaRM_APP_ROOT` 环境变量指向别处时必须忽略并在壳日志记录，否则新版壳会被旧根带跑（启动旧 Python / 旧前端）。
+- 用户数据根在 C# 与 Python 两侧都取 `APPDATA` 环境变量：.NET 已知目录 API 不认环境变量重定向，两边口径分叉会让 WebView2 数据与侧车数据落到不同地方。
+- 受管树内直接运行「非注册主程序」的 exe 会挂起默认定位器解析，与路径、提权无关。任何在受管树里跑的辅助程序都必须住树外，并用显式定位器指定受管根（`ShellContractProbe` 的 `update` 模式即此形态）。
+- 侧车主循环读 stdin，父壳死亡即 EOF 自退，但存在延迟窗口；启动清场因此保留（扫描命令行匹配本程序的侧车，毫秒级终止）。
+- 已知未解异常：带注入探针的发布产物曾在受管树内出现 WebView2 环境创建挂起（无异常、无 WER、无壳日志），最小注入与正式形态均未复现，根因未明；路径、构建配置、发布方式、APPDATA、定位器访问已逐个排除，排查时不必重走。
+
+**边界**：便携路径覆盖主壳运行期间的全量/增量更新与启动器回滚；真实应用包的健康确认、跨账号 UAC 与断电场景仍需人工验收。受管安装的自动检查依赖受管产物与更新源接入发布链。
 
 ## 构建坑
 
