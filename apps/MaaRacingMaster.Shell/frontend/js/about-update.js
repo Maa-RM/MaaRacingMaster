@@ -493,10 +493,17 @@
     try {
       pendingBackupExtras = false;
       // 安装前扫描本地差异：有额外文件或被改过的官方文件就先问玩家，再下载。
-      const report = await maarm.call('update_inspect');
-      if (report && ((report.extra_files || 0) + (report.modified_files || 0)) > 0) {
-        const proceed = await askLocalChange(report);
-        if (!proceed) return;
+      // 扫描本身失败不阻断下载（旧受管安装没有扫描结果，返回空）。
+      let report = null;
+      try { report = await maarm.call('update_inspect'); } catch (e) { report = null; }
+      if (report) {
+        const diffs = (report.extra_files || 0) + (report.modified_files || 0);
+        // 没有基线时只能识别额外文件：改动过官方文件的情况必须提前告知，
+        // 否则第一次应用内更新会静默覆盖它。
+        if (diffs > 0 || report.baseline_known === false) {
+          const proceed = await askLocalChange(report);
+          if (!proceed) return;
+        }
       }
       // 带上玩家看到目标时的修订号：后台已换目标则后端拒绝，不替旧界面下载新版本
       renderSnapshot(await maarm.call('update_start_download', { revision: lastUpdateRevision }));
@@ -515,6 +522,7 @@
   }
 
   function askLocalChange(report) {
+    const hasDiff = report.extra_files > 0 || report.modified_files > 0;
     const parts = [];
     if (report.extra_files > 0) {
       parts.push('<b>' + report.extra_files + '</b> 个额外文件（约 '
@@ -526,20 +534,19 @@
     const sample = Array.isArray(report.sample) && report.sample.length
       ? '<p class="maarm-modal-notice-hint">例如：' + report.sample.map(escHtml).join('、') + '</p>'
       : '';
-    // 首版安装没有基线清单：只能识别额外文件，这一点必须说清楚，别让玩家以为漏检。
-    const baselineHint = report.baseline_known === false
-      ? '<p class="maarm-modal-notice-hint">首次应用内更新只能识别额外文件；被修改的官方文件从下一次更新起才能识别。</p>'
-      : '';
+    const intro = hasDiff
+      ? '<p>程序目录里检测到 ' + parts.join('、') + '。</p>'
+      : '<p>首次应用内更新：本机还没有版本基线，无法识别被修改过的官方文件。</p>';
+    const backupLine = hasDiff
+      ? '<p>备份会把它们按原路径复制到：<br><code>' + escHtml(report.backup_path) + '</code></p>'
+        + '<p>不备份则这些文件会随旧版本一起删除。</p>'
+      : '<p>如果你改过程序目录里的文件，请先自行备份。备份目录可用：<br><code>'
+        + escHtml(report.backup_path) + '</code></p>';
     return new Promise((resolve) => {
       let decided = false;
       const decide = (value) => { if (!decided) { decided = true; resolve(value); } };
-      openModal({
-        title: '安装前发现本地文件',
-        bodyHtml:
-          '<div class="maarm-modal-notice"><p>程序目录里检测到 ' + parts.join('、') + '。</p>'
-          + '<p>备份会把它们按原路径复制到：<br><code>' + escHtml(report.backup_path) + '</code></p>'
-          + '<p>不备份则这些文件会随旧版本一起删除。</p>' + sample + baselineHint + '</div>',
-        buttons: [
+      const buttons = hasDiff
+        ? [
           {
             text: '备份后继续', primary: true,
             onClick: (modal) => { pendingBackupExtras = true; decide(true); modal.close(); },
@@ -549,7 +556,19 @@
             onClick: (modal) => { pendingBackupExtras = false; decide(true); modal.close(); },
           },
           { text: '放弃', onClick: (modal) => { decide(false); modal.close(); } },
-        ],
+        ]
+        : [
+          {
+            text: '继续安装', primary: true,
+            onClick: (modal) => { pendingBackupExtras = false; decide(true); modal.close(); },
+          },
+          { text: '放弃', onClick: (modal) => { decide(false); modal.close(); } },
+        ];
+      openModal({
+        title: hasDiff ? '安装前发现本地文件' : '首次应用内更新',
+        bodyHtml:
+          '<div class="maarm-modal-notice">' + intro + backupLine + sample + '</div>',
+        buttons,
         onClose: () => decide(false),
       });
     });

@@ -213,8 +213,10 @@ public sealed partial class MainWindow : Window
     {
         if (!_pageReady || !_backendReady) return;
         var version = ShellVersionStamp().Split('+')[0];
-        UpdateLauncher.AckHealthIfPending(version);
-        // 回执之后再消费交接记录：确认成功才把新清单转成下一次安装的差异基线。
+        var ack = UpdateLauncher.AckHealthIfPending(version);
+        // 回执没写出去 = 启动器会回滚：此时绝不能推进已装清单基线。
+        if (ack.Pending && !ack.Written) return;
+        // 确认成功后才消费交接记录，把新清单转成下一次安装的差异基线。
         UpdateLauncher.CaptureStartupReport(version);
     }
 

@@ -72,13 +72,65 @@ static BOOL DirExists(const wchar_t *path)
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+// 规范化绝对路径：比较前归一（".."、短名、大小写），避免边界判断被字面差异绕过。
+static BOOL CanonicalizePath(const wchar_t *path, wchar_t *out, size_t cap)
+{
+    if (path == NULL || path[0] == 0)
+        return FALSE;
+    DWORD length = GetFullPathNameW(path, (DWORD)cap, out, NULL);
+    return length > 0 && length < cap;
+}
+
+static BOOL SamePath(const wchar_t *left, const wchar_t *right)
+{
+    wchar_t a[PATH_CAP], b[PATH_CAP];
+    if (!CanonicalizePath(left, a, PATH_CAP) || !CanonicalizePath(right, b, PATH_CAP))
+        return FALSE;
+    return _wcsicmp(a, b) == 0;
+}
+
 // path 是否等于 dir 或位于 dir 之下（事务里的暂存/备份只允许在 .update 内）
 static BOOL IsUnder(const wchar_t *path, const wchar_t *dir)
 {
-    size_t length = wcslen(dir);
-    if (length == 0 || _wcsnicmp(path, dir, length) != 0)
+    wchar_t canonicalPath[PATH_CAP], canonicalDir[PATH_CAP];
+    if (!CanonicalizePath(path, canonicalPath, PATH_CAP) ||
+        !CanonicalizePath(dir, canonicalDir, PATH_CAP))
         return FALSE;
-    return path[length] == L'\\' || path[length] == 0;
+    size_t length = wcslen(canonicalDir);
+    if (length == 0 || _wcsnicmp(canonicalPath, canonicalDir, length) != 0)
+        return FALSE;
+    return canonicalPath[length] == L'\\' || canonicalPath[length] == 0;
+}
+
+// .update 自身若是重解析点（玩家/低权限身份可做的目录联接），整条事务链都不可信。
+static BOOL UpdateDirTrusted(void)
+{
+    DWORD attr = GetFileAttributesW(g_updateDir);
+    if (attr == INVALID_FILE_ATTRIBUTES)
+        return TRUE; // 目录尚未创建：没有可被劫持的对象
+    return (attr & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+// 取得安装实例锁的所有权。CreateMutex 只创建对象、不取得所有权，必须 Wait 才算持有；
+// 返回 NULL 表示别的实例正持有或创建失败。
+static HANDLE AcquireApplyLock(DWORD timeoutMs)
+{
+    HANDLE mutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
+    if (mutex == NULL)
+        return NULL;
+    DWORD wait = WaitForSingleObject(mutex, timeoutMs);
+    if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED)
+        return mutex;
+    CloseHandle(mutex);
+    return NULL;
+}
+
+static void ReleaseApplyLock(HANDLE mutex)
+{
+    if (mutex == NULL)
+        return;
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
 }
 
 static BOOL JoinPath(wchar_t *out, size_t cap, const wchar_t *base, const wchar_t *child)
@@ -290,6 +342,15 @@ static void KillProcessTree(DWORD pid)
 {
     if (pid == 0)
         return;
+    // 必须用系统目录里的绝对路径：CreateProcess 的 lpApplicationName 非空时不搜 PATH，
+    // 发布包根目录没有 taskkill.exe，裸文件名等于没杀成。
+    wchar_t systemDir[PATH_CAP];
+    UINT length = GetSystemDirectoryW(systemDir, PATH_CAP);
+    if (length == 0 || length >= PATH_CAP)
+        return;
+    wchar_t tool[PATH_CAP];
+    if (swprintf_s(tool, PATH_CAP, L"%s\\taskkill.exe", systemDir) <= 0)
+        return;
     wchar_t cmd[128];
     swprintf_s(cmd, 128, L"/PID %lu /T /F", (unsigned long)pid);
     STARTUPINFOW si;
@@ -297,7 +358,7 @@ static void KillProcessTree(DWORD pid)
     SecureZeroMemory(&si, sizeof(si));
     SecureZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
-    if (CreateProcessW(L"taskkill.exe", cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+    if (CreateProcessW(tool, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
                        NULL, NULL, &si, &pi))
     {
         WaitForSingleObject(pi.hProcess, 5000);
@@ -306,23 +367,24 @@ static void KillProcessTree(DWORD pid)
     }
 }
 
-// 启动普通实例（新版本或回滚后的旧版本），返回进程 PID（0 = 失败）
-static DWORD LaunchNormal(void)
+// 启动普通实例（新版本或回滚后的旧版本）：返回进程句柄（NULL = 失败），PID 写入 pidOut。
+// 句柄留给调用方等待/终止，不能创建完就丢——否则回滚前无法确认试启动进程已退出。
+static HANDLE LaunchNormal(DWORD *pidOut)
 {
+    *pidOut = 0;
     wchar_t exe[PATH_CAP];
     if (!JoinPath(exe, PATH_CAP, g_installRoot, L"MaaRacingMaster.exe"))
-        return 0;
+        return NULL;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     SecureZeroMemory(&si, sizeof(si));
     SecureZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
     if (!CreateProcessW(exe, NULL, NULL, NULL, FALSE, 0, NULL, g_installRoot, &si, &pi))
-        return 0;
+        return NULL;
     CloseHandle(pi.hThread);
-    DWORD pid = pi.dwProcessId;
-    CloseHandle(pi.hProcess);
-    return pid;
+    *pidOut = pi.dwProcessId;
+    return pi.hProcess;
 }
 
 // 健康回执：由新壳在启动完成后写入 <install>\.update\health.txt（version=<目标版本>）
@@ -419,12 +481,14 @@ static void RecoverBeforeLaunch(void)
         return;
 
     // 事务文件可能被低权限身份改写：目录必须与本次安装一致、暂存与备份必须在
-    // .update 之下，否则只清掉这条不可信记录，绝不按它删改任何目录。
-    if (_wcsicmp(tx.install, g_installRoot) != 0 ||
+    // .update 之下，且 .update 自身不能是重解析点，否则只清掉这条不可信记录，
+    // 绝不按它删改任何目录。
+    if (!SamePath(tx.install, g_installRoot) ||
         !IsUnder(tx.staging, g_updateDir) ||
-        !IsUnder(tx.backup, g_updateDir))
+        !IsUnder(tx.backup, g_updateDir) ||
+        !UpdateDirTrusted())
     {
-        LogLine(L"[recover] 事务记录越出安装目录，已忽略并清除");
+        LogLine(L"[recover] 事务记录的目录不可信，已忽略并清除");
         RemoveFileQuiet(g_txPath);
         return;
     }
@@ -497,11 +561,10 @@ static int RunApply(const wchar_t *txPath)
     wcsncpy_s(g_txPath, PATH_CAP, txPath, _TRUNCATE);
     EnsureUpdateDir();
 
-    HANDLE mutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
-    if (mutex != NULL && GetLastError() == ERROR_ALREADY_EXISTS)
+    HANDLE mutex = AcquireApplyLock(0);
+    if (mutex == NULL)
     {
-        LogLine(L"[apply] 已有更新事务在执行，退出");
-        CloseHandle(mutex);
+        LogLine(L"[apply] 安装锁被占用（更新或恢复进行中），退出");
         return 1;
     }
 
@@ -509,25 +572,31 @@ static int RunApply(const wchar_t *txPath)
     if (!LoadTx(&tx))
     {
         LogLine(L"[apply] 事务文件不可读: %s", txPath);
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
-    if (_wcsicmp(tx.install, g_installRoot) != 0)
+    if (!SamePath(tx.install, g_installRoot))
     {
         LogLine(L"[apply] 事务安装目录与自身不一致，拒绝执行");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
+        return 1;
+    }
+    if (!UpdateDirTrusted())
+    {
+        LogLine(L"[apply] .update 是重解析点，拒绝执行");
+        ReleaseApplyLock(mutex);
         return 1;
     }
     if (!IsUnder(tx.staging, g_updateDir) || !IsUnder(tx.backup, g_updateDir))
     {
         LogLine(L"[apply] 暂存或备份路径越出 .update，拒绝执行");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
     if (!DirExists(tx.staging))
     {
         LogLine(L"[apply] 暂存目录不存在: %s", tx.staging);
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
 
@@ -540,7 +609,7 @@ static int RunApply(const wchar_t *txPath)
     {
         LogLine(L"[apply] 旧壳未退出，放弃本次替换");
         WriteTxState(&tx, L"aborted");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
 
@@ -548,7 +617,7 @@ static int RunApply(const wchar_t *txPath)
     if (!WriteTxState(&tx, L"swapping"))
     {
         LogLine(L"[apply] 事务状态写入失败，放弃");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
 
@@ -556,7 +625,7 @@ static int RunApply(const wchar_t *txPath)
     {
         LogLine(L"[apply] 备份旧程序目录失败，放弃（旧版未动）");
         WriteTxState(&tx, L"aborted");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
     if (!MoveDir(tx.staging, g_programDir))
@@ -566,7 +635,7 @@ static int RunApply(const wchar_t *txPath)
             WriteTxState(&tx, L"aborted");
         else
             LogLine(L"[apply] 旧程序目录未能恢复，保留事务记录");
-        if (mutex) CloseHandle(mutex);
+        ReleaseApplyLock(mutex);
         return 1;
     }
 
@@ -576,16 +645,19 @@ static int RunApply(const wchar_t *txPath)
     LogLine(L"[apply] 目录已切换，试启动新版本");
 
     RemoveFileQuiet(g_healthPath);
-    DWORD newPid = LaunchNormal();
-    if (newPid == 0)
+    DWORD newPid = 0;
+    HANDLE newProcess = LaunchNormal(&newPid);
+    if (newProcess == NULL)
     {
         LogLine(L"[apply] 新版本启动失败，回滚");
         if (RollbackProgram(&tx))
             RemoveFileQuiet(g_txPath);
         else
             LogLine(L"[apply] 回滚失败，保留事务记录等下次启动重试");
-        LaunchNormal();
-        if (mutex) CloseHandle(mutex);
+        DWORD ignoredPid = 0;
+        HANDLE restarted = LaunchNormal(&ignoredPid);
+        if (restarted != NULL) CloseHandle(restarted);
+        ReleaseApplyLock(mutex);
         return 1;
     }
 
@@ -595,19 +667,31 @@ static int RunApply(const wchar_t *txPath)
         DeleteTree(tx.backup);
         RemoveFileQuiet(g_healthPath);
         RemoveFileQuiet(g_txPath);
-        if (mutex) CloseHandle(mutex);
+        CloseHandle(newProcess);
+        ReleaseApplyLock(mutex);
         return 0;
     }
 
     LogLine(L"[apply] 未收到健康回执，回滚到上一版");
     KillProcessTree(newPid);
+    // 回滚要移动程序目录：必须先确认试启动进程真的退出，否则移动会失败或留下半套文件。
+    if (WaitForSingleObject(newProcess, 15000) == WAIT_TIMEOUT)
+    {
+        LogLine(L"[apply] 试启动进程未退出，暂不回滚（保留事务记录）");
+        CloseHandle(newProcess);
+        ReleaseApplyLock(mutex);
+        return 1;
+    }
+    CloseHandle(newProcess);
     if (RollbackProgram(&tx))
         RemoveFileQuiet(g_txPath);
     else
         LogLine(L"[apply] 回滚失败，保留事务记录等下次启动重试");
     RemoveFileQuiet(g_healthPath);
-    LaunchNormal();
-    if (mutex) CloseHandle(mutex);
+    DWORD restartPid = 0;
+    HANDLE restartedAgain = LaunchNormal(&restartPid);
+    if (restartedAgain != NULL) CloseHandle(restartedAgain);
+    ReleaseApplyLock(mutex);
     return 1;
 }
 
@@ -679,22 +763,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     // prepared 当垃圾清掉。拿不到锁（事务进行中）就跳过恢复，直接尝试启动。
     if (DirExists(g_programDir) || PathExists(g_txPath))
         EnsureUpdateDir();
-    HANDLE recoverMutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
-    DWORD recoverWait = recoverMutex == NULL
-        ? WAIT_FAILED
-        : WaitForSingleObject(recoverMutex, APPLY_RECOVER_WAIT_MS);
-    BOOL recovered = recoverWait == WAIT_OBJECT_0 || recoverWait == WAIT_ABANDONED;
-    if (recovered)
+    HANDLE recoverMutex = AcquireApplyLock(APPLY_RECOVER_WAIT_MS);
+    if (recoverMutex != NULL)
     {
         RecoverBeforeLaunch();
-        ReleaseMutex(recoverMutex);
+        ReleaseApplyLock(recoverMutex);
     }
-    else if (recoverWait == WAIT_TIMEOUT)
+    else
     {
         LogLine(L"[recover] 更新事务进行中，跳过本地恢复");
     }
-    if (recoverMutex != NULL)
-        CloseHandle(recoverMutex);
 
     BOOL portableLayout = DirExists(g_programDir);
     const wchar_t *contentRoot = portableLayout ? g_programDir : g_installRoot;

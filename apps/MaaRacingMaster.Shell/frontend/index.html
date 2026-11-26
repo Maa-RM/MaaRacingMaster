@@ -346,9 +346,11 @@
   <!-- 拆分后的模块按依赖序加载：rpc.js 定义 window.MaaRM 共享命名空间（必须最先），
        app.js 是启动装配入口（必须最后）；中间模块只经 window.MaaRM 互相取用。 -->
   <script src="js/rpc.js"></script>
+  <!-- modal.js 必须先加载：about-update.js 在模块初始化时就取用 openModal，
+       晚于它加载会让备份确认与启动汇报拿不到函数（TypeError）。 -->
+  <script src="js/modal.js"></script>
   <script src="js/about-update.js"></script>
   <script src="js/achievement-toast.js"></script>
-  <script src="js/modal.js"></script>
   <script src="js/achievement.js"></script>
   <script src="js/log.js"></script>
   <script src="js/preview.js"></script>

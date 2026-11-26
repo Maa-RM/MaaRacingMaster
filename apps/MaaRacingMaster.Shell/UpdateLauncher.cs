@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace MaaRacingMaster.Shell;
 
@@ -62,8 +63,16 @@ public static class UpdateLauncher
         Path.Combine(UpdateDir(installRoot), "pending-notes.md");
 
     /// <summary>更新后首次启动的汇报：怎么升上来的（增量/整包、体积、来源），或上次更新没成功。</summary>
-    public sealed record StartupUpdateReport(string Outcome, string Version, string Mode,
-                                             long Bytes, string Source, string Notes);
+    public sealed record StartupUpdateReport(
+        [property: JsonPropertyName("outcome")] string Outcome,
+        [property: JsonPropertyName("version")] string Version,
+        [property: JsonPropertyName("mode")] string Mode,
+        [property: JsonPropertyName("bytes")] long Bytes,
+        [property: JsonPropertyName("source")] string Source,
+        [property: JsonPropertyName("notes")] string Notes);
+
+    /// <summary>健康回执结果：是否存在待确认事务、回执是否真的写出。</summary>
+    public sealed record HealthAckResult(bool Pending, bool Written);
 
     private static StartupUpdateReport? s_startupReport;
     private static bool s_startupReportTaken;
@@ -136,33 +145,37 @@ public static class UpdateLauncher
     /// 启动器据此确认升级成功并清理备份；超时未收到回执会自动回滚到旧版本。
     /// 任何异常都只记日志——回执失败最多导致回滚，不能影响正常启动。
     /// </summary>
-    public static void AckHealthIfPending(string runningVersion)
+    public static HealthAckResult AckHealthIfPending(string runningVersion)
     {
         var root = InstallRoot;
         if (root is null || string.IsNullOrWhiteSpace(runningVersion))
-            return;
+            return new HealthAckResult(false, false);
         var txPath = TransactionPath(root);
+        var pending = false;
         try
         {
             if (!File.Exists(txPath))
-                return;
+                return new HealthAckResult(false, false);
             var state = ReadValue(txPath, "state");
             var target = ReadValue(txPath, "target");
             if (!string.Equals(state, StateSwapped, StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(target, runningVersion, StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                return new HealthAckResult(false, false);
             }
+            pending = true;
             var updateDir = UpdateDir(root);
             Directory.CreateDirectory(updateDir);
             var temp = Path.Combine(updateDir, "health.tmp");
             File.WriteAllText(temp, $"version={runningVersion}\n");
             File.Move(temp, HealthPath(root), overwrite: true);
             ShellLog.Append($"[update] 已向启动器写健康回执: {runningVersion}");
+            return new HealthAckResult(true, true);
         }
         catch (Exception ex)
         {
             ShellLog.Append($"[update] 健康回执写入失败（启动器将按回滚处理）: {ex.Message}");
+            return new HealthAckResult(pending, false);
         }
     }
 

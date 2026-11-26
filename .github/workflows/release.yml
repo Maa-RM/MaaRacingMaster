@@ -374,9 +374,34 @@ jobs:
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { throw "缺少待上传资产: $f" }
           }
-          gh release upload "$env:TAGNAME" @files --clobber
+          # 只补缺件：已存在且摘要一致的资产直接跳过。绝不用 --clobber——它会先删掉
+          # 线上资产再重传，上传中断会让已公开的版本缺包。
+          $release = (gh api "repos/${{ github.repository }}/releases?per_page=100" |
+                      ConvertFrom-Json) |
+                     Where-Object { $_.tag_name -eq $env:TAGNAME } |
+                     Select-Object -First 1
+          if (-not $release) { throw "找不到本 tag 的 Release: $env:TAGNAME" }
+          $toUpload = @()
+          foreach ($f in $files) {
+            $name = Split-Path $f -Leaf
+            $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+            if ($asset) {
+              $local = (Get-FileHash $f -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($asset.digest -ne "sha256:$local") {
+                throw "同 tag 资产 $name 已存在且内容不同，拒绝覆盖"
+              }
+              Write-Host "资产已在位且摘要一致，跳过上传: $name"
+              continue
+            }
+            $toUpload += $f
+          }
+          if (@($toUpload).Count -eq 0) {
+            Write-Host "全部资产已在位，无需上传"
+            exit 0
+          }
+          gh release upload "$env:TAGNAME" @toUpload
           if ($LASTEXITCODE -ne 0) { throw "上传资产失败: $env:TAGNAME" }
-          Write-Host "已上传 $($files.Count) 个资产到草稿 $env:TAGNAME"
+          Write-Host "已补传 $(@($toUpload).Count) 个资产到草稿 $env:TAGNAME"
 
       - name: 核对草稿资产后再公开
         # 公开是玩家可见动作：草稿里的完整集合与摘要对不上就停在这里，Release 保持草稿。

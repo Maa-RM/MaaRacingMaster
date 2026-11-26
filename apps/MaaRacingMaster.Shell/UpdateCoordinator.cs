@@ -236,6 +236,7 @@ public sealed class UpdateCoordinator
     private StagedUpdate? _staged;                 // 便携模式：已暂存完成的候选树
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
+    private Task? _drainTask;                      // 切渠道后旧下载的收尾（未完成前不许开新下载）
 
     private Task<UpdateSnapshot>? _checkTask;      // 在途检查（同世代请求合并）
     private long _checkTaskEpoch = -1;
@@ -398,6 +399,9 @@ public sealed class UpdateCoordinator
         {
             if (expectedRevision is long seen && seen != _revision)
                 return Task.FromResult(Snapshot("界面信息已更新，请确认当前目标后重新操作"));
+            // 旧下载还没收尾：它和下一次下载写同一个暂存目录与缓存，必须先等它退出。
+            if (_drainTask is { IsCompleted: false })
+                return Task.FromResult(Snapshot("正在切换更新渠道，请稍候"));
             if (_phase == UpdateSnapshot.Downloading && _downloadTask is not null)
                 return Task.FromResult(Snapshot()); // 复用当前任务
             if (_phase == UpdateSnapshot.Ready)
@@ -771,8 +775,15 @@ public sealed class UpdateCoordinator
         // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
         // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
         // 旧下载也必须等：它和下一次下载写同一个暂存目录与缓存，只取消不等待会让
-        // 旧任务在新任务开始后继续清理或写入。
-        await DrainAsync(drainingDownload).ConfigureAwait(false);
+        // 旧任务在新任务开始后继续清理或写入。等待期间 Idle 已对外可见，所以用
+        // _drainTask 拦住这期间发起的新下载（再次切渠道或手动检查都不许绕过）。
+        var drainDownload = DrainAsync(drainingDownload);
+        lock (_gate) { _drainTask = drainDownload; }
+        await drainDownload.ConfigureAwait(false);
+        lock (_gate)
+        {
+            if (ReferenceEquals(_drainTask, drainDownload)) _drainTask = null;
+        }
         if (draining is { IsCompleted: false })
         {
             try { await draining.ConfigureAwait(false); }
@@ -963,10 +974,27 @@ public sealed class UpdateCoordinator
             }
             catch (Exception ex)
             {
+                // prepareGate 已让后端退出：只回 Ready 会把玩家留在「旧窗口能用、业务不可用」
+                // 的状态，必须复用交接失败的恢复流程把后端拉回来。
+                var recovered = false;
+                if (_handoffRecovery is not null)
+                {
+                    try
+                    {
+                        recovered = await _handoffRecovery().ConfigureAwait(false);
+                    }
+                    catch (Exception recEx)
+                    {
+                        ShellLog.Append($"[update] 备份失败后的后端恢复异常: {recEx.Message}");
+                    }
+                }
+                ShellLog.Append($"[update] 备份本地文件失败: {ex.Message}（后端恢复: {(recovered ? "已重启" : "失败，需重启应用")}）");
                 lock (_gate)
                 {
                     return SetState(_epoch, UpdateSnapshot.Ready,
-                        error: $"备份本地文件失败，已取消安装: {ex.Message}");
+                        error: recovered
+                            ? $"备份本地文件失败，已取消安装: {ex.Message}（旧版本可继续使用，可重试）"
+                            : $"备份本地文件失败，已取消安装: {ex.Message}（后端恢复失败，请重启应用）");
                 }
             }
         }
@@ -1207,9 +1235,12 @@ public sealed class UpdateCoordinator
                     lastError = $"{endpoint.Name}（版本号不合法）";
                     continue;
                 }
-                anyResponded = true;
                 if (markerVersion.CompareTo(current) <= 0)
+                {
+                    // 本源确认没有更高版本；「标记说有新版但清单取不到」不算这一类。
+                    anyResponded = true;
                     continue;
+                }
 
                 var release = await client.FetchManifestAsync(endpoint, marker, budget.Token)
                     .ConfigureAwait(false);
@@ -1230,6 +1261,8 @@ public sealed class UpdateCoordinator
                     lastError = $"{endpoint.Name}（版本号不合法）";
                     continue;
                 }
+                // 到这里本源确实有更高且可用的版本：全源都没找到时才允许判「已是最新」。
+                anyResponded = true;
                 if (bestVersion is null || target.CompareTo(bestVersion.Value) > 0)
                 {
                     bestEndpoint = endpoint;

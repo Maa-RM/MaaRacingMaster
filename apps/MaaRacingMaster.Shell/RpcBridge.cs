@@ -137,14 +137,24 @@ internal static class RpcBridge
         }
 
         // 安装前的本地差异：由前端在玩家点「安装」时调用，有差异先询问再下载。
+        // 回包必须在 UI 线程（WebView2 的 PostWebMessageAsJson 要求），因此这里不丢同步
+        // 上下文；扫描失败走统一错误出口，不让前端一直等。旧受管安装没有扫描结果，
+        // 返回空数据而不是错误，下载入口照旧可用。
         if (method == "update_inspect")
         {
-            var inspector = s_coordinator;
-            var report = inspector is null
-                ? null
-                : await inspector.InspectLocalChangesAsync().ConfigureAwait(false);
-            await ReplyAsync(sender, callId, report is not null, report,
-                report is null ? "没有可安装目标，请先检查更新" : null);
+            object? report = null;
+            string? inspectError = null;
+            try
+            {
+                report = s_coordinator is null
+                    ? null
+                    : await s_coordinator.InspectLocalChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                inspectError = ex.Message;
+            }
+            await ReplyAsync(sender, callId, inspectError is null, report, inspectError);
             return;
         }
         // 更新后首次启动的汇报（取一次即清空）。

@@ -36,6 +36,7 @@ internal static class PortableUpdateProbe
             CheckVersionOrdering();
             CheckTreeDigestVector();
             CheckCompatGate();
+            CheckStartupReportShape();
 
             var oldFiles = new Dictionary<string, byte[]>
             {
@@ -335,6 +336,19 @@ internal static class PortableUpdateProbe
             UpdateProtocol.TreeDigest(entries) ==
             "bd9f746716f48e74ae8c7f97dc10566de195d3e92daae999dfd722b19a3de05f",
             UpdateProtocol.TreeDigest(entries));
+    }
+
+    private static void CheckStartupReportShape()
+    {
+        // 前端按 snake_case 读取；默认序列化输出 PascalCase 会让回滚被当成成功显示
+        // （vundefined），这里锁住线上实际写出的字段名。
+        var json = JsonSerializer.Serialize(new UpdateLauncher.StartupUpdateReport(
+            "installed", "1.2.0", "delta", 1024, "probe", ""));
+        Program.Check("启动汇报字段名为 snake_case",
+            json.Contains("\"outcome\"", StringComparison.Ordinal)
+            && json.Contains("\"version\"", StringComparison.Ordinal)
+            && json.Contains("\"bytes\"", StringComparison.Ordinal),
+            json);
     }
 
     private static void CheckCompatGate()
