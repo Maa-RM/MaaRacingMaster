@@ -38,6 +38,16 @@ templates/plugin/
 > 删除 `plugins/<id>/` 目录即卸载。所有资源引用一律经 `__init__.py` 的常量自引用，
 > 不依赖 `assets/` 或其它插件的路径，目录搬走即完整带走。
 
+## 安装别人分享的插件（Windows 发行版）
+
+朋友发来的插件是一个**文件夹**（里面直接有 `manifest.py`），放进用户数据目录即可，不用改源码、不用重新打包：
+
+1. 在资源管理器地址栏输入 `%APPDATA%\MaaRacingMaster\plugins` 回车；目录不存在就先创建 `plugins`。
+2. 把**整个插件文件夹**复制进去，最终形如 `%APPDATA%\MaaRacingMaster\plugins\<插件id>\manifest.py`。不要只拷 `manifest.py`，也不要再套一层目录。
+3. 重启 MaaRacingMaster，在模块列表里确认插件名字出现——看到即安装成功，不必启动游戏。
+
+> 这里的 `plugins` 是 `core/registry.py` 扫描的「用户根」，与上面「复制即装」用的源码内置根是两条路径：用户根里的插件跨版本升级保留（升级只替换程序内容目录），删掉文件夹即卸载。若分享的插件 `ID` 与随包模块重名，以随包版本为准，用户根这份会被跳过。
+
 ## 各文件职责
 
 | 文件 | 职责 |
