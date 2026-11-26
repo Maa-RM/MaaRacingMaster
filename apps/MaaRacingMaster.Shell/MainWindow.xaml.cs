@@ -392,6 +392,7 @@ public sealed partial class MainWindow : Window
         coordinator.AutoCheckCommitted += PostUpdateSnapshot;
         AppRestarter.Scheduled += ScheduleRestartShutdown;
         RpcBridge.AttachCoordinator(coordinator);
+        RpcBridge.AttachAppRoot(ResolveRepoRoot()); // 随包文件读取（关于页「开源许可」）
 
         // 进程内自动检查：首次立即、之后按间隔（锚点是最近一次检查收尾）。
         // 关窗时 Stop 取消等待与在途索引，UI 收尾不同步等 I/O。

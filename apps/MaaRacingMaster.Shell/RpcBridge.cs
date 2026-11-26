@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml.Controls;
@@ -52,6 +53,8 @@ internal static class RpcBridge
         "webview2_status", "webview2_update",
         // 计划内重启（AppRestarter）：等本进程退出后由同构等待进程拉起新实例。
         "app_restart",
+        // 关于页「开源许可」：读随包发布的第三方许可声明（只读、限长）。
+        "read_licenses",
     };
 
     /// <summary>宿主更新动作集（壳自有，处理不经 sidecar；后端不可用不影响它们）。
@@ -64,6 +67,7 @@ internal static class RpcBridge
         "update_set_auto_check",
         "webview2_status", "webview2_update",
         "app_restart",
+        "read_licenses",
     };
 
     /// <summary>
@@ -82,11 +86,18 @@ internal static class RpcBridge
     private static PythonSidecar? s_sidecar;
     private static UpdateCoordinator? s_coordinator;
 
+    /// <summary>应用根（含 pyproject.toml 的目录；发布版即内容根）。主窗口启动时给定，
+    /// 供只读的随包文件访问使用。</summary>
+    private static string? s_appRoot;
+
     /// <summary>绑定/解绑业务后端。窗口启动时绑定，sidecar 关闭后置 null（此后请求回 backend unavailable）。</summary>
     public static void Attach(PythonSidecar? sidecar) => s_sidecar = sidecar;
 
     /// <summary>绑定宿主更新协调器（窗口启动时绑定；宿主动作不经业务后端）。</summary>
     public static void AttachCoordinator(UpdateCoordinator? coordinator) => s_coordinator = coordinator;
+
+    /// <summary>绑定应用根（随包文件读取的锚点，与分析根同源）。</summary>
+    public static void AttachAppRoot(string? appRoot) => s_appRoot = appRoot;
 
     /// <summary>
     /// 尝试接管一条前端消息：只处理 <c>type=call</c>，其余消息类型留给各窗口自行处理。
@@ -161,6 +172,16 @@ internal static class RpcBridge
         if (method == "update_startup_report")
         {
             await ReplyAsync(sender, callId, true, UpdateLauncher.TakeStartupReport(), null);
+            return;
+        }
+
+        // 关于页「开源许可」：读随包发布的第三方许可声明全文。只读、限长；文件随内容根
+        // 分发，与应用根同源。读不到时如实报错，让界面提示而不是弹一个空窗。
+        if (method == "read_licenses")
+        {
+            var (licenseText, licenseError) = ReadBundledLicenses();
+            await ReplyAsync(sender, callId, licenseError is null,
+                licenseText is null ? null : new { text = licenseText }, licenseError);
             return;
         }
 
@@ -266,6 +287,30 @@ internal static class RpcBridge
         }
 
         await ReplyAsync(sender, callId, ok, data, error);
+    }
+
+    /// <summary>随包许可声明的读取上限：正常约百行，超过即视为异常文件，不把整块内存赌进去。</summary>
+    private const int MaxLicenseBytes = 512 * 1024;
+
+    /// <summary>读应用根下的 THIRD_PARTY_LICENSES.md（发布包把它放在内容根）。</summary>
+    private static (string? Text, string? Error) ReadBundledLicenses()
+    {
+        var root = s_appRoot;
+        if (string.IsNullOrEmpty(root))
+            return (null, "找不到应用根");
+        var path = Path.Combine(root, "THIRD_PARTY_LICENSES.md");
+        try
+        {
+            if (!File.Exists(path))
+                return (null, "随包缺少 THIRD_PARTY_LICENSES.md");
+            if (new FileInfo(path).Length > MaxLicenseBytes)
+                return (null, "许可文件超出读取上限");
+            return (File.ReadAllText(path), null);
+        }
+        catch (Exception ex)
+        {
+            return (null, $"读取许可失败: {ex.Message}");
+        }
     }
 
     private static string? ReadParam(JsonElement? paramsEl, string name)
