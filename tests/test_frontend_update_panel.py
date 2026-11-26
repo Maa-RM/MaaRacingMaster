@@ -218,6 +218,19 @@ def test_about_tab_dot_is_anchored_to_label_text():
     )
 
 
+def test_startup_report_renders_notes_markdown(app_src: str):
+    """更新说明随清单下发，是 Markdown 子集（主题句 + 无序列表 + 行内加粗）：汇报弹窗要
+    把它渲染成列表，不能把 `##` / `**` 原文摊给玩家；文本先转义再放行有限结构。"""
+    assert "function renderNotesMarkdown" in app_src, "缺少更新说明渲染器"
+    renderer = _js_function_body(app_src, "function renderNotesMarkdown(text)")
+    assert "escHtml" in renderer, "说明文本未转义就拼 HTML"
+    assert "'<ul>'" in renderer and "'<li>'" in renderer, "无序列表未渲染"
+    assert "renderNotesMarkdown(report.notes)" in app_src, "汇报弹窗未接渲染器"
+    assert "white-space:pre-wrap" not in app_src, "更新说明仍按纯文本原样显示"
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    assert ".upd-notes ul" in css, "更新说明列表缺少样式"
+
+
 def test_status_text_meets_contrast_and_lives_in_live_region():
     """状态行是更新卡唯一的结果出口：颜色取深化 token（白底 ≥4.5:1），
     并且只在相位切换时播报（下载轮询不刷屏）。"""

@@ -168,12 +168,12 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
   transition: left var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1), width var(--maarm-duration-slow) cubic-bezier(0.22, 1, 0.36, 1);
   pointer-events: none;
 }
-/* 关于标签的更新提醒点：锚在文字外框（不是整个按钮）的右上角；
+/* 关于标签的更新提醒点：圆点圆心压在文字外框的右上角（top/right 各取半个直径）；
    外圈两圈错开半个周期向外扩散，与底栏状态球同款节奏。 */
 .maarm-tab-label { position: relative; display: inline-block; line-height: 1; }
 .maarm-tab-dot {
-  position: absolute; top: -2px; right: -5px;
-  width: 7px; height: 7px; border-radius: 50%;
+  position: absolute; top: -4px; right: -4px;
+  width: 8px; height: 8px; border-radius: 50%;
   background: var(--maarm-update-alert);
   box-shadow: 0 0 0 2px var(--maarm-surface);
   opacity: 0; transform: scale(0.4); pointer-events: none;
@@ -182,7 +182,8 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 .maarm-tab-dot.is-on { opacity: 1; transform: scale(1); }
 .maarm-tab-dot::before,
 .maarm-tab-dot::after {
-  content: ''; position: absolute; inset: 0;
+  /* 起始圈落在圆点之外 2px：贴着圆点起跳时两圈叠在实心圆边缘，视觉上会显扁 */
+  content: ''; position: absolute; inset: -2px;
   border: 1px solid var(--maarm-update-alert); border-radius: 50%;
   opacity: 0; pointer-events: none;
 }
@@ -192,8 +193,8 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 }
 .maarm-tab-dot.is-on::after { animation-delay: -1.2s; }
 @keyframes maarm-tab-dot-echo {
-  0%        { transform: scale(1.03); opacity: 0.55; }
-  70%, 100% { transform: scale(2.6);  opacity: 0; }
+  0%        { transform: scale(1);   opacity: 0.55; }
+  70%, 100% { transform: scale(2.2); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .maarm-tab-dot.is-on::before, .maarm-tab-dot.is-on::after { animation: none; }
@@ -1539,6 +1540,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .upd-icon--ok { color: var(--maarm-success-strong); }
 .upd-icon--err { color: var(--maarm-danger-strong); }
 .upd-icon--new { color: var(--maarm-primary-strong); }
+.upd-icon--info { color: var(--maarm-info); }
 .upd-text { flex: 1; min-width: 0; }
 .upd-title { font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--maarm-foreground); }
 .upd-title--err { color: var(--maarm-danger-strong); }
@@ -1600,6 +1602,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   background: color-mix(in srgb, var(--maarm-primary) 8%, transparent);
   border-color: color-mix(in srgb, var(--maarm-primary) 24%, transparent);
 }
+/* 选中态只染文字与右侧勾选标记：品牌图标（GitHub 的 mark 等）保持原色，染成主色会认不出 */
+.upd-set-opt.is-active > svg:not(.upd-set-check) { color: var(--maarm-foreground); }
 .upd-set-opt img, .upd-set-opt svg { width: 14px; height: 14px; flex-shrink: 0; }
 .upd-set-check { margin-left: auto; visibility: hidden; }
 .upd-set-opt.is-active .upd-set-check { visibility: visible; }
@@ -1685,6 +1689,25 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-modal-notice { font-size: 13px; line-height: 1.7; color: var(--maarm-foreground); }
 .maarm-modal-notice p { margin: 0 0 10px; }
 .maarm-modal-notice p.maarm-modal-notice-hint { margin: 0; color: var(--maarm-foreground-secondary); }
+/* 版本更新说明：清单 notes 的 Markdown 子集（标题段 + 无序列表 + 行内加粗/代码） */
+.upd-notes ul { margin: 0 0 10px; padding-left: 18px; }
+.upd-notes li { margin-bottom: 3px; }
+.upd-notes li::marker { color: var(--maarm-foreground-secondary); }
+.upd-notes > :last-child { margin-bottom: 0; }
+.upd-notes code {
+  padding: 1px 4px; border-radius: 3px;
+  background: var(--maarm-surface-hover);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px;
+}
+/* 开源许可：随包声明的全文（Markdown 源），限高滚动，允许选中复制 */
+.maarm-license {
+  max-height: 56vh; overflow: auto; margin: 0; padding: 10px 12px;
+  border-radius: var(--maarm-radius-sm);
+  background: var(--maarm-surface-hover);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; user-select: text;
+}
 /* 员工守则：图标 + 规则列表 */
 .maarm-modal-rules { display: flex; gap: 14px; align-items: flex-start; }
 .maarm-modal-rules-icon { width: 40px; height: 40px; flex-shrink: 0; margin-top: 4px; }

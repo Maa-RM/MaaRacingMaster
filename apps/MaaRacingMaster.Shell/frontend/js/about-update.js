@@ -25,6 +25,9 @@
     alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
       + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.4v.2"/></svg>',
+    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+      + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.6v.2"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
       + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="m4.5 12.5 4.5 4.5L19.5 6.5"/></svg>',
@@ -219,7 +222,9 @@
         }
         const version = currentVersion();
         return {
-          icon: null, title: version ? '当前版本 ' + version : '当前版本',
+          // 常态也给一个蓝色信息图标：卡片左侧不留空列，和其余相位视觉同构
+          icon: 'info', tone: 'info',
+          title: version ? '当前版本 ' + version : '当前版本',
           meta: channelText(snapshot),
           action: { label: '检查更新', icon: 'rotate-cw', run: checkUpdate },
         };
@@ -589,6 +594,32 @@
   }
 
   // ---------- 更新后首次启动的汇报 ----------
+  // 更新说明随清单下发，是 Markdown 子集（加粗标题 / 无序列表 / 行内加粗与代码）。
+  // 先整段转义再只放行这几种结构：说明文本同样来自远端，不能进任意 HTML 通道。
+  function renderNotesMarkdown(text) {
+    const inline = (s) => escHtml(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    const html = [];
+    let inList = false;
+    const closeList = () => { if (inList) { html.push('</ul>'); inList = false; } };
+    String(text).replace(/\r\n?/g, '\n').split('\n').forEach((raw) => {
+      const line = raw.trim();
+      if (!line) { closeList(); return; }
+      const bullet = /^[-*]\s+(.+)$/.exec(line);
+      if (bullet) {
+        if (!inList) { html.push('<ul>'); inList = true; }
+        html.push('<li>' + inline(bullet[1]) + '</li>');
+        return;
+      }
+      closeList();
+      const heading = /^#{1,6}\s+(.+)$/.exec(line);
+      html.push('<p>' + (heading ? '<b>' + inline(heading[1]) + '</b>' : inline(line)) + '</p>');
+    });
+    closeList();
+    return html.join('');
+  }
+
   async function showStartupReport(attempt) {
     try {
       const report = await maarm.call('update_startup_report');
@@ -610,8 +641,7 @@
       }
       const mode = report.mode === 'delta' ? '增量更新' : '完整包更新';
       const notes = report.notes
-        ? '<div class="maarm-modal-notice" style="white-space:pre-wrap">'
-          + escHtml(report.notes) + '</div>'
+        ? '<div class="maarm-modal-notice upd-notes">' + renderNotesMarkdown(report.notes) + '</div>'
         : '';
       openModal({
         title: '已更新到 v' + report.version,

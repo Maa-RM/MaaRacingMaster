@@ -39,6 +39,12 @@
     'stroke-width': '2',
     'aria-hidden': 'true'
   };
+  // GitHub 官方 mark 的路径本身占满 24 网格：叠上 2 号描边会溢出视框，边缘被裁成缺角。
+  var SOLID_FILL_SVG = {
+    'viewBox': '0 0 24 24',
+    'fill': 'currentColor',
+    'aria-hidden': 'true'
+  };
 
   var LUCIDE = {
     'cpu': [                                   // 性能卡 CPU 磁贴
@@ -80,6 +86,13 @@
     'book-open': [
       ['path', { 'd': 'M12 5v16' }],
       ['path', { 'd': 'M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z' }]
+    ],
+    'file-text': [                               // lucide: file-text（关于页「开源许可」入口）
+      ['path', { 'd': 'M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z' }],
+      ['path', { 'd': 'M14 2v4a2 2 0 0 0 2 2h4' }],
+      ['path', { 'd': 'M10 9H8' }],
+      ['path', { 'd': 'M16 13H8' }],
+      ['path', { 'd': 'M16 17H8' }]
     ],
     'arrow-up-right': [
       ['path', { 'd': 'M7 7h10v10' }],
@@ -194,7 +207,7 @@
   function svg(name, extraAttrs) {
     var def = ICONS[name];
     if (!def) throw new Error('MaaRMIcons: 未知图标 ' + name);
-    var base = def.solid ? SOLID_SVG : BASE_SVG;
+    var base = def.solid ? (name === 'github-solid' ? SOLID_FILL_SVG : SOLID_SVG) : BASE_SVG;
     if (extraAttrs) base = Object.assign({}, base, extraAttrs);
     var root = attrsToStr(base);
     var body = def.nodes.map(function (n) {
