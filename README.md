@@ -314,6 +314,16 @@ MaaRacingMaster/
 > 分层许可说明：项目源码为 Apache-2.0；模型权重按文件边界各自沿用上游许可——物品感知为 AGPL-3.0 衍生，线观测按 BDD100K 非商业/科研许可分发。主安装包不携带权重，模型包内随附完整许可与来源说明。运行依赖各自保留其许可证（含 LGPL-3.0 的 MaaFramework）。
 > 详见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md) 与 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。
 
+### 素材与商标
+
+本项目只引用游戏画面用于本机识别，**不对游戏素材主张任何权利**：
+
+- **游戏名称、标识与商标**（如《巅峰极速》《极速狂飙》）归游戏开发者与发行方所有。文中提及仅用于说明适用游戏，不表示隶属、授权或合作关系。
+- **识别模板与活动封面**（`plugins/*/resources/image/*.png`、`resources/cover.jpg` 等）为游戏界面的截图或裁切，仅作为本机画面识别的匹配模板与展示缩略图随插件存放；随仓库分发不构成对这些素材的再许可，权利仍归原权利人。
+- **项目自身的名称与 logo**：Apache-2.0 第 6 条不授予商标使用权，名称与 logo 不随代码许可一并授权。
+- 前端图标与动效（Lucide、morphicons、React Bits 等）、运行依赖、模型权重各自沿用上游许可，见 [THIRD\_PARTY\_LICENSES.md](THIRD_PARTY_LICENSES.md)。
+- 若相关权利人认为某处素材使用不妥，欢迎通过 [Issue](https://github.com/Maa-RM/MaaRacingMaster/issues) 指出，我们会移除或替换。
+
 ***
 
 ## 项目统计
