@@ -184,3 +184,44 @@ def test_single_flight_reuses_running_task(monkeypatch, tmp_path):
         assert second.revision == first.revision
         blocking.set()
         _wait(installer)
+
+
+def test_release_shelf_asset_cdn_redirects_are_allowlisted():
+    """发行货架的资产一跳必须放行：字节终点在货架自家的 CDN 上。
+
+    github.com → release-assets.githubusercontent.com（签名查询串）；
+    cnb.cool   → asset.cnb.cool/assets/t/<一次性令牌>。
+    真实事故：白名单只列货架主机，两源都在 302 处被拒，一键安装对任何用户都失败。
+    """
+    assert model_installer._url_allowed(
+        "https://github.com/owner/repo/releases/download/v1.0.0/pack.zip")
+    assert model_installer._url_allowed(
+        "https://release-assets.githubusercontent.com/github-production-release-asset/1/2?x=1")
+    assert model_installer._url_allowed(
+        "https://cnb.cool/org/repo/-/releases/download/v1.0.0/pack.zip")
+    assert model_installer._url_allowed("https://asset.cnb.cool/assets/t/abc123")
+    # 白名单之外的跳转目标仍然拒绝（防代理或第三方 CDN 介入）。
+    assert not model_installer._url_allowed("https://example.com/pack.zip")
+    assert not model_installer._url_allowed("http://asset.cnb.cool/assets/t/abc123")
+
+
+def test_all_source_errors_are_reported(monkeypatch, tmp_path):
+    """两源都失败时逐源留原因，不能只报最后一个——否则前一个源的真实失败被吞。"""
+    _patch(monkeypatch, tmp_path)
+    archive = _make_zip(tmp_path / "model.zip")
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("拒绝下载重定向到未知地址: https://asset.cnb.cool/assets/t/x")
+
+    monkeypatch.setattr(model_installer, "download_file", _boom)
+    descriptor = _descriptor(
+        archive, tmp_path, "",
+        sources={
+            "github": "https://github.com/owner/repo/releases/download/v1.0.0/model.zip",
+            "cnb": "https://cnb.cool/org/repo/-/releases/download/v1.0.0/model.zip",
+        })
+    installer = model_installer.ModelInstaller(descriptor)
+    installer.start()
+    status = _wait(installer)
+    assert status.phase == "failed"
+    assert "github:" in (status.error or "") and "cnb:" in (status.error or "")

@@ -28,8 +28,15 @@ from maaracing_master.plugins.infinite_drive import model_assets
 DESCRIPTOR_PATH = model_assets.MODELS_DIR / "download.json"
 DOWNLOAD_TIMEOUT_S = 20
 DOWNLOAD_DEADLINE_S = 600
+# 两个发行货架的 Release 下载地址不是字节的终点：github.com 302 到
+# release-assets.githubusercontent.com（带签名查询串），cnb.cool 302 到
+# asset.cnb.cool/assets/t/<一次性令牌>。资产一跳是货架自己交给自己家的 CDN，
+# 必须与货架同列入白名单；内容真伪仍由描述里的 SHA256 与 zip 成员白名单把关，
+# 主机白名单只负责不让跳转跨到无名义的第三方。
 ALLOWED_HOSTS = frozenset({
-    "github.com", "objects.githubusercontent.com", "codeload.github.com", "cnb.cool",
+    "github.com", "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com", "codeload.github.com",
+    "cnb.cool", "asset.cnb.cool",
 })
 _PHASES = frozenset({
     "idle", "downloading", "verifying", "extracting", "committing",
@@ -158,7 +165,7 @@ class ModelInstaller:
             descriptor = load_descriptor(self._descriptor_path)
             staging_root.mkdir(parents=True, exist_ok=True)
             archive = staging_root / f"{task_id}-{descriptor['asset']}"
-            last_error = ""
+            errors: list[str] = []
             for name, url in descriptor["sources"].items():
                 if self._cancelled():
                     self._set(task_id, phase="cancelled", error="用户取消")
@@ -172,10 +179,13 @@ class ModelInstaller:
                     if self._cancelled():
                         self._set(task_id, phase="cancelled", error="用户取消")
                         return
-                    last_error = f"{name}: {exc}"
+                    # 每个源都留原因：只报最后一个源会掩盖前面的真实失败（如某一源
+                    # 被白名单拒跳、另一源网络不可达），让排查从错误文本就断了线。
+                    errors.append(f"{name}: {exc}")
                     archive.unlink(missing_ok=True)
             else:
-                self._set(task_id, phase="failed", error=f"所有下载源均失败（{last_error}）")
+                self._set(task_id, phase="failed",
+                          error=f"所有下载源均失败（{'；'.join(errors)}）")
                 return
 
             if self._cancelled():
