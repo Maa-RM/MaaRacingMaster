@@ -73,6 +73,16 @@
      换形状必须同时补半径，倍数见末尾覆盖块的表格。 */
   --maarm-corner-shape: squircle;
 
+  /* 单行控件刻度：输入框 / 下拉 / 分段 / 数字胶囊的外高只有这一份，
+     控件栏的行距按它排（.cfg-row、任务卡、日志筛选条同高齐平）。 */
+  --maarm-control-h: 36px;
+  /* 数字胶囊（js/number-pill.js）：一组控件包一层壳，圆角比单行输入框的 radius-sm
+     圆一档才读得出「胶囊」。读数单格高与列宽同样在这里——JS 用这组 token 算列位移
+     与编辑框宽度，不另存像素副本。外高 = 单格高 + 2×内边距(2px) + 2×描边(1px)。 */
+  --maarm-num-radius: var(--maarm-radius-lg);
+  --maarm-num-cell-h: 30px;
+  --maarm-num-col-w: 0.62em;
+
   /* 字体 */
   /* 中文优先 Noto Sans SC（思源字形，小字号渲染优于雅黑；可变字体，500/600 为真字重），
      未安装的机器回落雅黑——仅字体栈顺序变化，无打包无依赖 */
@@ -651,18 +661,9 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   position: relative;
   display: flex; align-items: stretch;
 }
-.maarm-field-control input[type="number"] {
-  width: 100%; height: 36px; padding: 0 42px 0 12px;
-  border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
-  background: var(--maarm-surface); color: var(--maarm-foreground);
-  font-size: 13px; font-family: var(--maarm-font-sans);
-  transition: border-color var(--maarm-duration-fast);
-}
-.maarm-field-control input[type="number"]:focus { border-color: var(--maarm-primary); }
-.maarm-field-control input[type="number"]:disabled { opacity: 0.6; cursor: not-allowed; }
-/* 文本字段（路径 / 参数）：与数字框同款，只是不留右侧后缀位 */
+/* 文本字段（路径 / 参数）：与数字胶囊同高、同宽档（高度取 --maarm-control-h） */
 .maarm-field-control input[type="text"] {
-  width: 100%; height: 36px; padding: 0 12px;
+  width: 100%; height: var(--maarm-control-h); padding: 0 12px;
   border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
   background: var(--maarm-surface); color: var(--maarm-foreground);
   font-size: 13px; font-family: var(--maarm-font-sans);
@@ -672,7 +673,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-field-control input[type="text"]::placeholder { color: var(--maarm-foreground-dim); }
 /* 下拉框（宏组选择）：与文本框同款 */
 .maarm-field-control select {
-  width: 100%; height: 36px; padding: 0 12px;
+  width: 100%; height: var(--maarm-control-h); padding: 0 12px;
   border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border);
   background: var(--maarm-surface); color: var(--maarm-foreground);
   font-size: 13px; font-family: var(--maarm-font-sans);
@@ -683,35 +684,35 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 /* 字段 + 右侧动作按钮（浏览… / 重置）：按钮与输入框等高，视觉上是一整行 */
 .maarm-field-control-row { display: flex; align-items: stretch; gap: 8px; }
 .maarm-field-control-row .maarm-field-control { flex: 1; min-width: 0; }
-.maarm-field-control-row .maarm-btn { height: 36px; padding: 0 14px; }
+.maarm-field-control-row .maarm-btn { height: var(--maarm-control-h); padding: 0 14px; }
 /* hidden 属性优先于 .maarm-btn 的 display：否则「重置」按钮在默认态也会显示 */
 .maarm-btn[hidden] { display: none; }
-.maarm-field-control .field-suffix {
-  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-  font-size: 12px; color: var(--maarm-foreground-muted); pointer-events: none;
-}
 
-/* ---------- 滚轮计数器（stepper 字段）----------
-   单颗胶囊：− / 数字窗 / + 一体（布局对齐 21st.dev rolling counter，颜色、
-   圆角、阴影走本仓 token）。外高 36px，与普通输入框同高；每列是 30px 高的开窗，
-   12 格数字条由 config-panel.js 的 rAF 弹簧逐帧驱动；列随位数自动收展，速度带动态模糊。
-   点数字可原地编辑，输入框宽度随位数增长。 */
+/* ---------- 数字胶囊（NumberPill，js/number-pill.js）----------
+   单颗胶囊：− / 读数 / + 一体（布局对齐 21st.dev rolling counter，颜色、圆角、
+   阴影走本仓 token）。外高 = --maarm-num-cell-h + 内边距 + 描边 = --maarm-control-h，
+   所以与单行输入框、分段控件齐平。数字窗里每列是 --maarm-num-cell-h 高的开窗，
+   12 格数字条由 rAF 弹簧逐帧驱动（JS 只写「第几格」--slot，像素换算在这条 transform 里）；
+   列随位数自动收展，速度带动态模糊。点数字可原地编辑，输入框宽度随位数增长。
+   小数 / 缺上限的字段走常驻输入档（--plain）：同一副胶囊，只是数字不滚。 */
 .maarm-stepper {
   display: inline-flex; align-items: center; gap: 3px;
   width: fit-content; padding: 2px; user-select: none;
-  border: 1px solid var(--maarm-border); border-radius: 9px;
+  border: 1px solid var(--maarm-border); border-radius: var(--maarm-num-radius);
   background: var(--maarm-surface); box-shadow: var(--maarm-shadow-sm);
 }
 .maarm-stepper--locked { opacity: 0.6; pointer-events: none; }
 .stepper-btn {
-  width: 30px; height: 30px; flex: none;
+  width: var(--maarm-num-cell-h); height: var(--maarm-num-cell-h); flex: none;
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--maarm-radius-sm); border: 1px solid var(--maarm-border-light);
   background: var(--maarm-surface-active); color: var(--maarm-foreground-secondary);
   font-size: 16px; line-height: 1; font-family: var(--maarm-font-sans);
   cursor: pointer; user-select: none;
-  transition: background .15s ease-out, border-color .15s ease-out,
-              color .15s ease-out, transform .15s ease-out;
+  transition: background var(--maarm-duration-fast) ease-out,
+              border-color var(--maarm-duration-fast) ease-out,
+              color var(--maarm-duration-fast) ease-out,
+              transform var(--maarm-duration-fast) ease-out;
 }
 .stepper-btn:hover {
   background: var(--maarm-surface); border-color: var(--maarm-border-strong);
@@ -721,23 +722,26 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .stepper-btn:disabled { opacity: 0.4; pointer-events: none; }
 .stepper-window {
   display: flex; align-items: center;
-  height: 30px; min-width: 48px; padding: 0 8px;
+  height: var(--maarm-num-cell-h); min-width: 48px; padding: 0 8px;
   font-size: 18px;   /* 列宽与数字都按这个 em 走 */
   border-radius: var(--maarm-radius-sm);
   cursor: ns-resize; touch-action: none;   /* 纵向拖拽归这里，别让页面滚走 */
 }
 .stepper-col {
-  position: relative; width: 0.62em; height: 100%; overflow: hidden;
-  transition: width .2s ease-out, opacity .2s ease-out;   /* 位数收展 */
+  position: relative; width: var(--maarm-num-col-w); height: 100%; overflow: hidden;
+  transition: width var(--maarm-duration-base) ease-out,
+              opacity var(--maarm-duration-base) ease-out;   /* 位数收展 */
 }
 .stepper-col--hidden { width: 0; opacity: 0; }
 .stepper-strip {
   position: absolute; top: 0; left: 0; width: 100%;
   display: flex; flex-direction: column; align-items: center;
-  will-change: transform;   /* rAF 逐帧写 transform + filter */
+  /* 第几格 → 像素：JS 每帧只写 --slot（可带小数），换算留在这里，30px 只出现一次 */
+  transform: translate3d(0, calc(var(--slot, 0) * -1 * var(--maarm-num-cell-h)), 0);
+  will-change: transform;   /* rAF 逐帧写 --slot 与 filter */
 }
 .stepper-num {
-  height: 30px; flex: none;
+  height: var(--maarm-num-cell-h); flex: none;
   display: flex; align-items: center; justify-content: center;
   font-weight: 600; letter-spacing: -0.03em; line-height: 1;
   color: var(--maarm-foreground); font-variant-numeric: tabular-nums;
@@ -814,9 +818,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   color: var(--maarm-foreground-muted);
 }
 .cfg-desc-hint { font-weight: 500; color: var(--maarm-foreground-secondary); }
-/* 内置步骤的数字字段：保持窄框，不随字段栏拉宽 */
-.cfg-row-control .maarm-field-control--narrow { max-width: 132px; }
-/* 控件宽度：分段与下拉限宽，长文本占满字段栏 */
+/* 控件宽度：分段与下拉限宽，长文本占满字段栏；数字胶囊按内容自适应（fit-content） */
 .cfg-row-control .maarm-segmented,
 .cfg-row-control select { width: min(300px, 100%); }
 .cfg-row-control input[type="text"],
@@ -2083,7 +2085,7 @@ footer .spacer { flex: 1; }
   display: none; z-index: 99; box-shadow: var(--maarm-shadow-md); max-width: 80vw;
 }
 
-/* 分段选择控件（目标场次：实习/专家/大师） */
+/* 分段选择控件（目标场次：实习/专家/大师）：与输入框、数字胶囊同高 */
 .maarm-segmented {
   display: flex;
   padding: 3px;
@@ -2091,7 +2093,7 @@ footer .spacer { flex: 1; }
   background: var(--maarm-surface-hover);
   border: 1px solid var(--maarm-border);
   border-radius: var(--maarm-radius-sm);
-  height: 36px;
+  height: var(--maarm-control-h);
   user-select: none;
 }
 .maarm-segmented .seg-btn {

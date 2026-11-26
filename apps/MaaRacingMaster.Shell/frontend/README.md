@@ -163,18 +163,29 @@ Chromium 不提供待编译清单，漏登记只影响该弹窗首次打开的�
   - 行：标签列 96px，控件紧贴标签后，说明独占一行横跨字段栏（不再挂在标签旁或控件下方）。
   - 组：组标题缩进 12px，字段行再缩进 12px；组间用分隔线加更大的上方留白分开，标题紧贴
     自己的第一行。**不提供折叠分组**——折叠会把“有哪些设置”变成需要主动展开才知道的信息。
-  - 数字：`stepper` 与 `number` 共用同一副 36px 数字胶囊；滚轮保留数字滚动动画，点数字可
-    原地编辑（回车/失焦落定，Esc 撤销），输入框宽度随位数增长。预计用时并入说明行前缀。
+  - 数字：`number` 与 `stepper` 都渲染成同一副 36px 数字胶囊（− / 读数 / 单位 / + 一体），
+    实现只有一份，见下节。行结构仍归这里，胶囊本身归 `js/number-pill.js`。
   - 回归锁：`tests/test_frontend_config_panel.py::test_panel_layout_is_host_owned`。
-- 滚轮计数器（`stepper`）移植自 21st.dev 的 Rolling Counter（MIT，作者 Syed；
-  vanilla JS 重写、外观换本仓 token）：外高 36px 与普通输入框齐平；每列一个 rAF 弹簧模拟
+- **数字胶囊（`number` / `stepper`，`js/number-pill.js`）**：宿主全部数字字段的唯一实现，
+  `window.MaaRM.numberPill.create(...)` 挂到任意容器上（插件面板、内置步骤都用它）。点数字
+  原地编辑（回车/失焦落定，Esc 撤销），输入框宽度随位数增长；每列一个 rAF 弹簧模拟
   （高位错峰起步），速度越大模糊越重；± 可按住加速连滚（0.7s 后 ×5、1.4s 后 ×10）；数字窗
   竖向拖拽带惯性甩动；键盘走 spinbutton 语义（方向键 / PageUp·Down / Home·End）；列随位数
-  自动收展；点数字进入原地编辑。**写后端一律等弹簧收敛（动画落定）才 savePatch**——连滚/拖拽
-  期间只在本地滚动，不逐变化发请求。
+  自动收展。外观移植自 21st.dev 的 Rolling Counter（MIT，作者 Syed；vanilla JS 重写）。
+  **滚动档不是声明的，是算出来的**：`model.canRoll` 要求非负整数上下限 + 整数步长 + 有 max
+  才滚；小数或缺上限的字段退化成同一副胶囊的常驻输入档（`--plain`，数字不滚，仍可点进去输入），
+  所以契约里 `number` 与 `stepper` 的差别不影响外观。
+  **写后端一律等弹簧收敛（动画落定）才 savePatch**——连滚/拖拽期间只在本地滚动，不逐变化发请求；
+  点数字编辑的落定同理，换卡片重建解得先 `destroy()` 旧实例。
   字段可带 `unit_seconds`（每单位配置值的预计秒数，数值来自插件），说明行前缀的
   「预计用时约 X」按当前值即时乘算；值为 0 表示不限，显示「不限轮数」不出估计。
-  回归锁：`tests/test_frontend_config_panel.py` 的滚轮专项与类型覆盖锁。
+  **尺寸与圆角全走控件刻度 token**（`--maarm-control-h` / `--maarm-num-cell-h` /
+  `--maarm-num-col-w` / `--maarm-num-radius`），JS 只写「第几格」`--slot`，像素换算在 CSS
+  的 `calc` 里——改高度或列宽只动 `style.css` 一处。
+  回归锁：`tests/test_frontend_config_panel.py` 的滚轮专项、
+  `test_numeric_fields_share_one_pill`（两种类型共用同一实现）与
+  `test_number_pill_dimensions_come_from_tokens`（尺寸只从 token 来）；
+  纯逻辑（clamp / 位数 / 可否滚动 / 读数文本）由 `tests/js/number_pill_model.test.mjs` 覆盖。
 - 资产安装：插件 manifest 声明 `ASSET_INSTALLER` 时，面板额外显示一行安装入口（按钮文字与缺失提示来自插件的 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT`，宿主不认识模块语义）及进度、取消与错误；数据来自 `install_asset_status/start/cancel`，前端只传模块 id，不传 URL、目标路径或哈希，旧 revision 的响应丢弃。安装器由插件实现，宿主只做白名单转发与生命周期协调。
 - `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
   `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
@@ -189,7 +200,8 @@ Chromium 不提供待编译清单，漏登记只影响该弹窗首次打开的�
 - 安全：动态文本一律 `textContent`，渲染器不拼 HTML；契约的白名单重建在校验侧完成，前端
   不再二次解释模块内容。
 - 内置步骤（启动 / 关闭游戏）仍由 `js/run.js` 的 `BUILTIN_FIELDS` 渲染，不走插件 schema；
-  行结构复用同一套 `.cfg-group` / `.cfg-row`，视觉与模块面板一致。
+  行结构复用同一套 `.cfg-group` / `.cfg-row`，数字字段同样挂 `js/number-pill.js` 的胶囊，
+  视觉与模块面板一致。
 
 ## 底栏状态行与 PEEP 标题栏（`js/status-label.js`）
 
