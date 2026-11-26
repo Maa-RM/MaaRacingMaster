@@ -32,6 +32,9 @@
 #define APPLY_HEALTH_TIMEOUT_MS 120000
 #define APPLY_WAIT_SHELL_MS 60000
 #define APPLY_WAIT_LAUNCHER_MS 15000
+#define APPLY_RECOVER_WAIT_MS 30000
+// 普通启动的恢复与 --apply 共用一把锁：一个安装实例同一时刻只允许一个事务/恢复在动目录。
+#define APPLY_MUTEX_NAME L"Global\\MaaRM_UpdateApply"
 
 static WCHAR g_installRoot[PATH_CAP];
 static WCHAR g_programDir[PATH_CAP];
@@ -241,7 +244,22 @@ static BOOL WriteTxState(const TxRecord *tx, const wchar_t *state)
               stateUtf8, install, staging, backup, target,
               (unsigned long)tx->shellPid, (unsigned long)tx->launcherPid,
               (unsigned long)tx->watcherPid);
-    return WriteAllUtf8(g_txPath, utf8);
+    // 原子替换：先写临时文件再改名，断电时要么是旧记录、要么是新记录，
+    // 不会留下半截文件让下次启动失去备份线索。
+    wchar_t temp[PATH_CAP];
+    if (!JoinPath(temp, PATH_CAP, g_updateDir, L"transaction.tmp"))
+        return FALSE;
+    if (!WriteAllUtf8(temp, utf8))
+    {
+        RemoveFileQuiet(temp);
+        return FALSE;
+    }
+    if (!MoveFileExW(temp, g_txPath, MOVEFILE_REPLACE_EXISTING))
+    {
+        RemoveFileQuiet(temp);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static BOOL IsProcessAlive(DWORD pid)
@@ -300,7 +318,8 @@ static DWORD LaunchNormal(void)
     SecureZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
     if (!CreateProcessW(exe, NULL, NULL, NULL, FALSE, 0, NULL, g_installRoot, &si, &pi))
-        return 0;    CloseHandle(pi.hThread);
+        return 0;
+    CloseHandle(pi.hThread);
     DWORD pid = pi.dwProcessId;
     CloseHandle(pi.hProcess);
     return pid;
@@ -350,20 +369,36 @@ static BOOL MoveDir(const wchar_t *from, const wchar_t *to)
     return MoveFileExW(from, to, MOVEFILE_COPY_ALLOWED) != FALSE;
 }
 
-// 回滚：把当前 program 移开（尽量删除），把备份恢复为 program
-static void RollbackProgram(TxRecord *tx)
+// 回滚：把当前 program 移开（尽量删除），把备份恢复为 program。
+// 返回 FALSE 表示备份没能回到原位——调用方必须保留事务记录等下次重试，
+// 不能把它当成「已回滚」而删掉唯一的线索。
+static BOOL RollbackProgram(TxRecord *tx)
 {
+    if (!DirExists(tx->backup))
+    {
+        LogLine(L"[recover] 备份目录不存在，无法回滚");
+        return FALSE;
+    }
     if (DirExists(g_programDir))
     {
         wchar_t failed[PATH_CAP];
-        if (JoinPath(failed, PATH_CAP, g_updateDir, L"failed"))
-            DeleteTree(failed);
-        MoveFileExW(g_programDir, failed, MOVEFILE_COPY_ALLOWED);
+        if (!JoinPath(failed, PATH_CAP, g_updateDir, L"failed"))
+            return FALSE;
+        DeleteTree(failed);
+        if (!MoveFileExW(g_programDir, failed, MOVEFILE_COPY_ALLOWED))
+        {
+            LogLine(L"[recover] 移开当前程序目录失败，无法回滚");
+            return FALSE;
+        }
         DeleteTree(failed);
     }
-    if (DirExists(tx->backup))
-        MoveDir(tx->backup, g_programDir);
+    if (!MoveDir(tx->backup, g_programDir))
+    {
+        LogLine(L"[recover] 备份恢复到 program 失败");
+        return FALSE;
+    }
     LogLine(L"[recover] 已回滚到上一版程序目录");
+    return TRUE;
 }
 
 // 普通启动前的恢复处理：绝不让半完成的替换留在盘上。
@@ -383,6 +418,17 @@ static void RecoverBeforeLaunch(void)
     if (!LoadTx(&tx))
         return;
 
+    // 事务文件可能被低权限身份改写：目录必须与本次安装一致、暂存与备份必须在
+    // .update 之下，否则只清掉这条不可信记录，绝不按它删改任何目录。
+    if (_wcsicmp(tx.install, g_installRoot) != 0 ||
+        !IsUnder(tx.staging, g_updateDir) ||
+        !IsUnder(tx.backup, g_updateDir))
+    {
+        LogLine(L"[recover] 事务记录越出安装目录，已忽略并清除");
+        RemoveFileQuiet(g_txPath);
+        return;
+    }
+
     LogLine(L"[recover] 发现未完成事务 state=%s", tx.state);
 
     if (IsProcessAlive(tx.watcherPid))
@@ -401,14 +447,25 @@ static void RecoverBeforeLaunch(void)
     {
         if (!DirExists(g_programDir) && DirExists(tx.backup))
         {
-            MoveDir(tx.backup, g_programDir);
-            LogLine(L"[recover] 替换中断，已从备份恢复旧版");
+            if (MoveDir(tx.backup, g_programDir))
+            {
+                LogLine(L"[recover] 替换中断，已从备份恢复旧版");
+                RemoveFileQuiet(g_txPath);
+            }
+            else
+            {
+                LogLine(L"[recover] 从备份恢复失败，保留事务记录");
+            }
         }
         else if (DirExists(g_programDir) && DirExists(tx.backup))
         {
-            RollbackProgram(&tx);
+            if (RollbackProgram(&tx))
+                RemoveFileQuiet(g_txPath);
         }
-        RemoveFileQuiet(g_txPath);
+        else
+        {
+            RemoveFileQuiet(g_txPath);
+        }
     }
     else if (_wcsicmp(tx.state, L"swapped") == 0)
     {
@@ -421,9 +478,11 @@ static void RecoverBeforeLaunch(void)
         }
         else
         {
-            RollbackProgram(&tx);
             RemoveFileQuiet(g_healthPath);
-            RemoveFileQuiet(g_txPath);
+            if (RollbackProgram(&tx))
+                RemoveFileQuiet(g_txPath);
+            else
+                LogLine(L"[recover] 回滚失败，保留事务记录等下次重试");
         }
     }
     else
@@ -438,7 +497,7 @@ static int RunApply(const wchar_t *txPath)
     wcsncpy_s(g_txPath, PATH_CAP, txPath, _TRUNCATE);
     EnsureUpdateDir();
 
-    HANDLE mutex = CreateMutexW(NULL, FALSE, L"Global\\MaaRM_UpdateApply");
+    HANDLE mutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
     if (mutex != NULL && GetLastError() == ERROR_ALREADY_EXISTS)
     {
         LogLine(L"[apply] 已有更新事务在执行，退出");
@@ -503,8 +562,10 @@ static int RunApply(const wchar_t *txPath)
     if (!MoveDir(tx.staging, g_programDir))
     {
         LogLine(L"[apply] 移入新程序目录失败，回滚");
-        MoveDir(tx.backup, g_programDir);
-        WriteTxState(&tx, L"aborted");
+        if (MoveDir(tx.backup, g_programDir))
+            WriteTxState(&tx, L"aborted");
+        else
+            LogLine(L"[apply] 旧程序目录未能恢复，保留事务记录");
         if (mutex) CloseHandle(mutex);
         return 1;
     }
@@ -519,8 +580,10 @@ static int RunApply(const wchar_t *txPath)
     if (newPid == 0)
     {
         LogLine(L"[apply] 新版本启动失败，回滚");
-        RollbackProgram(&tx);
-        RemoveFileQuiet(g_txPath);
+        if (RollbackProgram(&tx))
+            RemoveFileQuiet(g_txPath);
+        else
+            LogLine(L"[apply] 回滚失败，保留事务记录等下次启动重试");
         LaunchNormal();
         if (mutex) CloseHandle(mutex);
         return 1;
@@ -538,9 +601,11 @@ static int RunApply(const wchar_t *txPath)
 
     LogLine(L"[apply] 未收到健康回执，回滚到上一版");
     KillProcessTree(newPid);
-    RollbackProgram(&tx);
+    if (RollbackProgram(&tx))
+        RemoveFileQuiet(g_txPath);
+    else
+        LogLine(L"[apply] 回滚失败，保留事务记录等下次启动重试");
     RemoveFileQuiet(g_healthPath);
-    RemoveFileQuiet(g_txPath);
     LaunchNormal();
     if (mutex) CloseHandle(mutex);
     return 1;
@@ -609,10 +674,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         return RunApply(txArg);
     }
 
-    // 普通启动：先处理未完成事务，再决定内容根（旧解压布局不创建 .update）
+    // 普通启动：先处理未完成事务，再决定内容根（旧解压布局不创建 .update）。
+    // 恢复与 --apply 共用同一把锁：更新器登记 watcher 之前，恢复不得把正在交接的
+    // prepared 当垃圾清掉。拿不到锁（事务进行中）就跳过恢复，直接尝试启动。
     if (DirExists(g_programDir) || PathExists(g_txPath))
         EnsureUpdateDir();
-    RecoverBeforeLaunch();
+    HANDLE recoverMutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
+    DWORD recoverWait = recoverMutex == NULL
+        ? WAIT_FAILED
+        : WaitForSingleObject(recoverMutex, APPLY_RECOVER_WAIT_MS);
+    BOOL recovered = recoverWait == WAIT_OBJECT_0 || recoverWait == WAIT_ABANDONED;
+    if (recovered)
+    {
+        RecoverBeforeLaunch();
+        ReleaseMutex(recoverMutex);
+    }
+    else if (recoverWait == WAIT_TIMEOUT)
+    {
+        LogLine(L"[recover] 更新事务进行中，跳过本地恢复");
+    }
+    if (recoverMutex != NULL)
+        CloseHandle(recoverMutex);
 
     BOOL portableLayout = DirExists(g_programDir);
     const wchar_t *contentRoot = portableLayout ? g_programDir : g_installRoot;
@@ -649,7 +731,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         FatalBox(L"无法设置应用根环境变量。");
         return 1;
     }
-    if (portableLayout && !SetEnvironmentVariableW(L"MaaRM_INSTALL_ROOT", g_installRoot))
+    if (portableLayout && !SetEnvironmentVariableW(L"MAARM_UPDATE_INSTALL_ROOT", g_installRoot))
     {
         FatalBox(L"无法设置安装根环境变量。");
         return 1;
@@ -659,7 +741,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     {
         wchar_t pidText[32];
         swprintf_s(pidText, 32, L"%lu", (unsigned long)GetCurrentProcessId());
-        SetEnvironmentVariableW(L"MaaRM_LAUNCHER_PID", pidText);
+        SetEnvironmentVariableW(L"MAARM_UPDATE_LAUNCHER_PID", pidText);
     }
     SetCurrentDirectoryW(contentRoot);
 

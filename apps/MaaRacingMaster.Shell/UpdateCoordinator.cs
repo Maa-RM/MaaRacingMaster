@@ -860,7 +860,7 @@ public sealed class UpdateCoordinator
     /// 交接失败（更新器缺失/无法启动）→ 走恢复委托重启后端（闸门通过 = 后端已确认
     /// 退出，不恢复则「旧版可继续使用」是假话），再回 ready 带原因：关窗未排，
     /// 前端保留重启升级入口（评审回归：先排关窗再交接会把启动失败变成关窗既成事实）。</summary>
-    public async Task<UpdateSnapshot> ApplyAsync()
+    public async Task<UpdateSnapshot> ApplyAsync(bool backupExtras = false)
     {
         lock (_gate)
         {
@@ -891,7 +891,7 @@ public sealed class UpdateCoordinator
             }
         }
         if (_portable)
-            return await ApplyPortableAsync().ConfigureAwait(false);
+            return await ApplyPortableAsync(backupExtras).ConfigureAwait(false);
 
         var manager = _manager;
         var pending = _pending;
@@ -944,10 +944,10 @@ public sealed class UpdateCoordinator
     /// 安排计划内关窗；交接失败（暂存缺失/启动器不可用）走恢复委托把后端拉起来，
     /// 状态回 ready 带原因——关窗未排，玩家仍可重试。
     /// </summary>
-    private async Task<UpdateSnapshot> ApplyPortableAsync()
+    private async Task<UpdateSnapshot> ApplyPortableAsync(bool backupExtras)
     {
         var targetVersion = _release?.Version;
-        if (_staged is null || string.IsNullOrEmpty(targetVersion))
+        if (_staged is null || _release is null || string.IsNullOrEmpty(targetVersion))
         {
             lock (_gate)
             {
@@ -955,8 +955,25 @@ public sealed class UpdateCoordinator
                     error: "没有已下载的更新，请重新检查后再试");
             }
         }
-        if (!UpdateLauncher.TryStartApply(targetVersion, Environment.ProcessId, out var error,
-                _installRoot))
+        if (backupExtras)
+        {
+            try
+            {
+                BackupLocalChanges(_release);
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    return SetState(_epoch, UpdateSnapshot.Ready,
+                        error: $"备份本地文件失败，已取消安装: {ex.Message}");
+                }
+            }
+        }
+        var source = _endpoint?.Name ?? _source;
+        if (!UpdateLauncher.TryStartApply(targetVersion, Environment.ProcessId,
+                _staged.Mode, _staged.DownloadBytes, source, _release.Notes ?? "",
+                UpdateProtocol.Serialize(_release), out var error, _installRoot))
         {
             var recovered = false;
             if (_handoffRecovery is not null)
@@ -987,6 +1004,107 @@ public sealed class UpdateCoordinator
         ApplyingStarted?.Invoke(); // 交接成功后才安排计划内关窗
         ShellLog.Append($"[update] 提交已交接：目标 {targetVersion}，等本进程退出后替换程序目录");
         return GetStatus();
+    }
+
+    /// <summary>
+    /// 安装前的本地差异：程序目录里多出来的文件，以及相对「已装清单」被玩家改过的
+    /// 官方文件。首版安装没有基线，只能判出额外文件（BaselineKnown=false）。
+    /// </summary>
+    public sealed record LocalChangeReport(
+        [property: JsonPropertyName("extra_files")] int ExtraFiles,
+        [property: JsonPropertyName("extra_bytes")] long ExtraBytes,
+        [property: JsonPropertyName("modified_files")] int ModifiedFiles,
+        [property: JsonPropertyName("baseline_known")] bool BaselineKnown,
+        [property: JsonPropertyName("sample")] IReadOnlyList<string> Sample,
+        [property: JsonPropertyName("backup_path")] string BackupPath);
+
+    /// <summary>扫描本地树（约一次全量哈希）；没有可安装目标时返回 null。</summary>
+    public Task<LocalChangeReport?> InspectLocalChangesAsync() => Task.Run(InspectLocalChanges);
+
+    private LocalChangeReport? InspectLocalChanges()
+    {
+        var release = _release;
+        if (!_portable || release is null || _installRoot is null) return null;
+        var contentRoot = Path.Combine(_installRoot, "program");
+        if (!Directory.Exists(contentRoot)) return null;
+
+        var target = release.Full.Files.Select(f => f.Path)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var disk = UpdateTree.Scan(contentRoot);
+        var extras = disk.Keys.Where(path => !target.Contains(path))
+            .OrderBy(path => path, UpdateProtocol.Utf8PathComparer.Instance).ToList();
+        var (modified, baseline) = ModifiedAgainstInstalled(target, disk);
+        long extraBytes = extras.Sum(path => disk[path].Size);
+        var sample = extras.Concat(modified)
+            .OrderBy(path => path, UpdateProtocol.Utf8PathComparer.Instance)
+            .Take(5).ToList();
+        return new LocalChangeReport(extras.Count, extraBytes, modified.Count,
+            baseline is not null, sample, BackupRoot());
+    }
+
+    private (List<string> Modified, UpdateFull? Baseline) ModifiedAgainstInstalled(
+        HashSet<string> target, IReadOnlyDictionary<string, UpdateFileEntry> disk)
+    {
+        var baseline = LoadInstalledManifest();
+        var modified = new List<string>();
+        if (baseline is null) return (modified, null);
+        var installed = baseline.Files.ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
+        foreach (var path in target)
+        {
+            if (!installed.TryGetValue(path, out var expected)) continue;
+            if (!disk.TryGetValue(path, out var actual)) continue;
+            if (!string.Equals(actual.Sha256, expected.Sha256, StringComparison.OrdinalIgnoreCase))
+                modified.Add(path);
+        }
+        modified.Sort(UpdateProtocol.Utf8PathComparer.Instance);
+        return (modified, baseline);
+    }
+
+    private UpdateFull? LoadInstalledManifest()
+    {
+        if (_installRoot is null) return null;
+        var path = UpdateLauncher.InstalledManifestPath(_installRoot);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return UpdateProtocol.Parse(File.ReadAllText(path)).Full;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 已装清单不可读，只能按额外文件判断差异: {ex.Message}");
+            return null;
+        }
+    }
+
+    private string BackupRoot()
+    {
+        var appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (!string.IsNullOrWhiteSpace(appData))
+            return Path.Combine(appData, "MaaRacingMaster", "data", "_update_backup", _currentVersion);
+        return Path.Combine(UpdateLauncher.UpdateDir(_installRoot!), "backup-files", _currentVersion);
+    }
+
+    /// <summary>把额外文件与被改过的官方文件按原相对路径复制到备份目录；失败即中止安装。</summary>
+    private void BackupLocalChanges(UpdateRelease release)
+    {
+        if (_installRoot is null) return;
+        var contentRoot = Path.Combine(_installRoot, "program");
+        var target = release.Full.Files.Select(f => f.Path)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var disk = UpdateTree.Scan(contentRoot);
+        var extras = disk.Keys.Where(path => !target.Contains(path)).ToList();
+        var (modified, _) = ModifiedAgainstInstalled(target, disk);
+        var backupRoot = BackupRoot();
+        var count = 0;
+        foreach (var rel in extras.Concat(modified).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var sourcePath = Path.Combine(contentRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+            var destination = Path.Combine(backupRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(sourcePath, destination, overwrite: true);
+            count++;
+        }
+        ShellLog.Append($"[update] 已备份本地文件 {count} 个到 {backupRoot}");
     }
 
     // ---------- 内部 ----------

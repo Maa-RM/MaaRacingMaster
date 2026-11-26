@@ -51,7 +51,8 @@ public sealed record UpdateRelease(
     [property: JsonPropertyName("compat")] UpdateCompat Compat,
     [property: JsonPropertyName("full")] UpdateFull Full,
     [property: JsonPropertyName("deltas")] IReadOnlyList<UpdateDelta>? Deltas,
-    [property: JsonPropertyName("limits")] UpdateLimits? Limits)
+    [property: JsonPropertyName("limits")] UpdateLimits? Limits,
+    [property: JsonPropertyName("notes")] string? Notes = null)
 {
     public IReadOnlyList<UpdateDelta> AvailableDeltas => Deltas ?? Array.Empty<UpdateDelta>();
 }
@@ -136,6 +137,14 @@ public static class UpdateProtocol
             return a.Length.CompareTo(b.Length);
         }
     }
+
+    /// <summary>
+    /// 把清单写回文本：安装交接时留一份到更新目录，作为下一次安装前的差异基线。
+    /// 与 <see cref="Parse"/> 使用同一套字段与转换器，往返后字节语义不变。
+    /// </summary>
+    public static string Serialize(UpdateRelease release)
+        => JsonSerializer.Serialize(release,
+            new JsonSerializerOptions(JsonOptions) { WriteIndented = true });
 
     public static UpdateRelease Parse(string json)
     {

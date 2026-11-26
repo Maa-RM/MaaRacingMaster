@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  const { maarm, state, $, showError, mkEl } = window.MaaRM;
+  const { maarm, state, $, showError, mkEl, openModal, escHtml } = window.MaaRM;
 
   // ---------- 图标 ----------
   // icons.js 里没有的字形在这里内联（静态字面量，不接任何远程数据）。
@@ -491,11 +491,105 @@
 
   async function downloadUpdate() {
     try {
+      pendingBackupExtras = false;
+      // 安装前扫描本地差异：有额外文件或被改过的官方文件就先问玩家，再下载。
+      const report = await maarm.call('update_inspect');
+      if (report && ((report.extra_files || 0) + (report.modified_files || 0)) > 0) {
+        const proceed = await askLocalChange(report);
+        if (!proceed) return;
+      }
       // 带上玩家看到目标时的修订号：后台已换目标则后端拒绝，不替旧界面下载新版本
       renderSnapshot(await maarm.call('update_start_download', { revision: lastUpdateRevision }));
     } catch (e) {
       console.error(e);
       paintFailure('下载启动失败：' + e.message);
+    }
+  }
+
+  // ---------- 安装前的本地差异 ----------
+  let pendingBackupExtras = false;
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 MB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function askLocalChange(report) {
+    const parts = [];
+    if (report.extra_files > 0) {
+      parts.push('<b>' + report.extra_files + '</b> 个额外文件（约 '
+        + escHtml(formatBytes(report.extra_bytes)) + '）');
+    }
+    if (report.modified_files > 0) {
+      parts.push('<b>' + report.modified_files + '</b> 个被修改的官方文件');
+    }
+    const sample = Array.isArray(report.sample) && report.sample.length
+      ? '<p class="maarm-modal-notice-hint">例如：' + report.sample.map(escHtml).join('、') + '</p>'
+      : '';
+    // 首版安装没有基线清单：只能识别额外文件，这一点必须说清楚，别让玩家以为漏检。
+    const baselineHint = report.baseline_known === false
+      ? '<p class="maarm-modal-notice-hint">首次应用内更新只能识别额外文件；被修改的官方文件从下一次更新起才能识别。</p>'
+      : '';
+    return new Promise((resolve) => {
+      let decided = false;
+      const decide = (value) => { if (!decided) { decided = true; resolve(value); } };
+      openModal({
+        title: '安装前发现本地文件',
+        bodyHtml:
+          '<div class="maarm-modal-notice"><p>程序目录里检测到 ' + parts.join('、') + '。</p>'
+          + '<p>备份会把它们按原路径复制到：<br><code>' + escHtml(report.backup_path) + '</code></p>'
+          + '<p>不备份则这些文件会随旧版本一起删除。</p>' + sample + baselineHint + '</div>',
+        buttons: [
+          {
+            text: '备份后继续', primary: true,
+            onClick: (modal) => { pendingBackupExtras = true; decide(true); modal.close(); },
+          },
+          {
+            text: '不备份，继续安装',
+            onClick: (modal) => { pendingBackupExtras = false; decide(true); modal.close(); },
+          },
+          { text: '放弃', onClick: (modal) => { decide(false); modal.close(); } },
+        ],
+        onClose: () => decide(false),
+      });
+    });
+  }
+
+  // ---------- 更新后首次启动的汇报 ----------
+  async function showStartupReport(attempt) {
+    try {
+      const report = await maarm.call('update_startup_report');
+      if (!report) {
+        // 壳要等「主页面成功 + 后端可用」才消费交接记录：稍后再取一次。
+        if (attempt < 1) setTimeout(() => showStartupReport(attempt + 1), 4000);
+        return;
+      }
+      if (report.outcome === 'rolled-back') {
+        openModal({
+          title: '上次更新未完成',
+          titleColor: 'var(--maarm-warning, #fbbf24)',
+          bodyHtml: '<div class="maarm-modal-notice"><p>升级到 v' + escHtml(report.version)
+            + ' 的尝试没有成功，已回到原来可用的版本。</p>'
+            + '<p>可以稍后在「关于」里重新检查并安装。</p></div>',
+          buttons: [{ text: '知道了', primary: true, onClick: (modal) => modal.close() }],
+        });
+        return;
+      }
+      const mode = report.mode === 'delta' ? '增量更新' : '完整包更新';
+      const notes = report.notes
+        ? '<div class="maarm-modal-notice" style="white-space:pre-wrap">'
+          + escHtml(report.notes) + '</div>'
+        : '';
+      openModal({
+        title: '已更新到 v' + report.version,
+        bodyHtml: '<div class="maarm-modal-notice"><p>' + mode + '，下载 '
+          + escHtml(formatBytes(report.bytes))
+          + (report.source ? '，来源 ' + escHtml(report.source) : '') + '。</p></div>' + notes,
+        maxWidth: 520,
+        buttons: [{ text: '知道了', primary: true, onClick: (modal) => modal.close() }],
+      });
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -520,7 +614,7 @@
 
   async function applyUpdate() {
     try {
-      const d = await maarm.call('update_apply');
+      const d = await maarm.call('update_apply', { backup_extras: pendingBackupExtras });
       if (d.phase === 'preparing' || d.phase === 'applying') {
         // 提交临界区：壳接管收尾与计划内关窗，界面只如实显示，不提供取消
         renderSnapshot(d);
@@ -688,6 +782,7 @@
     }
     refreshUpdateStatus();
     fetchAnnouncement();
+    showStartupReport(0);
   }
 
   // 版本号在 get_initial_state 之后才到，可能晚于 update_status：app.js 落到共享 state 后

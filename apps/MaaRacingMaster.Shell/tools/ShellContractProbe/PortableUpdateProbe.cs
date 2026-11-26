@@ -253,7 +253,45 @@ internal static class PortableUpdateProbe
                 && UpdateTree.Verify(UpdateLauncher.StagingPath(installRoot), release.Full).Count == 0,
                 $"phase={ready.Phase} error={ready.Error}");
 
-            var applied = await coordinator.ApplyAsync();
+            // 安装前的本地差异：程序目录里的玩家文件必须被识别；首版没有已装清单，
+            // 只能报额外文件（BaselineKnown=false），不能假装识别了被改过的官方文件。
+            File.WriteAllText(Path.Combine(installRoot, "program", "user-note.txt"), "mine");
+            // 没有基线时，「本版移除的官方文件」与「玩家文件」无法区分，两个都会报成额外文件——
+            // 这正是把已装清单留到下一次更新的理由。
+            var inspect = await coordinator.InspectLocalChangesAsync();
+            Program.Check("安装前识别额外文件（无基线时含发行包移除的文件）",
+                inspect is not null && inspect.ExtraFiles == 2 && inspect.ModifiedFiles == 0
+                && !inspect.BaselineKnown && inspect.Sample.Contains("user-note.txt"),
+                inspect is null
+                    ? "null"
+                    : $"extra={inspect.ExtraFiles} modified={inspect.ModifiedFiles} baseline={inspect.BaselineKnown}");
+
+            // 有已装清单时能识别「被改过的官方文件」：写入上一版基线并改一个官方文件。
+            var installedPath = UpdateLauncher.InstalledManifestPath(installRoot);
+            Directory.CreateDirectory(Path.GetDirectoryName(installedPath)!);
+            var oldRelease = new UpdateRelease(1, "v1.1.0", "1.1.0", "stable", "win-x64",
+                new UpdateCompat(UpdateProtocol.SupportedLayout, UpdateProtocol.SupportedLauncherApi),
+                new UpdateFull("MaaRacingMaster-1.1.0-win-x64.zip", 1, new string('a', 64),
+                    UpdateProtocol.TreeDigest(oldEntries.Values), oldEntries.Values.ToList()),
+                Array.Empty<UpdateDelta>(), null);
+            File.WriteAllText(installedPath, UpdateProtocol.Serialize(oldRelease));
+            File.WriteAllText(
+                Path.Combine(installRoot, "program", "runtime", "python", "python.exe"),
+                "locally changed");
+            var inspectBaseline = await coordinator.InspectLocalChangesAsync();
+            Program.Check("有基线时识别被改过的官方文件",
+                inspectBaseline is not null && inspectBaseline.BaselineKnown
+                && inspectBaseline.ModifiedFiles == 1
+                && inspectBaseline.Sample.Contains("runtime/python/python.exe"),
+                inspectBaseline is null
+                    ? "null"
+                    : $"modified={inspectBaseline.ModifiedFiles} baseline={inspectBaseline.BaselineKnown}");
+
+            // 备份落到「用户数据目录」而不是安装目录：只在本进程内改 APPDATA 指向临时目录。
+            var appData = Path.Combine(work, "appdata");
+            Environment.SetEnvironmentVariable("APPDATA", appData);
+
+            var applied = await coordinator.ApplyAsync(backupExtras: true);
             var txPath = UpdateLauncher.TransactionPath(installRoot);
             Program.Check("协调器提交 → applying 且事务文件就绪",
                 applied.Phase == UpdateSnapshot.Applying
@@ -261,6 +299,14 @@ internal static class PortableUpdateProbe
                 && File.Exists(txPath)
                 && File.ReadAllText(txPath).Contains("target=1.2.0", StringComparison.Ordinal),
                 $"phase={applied.Phase} error={applied.Error} fired={applyingFired}");
+            Program.Check("选择备份后本地文件复制到用户数据目录",
+                File.Exists(Path.Combine(appData, "MaaRacingMaster", "data", "_update_backup",
+                    "1.1.0", "user-note.txt")),
+                Path.Combine(appData, "MaaRacingMaster", "data", "_update_backup", "1.1.0"));
+            Program.Check("交接写入启动汇报与清单副本",
+                File.Exists(UpdateLauncher.PendingReportPath(installRoot))
+                && File.Exists(UpdateLauncher.PendingManifestPath(installRoot)),
+                UpdateLauncher.PendingReportPath(installRoot));
         }
         finally
         {
@@ -312,6 +358,64 @@ internal static class PortableUpdateProbe
         Program.Check("兼容闸门：不同安装布局 → 拒绝自动安装",
             UpdateProtocol.IncompatibleReason(otherLayout) is not null,
             UpdateProtocol.IncompatibleReason(otherLayout) ?? "");
+    }
+
+    /// <summary>
+    /// 用真实发布的 ZIP 与清单跑一遍暂存：发行包根目录带启动器、程序文件在 program\ 下，
+    /// 这条回归锁住「正式包能通过验树」——发布流程里的 Python 自验不经过客户端代码。
+    /// </summary>
+    public static void StageRealPackage(string[] args)
+    {
+        var zip = Option(args, "--zip");
+        var manifestPath = Option(args, "--manifest");
+        var outDir = Option(args, "--out");
+        if (zip is null || manifestPath is null || outDir is null)
+        {
+            Program.Check("stage 参数齐全", false, "需要 --zip / --manifest / --out");
+            return;
+        }
+
+        var work = Path.Combine(Path.GetTempPath(),
+            "maarm-stage-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            var release = UpdateProtocol.Parse(File.ReadAllText(manifestPath));
+            var incompatible = UpdateProtocol.IncompatibleReason(release);
+            Program.Check("正式清单兼容当前客户端", incompatible is null, incompatible ?? "");
+
+            var assets = Path.Combine(work, "assets", release.Tag);
+            Directory.CreateDirectory(assets);
+            File.Copy(zip, Path.Combine(assets, Path.GetFileName(zip)), overwrite: true);
+            var contentRoot = Path.Combine(work, "current");
+            Directory.CreateDirectory(contentRoot);
+            if (Directory.Exists(outDir)) Directory.Delete(outDir, recursive: true);
+
+            var stager = new UpdateStager(new FileUpdateTransport(), Path.Combine(work, "cache"));
+            var staged = stager.StageAsync(release, new Uri(Path.Combine(work, "assets")),
+                    "0.0.0-probe", contentRoot, outDir, null, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            var problems = UpdateTree.Verify(outDir, release.Full);
+            Program.Check("正式 ZIP 可暂存为程序树",
+                staged.Mode == StagedUpdate.ModeFull && problems.Count == 0,
+                string.Join("；", problems.Take(5)));
+            Program.Check("暂存不含包根启动器",
+                !File.Exists(Path.Combine(outDir, "MaaRacingMaster.exe")),
+                "暂存根出现启动器");
+        }
+        catch (Exception ex)
+        {
+            Program.Check("正式 ZIP 暂存", false, ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 临时目录清理失败不影响结论 */ }
+        }
+    }
+
+    private static string? Option(string[] args, string name)
+    {
+        var index = Array.IndexOf(args, name);
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 
     private static async Task CheckChannelMarkers(string work)

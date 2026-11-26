@@ -44,7 +44,7 @@ internal static class RpcBridge
         // 宿主更新动作（UpdateCoordinator）：固定意图，不携带 URL/路径；设置类只带
         // 枚举值（stable/preview、cnb/github）与布尔开关，由协调器校验，前端不传地址。
         "update_check", "update_start_download", "update_cancel_download",
-        "update_status", "update_apply",
+        "update_status", "update_apply", "update_inspect", "update_startup_report",
         "update_set_channel", "update_set_source", "update_set_dismissed",
         "update_set_auto_check",
         // 宿主运行环境维护（WebView2RuntimeUpdater）：下载源固定为微软官方跳转，
@@ -59,7 +59,7 @@ internal static class RpcBridge
     private static readonly HashSet<string> HostMethods = new(StringComparer.Ordinal)
     {
         "update_check", "update_start_download", "update_cancel_download",
-        "update_status", "update_apply",
+        "update_status", "update_apply", "update_inspect", "update_startup_report",
         "update_set_channel", "update_set_source", "update_set_dismissed",
         "update_set_auto_check",
         "webview2_status", "webview2_update",
@@ -136,6 +136,24 @@ internal static class RpcBridge
             return;
         }
 
+        // 安装前的本地差异：由前端在玩家点「安装」时调用，有差异先询问再下载。
+        if (method == "update_inspect")
+        {
+            var inspector = s_coordinator;
+            var report = inspector is null
+                ? null
+                : await inspector.InspectLocalChangesAsync().ConfigureAwait(false);
+            await ReplyAsync(sender, callId, report is not null, report,
+                report is null ? "没有可安装目标，请先检查更新" : null);
+            return;
+        }
+        // 更新后首次启动的汇报（取一次即清空）。
+        if (method == "update_startup_report")
+        {
+            await ReplyAsync(sender, callId, true, UpdateLauncher.TakeStartupReport(), null);
+            return;
+        }
+
         UpdateSnapshot data;
         string? error = null;
         var ok = true;
@@ -156,7 +174,8 @@ internal static class RpcBridge
                     "update_start_download" => await coordinator.StartDownloadAsync(
                         ReadLongParam(paramsEl, "revision")),
                     "update_cancel_download" => coordinator.CancelDownload(),
-                    "update_apply" => await coordinator.ApplyAsync(),
+                    "update_apply" => await coordinator.ApplyAsync(
+                        ReadBoolParam(paramsEl, "backup_extras") ?? false),
                     "update_set_channel" => await coordinator.SetChannelAsync(ReadParam(paramsEl, "value")),
                     "update_set_source" => await coordinator.SetSourceAsync(ReadParam(paramsEl, "value")),
                     "update_set_dismissed" => coordinator.SetDismissed(
