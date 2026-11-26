@@ -381,6 +381,19 @@ jobs:
                      Where-Object { $_.tag_name -eq $env:TAGNAME } |
                      Select-Object -First 1
           if (-not $release) { throw "找不到本 tag 的 Release: $env:TAGNAME" }
+          # 已公开的 Release 是只读交付物：缺资产说明上一轮发布不完整，必须人工处理，
+          # 不能把新字节补进公开版本（旧程序内置的摘要会失效）。
+          if (-not $release.draft) {
+            $missing = @($files | Where-Object {
+              $n = Split-Path $_ -Leaf
+              -not ($release.assets | Where-Object { $_.name -eq $n })
+            })
+            if (@($missing).Count -gt 0) {
+              throw "已公开的 Release 缺资产，拒绝补传（需人工处理）: $($missing -join ', ')"
+            }
+            Write-Host "Release 已公开且资产齐全，无需上传"
+            exit 0
+          }
           $toUpload = @()
           foreach ($f in $files) {
             $name = Split-Path $f -Leaf

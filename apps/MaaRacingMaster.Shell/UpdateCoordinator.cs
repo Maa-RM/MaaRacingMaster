@@ -236,7 +236,7 @@ public sealed class UpdateCoordinator
     private StagedUpdate? _staged;                 // 便携模式：已暂存完成的候选树
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
-    private Task? _drainTask;                      // 切渠道后旧下载的收尾（未完成前不许开新下载）
+    private int _drainCount;                       // 切渠道后旧下载的收尾（未完成前不许开新下载，可叠加）
 
     private Task<UpdateSnapshot>? _checkTask;      // 在途检查（同世代请求合并）
     private long _checkTaskEpoch = -1;
@@ -400,7 +400,7 @@ public sealed class UpdateCoordinator
             if (expectedRevision is long seen && seen != _revision)
                 return Task.FromResult(Snapshot("界面信息已更新，请确认当前目标后重新操作"));
             // 旧下载还没收尾：它和下一次下载写同一个暂存目录与缓存，必须先等它退出。
-            if (_drainTask is { IsCompleted: false })
+            if (_drainCount > 0)
                 return Task.FromResult(Snapshot("正在切换更新渠道，请稍候"));
             if (_phase == UpdateSnapshot.Downloading && _downloadTask is not null)
                 return Task.FromResult(Snapshot()); // 复用当前任务
@@ -774,15 +774,16 @@ public sealed class UpdateCoordinator
         if (!isChannel) return GetStatus();
         // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
         // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
-        // 旧下载也必须等：它和下一次下载写同一个暂存目录与缓存，只取消不等待会让
-        // 旧任务在新任务开始后继续清理或写入。等待期间 Idle 已对外可见，所以用
-        // _drainTask 拦住这期间发起的新下载（再次切渠道或手动检查都不许绕过）。
-        var drainDownload = DrainAsync(drainingDownload);
-        lock (_gate) { _drainTask = drainDownload; }
-        await drainDownload.ConfigureAwait(false);
-        lock (_gate)
+        // 旧下载也必须等：它和下一次下载写同一个暂存目录与缓存。用计数而不是单个
+        // 任务引用：连续切换两次时，第二次不能把第一次的等待闸门覆盖掉。
+        lock (_gate) { _drainCount++; }
+        try
         {
-            if (ReferenceEquals(_drainTask, drainDownload)) _drainTask = null;
+            await DrainAsync(drainingDownload).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate) { _drainCount--; }
         }
         if (draining is { IsCompleted: false })
         {
@@ -1121,10 +1122,15 @@ public sealed class UpdateCoordinator
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var disk = UpdateTree.Scan(contentRoot);
         var extras = disk.Keys.Where(path => !target.Contains(path)).ToList();
-        var (modified, _) = ModifiedAgainstInstalled(target, disk);
+        var (modified, baseline) = ModifiedAgainstInstalled(target, disk);
+        // 没有基线就分不清「被改过的官方文件」：既然玩家选了备份，就复制整个程序
+        // 目录，别让他以为备份过的东西一定在里面。
+        var toCopy = baseline is null
+            ? disk.Keys.ToList()
+            : extras.Concat(modified).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var backupRoot = BackupRoot();
         var count = 0;
-        foreach (var rel in extras.Concat(modified).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var rel in toCopy)
         {
             var sourcePath = Path.Combine(contentRoot, rel.Replace('/', Path.DirectorySeparatorChar));
             var destination = Path.Combine(backupRoot, rel.Replace('/', Path.DirectorySeparatorChar));
@@ -1132,7 +1138,8 @@ public sealed class UpdateCoordinator
             File.Copy(sourcePath, destination, overwrite: true);
             count++;
         }
-        ShellLog.Append($"[update] 已备份本地文件 {count} 个到 {backupRoot}");
+        ShellLog.Append($"[update] 已备份本地文件 {count} 个到 {backupRoot}"
+            + (baseline is null ? "（无基线：整目录复制）" : ""));
     }
 
     // ---------- 内部 ----------
@@ -1203,6 +1210,7 @@ public sealed class UpdateCoordinator
         string? lastError = null;
         string? needsManual = null;
         var anyResponded = false;
+        var sawUnavailableNewer = false;   // 有源声称有新版但取不到可用清单：不能报「已是最新」
         UpdateSourceEndpoint? bestEndpoint = null;
         UpdateRelease? bestRelease = null;
         SemanticVersion? bestVersion = null;
@@ -1215,6 +1223,7 @@ public sealed class UpdateCoordinator
                 lastError = $"{endpoint.Name}（不可达或未就绪）";
                 continue;
             }
+            var markerAhead = false;
             try
             {
                 // 每源预算覆盖「标记 + 清单」两次请求，也覆盖正文读取：HttpClient 的超时
@@ -1235,7 +1244,8 @@ public sealed class UpdateCoordinator
                     lastError = $"{endpoint.Name}（版本号不合法）";
                     continue;
                 }
-                if (markerVersion.CompareTo(current) <= 0)
+                markerAhead = markerVersion.CompareTo(current) > 0;
+                if (!markerAhead)
                 {
                     // 本源确认没有更高版本；「标记说有新版但清单取不到」不算这一类。
                     anyResponded = true;
@@ -1246,18 +1256,21 @@ public sealed class UpdateCoordinator
                     .ConfigureAwait(false);
                 if (!string.Equals(release.Channel, intent.Channel, StringComparison.Ordinal))
                 {
+                    sawUnavailableNewer = true;
                     lastError = $"{endpoint.Name}（渠道不符：{release.Channel}）";
                     continue;
                 }
                 var incompatible = UpdateProtocol.IncompatibleReason(release);
                 if (incompatible is not null)
                 {
+                    sawUnavailableNewer = true;
                     needsManual = $"{release.Version}：{incompatible}";
                     lastError = $"{endpoint.Name}（{incompatible}）";
                     continue;
                 }
                 if (!SemanticVersion.TryParse(release.Version, out var target))
                 {
+                    sawUnavailableNewer = true;
                     lastError = $"{endpoint.Name}（版本号不合法）";
                     continue;
                 }
@@ -1276,10 +1289,12 @@ public sealed class UpdateCoordinator
             }
             catch (OperationCanceledException)
             {
+                if (markerAhead) sawUnavailableNewer = true;
                 lastError = $"{endpoint.Name}（读取超时）";
             }
             catch (Exception ex)
             {
+                if (markerAhead) sawUnavailableNewer = true;
                 lastError = $"{endpoint.Name}（{ex.Message}）";
             }
         }
@@ -1312,7 +1327,7 @@ public sealed class UpdateCoordinator
 
         // 至少一个来源正常回应且都不高于本机：这才叫「已是最新」。全源失败仍按原语义
         // 区分自动/手动检查（自动保留旧状态，手动诚实报错）。
-        if (anyResponded && needsManual is null)
+        if (anyResponded && needsManual is null && !sawUnavailableNewer)
         {
             lock (_gate)
             {
@@ -1359,7 +1374,9 @@ public sealed class UpdateCoordinator
             _release = null;
             _pending = null;
             return SetState(intent.Epoch, UpdateSnapshot.Idle,
-                error: $"所有更新源均不可达：{lastError}");
+                error: sawUnavailableNewer
+                    ? $"更新源暂时不可用，请稍后重试：{lastError}"
+                    : $"所有更新源均不可达：{lastError}");
         }
     }
 

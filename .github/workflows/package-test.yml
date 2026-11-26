@@ -172,6 +172,20 @@ jobs:
             --out "${{ github.workspace }}\build\drill\staged"
           if ($LASTEXITCODE -ne 0) { throw "正式包暂存回归失败" }
 
+      - name: 更新事务演练（换目录 / 超时回滚 / 中断恢复）
+        # 只手动触发时跑：会真实替换临时安装目录，并等待 120 秒健康超时，日常打包验证
+        # 不付这个时间。验证的是正式编译的原生启动器，不是另写一套模拟。
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $stub = "${{ github.workspace }}\build\drill\stub"
+          dotnet publish apps\MaaRacingMaster.Shell\tools\UpdateDrillShell -c Release -o $stub
+          if ($LASTEXITCODE -ne 0) { throw "演练假壳编译失败" }
+          & "${{ github.workspace }}\scripts\release\update_drill.ps1" `
+            -PackageZip "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip" `
+            -StubDir $stub `
+            -WorkRoot "${{ github.workspace }}\build\drill\installs"
+
       - name: 上传验证产物（不创建 Release）
         uses: actions/upload-artifact@v7.0.2
         with:

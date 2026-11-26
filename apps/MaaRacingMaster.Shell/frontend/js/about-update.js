@@ -493,9 +493,14 @@
     try {
       pendingBackupExtras = false;
       // 安装前扫描本地差异：有额外文件或被改过的官方文件就先问玩家，再下载。
-      // 扫描本身失败不阻断下载（旧受管安装没有扫描结果，返回空）。
+      // 扫描失败必须停：把「不知道有没有差异」当成「没有差异」会静默覆盖玩家文件。
       let report = null;
-      try { report = await maarm.call('update_inspect'); } catch (e) { report = null; }
+      try {
+        report = await maarm.call('update_inspect');
+      } catch (e) {
+        paintFailure('检查本地文件失败，已停止下载：' + e.message);
+        return;
+      }
       if (report) {
         const diffs = (report.extra_files || 0) + (report.modified_files || 0);
         // 没有基线时只能识别额外文件：改动过官方文件的情况必须提前告知，
@@ -542,13 +547,20 @@
         + '<p>不备份则这些文件会随旧版本一起删除。</p>'
       : '<p>如果你改过程序目录里的文件，请先自行备份。备份目录可用：<br><code>'
         + escHtml(report.backup_path) + '</code></p>';
+    // 没有基线时只能识别额外文件：即使有差异，也要说清「改过的官方文件」识别不了，
+    // 并把备份动作升级为整目录复制（后端同口径）。
+    const caveat = report.baseline_known === false
+      ? '<p class="maarm-modal-notice-hint">本机还没有版本基线：只能识别额外文件，'
+        + '无法识别被修改过的官方文件。选择备份会复制整个程序目录。</p>'
+      : '';
+    const backupLabel = report.baseline_known === false ? '备份整个程序目录后继续' : '备份后继续';
     return new Promise((resolve) => {
       let decided = false;
       const decide = (value) => { if (!decided) { decided = true; resolve(value); } };
       const buttons = hasDiff
         ? [
           {
-            text: '备份后继续', primary: true,
+            text: backupLabel, primary: true,
             onClick: (modal) => { pendingBackupExtras = true; decide(true); modal.close(); },
           },
           {
@@ -567,7 +579,7 @@
       openModal({
         title: hasDiff ? '安装前发现本地文件' : '首次应用内更新',
         bodyHtml:
-          '<div class="maarm-modal-notice">' + intro + backupLine + sample + '</div>',
+          '<div class="maarm-modal-notice">' + intro + caveat + backupLine + sample + '</div>',
         buttons,
         onClose: () => decide(false),
       });

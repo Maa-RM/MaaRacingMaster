@@ -33,8 +33,7 @@
 #define APPLY_WAIT_SHELL_MS 60000
 #define APPLY_WAIT_LAUNCHER_MS 15000
 #define APPLY_RECOVER_WAIT_MS 30000
-// 普通启动的恢复与 --apply 共用一把锁：一个安装实例同一时刻只允许一个事务/恢复在动目录。
-#define APPLY_MUTEX_NAME L"Global\\MaaRM_UpdateApply"
+#define APPLY_NORMAL_WAIT_MS 5000
 
 static WCHAR g_installRoot[PATH_CAP];
 static WCHAR g_programDir[PATH_CAP];
@@ -42,6 +41,10 @@ static WCHAR g_updateDir[PATH_CAP];
 static WCHAR g_txPath[PATH_CAP];
 static WCHAR g_healthPath[PATH_CAP];
 static WCHAR g_logPath[PATH_CAP];
+// 安装实例锁：名字按安装路径哈希生成，两个独立解压目录互不阻塞。
+static WCHAR g_lockName[128];
+// 更新器为「试启动」拉起的根入口：它不能去抢父进程正持有的安装锁。
+static BOOL g_isUpdateChild;
 
 // 事务字段（由 shell 写入，本程序只读）
 typedef struct
@@ -111,11 +114,40 @@ static BOOL UpdateDirTrusted(void)
     return (attr & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
 }
 
+// 事务实际操作的子目录（staging/backup）同样不能是重解析点。
+static BOOL PathTrusted(const wchar_t *path)
+{
+    DWORD attr = GetFileAttributesW(path);
+    if (attr == INVALID_FILE_ATTRIBUTES)
+        return TRUE;
+    return (attr & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+// 每套安装一把锁：锁名由规范化安装路径哈希得到。全局固定的名字会让两个独立
+// 解压目录互相阻塞，也会把一个目录的恢复挡在另一个目录的事务后面。
+static void BuildLockName(void)
+{
+    wchar_t canonical[PATH_CAP];
+    const wchar_t *source = CanonicalizePath(g_installRoot, canonical, PATH_CAP)
+        ? canonical
+        : g_installRoot;
+    unsigned int hash = 2166136261u;
+    for (const wchar_t *p = source; *p != 0; ++p)
+    {
+        wchar_t c = *p;
+        if (c >= L'A' && c <= L'Z')
+            c = (wchar_t)(c + 32);
+        hash ^= (unsigned int)(c & 0xFF);
+        hash *= 16777619u;
+    }
+    swprintf_s(g_lockName, 128, L"Global\\MaaRM_UpdateApply_%08x", hash);
+}
+
 // 取得安装实例锁的所有权。CreateMutex 只创建对象、不取得所有权，必须 Wait 才算持有；
 // 返回 NULL 表示别的实例正持有或创建失败。
 static HANDLE AcquireApplyLock(DWORD timeoutMs)
 {
-    HANDLE mutex = CreateMutexW(NULL, FALSE, APPLY_MUTEX_NAME);
+    HANDLE mutex = CreateMutexW(NULL, FALSE, g_lockName);
     if (mutex == NULL)
         return NULL;
     DWORD wait = WaitForSingleObject(mutex, timeoutMs);
@@ -342,8 +374,9 @@ static void KillProcessTree(DWORD pid)
 {
     if (pid == 0)
         return;
-    // 必须用系统目录里的绝对路径：CreateProcess 的 lpApplicationName 非空时不搜 PATH，
-    // 发布包根目录没有 taskkill.exe，裸文件名等于没杀成。
+    // 必须用系统目录里的绝对路径，并且命令行要带程序名：CreateProcess 的
+    // lpApplicationName 非空时不搜 PATH，而 taskkill 仍按 argv[0] 解析参数——
+    // 只给 "/PID ..." 会被它当成程序名，返回 1 且不杀进程。
     wchar_t systemDir[PATH_CAP];
     UINT length = GetSystemDirectoryW(systemDir, PATH_CAP);
     if (length == 0 || length >= PATH_CAP)
@@ -351,14 +384,14 @@ static void KillProcessTree(DWORD pid)
     wchar_t tool[PATH_CAP];
     if (swprintf_s(tool, PATH_CAP, L"%s\\taskkill.exe", systemDir) <= 0)
         return;
-    wchar_t cmd[128];
-    swprintf_s(cmd, 128, L"/PID %lu /T /F", (unsigned long)pid);
+    wchar_t cmd[PATH_CAP];
+    swprintf_s(cmd, PATH_CAP, L"\"%s\" /PID %lu /T /F", tool, (unsigned long)pid);
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     SecureZeroMemory(&si, sizeof(si));
     SecureZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
-    if (CreateProcessW(tool, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW,
                        NULL, NULL, &si, &pi))
     {
         WaitForSingleObject(pi.hProcess, 5000);
@@ -380,7 +413,13 @@ static HANDLE LaunchNormal(DWORD *pidOut)
     SecureZeroMemory(&si, sizeof(si));
     SecureZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
-    if (!CreateProcessW(exe, NULL, NULL, NULL, FALSE, 0, NULL, g_installRoot, &si, &pi))
+    // 试启动的根入口不能去抢本进程正持有的安装锁，也不能重复恢复事务：
+    // 用环境变量标注它是「更新器拉起的子入口」，它据此跳过这两步。
+    SetEnvironmentVariableW(L"MAARM_UPDATE_CHILD", L"1");
+    BOOL started = CreateProcessW(exe, NULL, NULL, NULL, FALSE, 0, NULL, g_installRoot,
+                                  &si, &pi);
+    SetEnvironmentVariableW(L"MAARM_UPDATE_CHILD", NULL);
+    if (!started)
         return NULL;
     CloseHandle(pi.hThread);
     *pidOut = pi.dwProcessId;
@@ -466,12 +505,19 @@ static BOOL RollbackProgram(TxRecord *tx)
 // 普通启动前的恢复处理：绝不让半完成的替换留在盘上。
 static void RecoverBeforeLaunch(void)
 {
+    // 任何清理或替换之前先确认 .update 不是重解析点：本函数可能以管理员身份运行，
+    // 被联接出去的目录不能拿来做删除目标。
+    if (!UpdateDirTrusted())
+    {
+        LogLine(L"[recover] .update 是重解析点，跳过恢复");
+        return;
+    }
     if (!DirExists(g_programDir) && !PathExists(g_txPath))
     {
         if (DirExists(g_updateDir))
         {
             wchar_t staging[PATH_CAP];
-            if (JoinPath(staging, PATH_CAP, g_updateDir, L"staging"))
+            if (JoinPath(staging, PATH_CAP, g_updateDir, L"staging") && PathTrusted(staging))
                 DeleteTree(staging);
         }
         return;
@@ -486,7 +532,9 @@ static void RecoverBeforeLaunch(void)
     if (!SamePath(tx.install, g_installRoot) ||
         !IsUnder(tx.staging, g_updateDir) ||
         !IsUnder(tx.backup, g_updateDir) ||
-        !UpdateDirTrusted())
+        !UpdateDirTrusted() ||
+        !PathTrusted(tx.staging) ||
+        !PathTrusted(tx.backup))
     {
         LogLine(L"[recover] 事务记录的目录不可信，已忽略并清除");
         RemoveFileQuiet(g_txPath);
@@ -581,9 +629,9 @@ static int RunApply(const wchar_t *txPath)
         ReleaseApplyLock(mutex);
         return 1;
     }
-    if (!UpdateDirTrusted())
+    if (!UpdateDirTrusted() || !PathTrusted(tx.staging) || !PathTrusted(tx.backup))
     {
-        LogLine(L"[apply] .update 是重解析点，拒绝执行");
+        LogLine(L"[apply] .update 或暂存/备份是重解析点，拒绝执行");
         ReleaseApplyLock(mutex);
         return 1;
     }
@@ -724,6 +772,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         FatalBox(L"路径过长，无法继续。");
         return 1;
     }
+    BuildLockName();
+    g_isUpdateChild = GetEnvironmentVariableW(L"MAARM_UPDATE_CHILD", NULL, 0) > 0;
 
     // 事务执行模式：--apply <事务文件>
     if (wcsstr(lpCmdLine, L"--apply") != NULL)
@@ -760,18 +810,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     // 普通启动：先处理未完成事务，再决定内容根（旧解压布局不创建 .update）。
     // 恢复与 --apply 共用同一把锁：更新器登记 watcher 之前，恢复不得把正在交接的
-    // prepared 当垃圾清掉。拿不到锁（事务进行中）就跳过恢复，直接尝试启动。
-    if (DirExists(g_programDir) || PathExists(g_txPath))
-        EnsureUpdateDir();
-    HANDLE recoverMutex = AcquireApplyLock(APPLY_RECOVER_WAIT_MS);
-    if (recoverMutex != NULL)
+    // prepared 当垃圾清掉。试启动拉起的子入口（已带标记）跳过本段：父进程正持锁，
+    // 它既不能重复恢复，也不该等锁 30 秒；普通双击遇到锁则提示后退出，绝不绕过。
+    if (!g_isUpdateChild)
     {
+        if (DirExists(g_programDir) || PathExists(g_txPath))
+            EnsureUpdateDir();
+        HANDLE recoverMutex = AcquireApplyLock(APPLY_NORMAL_WAIT_MS);
+        if (recoverMutex == NULL)
+        {
+            FatalBox(L"程序正在更新，请稍候再试。");
+            return 1;
+        }
         RecoverBeforeLaunch();
         ReleaseApplyLock(recoverMutex);
-    }
-    else
-    {
-        LogLine(L"[recover] 更新事务进行中，跳过本地恢复");
     }
 
     BOOL portableLayout = DirExists(g_programDir);
