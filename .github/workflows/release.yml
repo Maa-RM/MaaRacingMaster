@@ -610,3 +610,33 @@ jobs:
           done
           echo "CNB Release 同步完成: https://cnb.cool/${CNB_PATH}/-/releases"
 
+
+  # 发布后双源冒烟：两个货架都同步完，再用「运行时判据」把模型包直链真走一遍。
+  # 为什么放在这里：资产齐了才有意义；为什么这段必须存在——货架会把
+  # /-/releases/download 302 给自家资产 CDN，CDN 主机名不在客户端白名单里时，
+  # 用户点「一键安装」才发现（v0.32.1~v0.32.4-dev.2 就是这么残的）。
+  # 判据只有一份：脚本 import 生产 model_installer.ALLOWED_HOSTS 与
+  # core.download.is_allowed_url，冒烟里不另抄名单。只取 Range 前 16 字节，
+  # 不下载整包；跨源字节同一性已由上游 cnb-release 的上传前 sha256 比对保证。
+  model-source-smoke:
+    name: 发布后双源冒烟（模型包直链）
+    runs-on: ubuntu-latest
+    needs: [win-build, cnb-release]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.11'
+      - name: 按客户端判据走 cnb 与 github 两个源
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          CNB_PATH: ${{ secrets.CNB_ORG }}/${{ secrets.CNB_REPO }}
+        run: |
+          set -euo pipefail
+          python scripts/release/smoke_model_sources.py \
+            --tag "$TAG" \
+            --github-repo "$GH_REPO" \
+            --cnb-path "$CNB_PATH"

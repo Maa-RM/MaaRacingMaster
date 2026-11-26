@@ -23,13 +23,21 @@ from pathlib import Path
 
 from maaracing_master.core.download import download_file, is_allowed_url
 from maaracing_master.core.paths import module_data_dir
+from maaracing_master.core.update_prefs import preferred_source
 from maaracing_master.plugins.infinite_drive import model_assets
 
 DESCRIPTOR_PATH = model_assets.MODELS_DIR / "download.json"
 DOWNLOAD_TIMEOUT_S = 20
 DOWNLOAD_DEADLINE_S = 600
+# 两个发行货架的 Release 下载地址不是字节的终点：github.com 302 到
+# release-assets.githubusercontent.com（带签名查询串），cnb.cool 302 到
+# asset.cnb.cool/assets/t/<一次性令牌>。资产一跳是货架自己交给自己家的 CDN，
+# 必须与货架同列入白名单；内容真伪仍由描述里的 SHA256 与 zip 成员白名单把关，
+# 主机白名单只负责不让跳转跨到无名义的第三方。
 ALLOWED_HOSTS = frozenset({
-    "github.com", "objects.githubusercontent.com", "codeload.github.com", "cnb.cool",
+    "github.com", "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com", "codeload.github.com",
+    "cnb.cool", "asset.cnb.cool",
 })
 _PHASES = frozenset({
     "idle", "downloading", "verifying", "extracting", "committing",
@@ -52,6 +60,17 @@ class InstallStatus:
 def _url_allowed(url: object) -> bool:
     """下载源必须落在本插件声明的官方主机内（传输层只搬字节，策略留在这里）。"""
     return is_allowed_url(url, ALLOWED_HOSTS)
+
+
+def _ordered_sources(sources: dict[str, str]) -> list[tuple[str, str]]:
+    """按宿主更新偏好排首选源；描述里的顺序只决定「其余源」的先后。
+
+    首选源这个参数只有一份：宿主写 config/update-prefs.json 的 source（默认 cnb），
+    这里读同一个文件。源键名与宿主同名（cnb/github），不另建映射表；插件自己
+    再写一套「先 cnb」的顺序，就是给同一偏好建第二份实现。
+    """
+    preferred = preferred_source()
+    return sorted(sources.items(), key=lambda item: item[0] != preferred)
 
 
 def _sha256_file(path: Path) -> str:
@@ -158,8 +177,8 @@ class ModelInstaller:
             descriptor = load_descriptor(self._descriptor_path)
             staging_root.mkdir(parents=True, exist_ok=True)
             archive = staging_root / f"{task_id}-{descriptor['asset']}"
-            last_error = ""
-            for name, url in descriptor["sources"].items():
+            errors: list[str] = []
+            for name, url in _ordered_sources(descriptor["sources"]):
                 if self._cancelled():
                     self._set(task_id, phase="cancelled", error="用户取消")
                     return
@@ -172,10 +191,13 @@ class ModelInstaller:
                     if self._cancelled():
                         self._set(task_id, phase="cancelled", error="用户取消")
                         return
-                    last_error = f"{name}: {exc}"
+                    # 每个源都留原因：只报最后一个源会掩盖前面的真实失败（如某一源
+                    # 被白名单拒跳、另一源网络不可达），让排查从错误文本就断了线。
+                    errors.append(f"{name}: {exc}")
                     archive.unlink(missing_ok=True)
             else:
-                self._set(task_id, phase="failed", error=f"所有下载源均失败（{last_error}）")
+                self._set(task_id, phase="failed",
+                          error=f"所有下载源均失败（{'；'.join(errors)}）")
                 return
 
             if self._cancelled():

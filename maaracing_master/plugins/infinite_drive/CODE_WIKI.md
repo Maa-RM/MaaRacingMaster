@@ -114,9 +114,9 @@
 | 模块 | 职责 |
 |---|---|
 | [model_assets.py](./model_assets.py) | 车道线驾驶模型包，从现行受管包、兼容受管包、手动目录和包内资产选取通过尺寸与 SHA256 校验的权重 |
-| [model_installer.py](./model_installer.py) | 插件自有模型包安装器：单飞任务、经 `core/download.py` 的流式传输、来源回退、取消、ZIP 白名单解压、暂存校验与可回退提交；状态带单调修订供前端轮询 |
+| [model_installer.py](./model_installer.py) | 插件自有模型包安装器：单飞任务、经 `core/download.py` 的流式传输、来源回退、取消、ZIP 白名单解压、暂存校验与可回退提交；状态带单调修订供前端轮询。首选源读宿主 `config/update-prefs.json` 的 `source`（默认 cnb），插件不另排顺序 |
 
-一键安装的落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，临时下载与解压在同级 `downloads/`。构建时在插件模型资源目录注入下载描述，含 tag、资产名、ZIP 哈希、尺寸、清单摘要与 GitHub/CNB 同 tag 地址；缺失或与当前清单摘要不符时前端回退手动安装。传输层（主机白名单、跳转校验、进度、取消、残片清理）在 [`core/download.py`](../../core/download.py)，插件只保留来源策略、SHA256、解压与提交。`manifest.py` 的 `ASSET_INSTALLER` 是宿主加载安装器的唯一声明，`ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 提供面板文案——core 不硬编码模型实现与模块语义。旧手动解压目录 `data/infinite_drive/models/` 仍是只读候选，不被安装器覆盖。宿主接缝（声明加载、双向准入互斥、冻结/关闭收尾）的口径见 [ADR-0027](../../../docs/adr/0027-contract-core-模块资产安装声明与下载落点.md)。
+一键安装的落点是 `%APPDATA%\MaaRacingMaster\data\infinite_drive\models\<清单摘要>\`，临时下载与解压在同级 `downloads/`。构建时在插件模型资源目录注入下载描述，含 tag、资产名、ZIP 哈希、尺寸、清单摘要与 GitHub/CNB 同 tag 地址；缺失或与当前清单摘要不符时前端回退手动安装。描述里的先后只是默认顺序，运行时首选源读宿主 `config/update-prefs.json` 的 `source`（真源 `UpdatePreferences.cs`，默认 cnb）——「首选下载源」只维护一处，与程序自更新同参数。传输层（主机白名单、跳转校验、进度、取消、残片清理）在 [`core/download.py`](../../core/download.py)，插件只保留来源策略、SHA256、解压与提交。`manifest.py` 的 `ASSET_INSTALLER` 是宿主加载安装器的唯一声明，`ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT` 提供面板文案——core 不硬编码模型实现与模块语义。旧手动解压目录 `data/infinite_drive/models/` 仍是只读候选，不被安装器覆盖。宿主接缝（声明加载、双向准入互斥、冻结/关闭收尾）的口径见 [ADR-0027](../../../docs/adr/0027-contract-core-模块资产安装声明与下载落点.md)。
 
 ## 4. 坑点（搬迁模块注释明确记载、与 v2 事实无冲突）
 
@@ -129,6 +129,7 @@
 - **录制反压**：帧入队用非阻塞投递，队列满即丢帧并计数，绝不阻塞采集侧；叠加图渲染在落盘线程串行，失败只计数不抛（[recorder.py](./recorder.py)）。
 - **结算读数竞态**：结算页出现瞬间比分仍在滚动、面板逐块渲染，单拍读数会拿到空串或中间值（实测读到过 64 与「一」）；奖励弹窗还会盖住分数区，OCR 会把「×40」读成「发40」。读数前先清覆盖层，再等相邻两拍一致且得分/关卡/总得分可解析再落库，它同时是「点下一关」的前置；超时按原文记录并告警，不伪造字段（[module.py](./module.py)）。
 - **道路定位依赖路缘和白线的同拍证据**。车道线缺测期间仍继续提交画面，线锁和车头角恢复后即可继续转向。相关门槛见 [驾驶控制](./driving.py)。
+- **资产 CDN 跳转与判据边界**：两个发行货架的 Release 直链都不是字节终点——`github.com` 302 到 `release-assets.githubusercontent.com`，`cnb.cool` 302 到 `asset.cnb.cool/assets/t/<令牌>`。资产域必须与货架同列白名单，否则一键安装两个源都死在第一跳（v0.32.1~v0.32.4-dev.2 全程如此）。判据维持「首发必须落在货架 + 显式资产域名单」，不改成「首发 + 跳转只要 https 公网、真伪全交给 SHA256」：换 CDN 不是高频事件，名单失配已由发布后双源冒烟当场拦红（[smoke_model_sources.py](../../../scripts/release/smoke_model_sources.py)）；放宽会把防线从主机名挪到哈希，收益有限且需独立复核（[model_installer.py](./model_installer.py)）。
 
 ## 5. 与归档的分工
 
