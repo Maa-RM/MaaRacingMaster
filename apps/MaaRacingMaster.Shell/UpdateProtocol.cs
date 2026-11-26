@@ -80,6 +80,26 @@ public static class UpdateProtocol
     public const int SupportedSchema = 1;
     public const string Platform = "win-x64";
 
+    /// <summary>客户端能安装的安装布局。启动器掌握的替换规则与它一一对应，不一致就拒绝。</summary>
+    public const string SupportedLayout = "program-v1";
+
+    /// <summary>启动器对壳暴露的事务接口版本；清单要求更高的版本只能手动下载整包。</summary>
+    public const int SupportedLauncherApi = 2;
+
+    /// <summary>
+    /// 清单是否适用于本客户端；不适用时返回面向玩家的原因（不含本机路径）。
+    /// 接口版本只拒绝「要求更高」：旧版本清单仍可由新启动器安装。
+    /// </summary>
+    public static string? IncompatibleReason(UpdateRelease release)
+    {
+        if (!string.Equals(release.Compat.Layout, SupportedLayout, StringComparison.Ordinal))
+            return $"安装布局 {release.Compat.Layout} 与当前程序不兼容，请下载完整安装包";
+        if (release.Compat.LauncherApi > SupportedLauncherApi)
+            return $"该版本需要启动器接口 {release.Compat.LauncherApi}"
+                   + $"（当前支持 {SupportedLauncherApi}），请下载完整安装包";
+        return null;
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = false,

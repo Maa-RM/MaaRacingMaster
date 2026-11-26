@@ -131,15 +131,19 @@ jobs:
           if (Test-Path $prev) { Remove-Item $prev -Recurse -Force }
           Copy-Item $stage $prev -Recurse
 
-          # 合成基线覆盖三类变化：改一个文件、删两个小文件、加一个新文件
-          $changed = Get-ChildItem $prev -Recurse -File | Select-Object -First 1
-          if (-not $changed) { throw "演练基线为空：$prev" }
+          # 合成基线覆盖三类变化：改一个文件、删两个小文件、加一个新文件。
+          # 改动必须落在 program\ 内——增量只比较这个子树，改包根的文件演练不到主路径。
+          $prevContent = Join-Path $prev "program"
+          if (-not (Test-Path $prevContent)) { throw "演练基线缺 program 目录: $prevContent" }
+          $changed = Get-ChildItem $prevContent -Recurse -File | Select-Object -First 1
+          if (-not $changed) { throw "演练基线为空：$prevContent" }
           Add-Content -Path $changed.FullName -Value "drill" -NoNewline
-          $victims = Get-ChildItem $prev -Recurse -File |
+          $victims = Get-ChildItem $prevContent -Recurse -File |
                      Where-Object { $_.FullName -ne $changed.FullName -and $_.Length -lt 4096 } |
                      Select-Object -First 2
+          if (@($victims).Count -lt 2) { throw "演练基线缺少可删除的小文件" }
           foreach ($victim in $victims) { Remove-Item $victim.FullName -Force }
-          Set-Content -Path (Join-Path $prev "drill-only.txt") -Value "drill"
+          Set-Content -Path (Join-Path $prevContent "drill-only.txt") -Value "drill"
 
           New-Item -ItemType Directory -Force -Path $drill | Out-Null
           $oldZip = "$drill\MaaRacingMaster-0.0.0-drill-win-x64.zip"

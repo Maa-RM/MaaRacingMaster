@@ -42,6 +42,10 @@ public sealed class UpdateStager
                                                string stageRoot, IProgress<int>? progress,
                                                CancellationToken cancellationToken)
     {
+        var incompatible = UpdateProtocol.IncompatibleReason(release);
+        if (incompatible is not null)
+            throw new UpdateProtocolException($"该版本无法自动安装：{incompatible}");
+
         var target = release.Full.Files.ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
         var current = UpdateTree.Scan(contentRoot);
         var delta = release.AvailableDeltas.FirstOrDefault(
@@ -121,7 +125,7 @@ public sealed class UpdateStager
             UpdateSourceCatalog.AssetUri(assetsBase, release.Tag, release.Full.File),
             release.Full.File, release.Full.Size, release.Full.Sha256, progress, ct)
             .ConfigureAwait(false);
-        ExtractZip(zipPath, stageRoot, ct);
+        ExtractZip(zipPath, stageRoot, release.Full, ct);
         progress?.Report(100);
     }
 
@@ -216,8 +220,18 @@ public sealed class UpdateStager
         return finalPath;
     }
 
-    private static void ExtractZip(string zipPath, string stageRoot, CancellationToken ct)
+    /// <summary>
+    /// 解整包时以清单为准裁剪：发行 ZIP 根目录还放着稳定启动器与安装说明，清单只描述
+    /// 可替换的程序子树。既能吃下带 <c>program/</c> 前缀的正式包，也能吃下直接平铺的
+    /// 旧格式；清单之外的文件一律不进暂存（否则对拍会因多出启动器而失败）。
+    /// </summary>
+    private static void ExtractZip(string zipPath, string stageRoot, UpdateFull full,
+                                   CancellationToken ct)
     {
+        var allowed = new HashSet<string>(full.Files.Select(f => f.Path),
+            StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        const string contentPrefix = "program/";
         using var archive = ZipFile.OpenRead(zipPath);
         foreach (var entry in archive.Entries)
         {
@@ -226,7 +240,19 @@ public sealed class UpdateStager
             var problem = UpdateProtocol.ValidatePath(rel);
             if (problem is not null)
                 throw new UpdateProtocolException($"整包路径不合法: {problem}");
-            var destination = SafeTarget(stageRoot, rel);
+
+            var target = rel;
+            if (!allowed.Contains(target))
+            {
+                if (!rel.StartsWith(contentPrefix, StringComparison.OrdinalIgnoreCase))
+                    continue; // 包根稳定入口等：不属于可替换内容
+                target = rel.Substring(contentPrefix.Length);
+                if (!allowed.Contains(target)) continue;
+            }
+            if (!seen.Add(target))
+                throw new UpdateProtocolException($"整包含重复文件: {target}");
+
+            var destination = SafeTarget(stageRoot, target);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             if (File.Exists(destination)) File.Delete(destination);
             entry.ExtractToFile(destination, overwrite: false);

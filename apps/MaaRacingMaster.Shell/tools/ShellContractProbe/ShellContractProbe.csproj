@@ -22,6 +22,7 @@
     <Compile Include="..\..\UpdateTransport.cs" Link="UpdateTransport.cs" />
     <Compile Include="..\..\UpdateSourceClient.cs" Link="UpdateSourceClient.cs" />
     <Compile Include="..\..\UpdateStager.cs" Link="UpdateStager.cs" />
+    <Compile Include="..\..\UpdateLauncher.cs" Link="UpdateLauncher.cs" />
     <!-- 钩子自退出断言与壳用同一固定版本（与正式接入版本绑定核验） -->
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>

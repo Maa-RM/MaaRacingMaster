@@ -502,7 +502,9 @@ public sealed class UpdateCoordinator
             firstFailure = ex;
         }
 
-        // 镜像回退：只换地址，不换发行——版本与整包摘要都一致才采用另一来源的清单。
+        // 镜像回退：只换地址，不换发行——按已选定的 tag/版本取清单，版本与整包摘要
+        // 都一致才采用另一来源的资产。不得重读备用源的「最新标记」：它一旦发了下一版，
+        // 就会错过仍可下载的旧目标。
         foreach (var candidate in intent.Endpoints)
         {
             if (candidate.Assets.Equals(endpoint.Assets) || !EndpointReachable(candidate))
@@ -510,7 +512,9 @@ public sealed class UpdateCoordinator
             try
             {
                 var client = new UpdateSourceClient(TransportForEndpoint(candidate));
-                var (_, mirror) = await client.FetchAsync(candidate, ct).ConfigureAwait(false);
+                var mirror = await client
+                    .FetchManifestAtAsync(candidate, release.Tag, release.Version, ct)
+                    .ConfigureAwait(false);
                 if (!string.Equals(mirror.Version, release.Version, StringComparison.Ordinal)
                     || !string.Equals(mirror.Full.Sha256, release.Full.Sha256,
                         StringComparison.OrdinalIgnoreCase))
@@ -676,6 +680,14 @@ public sealed class UpdateCoordinator
         }
     }
 
+    /// <summary>等一个旧任务完全退出；它的异常与终态由该任务自己写回的快照承担。</summary>
+    private static async Task DrainAsync(Task? task)
+    {
+        if (task is null || task.IsCompleted) return;
+        try { await task.ConfigureAwait(false); }
+        catch { /* 旧任务失败不阻断新渠道，状态已在它自己的返回里落定 */ }
+    }
+
     private void BackToAvailable(CheckIntent intent, string error)
     {
         lock (_gate)
@@ -727,6 +739,7 @@ public sealed class UpdateCoordinator
         bool changed;
         long epoch;
         Task<UpdateSnapshot>? draining = null;
+        Task? drainingDownload = null;
         lock (_gate)
         {
             if (_phase is UpdateSnapshot.Preparing or UpdateSnapshot.Applying)
@@ -737,6 +750,7 @@ public sealed class UpdateCoordinator
                 if (changed)
                 {
                     draining = _checkTask; // ResetForNewEpoch 会清空在途引用，先留一份等它退出
+                    drainingDownload = _downloadTask;
                     _awaitingStable = value == UpdateSnapshot.ChannelStable
                         && _channel == UpdateSnapshot.ChannelPreview;
                     _channel = value;
@@ -756,6 +770,9 @@ public sealed class UpdateCoordinator
         if (!isChannel) return GetStatus();
         // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
         // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
+        // 旧下载也必须等：它和下一次下载写同一个暂存目录与缓存，只取消不等待会让
+        // 旧任务在新任务开始后继续清理或写入。
+        await DrainAsync(drainingDownload).ConfigureAwait(false);
         if (draining is { IsCompleted: false })
         {
             try { await draining.ConfigureAwait(false); }
@@ -1029,15 +1046,21 @@ public sealed class UpdateCoordinator
     }
 
     /// <summary>
-    /// 便携安装的检查：按来源顺序取「版本标记 → 发布清单」，只接受与当前渠道一致的清单；
-    /// 版本不高于本机即视为已是最新。全部来源失败时沿用既有语义（自动检查保留旧状态，
-    /// 手动检查诚实报错）。清单与来源在锁内锁定，下载/提交只读同一事务上下文。
+    /// 便携安装的检查：按渠道取「版本标记 → 发布清单」，逐个来源找比本机更高的版本。
+    /// 某个来源的标记不高于本机不等于整体已最新——必须继续看下一个来源（首选源滞后时
+    /// 不能挡住另一源的新版本）。清单与来源在锁内锁定，下载/提交只读同一事务上下文。
     /// </summary>
     private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,
                                                             UpdateCheckTrigger trigger,
                                                             CancellationToken ct)
     {
         string? lastError = null;
+        string? needsManual = null;
+        var anyResponded = false;
+        UpdateSourceEndpoint? bestEndpoint = null;
+        UpdateRelease? bestRelease = null;
+        SemanticVersion? bestVersion = null;
+
         foreach (var endpoint in intent.Endpoints)
         {
             if (ct.IsCancellationRequested) break;
@@ -1048,52 +1071,61 @@ public sealed class UpdateCoordinator
             }
             try
             {
+                // 每源预算覆盖「标记 + 清单」两次请求，也覆盖正文读取：HttpClient 的超时
+                // 在流式读下只到响应头，镜像回头后卡住正文会拖死整轮回退。
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                budget.CancelAfter(_indexTimeout);
                 var client = new UpdateSourceClient(TransportForEndpoint(endpoint));
-                var (_, release) = await client.FetchAsync(endpoint, ct).ConfigureAwait(false);
-                ct.ThrowIfCancellationRequested();
-                if (!string.Equals(release.Channel, intent.Channel, StringComparison.Ordinal))
+                var marker = await client.FetchMarkerAsync(endpoint, intent.Channel, budget.Token)
+                    .ConfigureAwait(false);
+                if (marker is null)
                 {
-                    lastError = $"{endpoint.Name}（渠道不符：{release.Channel}）";
+                    lastError = $"{endpoint.Name}（没有 {intent.Channel} 渠道标记）";
                     continue;
                 }
-                if (!SemanticVersion.TryParse(release.Version, out var target)
+                if (!SemanticVersion.TryParse(marker.Version, out var markerVersion)
                     || !SemanticVersion.TryParse(_currentVersion, out var current))
                 {
                     lastError = $"{endpoint.Name}（版本号不合法）";
                     continue;
                 }
-                bool clearedAwaiting = false;
-                UpdateSnapshot result;
-                lock (_gate)
+                anyResponded = true;
+                if (markerVersion.CompareTo(current) <= 0)
+                    continue;
+
+                var release = await client.FetchManifestAsync(endpoint, marker, budget.Token)
+                    .ConfigureAwait(false);
+                if (!string.Equals(release.Channel, intent.Channel, StringComparison.Ordinal))
                 {
-                    if (intent.IsStale(_phase, _epoch))
-                        return Snapshot();
-                    _endpoint = endpoint;
-                    _activeIntent = intent;
-                    if (target.CompareTo(current) <= 0)
-                    {
-                        _release = null;
-                        _pending = null;
-                        _targetVersion = null;
-                        return SetState(intent.Epoch, UpdateSnapshot.UpToDate);
-                    }
-                    _release = release;
-                    _pending = null;
-                    _targetVersion = release.Version;
-                    if (_awaitingStable)
-                    {
-                        _awaitingStable = false;
-                        clearedAwaiting = true;
-                    }
-                    result = SetState(intent.Epoch, UpdateSnapshot.Available);
+                    lastError = $"{endpoint.Name}（渠道不符：{release.Channel}）";
+                    continue;
                 }
-                if (clearedAwaiting)
-                    _savePreferences(_channel, _source, false);
-                return result;
+                var incompatible = UpdateProtocol.IncompatibleReason(release);
+                if (incompatible is not null)
+                {
+                    needsManual = $"{release.Version}：{incompatible}";
+                    lastError = $"{endpoint.Name}（{incompatible}）";
+                    continue;
+                }
+                if (!SemanticVersion.TryParse(release.Version, out var target))
+                {
+                    lastError = $"{endpoint.Name}（版本号不合法）";
+                    continue;
+                }
+                if (bestVersion is null || target.CompareTo(bestVersion.Value) > 0)
+                {
+                    bestEndpoint = endpoint;
+                    bestRelease = release;
+                    bestVersion = target;
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (OperationCanceledException)
+            {
+                lastError = $"{endpoint.Name}（读取超时）";
             }
             catch (Exception ex)
             {
@@ -1101,6 +1133,68 @@ public sealed class UpdateCoordinator
             }
         }
         if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+
+        if (bestRelease is not null && bestEndpoint is not null)
+        {
+            bool clearedAwaiting = false;
+            UpdateSnapshot result;
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _endpoint = bestEndpoint;
+                _activeIntent = intent;
+                _release = bestRelease;
+                _pending = null;
+                _targetVersion = bestRelease.Version;
+                if (_awaitingStable)
+                {
+                    _awaitingStable = false;
+                    clearedAwaiting = true;
+                }
+                result = SetState(intent.Epoch, UpdateSnapshot.Available);
+            }
+            if (clearedAwaiting)
+                _savePreferences(_channel, _source, false);
+            return result;
+        }
+
+        // 至少一个来源正常回应且都不高于本机：这才叫「已是最新」。全源失败仍按原语义
+        // 区分自动/手动检查（自动保留旧状态，手动诚实报错）。
+        if (anyResponded && needsManual is null)
+        {
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _release = null;
+                _pending = null;
+                _targetVersion = null;
+                return SetState(intent.Epoch, UpdateSnapshot.UpToDate);
+            }
+        }
+
+        // 有更新的版本但当前启动器装不了：不能报「已是最新」，也不能给出一个点了会失败的
+        // 安装按钮——只提示手动下载。
+        if (needsManual is not null)
+        {
+            if (trigger == UpdateCheckTrigger.Auto)
+            {
+                ShellLog.Append($"[update] 新版本需要手动安装，保留当前状态: {needsManual}");
+                return GetStatus();
+            }
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _targetVersion = null;
+                _release = null;
+                _pending = null;
+                return SetState(intent.Epoch, UpdateSnapshot.Idle,
+                    error: $"新版本无法自动安装：{needsManual}");
+            }
+        }
+
         if (trigger == UpdateCheckTrigger.Auto)
         {
             ShellLog.Append($"[update] 自动检查全源失败，保留当前状态: {lastError}");

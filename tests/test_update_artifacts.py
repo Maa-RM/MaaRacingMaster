@@ -166,6 +166,20 @@ def test_build_manifest_shape_and_no_self_reference(tmp_path: Path):
     assert (out / delta["file"]).is_file()
 
 
+def test_manifest_carries_release_notes_only_when_provided(tmp_path: Path):
+    """更新说明随清单下发；未提供时不写这个键（空串与缺省在客户端是同一件事）。"""
+    tree, zip_path = _release(tmp_path)
+    with_notes = art.build(tree, zip_path, "1.1.0", "v1.1.0", tmp_path / "out-notes", [],
+                           "preview", notes="**提速**\n\n- 修复登出后再登录丢配置")
+    manifest = json.loads(Path(with_notes["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["notes"] == "**提速**\n\n- 修复登出后再登录丢配置"
+
+    without = art.build(tree, zip_path, "1.1.0", "v1.1.0", tmp_path / "out-plain", [],
+                        "preview")
+    manifest = json.loads(Path(without["manifest"]).read_text(encoding="utf-8"))
+    assert "notes" not in manifest
+
+
 def test_build_rejects_zip_that_differs_from_tree(tmp_path: Path):
     tree, zip_path = _release(tmp_path, "1.1.0")
     _other_tree, other_zip = _release(tmp_path, "9.9.9", payload=b"something else")

@@ -93,8 +93,24 @@ public static class UpdateSourceCatalog
                + "/" + Uri.EscapeDataString(file));
 }
 
-/// <summary>版本标记（docs/latest_release.json）的必要字段。</summary>
+/// <summary>一个渠道的版本标记（tag 与版本号；清单会再核对一次两者一致）。</summary>
 public sealed record ReleaseMarker(string Tag, string Version);
+
+/// <summary>
+/// 版本标记文件（docs/latest_release.json）：顶层是「最新发布」，<c>channels</c> 是按渠道
+/// 分发的入口。缺少 <c>channels</c> 的旧标记对任何渠道都生效（离线演练与历史源）；
+/// 一旦写了 <c>channels</c>，就只认其中的渠道——缺该渠道即本源本渠道无更新，不回退顶层。
+/// </summary>
+public sealed record ReleaseMarkers(string? Tag, string? Version,
+    IReadOnlyDictionary<string, ReleaseMarker>? Channels)
+{
+    public ReleaseMarker? ForChannel(string channel)
+    {
+        if (Channels is not null)
+            return Channels.TryGetValue(channel, out var marker) ? marker : null;
+        return Tag is null || Version is null ? null : new ReleaseMarker(Tag, Version);
+    }
+}
 
 /// <summary>
 /// 来源访问：先取版本标记，再按标记里的 tag 取清单。任何一步失败都抛异常，
@@ -106,45 +122,81 @@ public sealed class UpdateSourceClient
 
     public UpdateSourceClient(IUpdateTransport transport) => _transport = transport;
 
-    public async Task<(ReleaseMarker Marker, UpdateRelease Release)> FetchAsync(
-        UpdateSourceEndpoint endpoint, CancellationToken cancellationToken)
+    /// <summary>读本源该渠道的标记；本源没有这个渠道时返回 null（不是错误）。</summary>
+    public async Task<ReleaseMarker?> FetchMarkerAsync(UpdateSourceEndpoint endpoint, string channel,
+                                                       CancellationToken cancellationToken)
     {
         var markerText = await _transport.GetStringAsync(endpoint.Marker, cancellationToken)
             .ConfigureAwait(false);
-        var marker = ParseMarker(markerText, endpoint.Name);
+        return ParseMarkers(markerText, endpoint.Name).ForChannel(channel);
+    }
 
-        var manifestUri = UpdateSourceCatalog.ManifestUri(endpoint, marker.Tag, marker.Version);
+    public Task<UpdateRelease> FetchManifestAsync(UpdateSourceEndpoint endpoint, ReleaseMarker marker,
+                                                  CancellationToken cancellationToken)
+        => FetchManifestAtAsync(endpoint, marker.Tag, marker.Version, cancellationToken);
+
+    /// <summary>
+    /// 按已选定的 tag/版本取清单。镜像回退必须走这条：重新读备用源的「最新标记」会在
+    /// 备用源已发下一版时错过仍可下载的旧目标（版本与摘要都对不上 → 白白放弃回退）。
+    /// </summary>
+    public async Task<UpdateRelease> FetchManifestAtAsync(UpdateSourceEndpoint endpoint, string tag,
+                                                          string version,
+                                                          CancellationToken cancellationToken)
+    {
+        var manifestUri = UpdateSourceCatalog.ManifestUri(endpoint, tag, version);
         var manifestText = await _transport.GetStringAsync(manifestUri, cancellationToken)
             .ConfigureAwait(false);
         var release = UpdateProtocol.Parse(manifestText);
-        if (!string.Equals(release.Tag, marker.Tag, StringComparison.Ordinal)
-            || !string.Equals(release.Version, marker.Version, StringComparison.Ordinal))
+        if (!string.Equals(release.Tag, tag, StringComparison.Ordinal)
+            || !string.Equals(release.Version, version, StringComparison.Ordinal))
         {
             throw new UpdateProtocolException(
-                $"清单与版本标记不一致（标记 {marker.Tag}/{marker.Version}，清单 {release.Tag}/{release.Version}）");
+                $"清单与版本标记不一致（标记 {tag}/{version}，清单 {release.Tag}/{release.Version}）");
         }
-        return (marker, release);
+        return release;
     }
 
-    private static ReleaseMarker ParseMarker(string json, string sourceName)
+    private static ReleaseMarkers ParseMarkers(string json, string sourceName)
     {
         try
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
-            var tag = root.TryGetProperty("tag", out var tagElement)
-                ? tagElement.GetString()
-                : null;
-            var version = root.TryGetProperty("version", out var versionElement)
-                ? versionElement.GetString()
-                : null;
-            if (string.IsNullOrWhiteSpace(tag) || string.IsNullOrWhiteSpace(version))
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new UpdateProtocolException($"{sourceName} 的版本标记不是对象");
+
+            var tag = ReadString(root, "tag");
+            var version = ReadString(root, "version");
+            Dictionary<string, ReleaseMarker>? channels = null;
+            if (root.TryGetProperty("channels", out var channelsElement)
+                && channelsElement.ValueKind == JsonValueKind.Object)
+            {
+                channels = new Dictionary<string, ReleaseMarker>(StringComparer.Ordinal);
+                foreach (var property in channelsElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind != JsonValueKind.Object) continue;
+                    var entryTag = ReadString(property.Value, "tag");
+                    var entryVersion = ReadString(property.Value, "version");
+                    if (entryTag is null || entryVersion is null)
+                    {
+                        throw new UpdateProtocolException(
+                            $"{sourceName} 的 {property.Name} 渠道标记缺少 tag/version");
+                    }
+                    channels[property.Name] = new ReleaseMarker(entryTag, entryVersion);
+                }
+            }
+            if (channels is null && (tag is null || version is null))
                 throw new UpdateProtocolException($"{sourceName} 的版本标记缺少 tag/version");
-            return new ReleaseMarker(tag.Trim(), version.Trim());
+            return new ReleaseMarkers(tag, version, channels);
         }
         catch (JsonException ex)
         {
             throw new UpdateProtocolException($"{sourceName} 的版本标记不是合法 JSON: {ex.Message}");
         }
     }
+
+    private static string? ReadString(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim()
+            : null;
 }

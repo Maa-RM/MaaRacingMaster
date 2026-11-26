@@ -264,20 +264,42 @@ jobs:
           if (-not (Test-Path $stage)) { throw "程序树不存在: $stage" }
           if (-not (Test-Path $zip)) { throw "完整包不存在: $zip" }
 
-          # 直接增量只覆盖目标之前最近的几个发布；旧 tag 缺完整包资产时跳过，不阻断发布。
-          $tags = git tag --sort=-v:refname |
-                  Where-Object { $_ -ne $env:TAGNAME } |
-                  Select-Object -First 4
+          # 直接增量只覆盖目标之前最近的几个发布。候选基线必须自带给便携更新生成的
+          # 清单且布局为 program-v1：早于便携更新的发布没有 program/ 子目录，拿来差分
+          # 只会被跳过。先按清单筛、再下载完整包——只取最近 4 个 tag 会漏掉更早的合格基线。
+          $tags = @(git tag --sort=-v:refname |
+                    Where-Object { $_ -ne $env:TAGNAME } |
+                    Select-Object -First 10)
           $prevZips = @()
           foreach ($tagName in $tags) {
+            if ($prevZips.Count -ge 3) { break }
             $dir = Join-Path $env:RUNNER_TEMP "prev\$tagName"
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            gh release download $tagName --pattern "MaaRacingMaster-*-update.json" --dir $dir 2>$null | Out-Null
+            $manifestFile = Get-ChildItem $dir -Filter "*-update.json" -ErrorAction SilentlyContinue |
+                            Select-Object -First 1
+            if (-not $manifestFile) {
+              Write-Host "跳过 $tagName：没有更新清单（早于便携更新）"
+              continue
+            }
+            $layout = (Get-Content $manifestFile.FullName -Raw | ConvertFrom-Json).compat.layout
+            if ($layout -ne "program-v1") {
+              Write-Host "跳过 $tagName：布局 $layout 不兼容"
+              continue
+            }
             gh release download $tagName --pattern "MaaRacingMaster-*-win-x64.zip" --dir $dir 2>$null | Out-Null
             $found = Get-ChildItem $dir -Filter "*-win-x64.zip" -ErrorAction SilentlyContinue |
                      Select-Object -First 1
             if ($found) { $prevZips += $found.FullName }
             else { Write-Host "跳过 $tagName：该发布没有完整包资产" }
           }
+
+          # 面向玩家的更新说明随清单下发：客户端更新后首次启动直接显示。
+          $notesPath = "$rel\update-notes.md"
+          $notes = python -X utf8 scripts/release/extract_changelog.py "$env:VER"
+          if ($LASTEXITCODE -ne 0) { throw "更新说明抽取失败" }
+          if ($notes) { Set-Content -Path $notesPath -Value $notes -Encoding utf8 }
+          else { Write-Host "docs/update_log.md 缺 v$env:VER 小节：清单不带更新说明" }
 
           $arguments = @(
             "-B", "-X", "utf8", "scripts/release/make_update_artifacts.py", "build",
@@ -288,6 +310,7 @@ jobs:
             "--tag", $env:TAGNAME,
             "--out", $rel
           )
+          if (Test-Path $notesPath) { $arguments += @("--notes-file", $notesPath) }
           foreach ($prev in $prevZips) { $arguments += @("--prev-zip", $prev) }
           python @arguments
           if ($LASTEXITCODE -ne 0) { throw "更新清单或增量生成/自验失败，阻断发布" }
@@ -333,18 +356,67 @@ jobs:
             Write-Host "同 tag 资产 $name 已存在且哈希一致，复用"
           }
 
-      - name: 补传应用包、模型包、更新清单与增量到 Release
-        # 故意不传 draft：上传完全部资产后，action 把草稿转为公开（finalize）——
-        # 这是「页面公开时下载包已就位」的唯一保证点。改回 draft: true 会把草稿永久留在不可见状态。
-        uses: softprops/action-gh-release@v3.0.4
-        with:
-          tag_name: ${{ env.TAGNAME }}
-          overwrite: false
-          files: |
-            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-win-x64.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-infinite_drive-models-${{ env.VER }}.zip
-            ${{ github.workspace }}/build/release/MaaRacingMaster-${{ env.VER }}-update.json
-            ${{ github.workspace }}/build/release/MaaRacingMaster-*-to-*-delta.zip
+      - name: 补传应用包、模型包、更新清单与增量到草稿
+        # 只用 gh 上传，不改草稿状态：公开动作必须等摘要逐个核对通过后才做（见下一步）。
+        # 字节一致性由上一个「同 tag 资产不可变检查」保证：远端已存在且摘要不同即失败。
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = "${{ github.workspace }}\build\release"
+          $files = @(
+            "$rel\MaaRacingMaster-$env:VER-win-x64.zip",
+            "$rel\MaaRacingMaster-infinite_drive-models-$env:VER.zip",
+            "$rel\MaaRacingMaster-$env:VER-update.json"
+          )
+          $files += @(Get-ChildItem $rel -Filter "MaaRacingMaster-*-to-*-delta.zip" |
+                      ForEach-Object { $_.FullName })
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { throw "缺少待上传资产: $f" }
+          }
+          gh release upload "$env:TAGNAME" @files --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传资产失败: $env:TAGNAME" }
+          Write-Host "已上传 $($files.Count) 个资产到草稿 $env:TAGNAME"
+
+      - name: 核对草稿资产后再公开
+        # 公开是玩家可见动作：草稿里的完整集合与摘要对不上就停在这里，Release 保持草稿。
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = "${{ github.workspace }}\build\release"
+          $release = (gh api "repos/${{ github.repository }}/releases?per_page=100" |
+                      ConvertFrom-Json) |
+                     Where-Object { $_.tag_name -eq $env:TAGNAME } |
+                     Select-Object -First 1
+          if (-not $release) { throw "找不到本 tag 的 Release: $env:TAGNAME" }
+
+          $files = @(
+            "$rel\MaaRacingMaster-$env:VER-win-x64.zip",
+            "$rel\MaaRacingMaster-infinite_drive-models-$env:VER.zip",
+            "$rel\MaaRacingMaster-$env:VER-update.json"
+          )
+          $files += @(Get-ChildItem $rel -Filter "MaaRacingMaster-*-to-*-delta.zip" |
+                      ForEach-Object { $_.FullName })
+
+          foreach ($f in $files) {
+            $name = Split-Path $f -Leaf
+            $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+            if (-not $asset) { throw "草稿缺资产: $name" }
+            $local = (Get-FileHash $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.digest -ne "sha256:$local") {
+              throw "草稿资产摘要与本地不一致: $name"
+            }
+          }
+
+          if ($release.draft) {
+            gh release edit "$env:TAGNAME" --draft=false
+            if ($LASTEXITCODE -ne 0) { throw "公开 Release 失败: $env:TAGNAME" }
+            Write-Host "草稿核对通过，已公开: $env:TAGNAME"
+          }
+          else {
+            Write-Host "Release 已公开（重跑），资产摘要一致，跳过公开动作"
+          }
 
       - name: 公开校验（已公开且资产齐全）
         # 把「公开时下载包已就位」变成可机检的结论：仍为草稿或缺任一资产即失败。

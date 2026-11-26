@@ -52,6 +52,12 @@ public sealed class HttpUpdateTransport : IUpdateTransport, IDisposable
         await CopyWithProgressAsync(source, destination, bytes, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 流式读正文时的空闲上限：HttpClient.Timeout 在 ResponseHeadersRead 下只覆盖到
+    /// 响应头（微软文档明示），正文停滞必须自己限。每次读到字节就重新计时。
+    /// </summary>
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(60);
+
     internal static async Task CopyWithProgressAsync(Stream source, string destination,
                                                      IProgress<long>? bytes,
                                                      CancellationToken cancellationToken)
@@ -60,9 +66,15 @@ public sealed class HttpUpdateTransport : IUpdateTransport, IDisposable
             FileShare.None, 81920, useAsync: true);
         var buffer = new byte[81920];
         long total = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+        while (true)
         {
+            int read;
+            using (var idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                idle.CancelAfter(IdleTimeout);
+                read = await source.ReadAsync(buffer, idle.Token).ConfigureAwait(false);
+            }
+            if (read == 0) break;
             await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
             total += read;
             bytes?.Report(total);

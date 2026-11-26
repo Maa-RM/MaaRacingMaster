@@ -298,7 +298,8 @@ def build(new_tree: Path, new_zip: Path, version: str, tag: str,
           out_dir: Path, prev_zips: list[Path], channel: str,
           max_delta_ratio: float = MAX_DELTA_RATIO,
           max_deltas: int = 3,
-          content_subdir: str = "") -> dict:
+          content_subdir: str = "",
+          notes: str = "") -> dict:
     subdir = content_subdir.strip("/")
     content_root = new_tree / subdir if subdir else new_tree
     if not content_root.is_dir():
@@ -379,6 +380,10 @@ def build(new_tree: Path, new_zip: Path, version: str, tag: str,
         "deltas": deltas,
         "limits": {"max_delta_ratio": max_delta_ratio},
     }
+    # 面向玩家的本版更新说明随清单下发：客户端更新后首次启动直接显示，不再另发请求。
+    # 缺省不写字段（空字符串与「没有说明」在客户端是同一件事，少一个键就少一处歧义）。
+    if notes.strip():
+        manifest["notes"] = notes.strip()
     manifest_path = out_dir / f"MaaRacingMaster-{version}-update.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8")
@@ -416,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
                               help="最多生成的直接增量个数（默认 3）")
     build_parser.add_argument("--content-subdir", default="",
                               help="可替换内容在包内的子目录（如 program）；清单与增量路径相对它")
+    build_parser.add_argument("--notes-file", default="",
+                              help="本版面向玩家的更新说明（纯文本/Markdown），随清单下发")
 
     args = parser.parse_args(argv)
     if args.command == "pack":
@@ -425,6 +432,12 @@ def main(argv: list[str] | None = None) -> int:
     version = args.version[1:] if args.version.startswith("v") else args.version
     tag = args.tag or f"v{version}"
     channel = args.channel or ("preview" if "-" in version else "stable")
+    notes = ""
+    if args.notes_file:
+        notes_path = Path(args.notes_file)
+        if not notes_path.is_file():
+            raise SystemExit(f"更新说明文件不存在: {notes_path}")
+        notes = notes_path.read_text(encoding="utf-8")
     result = build(
         new_tree=Path(args.new_tree),
         new_zip=Path(args.new_zip),
@@ -436,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         max_delta_ratio=args.max_delta_ratio,
         max_deltas=args.max_deltas,
         content_subdir=args.content_subdir,
+        notes=notes,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

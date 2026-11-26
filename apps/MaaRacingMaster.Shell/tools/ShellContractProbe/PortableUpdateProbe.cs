@@ -35,6 +35,7 @@ internal static class PortableUpdateProbe
         {
             CheckVersionOrdering();
             CheckTreeDigestVector();
+            CheckCompatGate();
 
             var oldFiles = new Dictionary<string, byte[]>
             {
@@ -87,10 +88,15 @@ internal static class PortableUpdateProbe
 
             var transport = new FileUpdateTransport();
             var client = new UpdateSourceClient(transport);
-            var (marker, release) = await client.FetchAsync(endpoints[0], CancellationToken.None);
-            Program.Check("版本标记与清单读取", marker.Version == "1.2.0" && release.Version == "1.2.0"
+            var marker = await client.FetchMarkerAsync(endpoints[0], "stable", CancellationToken.None);
+            Program.Check("版本标记按渠道读取（无 channels 的旧标记对任何渠道生效）",
+                marker is not null && marker.Version == "1.2.0", $"marker={marker?.Version}");
+            var release = await client.FetchManifestAsync(endpoints[0], marker!, CancellationToken.None);
+            Program.Check("版本标记与清单读取", release.Version == "1.2.0"
                 && release.Full.Files.Count == newEntries.Count,
-                $"marker={marker.Version} version={release.Version} files={release.Full.Files.Count}");
+                $"version={release.Version} files={release.Full.Files.Count}");
+
+            await CheckChannelMarkers(work);
 
             var manifestPath = Path.Combine(assets, "MaaRacingMaster-1.2.0-update.json");
             var broken = File.ReadAllText(manifestPath).Replace("\"app/New.dll\"", "\"../New.dll\"");
@@ -130,6 +136,59 @@ internal static class PortableUpdateProbe
             Program.Check("无匹配基线 → 直接使用完整包", fullOnly.Mode == StagedUpdate.ModeFull
                 && UpdateTree.Verify(stageC, release.Full).Count == 0,
                 $"mode={fullOnly.Mode}");
+
+            // 正式发行 ZIP 的真实形状：根目录放稳定启动器，程序文件在 program\ 下。
+            // 清单以 program\ 为根，暂存只取子树——启动器本身不参与替换。
+            var prefixedRoot = Path.Combine(work, "prefixed");
+            Materialize(prefixedRoot,
+                newFiles.ToDictionary(kv => "program/" + kv.Key, kv => kv.Value));
+            Directory.CreateDirectory(prefixedRoot);
+            File.WriteAllBytes(Path.Combine(prefixedRoot, "MaaRacingMaster.exe"),
+                Encoding.UTF8.GetBytes("launcher"));
+            var prefixedTag = "v1.3.0";
+            var prefixedAssets = Path.Combine(feed, "assets", prefixedTag);
+            Directory.CreateDirectory(prefixedAssets);
+            var prefixedZip = Path.Combine(prefixedAssets, "MaaRacingMaster-1.3.0-win-x64.zip");
+            var prefixedPaths = newFiles.Keys.Select(path => "program/" + path)
+                .Append("MaaRacingMaster.exe");
+            ZipTree(prefixedRoot, prefixedPaths, prefixedZip);
+            var prefixedManifest = new
+            {
+                schema = 1,
+                tag = prefixedTag,
+                version = "1.3.0",
+                channel = "stable",
+                platform = "win-x64",
+                compat = new { layout = "program-v1", launcher_api = UpdateProtocol.SupportedLauncherApi },
+                full = new
+                {
+                    file = Path.GetFileName(prefixedZip),
+                    size = new FileInfo(prefixedZip).Length,
+                    sha256 = UpdateTree.HashFile(prefixedZip),
+                    tree_sha256 = UpdateProtocol.TreeDigest(newEntries.Values),
+                    files = newEntries.Values
+                        .OrderBy(e => e.Path, UpdateProtocol.Utf8PathComparer.Instance)
+                        .Select(e => new object[] { e.Path, e.Size, e.Sha256 })
+                        .ToList(),
+                },
+                deltas = Array.Empty<object>(),
+                limits = new { max_delta_ratio = 0.30 },
+            };
+            var prefixedManifestPath = Path.Combine(prefixedAssets, "MaaRacingMaster-1.3.0-update.json");
+            File.WriteAllText(prefixedManifestPath,
+                JsonSerializer.Serialize(prefixedManifest, ManifestJson));
+            var prefixedRelease = UpdateProtocol.Parse(
+                File.ReadAllText(prefixedManifestPath));
+            var prefixedStage = Path.Combine(work, "stage-prefixed");
+            var prefixedStaged = await new UpdateStager(new FileUpdateTransport(),
+                    Path.Combine(work, "cache-prefixed"))
+                .StageAsync(prefixedRelease, new Uri(Path.Combine(feed, "assets")), "9.9.9",
+                    cleanOldRoot, prefixedStage, null, CancellationToken.None);
+            Program.Check("正式包只暂存 program 子树，启动器不进暂存",
+                prefixedStaged.Mode == StagedUpdate.ModeFull
+                && UpdateTree.Verify(prefixedStage, prefixedRelease.Full).Count == 0
+                && !File.Exists(Path.Combine(prefixedStage, "MaaRacingMaster.exe")),
+                $"mode={prefixedStaged.Mode} notes={string.Join("；", prefixedStaged.Notes)}");
 
             // 恢复被故意破坏的增量与清单，再验证「额外文件不阻断增量」。
             ZipTree(newRoot, payload, deltaZip);
@@ -232,6 +291,56 @@ internal static class PortableUpdateProbe
             UpdateProtocol.TreeDigest(entries));
     }
 
+    private static void CheckCompatGate()
+    {
+        var hash = new string('a', 64);
+        var baseRelease = new UpdateRelease(1, "v1.0.0", "1.0.0", "stable", "win-x64",
+            new UpdateCompat("program-v1", UpdateProtocol.SupportedLauncherApi),
+            new UpdateFull("f.zip", 1, hash, hash, Array.Empty<UpdateFileEntry>()),
+            Array.Empty<UpdateDelta>(), null);
+        Program.Check("兼容闸门：同接口放行", UpdateProtocol.IncompatibleReason(baseRelease) is null, "");
+
+        var newerApi = baseRelease with
+        {
+            Compat = new UpdateCompat("program-v1", UpdateProtocol.SupportedLauncherApi + 1),
+        };
+        Program.Check("兼容闸门：要求更高的启动器接口 → 拒绝自动安装",
+            UpdateProtocol.IncompatibleReason(newerApi) is not null,
+            UpdateProtocol.IncompatibleReason(newerApi) ?? "");
+
+        var otherLayout = baseRelease with { Compat = new UpdateCompat("flat-v0", 1) };
+        Program.Check("兼容闸门：不同安装布局 → 拒绝自动安装",
+            UpdateProtocol.IncompatibleReason(otherLayout) is not null,
+            UpdateProtocol.IncompatibleReason(otherLayout) ?? "");
+    }
+
+    private static async Task CheckChannelMarkers(string work)
+    {
+        var root = Path.Combine(work, "markers");
+        Directory.CreateDirectory(root);
+        var markerPath = Path.Combine(root, "latest_release.json");
+        File.WriteAllText(markerPath, JsonSerializer.Serialize(new
+        {
+            tag = "v2.0.0-dev.1",
+            version = "2.0.0-dev.1",
+            channels = new
+            {
+                stable = new { tag = "v1.0.0", version = "1.0.0" },
+                preview = new { tag = "v2.0.0-dev.1", version = "2.0.0-dev.1" },
+            },
+        }, ManifestJson));
+
+        var endpoint = new UpdateSourceEndpoint("probe", new Uri(markerPath),
+            new Uri(Path.Combine(root, "assets")));
+        var client = new UpdateSourceClient(new FileUpdateTransport());
+        var stable = await client.FetchMarkerAsync(endpoint, "stable", CancellationToken.None);
+        var preview = await client.FetchMarkerAsync(endpoint, "preview", CancellationToken.None);
+        var missing = await client.FetchMarkerAsync(endpoint, "nightly", CancellationToken.None);
+        Program.Check("分渠道标记：各渠道取自己的版本，未声明渠道不回退顶层",
+            stable?.Version == "1.0.0" && preview?.Version == "2.0.0-dev.1" && missing is null,
+            $"stable={stable?.Version} preview={preview?.Version} nightly={missing?.Version}");
+    }
+
     private static void WriteManifest(string feed, string tag,
                                       IReadOnlyDictionary<string, UpdateFileEntry> oldEntries,
                                       IReadOnlyDictionary<string, UpdateFileEntry> newEntries,
@@ -249,7 +358,7 @@ internal static class PortableUpdateProbe
             version = "1.2.0",
             channel = "stable",
             platform = "win-x64",
-            compat = new { layout = "probe-v1", launcher_api = 1 },
+            compat = new { layout = "program-v1", launcher_api = UpdateProtocol.SupportedLauncherApi },
             full = new
             {
                 file = Path.GetFileName(fullZip),
