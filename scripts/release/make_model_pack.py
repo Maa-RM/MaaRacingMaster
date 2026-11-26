@@ -83,14 +83,17 @@ def build(version: str, out_dir: Path, github_repo: str = "",
     sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="ascii")
 
     # 下载描述随主包分发，不随模型 ZIP。前端不传 URL，运行时只消费本描述。
+    # 这里的先后只是描述的稳定默认顺序，不决定运行时首选：安装器按宿主
+    # update-prefs.json 的 source（默认 cnb）重排（model_installer._ordered_sources），
+    # 同一个「首选下载源」参数只维护在宿主一处。
     tag = version if version.startswith("v") else f"v{version}"
     sources: dict[str, str] = {}
-    if github_repo:
-        sources["github"] = (
-            f"https://github.com/{github_repo}/releases/download/{tag}/{zip_path.name}")
     if cnb_path:
         sources["cnb"] = (
             f"https://cnb.cool/{cnb_path}/-/releases/download/{tag}/{zip_path.name}")
+    if github_repo:
+        sources["github"] = (
+            f"https://github.com/{github_repo}/releases/download/{tag}/{zip_path.name}")
     unpacked = sum(src.stat().st_size for _packed, src in files)
     for extra in (readme, license_file):
         if extra.is_file():

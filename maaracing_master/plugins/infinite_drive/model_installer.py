@@ -23,6 +23,7 @@ from pathlib import Path
 
 from maaracing_master.core.download import download_file, is_allowed_url
 from maaracing_master.core.paths import module_data_dir
+from maaracing_master.core.update_prefs import preferred_source
 from maaracing_master.plugins.infinite_drive import model_assets
 
 DESCRIPTOR_PATH = model_assets.MODELS_DIR / "download.json"
@@ -59,6 +60,17 @@ class InstallStatus:
 def _url_allowed(url: object) -> bool:
     """下载源必须落在本插件声明的官方主机内（传输层只搬字节，策略留在这里）。"""
     return is_allowed_url(url, ALLOWED_HOSTS)
+
+
+def _ordered_sources(sources: dict[str, str]) -> list[tuple[str, str]]:
+    """按宿主更新偏好排首选源；描述里的顺序只决定「其余源」的先后。
+
+    首选源这个参数只有一份：宿主写 config/update-prefs.json 的 source（默认 cnb），
+    这里读同一个文件。源键名与宿主同名（cnb/github），不另建映射表；插件自己
+    再写一套「先 cnb」的顺序，就是给同一偏好建第二份实现。
+    """
+    preferred = preferred_source()
+    return sorted(sources.items(), key=lambda item: item[0] != preferred)
 
 
 def _sha256_file(path: Path) -> str:
@@ -166,7 +178,7 @@ class ModelInstaller:
             staging_root.mkdir(parents=True, exist_ok=True)
             archive = staging_root / f"{task_id}-{descriptor['asset']}"
             errors: list[str] = []
-            for name, url in descriptor["sources"].items():
+            for name, url in _ordered_sources(descriptor["sources"]):
                 if self._cancelled():
                     self._set(task_id, phase="cancelled", error="用户取消")
                     return

@@ -51,6 +51,8 @@ def test_descriptor_binds_tag_asset_hash_and_digest(monkeypatch, tmp_path):
         f"https://github.com/owner/repo/releases/download/v1.2.3/{zip_path.name}")
     assert data["sources"]["cnb"] == (
         f"https://cnb.cool/org/repo/-/releases/download/v1.2.3/{zip_path.name}")
+    # 顺序即运行时首选顺序：cnb 在前（国内直连稳定），github 兜底。
+    assert list(data["sources"]) == ["cnb", "github"]
 
 
 def test_archive_is_reproducible_across_source_mtime(monkeypatch, tmp_path):

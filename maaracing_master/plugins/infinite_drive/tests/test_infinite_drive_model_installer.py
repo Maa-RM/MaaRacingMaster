@@ -225,3 +225,34 @@ def test_all_source_errors_are_reported(monkeypatch, tmp_path):
     status = _wait(installer)
     assert status.phase == "failed"
     assert "github:" in (status.error or "") and "cnb:" in (status.error or "")
+
+
+def test_source_order_follows_host_update_preference(monkeypatch, tmp_path):
+    """首选源只有一份参数：宿主 update-prefs.json 的 source，插件不自己排顺序。"""
+    _patch(monkeypatch, tmp_path)
+    archive = _make_zip(tmp_path / "model.zip")
+    sources = {
+        "github": "https://github.com/owner/repo/releases/download/v1.0.0/model.zip",
+        "cnb": "https://cnb.cool/org/repo/-/releases/download/v1.0.0/model.zip",
+    }
+    descriptor = _descriptor(archive, tmp_path, "", sources=sources)
+
+    for preference, first_host in (("cnb", "https://cnb.cool"), ("github", "https://github.com")):
+        calls: list[str] = []
+
+        def _record(url, *_args, **_kwargs):
+            calls.append(str(url))
+            raise OSError("模拟失败")
+
+        monkeypatch.setattr(model_installer, "download_file", _record)
+        monkeypatch.setattr(model_installer, "preferred_source", lambda p=preference: p)
+        installer = model_installer.ModelInstaller(descriptor)
+        installer.start()
+        assert _wait(installer).phase == "failed"
+        assert calls and calls[0].startswith(first_host), (preference, calls)
+
+
+def test_ordered_sources_keeps_descriptor_order_for_the_rest(monkeypatch):
+    monkeypatch.setattr(model_installer, "preferred_source", lambda: "github")
+    ordered = model_installer._ordered_sources({"cnb": "c", "github": "g", "mirror": "m"})
+    assert ordered == [("github", "g"), ("cnb", "c"), ("mirror", "m")]
