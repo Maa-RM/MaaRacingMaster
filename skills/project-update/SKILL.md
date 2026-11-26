@@ -1,6 +1,6 @@
 ---
 name: "project-update"
-description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命主题分支（命名规范、PR 准入三道闸）、commit 粒度、amend 边界、独立工作区与共享检出的最小约束，以及完整发版流程（清理临时文件 → 定版本号 → 更新 docs/update_log.md → 提交到 type/slug 主题分支 → 开 PR 并 squash 合入 → 打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
+description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命主题分支（命名规范、PR 准入三道闸）、commit 粒度、amend 边界、独立工作区与共享检出的最小约束，以及完整发版流程（清理临时文件 → 定版本号 → 功能与修复按主题各开 PR 合入 → release 分支单独提交 docs/update_log.md 与 docs/latest_release.json 并开 PR 合入 → 在该 release 提交上打 tag 并 push 触发 CI/CD）。Invoke when the user says '发布', '更新项目', '发版', 'release', wants to prepare a new version, or whenever the task will touch the remote repository — push / push tag / push branch / open or merge PR / publish."
 ---
 
 # 项目更新助手（MaaRacingMaster 发版流程）
@@ -41,7 +41,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
   slug 全小写、仅 `a-z0-9.-`，用连字符不用下划线，需说明用途的分段加在后缀（如 `chore/actions-bump-pkgtest`）。`dependabot/**` 为机器生成分支的豁免，不受此约束。
 - **历史例外只留一条**：`archive/dev-d542Bb` 永久保留，作用是让旧草稿线的提交在远端仍可解析（证据锚、历史比对要用）。它**只读**：不新增、不写入、不当合并源；新的长历史一律不再产生。
 - **一个主题一份独立工作区**：并行工作时每个主题用独立工作区（`git worktree` 或独立 clone 均可），HEAD 只停在自己的主题分支；共享检出不切到 `master`、不改史、不丢别人未提交内容。解释器与验证入口用仓库声明的环境（见 [CONTRIBUTING](../../CONTRIBUTING.md)），环境放在哪个目录属个人配置。
-- 发版顺序随之固定：**先沉淀（PR 合入稳定线）→ 再在稳定线上打 tag**。tag 必须打在稳定线含全部改动的那份上（见发版节）。
+- 发版顺序随之固定：**功能 / 修复按主题各开 PR 合入稳定线 → release 分支只含版本日志与版本标记、单独开 PR 合入 → tag 打在该 release 提交上**（见使用流程 ③→④→⑤）。tag 必须打在稳定线含全部改动的那份上，不落在功能主题提交上。
 - 旧的「长期草稿线 + 压扁沉淀」模型与它带来的假冲突分流、集成提交，已随本模型退役（决策与代价见 [ADR-0028](../../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md)），本节不再保留其操作口径。
 
 ### PR 准入（开 PR 前自检）
@@ -92,14 +92,14 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 | -------------------- | ----------------------------------------------------------------------------------------------- |
 | ① 清理临时文件             | 删除 `__pycache__`、`*.pyc`、`*.egg-info`、`build/`、`dist/`、`.pytest_cache/` 等（**不含** `debug/` 调试截图） |
 | ② 确定版本号              | 按「当前 dev 系列顺延 / minor 升级开新系列」规则计算，**用户指定优先**                                                    |
-| ③ 更新文档               | 更新 `docs/update_log.md` 添加新版本条目（README 如需一并更新）                                                  |
-| ④ 提交改动               | 从 `origin/master` 切 `type/slug` 主题分支提交；稳定线只经 PR 收入，见「分支模型」                      |
-| ⑤ 更新版本标记 + 打 Tag 并推送 | 更新 `docs/latest_release.json`（顶层是最新发布；预发布同时改 `channels.preview`，正式版同时改 `channels.stable`），创建 `vX.Y.Z[-dev.N]` tag 并 push，触发 CI/CD Release                   |
+| ③ 主题改动先合入（前置）       | 本轮待发的功能 / 修复 / 文档 / CI 改动按 `feat` / `fix` / `chore` 各开一条主题分支 PR、squash 合入 master；确认 CI 绿。release 步骤不夹带这些改动 |
+| ④ release 收口           | 从最新 `origin/master` 切 `release/vX.Y.Z[-dev.N]`，只改 `docs/update_log.md` + `docs/latest_release.json`（README 如需一并更新），单独开 PR、squash 合入 |
+| ⑤ 打 Tag 并推送            | 取 ④ 的 squash 提交打 `vX.Y.Z[-dev.N]` 轻量 tag 并 push，触发 CI/CD Release                              |
 | ⑥ 本地打包验证（可选）         | 跑 `scripts/release/assemble.ps1` 生成 zip+sha256 本地校验                                             |
 | ⑦ 全部执行               | 按 ①→②→③→④→⑤ 顺序（⑥ 可选插入 ⑤ 前）                                                                      |
 
-**顺序依赖：** ③ 需先定 ②（日志条目含版本号）；④ 应包含 ②③ 的改动；⑤ 必须晚于 ④
-（tag 打在含全部改动的 master 上）。
+**顺序依赖：** ③ 必须先于 ④（release PR 只含版本文档，待发主题须已合入 master）；④ 的日志条目含 ② 定的版本号；⑤ 必须晚于 ④
+（tag 打在 ④ 的 squash 提交上，该提交才同时含 changelog 与版本标记）。
 
 ***
 
@@ -140,34 +140,11 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 5. 用正则校验 SemVer：`^v\d+\.\d+\.\d+(-[\w.]+)?$`
 6. 输出版本号让用户确认后再继续
 
-### ③ 更新文档
+### ③ 主题改动先合入（前置）
 
-在 `docs/update_log.md` 顶部（最新 `## YYYY-MM-DD` 之后）插入新版本小节。**这是面向玩家的更新说明，不是开发日志**——收录判据与禁止项见 [`docs/README.md`](../../docs/README.md)「update_log 收录判据」。
+本轮待发的功能 / 修复 / 文档 / CI 改动按**一个主题一条 PR**分别合入 master，**不写版本日志、不写版本标记、不打 tag**——那三件事是 ④ ⑤ 的专属动作。这样每个主题 PR 的净增量就是该主题本身，release PR 的净增量就是「发版」这件事（[CONTRIBUTING](../../CONTRIBUTING.md)「一个 PR 一个主题」、[ADR-0028](../../docs/adr/0028-arch-global-分支模型定为单主干与短命主题分支.md) 决策 2）。
 
-```markdown
-## YYYY-MM-DD
-
-### vX.Y.Z[-dev.N] 一句话主题 🏷️
-
-- **新增：** …
-- **改进：** …
-- **修复：** …
-- **移除：** …
-```
-
-- 每条都过一遍判据：**玩家能看到什么不同？** 答不出的删掉；没有内容的分类不写
-- 变更来源是 `git log <上个 tag>..HEAD`——过程细节已在 commit message，不重复搬进本文
-- 让用户确认或编辑日志内容再写入
-
-- 若功能列表/项目结构等涉及 README.md，询问用户是否一并更新
-
-- 若本次是重写 skill/规范变更，同步更新 `AGENTS.md`「版本交付与协作」小节
-
-### ④ 提交改动
-
-**当前实际模式（2026-11 起）：从 `origin/master` 切 `type/slug` 主题分支，一个主题一条，合入即删**（命名见「分支模型」）。
-
-1. 建分支：`git switch -c feat/<slug> origin/master`（并行工作时改用独立工作区，见「独立工作区与共享检出」）
+1. 从 `origin/master` 切 `type/slug` 主题分支（命名见「分支模型」）：`git switch -c <type>/<slug> origin/master`（并行工作时改用独立工作区，见「独立工作区与共享检出」）
 2. `git status --short` 查看未提交改动；提交按 pathspec 直提：`git commit -m "标题" -m "正文" -- <具体文件>`（PowerShell 不支持 heredoc，用 `-m`）
 3. push：`git push -u origin <主题分支>`——只同步/备份，不触发测试（触发面只有 PR、`master` push 与 tag）
 
@@ -181,17 +158,47 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 
 **合入之后**：远端头分支由 `delete_branch_on_merge` 自动删除；本地 `git branch -d <主题分支>`，用了独立工作区的把它移除。下一条主题从最新的 `origin/master` 切。
 
-**旧的「集成提交」已退役**：它存在的原因是压扁草稿线与稳定线之间没有合并基线，需要把「日常线的整棵树」挂成一个父为 master 的提交来制造可审对照物。单主干下 PR 的净增量天然等于主题增量，不再需要构造对照树；`release/**` 只保留为「打 tag 前的最后一次收口」这一分支名用途，按常规主题分支操作。`release/**` 在 test.yml 的 push 分支表里，推上去自带一轮全量 CI——PR 流水线与分支流水线各跑一次，**同一提交两边结论可以不同**（计时类断言吃不住负载差），红的先本地复现再定性。
+**旧的「集成提交」已退役**：它存在的原因是压扁草稿线与稳定线之间没有合并基线，需要把「日常线的整棵树」挂成一个父为 master 的提交来制造可审对照物。单主干下 PR 的净增量天然等于主题增量，不再需要构造对照树。`release/**` 专用于下一步的收口，不承载功能改动。
 
-### ⑤ 更新版本标记 + 打 Tag 并推送（触发 CI/CD）
+### ④ release 收口（单独一条 PR）
 
-1. **更新** **`docs/latest_release.json`**（程序内「检查更新」的唯一信源）：`tag`、`version`、`published_at` 三项指向本次版本，`download_url` 保持不变。CI **不回写此文件**（master 受分支保护），漏写会造成「Release 页面已有新版，但玩家软件里永远收不到更新提示」的错位。该改动必须作为 commit 落在 **tag 之前**——tag 落点那份代码要同时含 changelog 小节与此标记文件（Release 正文由 `extract_changelog.py` 从 tag 那份 `docs/update_log.md` 抽取，改文案必须与 tag 落点一起前移）。
-2. 确认工作区干净（`git status --porcelain` 无输出）；确认待发内容**已沉淀进稳定线**（PR 已合入 master、CI 绿）。
-3. **取本次发版 PR 的 squash 提交并显式对它打 tag**：`gh pr view <N> --json mergeCommit --jq .mergeCommit.oid` 拿到 SHA；**先 `git fetch origin master`**（刚合并时本地可能还没有该对象、或跟踪引用尚未更新，不 fetch 会让正确的提交也过不了校验）；再核 `git merge-base --is-ancestor <sha> origin/master` 成立、且 `git rev-parse <sha>^{tree}` 与验收过的主题 HEAD 树一致（不一致说明合并带了额外解决残留，先查清）。然后 `git tag <tag> <sha>`（0.x 阶段通常为 pre-release；本仓库自 v0.12 起统一用**轻量 tag**，`git cat-file -t refs/tags/<上一个>` 可验类型）。**不要省略目标提交**：`git tag <tag>` 默认打在本地 HEAD（可能停在主题分支）上，`git tag <tag> origin/master` 则会随其他 PR 合入而前进——两者都不绑定本次验收。
-4. push tag：`git push origin <tag>`（tag 已绑定本次 squash 提交，不随 master 前进；不在共享检出里切分支）
-5. **push 前必须向用户确认**（发版动作不可逆）
-6. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（与 PR / master push 同一条 test.yml：pytest、ruff、pyright、真源与卫生机检、Shell 编译）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
-7. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
+从最新的 `origin/master` 切 `release/vX.Y.Z[-dev.N]`，**只改两个文件**，按与主题 PR 相同的流程合入 master（门禁、冲突处理、squash 合并同上）：
+
+1. **`docs/update_log.md`**：在顶部（最新 `## YYYY-MM-DD` 之后）插入新版本小节。**这是面向玩家的更新说明，不是开发日志**——收录判据与禁止项见 [`docs/README.md`](../../docs/README.md)「update_log 收录判据」。
+
+   ```markdown
+   ## YYYY-MM-DD
+
+   ### vX.Y.Z[-dev.N] 一句话主题 🏷️
+
+   - **新增：** …
+   - **改进：** …
+   - **修复：** …
+   - **移除：** …
+   ```
+
+   - 每条都过一遍判据：**玩家能看到什么不同？** 答不出的删掉；没有内容的分类不写
+   - 变更来源是 `git log <上个 tag>..HEAD`，这里取的是 ③ 已经合入的各主题提交——过程细节已在 commit message，不重复搬进本文
+   - 让用户确认或编辑日志内容再写入
+   - 若功能列表 / 项目结构涉及 README.md，在 ③ 的对应主题 PR 里一并更新，不放到 release PR
+   - 若本次是重写 skill / 规范变更，同步更新 `AGENTS.md`「版本交付与协作」小节
+
+2. **`docs/latest_release.json`**（程序内「检查更新」的唯一信源）：`tag`、`version`、`published_at` 三项指向本次版本，`download_url` 保持不变。CI **不回写此文件**（master 受分支保护），漏写会造成「Release 页面已有新版，但玩家软件里永远收不到更新提示」的错位。Release 正文由 `extract_changelog.py` 从 tag 那份 `docs/update_log.md` 抽取，所以日志与标记必须在同一条 release PR 里、一起落在 tag 之前。
+
+**commit 与合并**：squash subject 用 `release: vX.Y.Z[-dev.N] 一句话主题`——**与普通主题 PR 不同，不带 `(#N)`**。这一标题只属于 release PR；功能主题 PR 用 `<type>(<scope>): <主题> (#<N>)`，且**不夹带版本日志与版本标记**。`release/**` 在 test.yml 的 push 分支表里，推上去自带一轮全量 CI——PR 流水线与分支流水线各跑一次，**同一提交两边结论可以不同**（计时类断言吃不住负载差），红的先本地复现再定性。
+
+**合入后**：确认工作区干净（`git status --porcelain` 无输出）、CI 绿，再进入 ⑤。
+
+### ⑤ 打 Tag 并推送（触发 CI/CD）
+
+tag 只打在 ④ 那条 release PR 的 squash 提交上，**不打在功能主题 PR 上**：
+
+1. `gh pr view <N> --json mergeCommit --jq .mergeCommit.oid` 拿到 release PR 的 merge commit SHA；**先 `git fetch origin master`**（刚合并时本地可能还没有该对象、或跟踪引用尚未更新，不 fetch 会让正确的提交也过不了校验）；再核 `git merge-base --is-ancestor <sha> origin/master` 成立、且 `git rev-parse <sha>^{tree}` 与验收过的 release HEAD 树一致（不一致说明合并带了额外解决残留，先查清）。
+2. `git tag <tag> <sha>`（0.x 阶段通常为 pre-release；本仓库自 v0.12 起统一用**轻量 tag**，`git cat-file -t refs/tags/<上一个>` 可验类型）。**不要省略目标提交**：`git tag <tag>` 默认打在本地 HEAD（可能停在主题分支）上，`git tag <tag> origin/master` 则会随其他 PR 合入而前进——两者都不绑定本次验收。
+3. push tag：`git push origin <tag>`（tag 已绑定本次 squash 提交，不随 master 前进；不在共享检出里切分支）
+4. **push 前必须向用户确认**（发版动作不可逆）
+5. 告知用户：push tag 触发 GitHub Actions（`.github/workflows/release.yml`），流水线 = `test`（与 PR / master push 同一条 test.yml：pytest、ruff、pyright、真源与卫生机检、Shell 编译）→ `release`（创建 GitHub Release **草稿**，正文含下载指引；sdist/wheel 只构建验证、不再上传）→ `win-build`（assemble.ps1 组装解压即用 win-x64 zip + 本地 sha256，并生成可选模型包，一并补传到该草稿；两个资产上传完成后由 action 把草稿转为公开，随后校验「已公开且资产齐全」）→ `cnb-release`（同步 zip/模型包与正文到 CNB）。草稿不可见，因此构建失败只留下草稿，不会出现没有下载包的公开页面
+6. **tag 触发的工作流与 master push 的工作流 checkout 语义不同**：前者完整历史（拿得到 tag），后者 `--no-tags` 浅克隆。因此「master 的 Test 红、Release gate 绿」可以同时成立，排查时先分清是哪条流水线
 
 ### ⑥ 本地打包验证（可选）
 
@@ -251,7 +258,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **Git Tag 是唯一信源**：禁止手动改源码版本号，`setuptools-scm` 从 tag 自动推导（写入 `maaracing_master/_version.py`）
 
-- **发布模式**：从 `origin/master` 切 `type/slug` 主题分支 → 主题收口开 PR 并 squash 合入稳定线 → 在稳定线上打 tag → push tag 触发 CI/CD（见「分支模型」）
+- **发布模式**：功能 / 修复按主题从 `origin/master` 切 `type/slug` 分支，各自开 PR 并 squash 合入稳定线 → 切 `release/vX.Y.Z[-dev.N]`，只含 `docs/update_log.md` 与 `docs/latest_release.json`，单独开 PR 合入 → tag 打在该 release 提交上 → push tag 触发 CI/CD（见「使用流程」）
 
 - tag 触发 CI 时 `test` 会先跑 pytest，测试失败不发布
 
