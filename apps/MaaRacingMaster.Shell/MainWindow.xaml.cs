@@ -389,6 +389,9 @@ public sealed partial class MainWindow : Window
         {
             web.Focus(FocusState.Programmatic);
             SendMaximizedState();
+            // 升级后的首次启动：页面已渲染即向启动器回执，完成「试启动」确认。
+            // 回执失败（或本进程根本没起来）时启动器会超时回滚到旧版本。
+            UpdateLauncher.AckHealthIfPending(ShellVersionStamp().Split('+')[0]);
         };
         _ = InitializeWebViewAsync();
     }

@@ -16,6 +16,12 @@
     <Compile Include="..\..\UpdateCoordinator.cs" Link="UpdateCoordinator.cs" />
     <!-- 自动检查调度也链接正式源码：验证首轮立即发起与停止语义，而非复制逻辑 -->
     <Compile Include="..\..\UpdateAutoCheck.cs" Link="UpdateAutoCheck.cs" />
+    <!-- 便携版更新协议：清单/来源/传输/暂存与树对拍，探针直接驱动正式实现 -->
+    <Compile Include="..\..\UpdateProtocol.cs" Link="UpdateProtocol.cs" />
+    <Compile Include="..\..\UpdateTree.cs" Link="UpdateTree.cs" />
+    <Compile Include="..\..\UpdateTransport.cs" Link="UpdateTransport.cs" />
+    <Compile Include="..\..\UpdateSourceClient.cs" Link="UpdateSourceClient.cs" />
+    <Compile Include="..\..\UpdateStager.cs" Link="UpdateStager.cs" />
     <!-- 钩子自退出断言与壳用同一固定版本（与正式接入版本绑定核验） -->
     <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
