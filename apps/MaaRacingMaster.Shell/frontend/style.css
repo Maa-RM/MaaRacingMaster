@@ -199,21 +199,25 @@ nav.tabs { position: relative; display: flex; align-items: stretch; height: 100%
 @media (prefers-reduced-motion: reduce) {
   .maarm-tab-dot.is-on::before, .maarm-tab-dot.is-on::after { animation: none; }
 }
-/* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML） */
+/* 自绘窗口控制按钮：整块注册为 Passthrough 交互区（输入穿透非客户区交给 HTML）。
+   图标不自创形状：路径由 `apps/MaaRacingMaster.Shell/tools/extract_caption_glyphs.py` 从系统标题栏
+   字形（`SegoeIcons.ttf` 的 U+E921/E922/E923/E8BB）的轮廓导出，10×10 视框、1 单位 = 1px，
+   圆角（外框 1.47、内框 0.5、横条与斜线的端帽）都是原生那份几何。
+   为什么不直接用字形文本：WebView2 走 ClearType，10px 字形只有 1px 笔画，会被亚像素拆成两列红蓝彩边；
+   强制灰度又会把笔画摊成两列浅灰。取轮廓画矢量后，直线段落在整像素（外框 0/10、内框 1/9、横条 4..5），
+   只有圆角和斜线吃灰度抗锯齿。 */
 .win-controls { display: flex; height: 100%; margin-left: auto; flex: 0 0 auto; }
 .win-btn {
   width: 46px; height: 100%; padding: 0; border: 0;
-  background: transparent; color: var(--maarm-foreground-secondary);
+  background: transparent; color: var(--maarm-foreground);
   display: flex; align-items: center; justify-content: center; cursor: default;
 }
-.win-btn svg {
-  width: 10px; height: 10px; fill: none; stroke: currentColor;
-  stroke-width: 1; vector-effect: non-scaling-stroke;
-}
+.win-icon { display: block; width: 10px; height: 10px; fill: currentColor; stroke: none; }
 .win-btn:focus-visible { outline-offset: -2px; } /* 贴屏幕边缘，环内收防被裁切 */
 .win-btn:hover { background: var(--maarm-surface-hover); }
 .win-btn:active { background: var(--maarm-surface-active); }
 .win-btn--close:hover { background: var(--maarm-danger); color: #fff; }
+.win-btn--close:active { background: var(--maarm-danger-strong); color: #fff; }
 .win-btn--maximized .icon-max { display: none; }
 .win-btn--maximized .icon-restore { display: block; }
 .win-btn:not(.win-btn--maximized) .icon-restore { display: none; }

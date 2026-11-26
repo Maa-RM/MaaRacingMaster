@@ -113,8 +113,14 @@ Chromium 不提供待编译清单，漏登记只影响该弹窗首次打开的�
   - JS 动态模板：`${MaaRMIcons.svg('图标名'[, {class: '...'}])}`。
   - 变形动画：`MaaRMIcons.node('图标名')` 取 IconNode 喂给 `<morph-icon>`。
 - **不属于图标系统的两类图形**（刻意排除，勿迁入 icons.js）：
-  - 窗口标题栏 chrome（最小化/最大化/关闭，自绘 10×10，模拟 Windows 原生标题栏度量），
-    留在 `index.html` 原位；
+  - 窗口标题栏 chrome（最小化/最大化/关闭），留在 `index.html` 原位。按钮是 HTML 自绘，**图标形状
+    取自系统标题栏字形**：`apps/MaaRacingMaster.Shell/tools/extract_caption_glyphs.py` 从
+    `SegoeIcons.ttf`（Win11 `Segoe Fluent Icons`，回退 `segmdl2.ttf`）里 U+E921/E922/E923/E8BB
+    的轮廓导出成 10×10 视框（1 单位 = 1px）的填充路径——横条、圆角 1.47 的方框、两个错位方框的
+    「还原」、圆角端帽的斜叉都是原生那份几何。改图标要重跑工具，`--check` 会逐条比对 html 里的路径。
+    别改用图标库或字形文本：Fluent 的方框是 2.5px 圆角、Bootstrap 16px 方框是 2px 粗边，都对不上
+    caption 的直角 1px；而 WebView2 的 ClearType 会把 10px 字形的 1px 笔画拆成两列红蓝彩边。走轮廓
+    矢量后直线段正好落在整像素（外框 0/10、内框 1/9、横条 4..5），只有圆角与斜线吃灰度抗锯齿。
   - 性能走势图（`perf-spark` 内联 polyline），是数据可视化不是图标。
 - **实心媒体图标**（`media-play/pause/stop`，实心是媒体控件惯例画法）不参与变形动画，
   `MaaRMIcons.node()` 对其直接抛错。
