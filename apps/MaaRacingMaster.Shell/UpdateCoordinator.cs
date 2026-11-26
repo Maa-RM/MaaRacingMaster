@@ -107,7 +107,8 @@ public sealed class UpdateCoordinator
         long Epoch,
         string StartPhase,
         string Channel,
-        string[] Sources)
+        string[] Sources,
+        UpdateSourceEndpoint[] Endpoints)
     {
         public bool IsStale(string phase, long epoch) => epoch != Epoch || phase != StartPhase;
     }
@@ -197,6 +198,11 @@ public sealed class UpdateCoordinator
     }
 
     private readonly SourceCatalog _catalog;
+    private readonly string? _feedSource;          // 随包来源配置原文（便携模式按命名端点解析）
+    private readonly bool _portable;               // 便携安装：清单协议 + 启动器事务
+    private readonly string? _installRoot;         // 便携安装根（program\ 的父目录）
+    private readonly string _currentVersion;       // 本次运行的版本（渠道比较用）
+    private readonly bool _snapshotManaged;        // 快照里的 managed = 自动升级是否可用
     private readonly IVelopackLocator? _locator;   // 显式定位器注入（合同探针用）；null = 默认定位器
     private readonly PrepareGateAsync? _prepareGate;
     private readonly HandoffRecoveryAsync? _handoffRecovery;
@@ -225,8 +231,12 @@ public sealed class UpdateCoordinator
     private string? _lockedSource;                 // 与 _manager 配对：镜像回退时跳过已锁源
     private CheckIntent? _activeIntent;            // 当前已验证目标所属的事务上下文
     private UpdateInfo? _pending;
+    private UpdateRelease? _release;               // 便携模式：已验证的发布清单
+    private UpdateSourceEndpoint? _endpoint;       // 便携模式：锁定的来源端点
+    private StagedUpdate? _staged;                 // 便携模式：已暂存完成的候选树
     private CancellationTokenSource? _downloadCts;
     private Task? _downloadTask;
+    private int _drainCount;                       // 切渠道后旧下载的收尾（未完成前不许开新下载，可叠加）
 
     private Task<UpdateSnapshot>? _checkTask;      // 在途检查（同世代请求合并）
     private long _checkTaskEpoch = -1;
@@ -247,10 +257,17 @@ public sealed class UpdateCoordinator
                              bool initialAutoCheck = true,
                              Action<bool>? saveAutoCheck = null,
                              TimeProvider? timeProvider = null,
-                             TimeSpan? indexTimeout = null)
+                             TimeSpan? indexTimeout = null,
+                             string? installRoot = null,
+                             string? currentVersion = null)
     {
         _catalog = new SourceCatalog(feedSource);
+        _feedSource = feedSource;
         _managed = managed;
+        _portable = !string.IsNullOrWhiteSpace(installRoot) && Directory.Exists(installRoot);
+        _installRoot = _portable ? installRoot : null;
+        _currentVersion = string.IsNullOrWhiteSpace(currentVersion) ? "0.0.0" : currentVersion;
+        _snapshotManaged = managed || _portable;
         _locator = locator;
         _prepareGate = prepareGate;
         _handoffRecovery = handoffRecovery;
@@ -265,7 +282,7 @@ public sealed class UpdateCoordinator
         _awaitingStable = initialAwaitingStable && _channel == UpdateSnapshot.ChannelStable;
         _dismissedVersion = string.IsNullOrWhiteSpace(initialDismissedVersion)
             ? null : initialDismissedVersion.Trim();
-        if (!managed)
+        if (!managed && !_portable)
         {
             _phase = UpdateSnapshot.Unavailable;
             _error = "非受管安装，自动升级不可用（请使用手动升级入口）";
@@ -293,7 +310,7 @@ public sealed class UpdateCoordinator
     {
         lock (_gate)
         {
-            if (!_managed || !_autoCheckEnabled) return null;
+            if ((!_managed && !_portable) || !_autoCheckEnabled) return null;
             var anchor = _autoAnchorUtc;
             if (anchor is null) return TimeSpan.Zero;
             var delay = anchor.Value + interval - now;
@@ -336,8 +353,11 @@ public sealed class UpdateCoordinator
             }
             else
             {
-                var sources = _catalog.For(_source);
-                if (sources.Length == 0)
+                var sources = _portable ? Array.Empty<string>() : _catalog.For(_source);
+                var endpoints = _portable
+                    ? UpdateSourceCatalog.Parse(_feedSource, _source).ToArray()
+                    : Array.Empty<UpdateSourceEndpoint>();
+                if ((_portable ? endpoints.Length : sources.Length) == 0)
                 {
                     _targetVersion = null;
                     _pending = null;
@@ -346,7 +366,7 @@ public sealed class UpdateCoordinator
                     NoteCheckSettled(_time.GetUtcNow());
                     return Task.FromResult(empty);
                 }
-                var intent = new CheckIntent(_epoch, _phase, _channel, sources);
+                var intent = new CheckIntent(_epoch, _phase, _channel, sources, endpoints);
                 var cts = new CancellationTokenSource();
                 var completion = new TaskCompletionSource<UpdateSnapshot>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -371,20 +391,36 @@ public sealed class UpdateCoordinator
     public Task<UpdateSnapshot> StartDownloadAsync(long? expectedRevision = null)
     {
         UpdateInfo? pending;
+        UpdateRelease? release = null;
+        UpdateSourceEndpoint? endpoint = null;
         CheckIntent intent;
         CancellationTokenSource cts;
         lock (_gate)
         {
             if (expectedRevision is long seen && seen != _revision)
                 return Task.FromResult(Snapshot("界面信息已更新，请确认当前目标后重新操作"));
+            // 旧下载还没收尾：它和下一次下载写同一个暂存目录与缓存，必须先等它退出。
+            if (_drainCount > 0)
+                return Task.FromResult(Snapshot("正在切换更新渠道，请稍候"));
             if (_phase == UpdateSnapshot.Downloading && _downloadTask is not null)
                 return Task.FromResult(Snapshot()); // 复用当前任务
             if (_phase == UpdateSnapshot.Ready)
                 return Task.FromResult(Snapshot()); // 已下载完成：重复调用幂等返回
             if (_phase != UpdateSnapshot.Available)
                 return Task.FromResult(Snapshot(BusyReason()));
-            if (_pending is null || _activeIntent is null)
+            if (_activeIntent is null)
                 return Task.FromResult(Snapshot("没有可安装目标，请先检查更新"));
+            if (_portable)
+            {
+                release = _release;
+                endpoint = _endpoint;
+                if (release is null || endpoint is null)
+                    return Task.FromResult(Snapshot("没有可安装目标，请先检查更新"));
+            }
+            else if (_pending is null)
+            {
+                return Task.FromResult(Snapshot("没有可安装目标，请先检查更新"));
+            }
             _checkCts?.Cancel(); // 下载事务接管：在途检查的迟到结果没有回写资格
             pending = _pending;
             intent = _activeIntent;
@@ -393,11 +429,127 @@ public sealed class UpdateCoordinator
             _revision++;
             _phase = UpdateSnapshot.Downloading;
             _error = null;
-            // 任务在锁外创建：DownloadAsync 的同步前段与完成翻转都拿同一把锁，
+            // 任务在锁外创建：下载的同步前段与完成翻转都拿同一把锁，
             // 持锁启动会在同步完成路径上自我死锁。
         }
-        _downloadTask = Task.Run(() => DownloadAsync(pending!, intent, cts.Token));
+        _downloadTask = _portable
+            ? Task.Run(() => DownloadPortableAsync(release!, endpoint!, intent, cts.Token))
+            : Task.Run(() => DownloadAsync(pending!, intent, cts.Token));
         return Task.FromResult(GetStatus());
+    }
+
+    /// <summary>
+    /// 便携安装的下载：把清单落成完整候选树（增量优先、失败回退整包，细节在
+    /// <see cref="UpdateStager"/>）。失败时按事务上下文里的其它来源重建同一目标
+    /// （版本与整包摘要都一致才换源），全部失败回可重试的 available。
+    /// </summary>
+    private async Task DownloadPortableAsync(UpdateRelease release, UpdateSourceEndpoint endpoint,
+                                             CheckIntent intent, CancellationToken ct)
+    {
+        try
+        {
+            var staged = await StagePortableAsync(release, endpoint, intent, ct).ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (intent.Epoch == _epoch && _phase == UpdateSnapshot.Downloading)
+                {
+                    _staged = staged;
+                    SetState(intent.Epoch, UpdateSnapshot.Ready, progress: 100);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            BackToAvailable(intent, "下载已取消");
+        }
+        catch (Exception ex)
+        {
+            BackToAvailable(intent, "下载失败: " + ex.Message);
+        }
+    }
+
+    private async Task<StagedUpdate> StagePortableAsync(UpdateRelease release,
+                                                        UpdateSourceEndpoint endpoint,
+                                                        CheckIntent intent, CancellationToken ct)
+    {
+        var installRoot = _installRoot ?? throw new InvalidOperationException("缺少安装根");
+        var contentRoot = Path.Combine(installRoot, "program");
+        var stageRoot = UpdateLauncher.StagingPath(installRoot);
+        var cacheDir = Path.Combine(UpdateLauncher.UpdateDir(installRoot), "cache");
+        var stager = new UpdateStager(TransportForAssets(endpoint.Assets), cacheDir);
+        var progress = new SyncProgress(value =>
+        {
+            lock (_gate)
+            {
+                if (intent.Epoch == _epoch && _phase == UpdateSnapshot.Downloading)
+                {
+                    _progress = value;
+                    _revision++;
+                }
+            }
+        });
+
+        Exception? firstFailure = null;
+        try
+        {
+            return await stager
+                .StageAsync(release, endpoint.Assets, _currentVersion, contentRoot, stageRoot,
+                            progress, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            firstFailure = ex;
+        }
+
+        // 镜像回退：只换地址，不换发行——按已选定的 tag/版本取清单，版本与整包摘要
+        // 都一致才采用另一来源的资产。不得重读备用源的「最新标记」：它一旦发了下一版，
+        // 就会错过仍可下载的旧目标。
+        foreach (var candidate in intent.Endpoints)
+        {
+            if (candidate.Assets.Equals(endpoint.Assets) || !EndpointReachable(candidate))
+                continue;
+            try
+            {
+                var client = new UpdateSourceClient(TransportForEndpoint(candidate));
+                var mirror = await client
+                    .FetchManifestAtAsync(candidate, release.Tag, release.Version, ct)
+                    .ConfigureAwait(false);
+                if (!string.Equals(mirror.Version, release.Version, StringComparison.Ordinal)
+                    || !string.Equals(mirror.Full.Sha256, release.Full.Sha256,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                var mirrorStager = new UpdateStager(TransportForAssets(candidate.Assets), cacheDir);
+                return await mirrorStager
+                    .StageAsync(mirror, candidate.Assets, _currentVersion, contentRoot, stageRoot,
+                                progress, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // 该镜像不可用：继续下一候选
+            }
+        }
+        throw new InvalidOperationException(
+            $"{firstFailure?.Message}（镜像回退未找到同目标源）");
+    }
+
+    /// <summary>同步进度回调（不投递到同步上下文，避免下载结束后才到达）。</summary>
+    private sealed class SyncProgress : IProgress<int>
+    {
+        private readonly Action<int> _report;
+        public SyncProgress(Action<int> report) => _report = report;
+        public void Report(int value) => _report(value);
     }
 
     private async Task DownloadAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)
@@ -532,6 +684,14 @@ public sealed class UpdateCoordinator
         }
     }
 
+    /// <summary>等一个旧任务完全退出；它的异常与终态由该任务自己写回的快照承担。</summary>
+    private static async Task DrainAsync(Task? task)
+    {
+        if (task is null || task.IsCompleted) return;
+        try { await task.ConfigureAwait(false); }
+        catch { /* 旧任务失败不阻断新渠道，状态已在它自己的返回里落定 */ }
+    }
+
     private void BackToAvailable(CheckIntent intent, string error)
     {
         lock (_gate)
@@ -583,6 +743,8 @@ public sealed class UpdateCoordinator
         bool changed;
         long epoch;
         Task<UpdateSnapshot>? draining = null;
+        Task? drainingDownload = null;
+        var countingDrain = false;
         lock (_gate)
         {
             if (_phase is UpdateSnapshot.Preparing or UpdateSnapshot.Applying)
@@ -593,6 +755,11 @@ public sealed class UpdateCoordinator
                 if (changed)
                 {
                     draining = _checkTask; // ResetForNewEpoch 会清空在途引用，先留一份等它退出
+                    drainingDownload = _downloadTask;
+                    // 计数与重置同锁：重置一把状态放成 Idle，下载闸门就必须已经生效，
+                    // 否则这里释放锁到下一行加计数之间存在并发窗口。
+                    _drainCount++;
+                    countingDrain = true;
                     _awaitingStable = value == UpdateSnapshot.ChannelStable
                         && _channel == UpdateSnapshot.ChannelPreview;
                     _channel = value;
@@ -608,10 +775,20 @@ public sealed class UpdateCoordinator
             epoch = _epoch;
         }
         if (!changed) return GetStatus();
+        // 先等旧下载真正退出，再做偏好落盘与后续检查：等待闸门已随重置一起生效。
+        if (countingDrain)
+        {
+            try
+            {
+                await DrainAsync(drainingDownload).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_gate) { _drainCount--; }
+            }
+        }
         _savePreferences(_channel, _source, _awaitingStable);
         if (!isChannel) return GetStatus();
-        // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
-        // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
         if (draining is { IsCompleted: false })
         {
             try { await draining.ConfigureAwait(false); }
@@ -679,6 +856,9 @@ public sealed class UpdateCoordinator
         _lockedSource = null;
         _activeIntent = null;
         _pending = null;
+        _release = null;
+        _endpoint = null;
+        _staged = null;
         _targetVersion = null;
         _checkCts?.Cancel();
         _checkCts = null;
@@ -696,11 +876,11 @@ public sealed class UpdateCoordinator
     /// 交接失败（更新器缺失/无法启动）→ 走恢复委托重启后端（闸门通过 = 后端已确认
     /// 退出，不恢复则「旧版可继续使用」是假话），再回 ready 带原因：关窗未排，
     /// 前端保留重启升级入口（评审回归：先排关窗再交接会把启动失败变成关窗既成事实）。</summary>
-    public async Task<UpdateSnapshot> ApplyAsync()
+    public async Task<UpdateSnapshot> ApplyAsync(bool backupExtras = false)
     {
         lock (_gate)
         {
-            if (_phase != UpdateSnapshot.Ready || _pending is null)
+            if (_phase != UpdateSnapshot.Ready || (_pending is null && !_portable))
                 return Snapshot(BusyReason());
             _checkCts?.Cancel(); // ready 允许手动复查：提交时在途结果同样失效
             _revision++;
@@ -726,6 +906,9 @@ public sealed class UpdateCoordinator
                 }
             }
         }
+        if (_portable)
+            return await ApplyPortableAsync(backupExtras).ConfigureAwait(false);
+
         var manager = _manager;
         var pending = _pending;
         if (manager is null || pending is null)
@@ -772,6 +955,197 @@ public sealed class UpdateCoordinator
         return GetStatus();
     }
 
+    /// <summary>
+    /// 便携安装的提交：事务文件与替换都由根启动器执行。交接成功才进入 applying 并
+    /// 安排计划内关窗；交接失败（暂存缺失/启动器不可用）走恢复委托把后端拉起来，
+    /// 状态回 ready 带原因——关窗未排，玩家仍可重试。
+    /// </summary>
+    private async Task<UpdateSnapshot> ApplyPortableAsync(bool backupExtras)
+    {
+        var targetVersion = _release?.Version;
+        if (_staged is null || _release is null || string.IsNullOrEmpty(targetVersion))
+        {
+            lock (_gate)
+            {
+                return SetState(_epoch, UpdateSnapshot.Ready,
+                    error: "没有已下载的更新，请重新检查后再试");
+            }
+        }
+        if (backupExtras)
+        {
+            try
+            {
+                BackupLocalChanges(_release);
+            }
+            catch (Exception ex)
+            {
+                // prepareGate 已让后端退出：只回 Ready 会把玩家留在「旧窗口能用、业务不可用」
+                // 的状态，必须复用交接失败的恢复流程把后端拉回来。
+                var recovered = false;
+                if (_handoffRecovery is not null)
+                {
+                    try
+                    {
+                        recovered = await _handoffRecovery().ConfigureAwait(false);
+                    }
+                    catch (Exception recEx)
+                    {
+                        ShellLog.Append($"[update] 备份失败后的后端恢复异常: {recEx.Message}");
+                    }
+                }
+                ShellLog.Append($"[update] 备份本地文件失败: {ex.Message}（后端恢复: {(recovered ? "已重启" : "失败，需重启应用")}）");
+                lock (_gate)
+                {
+                    return SetState(_epoch, UpdateSnapshot.Ready,
+                        error: recovered
+                            ? $"备份本地文件失败，已取消安装: {ex.Message}（旧版本可继续使用，可重试）"
+                            : $"备份本地文件失败，已取消安装: {ex.Message}（后端恢复失败，请重启应用）");
+                }
+            }
+        }
+        var source = _endpoint?.Name ?? _source;
+        if (!UpdateLauncher.TryStartApply(targetVersion, Environment.ProcessId,
+                _staged.Mode, _staged.DownloadBytes, source, _release.Notes ?? "",
+                UpdateProtocol.Serialize(_release), out var error, _installRoot))
+        {
+            var recovered = false;
+            if (_handoffRecovery is not null)
+            {
+                try
+                {
+                    recovered = await _handoffRecovery().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    ShellLog.Append($"[update] 交接失败恢复异常: {ex.Message}");
+                }
+            }
+            ShellLog.Append($"[update] 安装事务启动失败: {error}（后端恢复: {(recovered ? "已重启" : "失败，需重启应用")}）");
+            lock (_gate)
+            {
+                return SetState(_epoch, UpdateSnapshot.Ready,
+                    error: recovered
+                        ? $"升级程序启动失败: {error}（旧版本可继续使用，可重试升级）"
+                        : $"升级程序启动失败: {error}（自动恢复失败，请重启应用后再试）");
+            }
+        }
+        lock (_gate)
+        {
+            _revision++;
+            _phase = UpdateSnapshot.Applying;
+        }
+        ApplyingStarted?.Invoke(); // 交接成功后才安排计划内关窗
+        ShellLog.Append($"[update] 提交已交接：目标 {targetVersion}，等本进程退出后替换程序目录");
+        return GetStatus();
+    }
+
+    /// <summary>
+    /// 安装前的本地差异：程序目录里多出来的文件，以及相对「已装清单」被玩家改过的
+    /// 官方文件。首版安装没有基线，只能判出额外文件（BaselineKnown=false）。
+    /// </summary>
+    public sealed record LocalChangeReport(
+        [property: JsonPropertyName("extra_files")] int ExtraFiles,
+        [property: JsonPropertyName("extra_bytes")] long ExtraBytes,
+        [property: JsonPropertyName("modified_files")] int ModifiedFiles,
+        [property: JsonPropertyName("baseline_known")] bool BaselineKnown,
+        [property: JsonPropertyName("sample")] IReadOnlyList<string> Sample,
+        [property: JsonPropertyName("backup_path")] string BackupPath);
+
+    /// <summary>扫描本地树（约一次全量哈希）；没有可安装目标时返回 null。</summary>
+    public Task<LocalChangeReport?> InspectLocalChangesAsync() => Task.Run(InspectLocalChanges);
+
+    private LocalChangeReport? InspectLocalChanges()
+    {
+        var release = _release;
+        if (!_portable || release is null || _installRoot is null) return null;
+        var contentRoot = Path.Combine(_installRoot, "program");
+        if (!Directory.Exists(contentRoot)) return null;
+
+        var target = release.Full.Files.Select(f => f.Path)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var disk = UpdateTree.Scan(contentRoot);
+        var extras = disk.Keys.Where(path => !target.Contains(path))
+            .OrderBy(path => path, UpdateProtocol.Utf8PathComparer.Instance).ToList();
+        var (modified, baseline) = ModifiedAgainstInstalled(target, disk);
+        long extraBytes = extras.Sum(path => disk[path].Size);
+        var sample = extras.Concat(modified)
+            .OrderBy(path => path, UpdateProtocol.Utf8PathComparer.Instance)
+            .Take(5).ToList();
+        return new LocalChangeReport(extras.Count, extraBytes, modified.Count,
+            baseline is not null, sample, BackupRoot());
+    }
+
+    private (List<string> Modified, UpdateFull? Baseline) ModifiedAgainstInstalled(
+        HashSet<string> target, IReadOnlyDictionary<string, UpdateFileEntry> disk)
+    {
+        var baseline = LoadInstalledManifest();
+        var modified = new List<string>();
+        if (baseline is null) return (modified, null);
+        var installed = baseline.Files.ToDictionary(f => f.Path, StringComparer.OrdinalIgnoreCase);
+        foreach (var path in target)
+        {
+            if (!installed.TryGetValue(path, out var expected)) continue;
+            if (!disk.TryGetValue(path, out var actual)) continue;
+            if (!string.Equals(actual.Sha256, expected.Sha256, StringComparison.OrdinalIgnoreCase))
+                modified.Add(path);
+        }
+        modified.Sort(UpdateProtocol.Utf8PathComparer.Instance);
+        return (modified, baseline);
+    }
+
+    private UpdateFull? LoadInstalledManifest()
+    {
+        if (_installRoot is null) return null;
+        var path = UpdateLauncher.InstalledManifestPath(_installRoot);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return UpdateProtocol.Parse(File.ReadAllText(path)).Full;
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 已装清单不可读，只能按额外文件判断差异: {ex.Message}");
+            return null;
+        }
+    }
+
+    private string BackupRoot()
+    {
+        var appData = Environment.GetEnvironmentVariable("APPDATA");
+        if (!string.IsNullOrWhiteSpace(appData))
+            return Path.Combine(appData, "MaaRacingMaster", "data", "_update_backup", _currentVersion);
+        return Path.Combine(UpdateLauncher.UpdateDir(_installRoot!), "backup-files", _currentVersion);
+    }
+
+    /// <summary>把额外文件与被改过的官方文件按原相对路径复制到备份目录；失败即中止安装。</summary>
+    private void BackupLocalChanges(UpdateRelease release)
+    {
+        if (_installRoot is null) return;
+        var contentRoot = Path.Combine(_installRoot, "program");
+        var target = release.Full.Files.Select(f => f.Path)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var disk = UpdateTree.Scan(contentRoot);
+        var extras = disk.Keys.Where(path => !target.Contains(path)).ToList();
+        var (modified, baseline) = ModifiedAgainstInstalled(target, disk);
+        // 没有基线就分不清「被改过的官方文件」：既然玩家选了备份，就复制整个程序
+        // 目录，别让他以为备份过的东西一定在里面。
+        var toCopy = baseline is null
+            ? disk.Keys.ToList()
+            : extras.Concat(modified).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var backupRoot = BackupRoot();
+        var count = 0;
+        foreach (var rel in toCopy)
+        {
+            var sourcePath = Path.Combine(contentRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+            var destination = Path.Combine(backupRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(sourcePath, destination, overwrite: true);
+            count++;
+        }
+        ShellLog.Append($"[update] 已备份本地文件 {count} 个到 {backupRoot}"
+            + (baseline is null ? "（无基线：整目录复制）" : ""));
+    }
+
     // ---------- 内部 ----------
 
     /// <summary>检查事务执行体：持检查槽（任意时刻一轮），完成后释放并结算计时锚点。
@@ -784,7 +1158,11 @@ public sealed class UpdateCoordinator
             await _checkGate.WaitAsync(run.Cts.Token).ConfigureAwait(false);
             try
             {
-                result = await DoCheckAsync(run.Intent, run.Trigger, run.Cts.Token).ConfigureAwait(false);
+                result = _portable
+                    ? await DoPortableCheckAsync(run.Intent, run.Trigger, run.Cts.Token)
+                        .ConfigureAwait(false)
+                    : await DoCheckAsync(run.Intent, run.Trigger, run.Cts.Token)
+                        .ConfigureAwait(false);
             }
             finally
             {
@@ -823,6 +1201,205 @@ public sealed class UpdateCoordinator
         }
         return result;
     }
+
+    /// <summary>
+    /// 便携安装的检查：按渠道取「版本标记 → 发布清单」，逐个来源找比本机更高的版本。
+    /// 某个来源的标记不高于本机不等于整体已最新——必须继续看下一个来源（首选源滞后时
+    /// 不能挡住另一源的新版本）。清单与来源在锁内锁定，下载/提交只读同一事务上下文。
+    /// </summary>
+    private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,
+                                                            UpdateCheckTrigger trigger,
+                                                            CancellationToken ct)
+    {
+        string? lastError = null;
+        string? needsManual = null;
+        var anyResponded = false;
+        var sawUnavailableNewer = false;   // 有源声称有新版但取不到可用清单：不能报「已是最新」
+        UpdateSourceEndpoint? bestEndpoint = null;
+        UpdateRelease? bestRelease = null;
+        SemanticVersion? bestVersion = null;
+
+        foreach (var endpoint in intent.Endpoints)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (!EndpointReachable(endpoint))
+            {
+                lastError = $"{endpoint.Name}（不可达或未就绪）";
+                continue;
+            }
+            var markerAhead = false;
+            try
+            {
+                // 每源预算覆盖「标记 + 清单」两次请求，也覆盖正文读取：HttpClient 的超时
+                // 在流式读下只到响应头，镜像回头后卡住正文会拖死整轮回退。
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                budget.CancelAfter(_indexTimeout);
+                var client = new UpdateSourceClient(TransportForEndpoint(endpoint));
+                var marker = await client.FetchMarkerAsync(endpoint, intent.Channel, budget.Token)
+                    .ConfigureAwait(false);
+                if (marker is null)
+                {
+                    lastError = $"{endpoint.Name}（没有 {intent.Channel} 渠道标记）";
+                    continue;
+                }
+                if (!SemanticVersion.TryParse(marker.Version, out var markerVersion)
+                    || !SemanticVersion.TryParse(_currentVersion, out var current))
+                {
+                    lastError = $"{endpoint.Name}（版本号不合法）";
+                    continue;
+                }
+                markerAhead = markerVersion.CompareTo(current) > 0;
+                if (!markerAhead)
+                {
+                    // 本源确认没有更高版本；「标记说有新版但清单取不到」不算这一类。
+                    anyResponded = true;
+                    continue;
+                }
+
+                var release = await client.FetchManifestAsync(endpoint, marker, budget.Token)
+                    .ConfigureAwait(false);
+                if (!string.Equals(release.Channel, intent.Channel, StringComparison.Ordinal))
+                {
+                    sawUnavailableNewer = true;
+                    lastError = $"{endpoint.Name}（渠道不符：{release.Channel}）";
+                    continue;
+                }
+                var incompatible = UpdateProtocol.IncompatibleReason(release);
+                if (incompatible is not null)
+                {
+                    sawUnavailableNewer = true;
+                    needsManual = $"{release.Version}：{incompatible}";
+                    lastError = $"{endpoint.Name}（{incompatible}）";
+                    continue;
+                }
+                if (!SemanticVersion.TryParse(release.Version, out var target))
+                {
+                    sawUnavailableNewer = true;
+                    lastError = $"{endpoint.Name}（版本号不合法）";
+                    continue;
+                }
+                // 到这里本源确实有更高且可用的版本：全源都没找到时才允许判「已是最新」。
+                anyResponded = true;
+                if (bestVersion is null || target.CompareTo(bestVersion.Value) > 0)
+                {
+                    bestEndpoint = endpoint;
+                    bestRelease = release;
+                    bestVersion = target;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                if (markerAhead) sawUnavailableNewer = true;
+                lastError = $"{endpoint.Name}（读取超时）";
+            }
+            catch (Exception ex)
+            {
+                if (markerAhead) sawUnavailableNewer = true;
+                lastError = $"{endpoint.Name}（{ex.Message}）";
+            }
+        }
+        if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
+
+        if (bestRelease is not null && bestEndpoint is not null)
+        {
+            bool clearedAwaiting = false;
+            UpdateSnapshot result;
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _endpoint = bestEndpoint;
+                _activeIntent = intent;
+                _release = bestRelease;
+                _pending = null;
+                _targetVersion = bestRelease.Version;
+                if (_awaitingStable)
+                {
+                    _awaitingStable = false;
+                    clearedAwaiting = true;
+                }
+                result = SetState(intent.Epoch, UpdateSnapshot.Available);
+            }
+            if (clearedAwaiting)
+                _savePreferences(_channel, _source, false);
+            return result;
+        }
+
+        // 至少一个来源正常回应且都不高于本机：这才叫「已是最新」。全源失败仍按原语义
+        // 区分自动/手动检查（自动保留旧状态，手动诚实报错）。
+        if (anyResponded && needsManual is null && !sawUnavailableNewer)
+        {
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _release = null;
+                _pending = null;
+                _targetVersion = null;
+                return SetState(intent.Epoch, UpdateSnapshot.UpToDate);
+            }
+        }
+
+        // 有更新的版本但当前启动器装不了：不能报「已是最新」，也不能给出一个点了会失败的
+        // 安装按钮——只提示手动下载。
+        if (needsManual is not null)
+        {
+            if (trigger == UpdateCheckTrigger.Auto)
+            {
+                ShellLog.Append($"[update] 新版本需要手动安装，保留当前状态: {needsManual}");
+                return GetStatus();
+            }
+            lock (_gate)
+            {
+                if (intent.IsStale(_phase, _epoch))
+                    return Snapshot();
+                _targetVersion = null;
+                _release = null;
+                _pending = null;
+                return SetState(intent.Epoch, UpdateSnapshot.Idle,
+                    error: $"新版本无法自动安装：{needsManual}");
+            }
+        }
+
+        if (trigger == UpdateCheckTrigger.Auto)
+        {
+            ShellLog.Append($"[update] 自动检查全源失败，保留当前状态: {lastError}");
+            return GetStatus();
+        }
+        lock (_gate)
+        {
+            if (intent.IsStale(_phase, _epoch))
+                return Snapshot();
+            _targetVersion = null;
+            _release = null;
+            _pending = null;
+            return SetState(intent.Epoch, UpdateSnapshot.Idle,
+                error: sawUnavailableNewer
+                    ? $"更新源暂时不可用，请稍后重试：{lastError}"
+                    : $"所有更新源均不可达：{lastError}");
+        }
+    }
+
+    /// <summary>本地目录源要确认标记文件在位；网络源交给请求异常区分。</summary>
+    private static bool EndpointReachable(UpdateSourceEndpoint endpoint)
+    {
+        if (endpoint.Marker.IsFile)
+            return File.Exists(endpoint.Marker.LocalPath);
+        return true;
+    }
+
+    private static readonly IUpdateTransport LocalTransport = new FileUpdateTransport();
+
+    /// <summary>来源端点对应的传输：file:// 用于本地演练，其余走 HTTP。</summary>
+    private static IUpdateTransport TransportForEndpoint(UpdateSourceEndpoint endpoint)
+        => endpoint.Marker.IsFile ? LocalTransport : new HttpUpdateTransport(TimeSpan.FromMinutes(5));
+
+    private static IUpdateTransport TransportForAssets(Uri assets)
+        => assets.IsFile ? LocalTransport : new HttpUpdateTransport(TimeSpan.FromMinutes(30));
 
     private async Task<UpdateSnapshot> DoCheckAsync(CheckIntent intent, UpdateCheckTrigger trigger,
                                                     CancellationToken ct)
@@ -971,6 +1548,9 @@ public sealed class UpdateCoordinator
             _progress = 0;
             _pending = null;
             _activeIntent = null;
+            _release = null;
+            _endpoint = null;
+            _staged = null;
         }
         _revision++;
         return Snapshot();
@@ -980,6 +1560,6 @@ public sealed class UpdateCoordinator
     {
         var effError = error ?? _error;
         return new UpdateSnapshot(_phase, _progress, _targetVersion, effError, _revision,
-            _managed, _channel, _source, _awaitingStable, _dismissedVersion, _autoCheckEnabled);
+            _snapshotManaged, _channel, _source, _awaitingStable, _dismissedVersion, _autoCheckEnabled);
     }
 }

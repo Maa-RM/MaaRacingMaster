@@ -94,7 +94,7 @@ description: "MaaRacingMaster 提交纪律与发版手册：单主干 + 短命�
 | ② 确定版本号              | 按「当前 dev 系列顺延 / minor 升级开新系列」规则计算，**用户指定优先**                                                    |
 | ③ 更新文档               | 更新 `docs/update_log.md` 添加新版本条目（README 如需一并更新）                                                  |
 | ④ 提交改动               | 从 `origin/master` 切 `type/slug` 主题分支提交；稳定线只经 PR 收入，见「分支模型」                      |
-| ⑤ 更新版本标记 + 打 Tag 并推送 | 更新 `docs/latest_release.json`，创建 `vX.Y.Z[-dev.N]` tag 并 push，触发 CI/CD Release                   |
+| ⑤ 更新版本标记 + 打 Tag 并推送 | 更新 `docs/latest_release.json`（顶层是最新发布；预发布同时改 `channels.preview`，正式版同时改 `channels.stable`），创建 `vX.Y.Z[-dev.N]` tag 并 push，触发 CI/CD Release                   |
 | ⑥ 本地打包验证（可选）         | 跑 `scripts/release/assemble.ps1` 生成 zip+sha256 本地校验                                             |
 | ⑦ 全部执行               | 按 ①→②→③→④→⑤ 顺序（⑥ 可选插入 ⑤ 前）                                                                      |
 
@@ -267,7 +267,7 @@ powershell -File scripts\release\assemble.ps1 -Version <版本号> -RepoRoot <�
 
 - **发布 CI/CD：** `.github/workflows/release.yml`（push tag `v*` 触发：test → release → win-build → cnb-release）
 
-- **版本标记：** `docs/latest_release.json`（程序「检测更新」信源，CNB raw 优先读取；由发版提交携带，CI 不回写）
+- **版本标记：** `docs/latest_release.json`（程序「检测更新」信源，CNB raw 优先读取；由发版提交携带，CI 不回写）。顶层 `tag`/`version` 是最新发布，`channels.stable` / `channels.preview` 是应用内更新按渠道取的入口：发预发布只改 `preview`，发正式版同时改 `stable` 与顶层；漏改的后果是相应渠道收不到这版更新
 
 - **CNB 镜像：** `.github/workflows/mirror-to-cnb.yml`（master push 自动 git 镜像同步到 cnb.cool）
 

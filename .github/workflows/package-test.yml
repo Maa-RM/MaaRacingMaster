@@ -112,11 +112,79 @@ jobs:
           $zip = "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip"
           if (-not (Test-Path $zip)) { throw "zip 未生成: $zip" }
           Get-Item $zip | Select-Object Name, Length
-          $member = 'maaracing_master/plugins/infinite_drive/resources/models/download.json'
+          $member = 'program/maaracing_master/plugins/infinite_drive/resources/models/download.json'
           # tar 归档成员带 ./ 前缀（Windows bsdtar 实测），比较前先归一
           python -c "import sys, zipfile; names = {n[2:] if n.startswith('./') else n for n in zipfile.ZipFile(sys.argv[1]).namelist()}; sys.exit(0 if sys.argv[2] in names else '缺少 ' + sys.argv[2])" $zip $member
           if ($LASTEXITCODE -ne 0) { throw "主包缺少模型下载描述，一键安装不可用" }
           Write-Host "已确认包内存在 $member"
+
+      - name: 更新清单与增量演练（含反向自验）
+        # 非发版演练：用真实打包树生成清单，再合成一份“旧版”让差分真正跑一遍
+        # 生成 → 应用 → 逐文件对拍；产物留在 build/drill，不上传、不建 Release。
+        shell: pwsh
+        run: |
+          $rel = "${{ github.workspace }}\build\release"
+          $stage = "$rel\MaaRacingMaster-$env:VER-win-x64"
+          $zip = "$rel\MaaRacingMaster-$env:VER-win-x64.zip"
+          $drill = "${{ github.workspace }}\build\drill"
+          $prev = Join-Path $env:RUNNER_TEMP "drill-prev"
+          if (Test-Path $prev) { Remove-Item $prev -Recurse -Force }
+          Copy-Item $stage $prev -Recurse
+
+          # 合成基线覆盖三类变化：改一个文件、删两个小文件、加一个新文件。
+          # 改动必须落在 program\ 内——增量只比较这个子树，改包根的文件演练不到主路径。
+          $prevContent = Join-Path $prev "program"
+          if (-not (Test-Path $prevContent)) { throw "演练基线缺 program 目录: $prevContent" }
+          $changed = Get-ChildItem $prevContent -Recurse -File | Select-Object -First 1
+          if (-not $changed) { throw "演练基线为空：$prevContent" }
+          Add-Content -Path $changed.FullName -Value "drill" -NoNewline
+          $victims = Get-ChildItem $prevContent -Recurse -File |
+                     Where-Object { $_.FullName -ne $changed.FullName -and $_.Length -lt 4096 } |
+                     Select-Object -First 2
+          if (@($victims).Count -lt 2) { throw "演练基线缺少可删除的小文件" }
+          foreach ($victim in $victims) { Remove-Item $victim.FullName -Force }
+          Set-Content -Path (Join-Path $prevContent "drill-only.txt") -Value "drill"
+
+          New-Item -ItemType Directory -Force -Path $drill | Out-Null
+          $oldZip = "$drill\MaaRacingMaster-0.0.0-drill-win-x64.zip"
+          python -B -X utf8 scripts/release/make_update_artifacts.py pack --tree $prev --out $oldZip
+          if ($LASTEXITCODE -ne 0) { throw "合成基线打包失败" }
+          python -B -X utf8 scripts/release/make_update_artifacts.py build `
+            --new-tree $stage `
+            --new-zip $zip `
+            --content-subdir program `
+            --version $env:VER `
+            --tag "v$env:VER" `
+            --prev-zip $oldZip `
+            --out $drill
+          if ($LASTEXITCODE -ne 0) { throw "更新清单或增量演练失败" }
+          Get-ChildItem $drill | Select-Object Name, Length
+
+      - name: 用真实发布包回归客户端暂存
+        # 清单以 program\ 为根、发行 ZIP 根目录还有启动器：Python 自验只比树，
+        # 这条回归真正跑客户端暂存代码，锁住「正式包能验树、启动器不进暂存」。
+        shell: pwsh
+        run: |
+          dotnet run --project apps\MaaRacingMaster.Shell\tools\ShellContractProbe `
+            -c Release -- stage `
+            --zip "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip" `
+            --manifest "${{ github.workspace }}\build\drill\MaaRacingMaster-$env:VER-update.json" `
+            --out "${{ github.workspace }}\build\drill\staged"
+          if ($LASTEXITCODE -ne 0) { throw "正式包暂存回归失败" }
+
+      - name: 更新事务演练（换目录 / 超时回滚 / 中断恢复）
+        # 只手动触发时跑：会真实替换临时安装目录，并等待 120 秒健康超时，日常打包验证
+        # 不付这个时间。验证的是正式编译的原生启动器，不是另写一套模拟。
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $stub = "${{ github.workspace }}\build\drill\stub"
+          dotnet publish apps\MaaRacingMaster.Shell\tools\UpdateDrillShell -c Release -o $stub
+          if ($LASTEXITCODE -ne 0) { throw "演练假壳编译失败" }
+          & "${{ github.workspace }}\scripts\release\update_drill.ps1" `
+            -PackageZip "${{ github.workspace }}\build\release\MaaRacingMaster-$env:VER-win-x64.zip" `
+            -StubDir $stub `
+            -WorkRoot "${{ github.workspace }}\build\drill\installs"
 
       - name: 上传验证产物（不创建 Release）
         uses: actions/upload-artifact@v7.0.2

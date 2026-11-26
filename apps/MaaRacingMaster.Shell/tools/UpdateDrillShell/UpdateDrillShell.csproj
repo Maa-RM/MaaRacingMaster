@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 更新事务演练用的「假壳」：只做三件事——留启动痕迹、按模式写健康回执或保持运行、
+       读完事务目标版本后退出。它被复制到 program\app\MaaRacingMaster.Shell.exe 的位置，
+       用来在 CI 里验证启动器的换目录、超时回滚与中断恢复，不进发布产物。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MaaRacingMaster.Shell</AssemblyName>
+    <RootNamespace>UpdateDrillShell</RootNamespace>
+  </PropertyGroup>
+
+</Project>

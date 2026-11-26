@@ -22,7 +22,7 @@ internal static class Program
 {
     private static int s_failures;
 
-    private static void Check(string name, bool ok, string detail)
+    internal static void Check(string name, bool ok, string detail)
     {
         Console.WriteLine((ok ? "[PASS] " : "[FAIL] ") + name + (ok ? string.Empty : " —— " + detail));
         if (!ok) s_failures++;
@@ -49,8 +49,11 @@ internal static class Program
             case "update": CheckUpdateCoordinator(args).GetAwaiter().GetResult(); break;
             case "settings": CheckUpdateSettingsAsync().GetAwaiter().GetResult(); break;
             case "auto": CheckUpdateAutoCheckAsync().GetAwaiter().GetResult(); break;
+            case "portable": PortableUpdateProbe.RunAsync(args).GetAwaiter().GetResult(); break;
+            case "stage": PortableUpdateProbe.StageRealPackage(args); break;
             default:
-                Console.Error.WriteLine("用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings|auto");
+                Console.Error.WriteLine(
+                    "用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings|auto|portable|stage");
                 return 2;
         }
         Console.WriteLine(s_failures == 0 ? "ALL PASS" : $"FAILURES: {s_failures}");

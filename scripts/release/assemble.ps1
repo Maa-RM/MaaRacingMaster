@@ -598,6 +598,23 @@ if ($Managed) {
 } else {
 # 旧 ZIP 模式（保留原逻辑）：根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见
 # apps/MaaRacingMaster.Launcher/launcher.c）。
+# 应用内更新的来源配置：两个地址同时提供时写入壳 exe 同目录（program\app），与受管模式
+# 同一命名行格式；只给一个属发行事故直接报错；都不给（本机打包/无声明的构建）跳过，
+# 客户端诚实报「未配置」并保留手动入口。
+if (-not [string]::IsNullOrWhiteSpace($UpdateSourceCnb) -or
+    -not [string]::IsNullOrWhiteSpace($UpdateSourceGithub)) {
+    if ([string]::IsNullOrWhiteSpace($UpdateSourceCnb) -or
+        [string]::IsNullOrWhiteSpace($UpdateSourceGithub)) {
+        $errors.Add('便携包要求 -UpdateSourceCnb 与 -UpdateSourceGithub 同时提供（同一货架的两个下载地址）')
+    } else {
+        $sourceLines = [System.Collections.Generic.List[string]]::new()
+        $sourceLines.Add("cnb|$($UpdateSourceCnb.Trim())")
+        $sourceLines.Add("github|$($UpdateSourceGithub.Trim())")
+        New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+        Set-Content -Path (Join-Path $appDir 'update-source.txt') -Value $sourceLines -Encoding ascii
+        Write-Host '[assemble] update-source.txt 已写入命名下载地址（cnb/github）'
+    }
+}
 # 根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见 apps/MaaRacingMaster.Launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
 # 现在通过 launcher.rc 一次性嵌入两类 Win32 资源：图标（resources/icon）与内嵌申请清单
@@ -971,6 +988,20 @@ if ($errors.Count -gt 0) {
     if (-not $KeepGoing) { exit 1 }
 }
 
+# ---------- 6.5 收敛布局：稳定入口留在包根，可替换内容收进 program\ ----------
+# 应用内更新只替换 program\：根启动器 MaaRacingMaster.exe 保持原位，替换与恢复都由它执行，
+# 原入口在事务的任一阶段都不会消失。清单与增量以 program\ 为根求路径与树摘要。
+if (-not $Managed) {
+    $programDir = Join-Path $StageRoot 'program'
+    if (Test-Path $programDir) { Remove-Item $programDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $programDir | Out-Null
+    Get-ChildItem -LiteralPath $StageRoot -Force |
+        Where-Object { $_.Name -ne 'MaaRacingMaster.exe' -and $_.Name -ne 'program' } |
+        ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $programDir -Force }
+    Write-Host '[assemble] 布局收敛：入口在包根，内容在 program\'
+}
+$contentRoot = if ($Managed) { $StageRoot } else { Join-Path $StageRoot 'program' }
+
 # ---------- 7. zip + sha256 ----------
 # 归档前统一清理构建缓存，涵盖复用 runtime 和 GUI 缓存的路径。
 # 只删除本次生成的 stage 内产物，源缓存仍保留指纹供后续构建复用。
@@ -1001,21 +1032,30 @@ Write-Host ("[assemble] done: {0}  {1}" -f $zip, $hash) -ForegroundColor Green
 # ---------- 8. Release Size Gate + report (Release only) ----------
 # 与已验收 baseline (0.20.0: total 468.86 / zip 198.79) 对比，涨超 5MB 判 SIZE REGRESSION。
 if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
-    $g_runtime = (Get-ChildItem (Join-Path $StageRoot 'runtime') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
-    # GUI 组：旧 ZIP = app\ 整目录；受管模式 = 内容根下的散文件（目录各归各组，避免双计）
+    # 布局可能是「入口在根 + program\ 内容」，也可能是受管内容根；单段测试夹具是平铺 stage。
+    $hasProgram = Test-Path (Join-Path $StageRoot 'program')
+    $contentRoot = if ($Managed) {
+        $StageRoot
+    } elseif ($hasProgram) {
+        Join-Path $StageRoot 'program'
+    } else {
+        $StageRoot
+    }
+    $g_runtime = (Get-ChildItem (Join-Path $contentRoot 'runtime') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    # GUI 组：旧 ZIP = program\app\ 整目录；受管模式 = 内容根下的散文件（目录各归各组，避免双计）
     $g_app = if ($Managed) {
         (Get-ChildItem $appDir -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     } else {
-        (Get-ChildItem (Join-Path $StageRoot 'app') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+        (Get-ChildItem (Join-Path $contentRoot 'app') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     }
-    $g_sidecar = (Get-ChildItem (Join-Path $StageRoot 'maaracing_master') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
-    # other 组：根下散文件只归旧 ZIP 模式（受管模式的根文件已入 GUI 组，避免双计）
+    $g_sidecar = (Get-ChildItem (Join-Path $contentRoot 'maaracing_master') -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+    # other 组：内容根下散文件只归旧 ZIP 模式（受管模式的根文件已入 GUI 组，避免双计）
     $g_otherRootFiles = 0L
     if (-not $Managed) {
-        $g_otherRootFiles = (Get-ChildItem $StageRoot -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
+        $g_otherRootFiles = (Get-ChildItem $contentRoot -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum
     }
     $g_other = $g_otherRootFiles +
-               (Get-ChildItem $StageRoot -Directory | Where-Object { $_.Name -notin @('runtime','app','maaracing_master') } |
+               (Get-ChildItem $contentRoot -Directory | Where-Object { $_.Name -notin @('runtime','app','maaracing_master') } |
                 ForEach-Object { (Get-ChildItem $_.FullName -Recurse -File -EA SilentlyContinue | Measure-Object Length -Sum).Sum } | Measure -Sum).Sum
     $g_total = $g_runtime + $g_app + $g_sidecar + $g_other
     $g_zip = (Get-Item $zip).Length
@@ -1024,7 +1064,8 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
     $g_modelZip = 0L
     if ($WithModels) {
         $modelPrefix = 'maaracing_master/plugins/infinite_drive/resources/models/'
-        $models = Join-Path $StageRoot $modelPrefix
+        $zipModelPrefix = if ($hasProgram) { 'program/' + $modelPrefix } else { $modelPrefix }
+        $models = Join-Path $contentRoot $modelPrefix
         if (Test-Path -LiteralPath $models) {
             $g_model = (Get-ChildItem -LiteralPath $models -Recurse -File -Filter '*.onnx' |
                 Measure-Object Length -Sum).Sum
@@ -1034,7 +1075,7 @@ if ($Configuration -eq 'Release' -and -not $DisableReleaseOptimizations) {
         try {
             $g_modelZip = ($archive.Entries | Where-Object {
                 $rel = $_.FullName.Replace('\', '/').TrimStart('./')
-                $rel.StartsWith($modelPrefix) -and $rel.EndsWith('.onnx')
+                $rel.StartsWith($zipModelPrefix) -and $rel.EndsWith('.onnx')
             } | Measure-Object CompressedLength -Sum).Sum
         } finally { $archive.Dispose() }
     }

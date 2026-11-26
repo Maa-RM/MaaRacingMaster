@@ -1,6 +1,16 @@
 {
-  "tag": "v0.32.3-dev.1",
-  "version": "0.32.3-dev.1",
-  "published_at": "2026-11-25",
-  "download_url": "https://cnb.cool/MaaRacingMaster/MAIN/-/releases"
+  "tag": "v0.32.4-dev.1",
+  "version": "0.32.4-dev.1",
+  "published_at": "2026-11-26",
+  "download_url": "https://cnb.cool/MaaRacingMaster/MAIN/-/releases",
+  "channels": {
+    "stable": {
+      "tag": "v0.19.1",
+      "version": "0.19.1"
+    },
+    "preview": {
+      "tag": "v0.32.4-dev.1",
+      "version": "0.32.4-dev.1"
+    }
+  }
 }

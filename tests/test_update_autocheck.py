@@ -140,7 +140,9 @@ def test_auto_check_events_and_anchor():
         "忙态/不可用时的自动尝试未推进锚点（会立刻重试）"
     )
     delay = _cs_method(src, "public TimeSpan? NextAutoCheckDelay(DateTimeOffset now, TimeSpan interval)")
-    assert "if (!_managed || !_autoCheckEnabled) return null" in delay, "非受管/关闭时仍会安排检查"
+    assert "if ((!_managed && !_portable) || !_autoCheckEnabled) return null" in delay, (
+        "非受管且非便携/关闭时仍会安排检查"
+    )
     assert "return TimeSpan.Zero" in delay, "首次检查未立即到期"
 
 

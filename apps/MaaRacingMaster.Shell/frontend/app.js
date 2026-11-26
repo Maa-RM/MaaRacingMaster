@@ -12,7 +12,7 @@
     maarm, $, state, showError, reportError, mkEl, appendIcon, postWindowAction,
     openModal, setPreviewFloating, peepConsumer, waitFor, twoFrames, delay,
     renderModulePages, checkRegistryOptimizations, pollDashboard,
-    renderTaskList, pollStatus, setStatus, pollLogs,
+    renderTaskList, pollStatus, setStatus, pollLogs, escHtml,
   } = window.MaaRM;
 
   // ---------- ViGEmBus 驱动缺失引导弹框 ----------
@@ -226,6 +226,30 @@
       }
     });
   });
+
+  // 关于页「开源许可」：读随包的 THIRD_PARTY_LICENSES.md，在应用内弹窗展示全文。
+  // 文件在安装目录里，按外部内容处理——整段转义后落地，不参与 HTML 解析。
+  const licenseBtn = $('btn-open-licenses');
+  if (licenseBtn) {
+    licenseBtn.addEventListener('click', async () => {
+      try {
+        const data = await maarm.call('read_licenses');
+        const text = data && typeof data.text === 'string' ? data.text : '';
+        if (!text) {
+          showError('没有读到随包的第三方许可文件');
+          return;
+        }
+        openModal({
+          title: '开源许可',
+          maxWidth: 640,
+          bodyHtml: '<pre class="maarm-license">' + escHtml(text) + '</pre>',
+          buttons: [{ text: '知道了', primary: true, onClick: (modal) => modal.close() }],
+        });
+      } catch (e) {
+        showError('读取许可失败：' + e.message);
+      }
+    });
+  }
 
   // ---------- 关于页彩蛋：点击版本号掉落文字（同款 MAA） ----------
   // 掉落池：怪谈短语，每第 FALLING_EGG_EVERY 次点击混入一条（其余掉当前版本号）

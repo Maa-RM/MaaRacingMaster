@@ -11,7 +11,7 @@
 (function () {
   'use strict';
 
-  const { maarm, state, $, showError, mkEl } = window.MaaRM;
+  const { maarm, state, $, showError, mkEl, openModal, escHtml } = window.MaaRM;
 
   // ---------- 图标 ----------
   // icons.js 里没有的字形在这里内联（静态字面量，不接任何远程数据）。
@@ -25,6 +25,9 @@
     alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
       + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.4v.2"/></svg>',
+    info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+      + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+      + '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.6v.2"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
       + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
       + '<path d="m4.5 12.5 4.5 4.5L19.5 6.5"/></svg>',
@@ -219,7 +222,9 @@
         }
         const version = currentVersion();
         return {
-          icon: null, title: version ? '当前版本 ' + version : '当前版本',
+          // 常态也给一个蓝色信息图标：卡片左侧不留空列，和其余相位视觉同构
+          icon: 'info', tone: 'info',
+          title: version ? '当前版本 ' + version : '当前版本',
           meta: channelText(snapshot),
           action: { label: '检查更新', icon: 'rotate-cw', run: checkUpdate },
         };
@@ -491,11 +496,163 @@
 
   async function downloadUpdate() {
     try {
+      pendingBackupExtras = false;
+      // 安装前扫描本地差异：有额外文件或被改过的官方文件就先问玩家，再下载。
+      // 扫描失败必须停：把「不知道有没有差异」当成「没有差异」会静默覆盖玩家文件。
+      let report = null;
+      try {
+        report = await maarm.call('update_inspect');
+      } catch (e) {
+        paintFailure('检查本地文件失败，已停止下载：' + e.message);
+        return;
+      }
+      if (report) {
+        const diffs = (report.extra_files || 0) + (report.modified_files || 0);
+        // 没有基线时只能识别额外文件：改动过官方文件的情况必须提前告知，
+        // 否则第一次应用内更新会静默覆盖它。
+        if (diffs > 0 || report.baseline_known === false) {
+          const proceed = await askLocalChange(report);
+          if (!proceed) return;
+        }
+      }
       // 带上玩家看到目标时的修订号：后台已换目标则后端拒绝，不替旧界面下载新版本
       renderSnapshot(await maarm.call('update_start_download', { revision: lastUpdateRevision }));
     } catch (e) {
       console.error(e);
       paintFailure('下载启动失败：' + e.message);
+    }
+  }
+
+  // ---------- 安装前的本地差异 ----------
+  let pendingBackupExtras = false;
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 MB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function askLocalChange(report) {
+    const hasDiff = report.extra_files > 0 || report.modified_files > 0;
+    const parts = [];
+    if (report.extra_files > 0) {
+      parts.push('<b>' + report.extra_files + '</b> 个额外文件（约 '
+        + escHtml(formatBytes(report.extra_bytes)) + '）');
+    }
+    if (report.modified_files > 0) {
+      parts.push('<b>' + report.modified_files + '</b> 个被修改的官方文件');
+    }
+    const sample = Array.isArray(report.sample) && report.sample.length
+      ? '<p class="maarm-modal-notice-hint">例如：' + report.sample.map(escHtml).join('、') + '</p>'
+      : '';
+    const intro = hasDiff
+      ? '<p>程序目录里检测到 ' + parts.join('、') + '。</p>'
+      : '<p>首次应用内更新：本机还没有版本基线，无法识别被修改过的官方文件。</p>';
+    const backupLine = hasDiff
+      ? '<p>备份会把它们按原路径复制到：<br><code>' + escHtml(report.backup_path) + '</code></p>'
+        + '<p>不备份则这些文件会随旧版本一起删除。</p>'
+      : '<p>如果你改过程序目录里的文件，请先自行备份。备份目录可用：<br><code>'
+        + escHtml(report.backup_path) + '</code></p>';
+    // 没有基线时只能识别额外文件：即使有差异，也要说清「改过的官方文件」识别不了，
+    // 并把备份动作升级为整目录复制（后端同口径）。
+    const caveat = report.baseline_known === false
+      ? '<p class="maarm-modal-notice-hint">本机还没有版本基线：只能识别额外文件，'
+        + '无法识别被修改过的官方文件。选择备份会复制整个程序目录。</p>'
+      : '';
+    const backupLabel = report.baseline_known === false ? '备份整个程序目录后继续' : '备份后继续';
+    return new Promise((resolve) => {
+      let decided = false;
+      const decide = (value) => { if (!decided) { decided = true; resolve(value); } };
+      // 只要备份有意义就给备份按钮：无基线时即使没有可枚举的差异，也要能整目录备份
+      // （只改过官方文件的情况就落在这里，不能只写一句「可以备份」却没有入口）。
+      const buttons = (hasDiff || report.baseline_known === false)
+        ? [
+          {
+            text: backupLabel, primary: true,
+            onClick: (modal) => { pendingBackupExtras = true; decide(true); modal.close(); },
+          },
+          {
+            text: '不备份，继续安装',
+            onClick: (modal) => { pendingBackupExtras = false; decide(true); modal.close(); },
+          },
+          { text: '放弃', onClick: (modal) => { decide(false); modal.close(); } },
+        ]
+        : [
+          {
+            text: '继续安装', primary: true,
+            onClick: (modal) => { pendingBackupExtras = false; decide(true); modal.close(); },
+          },
+          { text: '放弃', onClick: (modal) => { decide(false); modal.close(); } },
+        ];
+      openModal({
+        title: hasDiff ? '安装前发现本地文件' : '首次应用内更新',
+        bodyHtml:
+          '<div class="maarm-modal-notice">' + intro + caveat + backupLine + sample + '</div>',
+        buttons,
+        onClose: () => decide(false),
+      });
+    });
+  }
+
+  // ---------- 更新后首次启动的汇报 ----------
+  // 更新说明随清单下发，是 Markdown 子集（加粗标题 / 无序列表 / 行内加粗与代码）。
+  // 先整段转义再只放行这几种结构：说明文本同样来自远端，不能进任意 HTML 通道。
+  function renderNotesMarkdown(text) {
+    const inline = (s) => escHtml(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    const html = [];
+    let inList = false;
+    const closeList = () => { if (inList) { html.push('</ul>'); inList = false; } };
+    String(text).replace(/\r\n?/g, '\n').split('\n').forEach((raw) => {
+      const line = raw.trim();
+      if (!line) { closeList(); return; }
+      const bullet = /^[-*]\s+(.+)$/.exec(line);
+      if (bullet) {
+        if (!inList) { html.push('<ul>'); inList = true; }
+        html.push('<li>' + inline(bullet[1]) + '</li>');
+        return;
+      }
+      closeList();
+      const heading = /^#{1,6}\s+(.+)$/.exec(line);
+      html.push('<p>' + (heading ? '<b>' + inline(heading[1]) + '</b>' : inline(line)) + '</p>');
+    });
+    closeList();
+    return html.join('');
+  }
+
+  async function showStartupReport(attempt) {
+    try {
+      const report = await maarm.call('update_startup_report');
+      if (!report) {
+        // 壳要等「主页面成功 + 后端可用」才消费交接记录：稍后再取一次。
+        if (attempt < 1) setTimeout(() => showStartupReport(attempt + 1), 4000);
+        return;
+      }
+      if (report.outcome === 'rolled-back') {
+        openModal({
+          title: '上次更新未完成',
+          titleColor: 'var(--maarm-warning, #fbbf24)',
+          bodyHtml: '<div class="maarm-modal-notice"><p>升级到 v' + escHtml(report.version)
+            + ' 的尝试没有成功，已回到原来可用的版本。</p>'
+            + '<p>可以稍后在「关于」里重新检查并安装。</p></div>',
+          buttons: [{ text: '知道了', primary: true, onClick: (modal) => modal.close() }],
+        });
+        return;
+      }
+      const mode = report.mode === 'delta' ? '增量更新' : '完整包更新';
+      const notes = report.notes
+        ? '<div class="maarm-modal-notice upd-notes">' + renderNotesMarkdown(report.notes) + '</div>'
+        : '';
+      openModal({
+        title: '已更新到 v' + report.version,
+        bodyHtml: '<div class="maarm-modal-notice"><p>' + mode + '，下载 '
+          + escHtml(formatBytes(report.bytes))
+          + (report.source ? '，来源 ' + escHtml(report.source) : '') + '。</p></div>' + notes,
+        maxWidth: 520,
+        buttons: [{ text: '知道了', primary: true, onClick: (modal) => modal.close() }],
+      });
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -520,7 +677,7 @@
 
   async function applyUpdate() {
     try {
-      const d = await maarm.call('update_apply');
+      const d = await maarm.call('update_apply', { backup_extras: pendingBackupExtras });
       if (d.phase === 'preparing' || d.phase === 'applying') {
         // 提交临界区：壳接管收尾与计划内关窗，界面只如实显示，不提供取消
         renderSnapshot(d);
@@ -688,6 +845,7 @@
     }
     refreshUpdateStatus();
     fetchAnnouncement();
+    showStartupReport(0);
   }
 
   // 版本号在 get_initial_state 之后才到，可能晚于 update_status：app.js 落到共享 state 后

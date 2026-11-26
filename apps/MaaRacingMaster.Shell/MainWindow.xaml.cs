@@ -191,6 +191,35 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>后端就绪探测：业务后端有应答才算这次试启动可用（升级回执的必要条件）。</summary>
+    private async Task ProbeBackendReadyAsync()
+    {
+        var sidecar = _sidecar;
+        if (sidecar is null) return;
+        try
+        {
+            await sidecar.CallAsync("get_status", null, TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+            _backendReady = true;
+            DispatcherQueue.TryEnqueue(TryAckHealth);
+        }
+        catch (Exception ex)
+        {
+            ShellLog.Append($"[update] 后端就绪探测失败，不写升级健康回执: {ex.Message}");
+        }
+    }
+
+    private void TryAckHealth()
+    {
+        if (!_pageReady || !_backendReady) return;
+        var version = ShellVersionStamp().Split('+')[0];
+        var ack = UpdateLauncher.AckHealthIfPending(version);
+        // 回执没写出去 = 启动器会回滚：此时绝不能推进已装清单基线。
+        if (ack.Pending && !ack.Written) return;
+        // 确认成功后才消费交接记录，把新清单转成下一次安装的差异基线。
+        UpdateLauncher.CaptureStartupReport(version);
+    }
+
     /// <summary>交接失败恢复（升级闸门通过后后端已确认退出）：重启后端让旧版本立即可用，
     /// 业务查询与重试升级都恢复。成功返回 true；失败返回 false（协调器据此把提示改为
     /// 「请重启应用」，不谎称旧版可继续使用）。</summary>
@@ -267,6 +296,11 @@ public sealed partial class MainWindow : Window
     private TaskbarProgress? _taskbar;
     private UpdateAutoCheck? _autoCheck;
 
+    // 升级后「试启动」判据：主页面导航成功 + 后端第一次应答成功，两者齐了才向启动器
+    // 回执。只有页面渲染不代表程序可用——白页或后端崩掉时回执会让启动器删掉旧版备份。
+    private bool _pageReady;
+    private bool _backendReady;
+
     // WM_GETMINMAXINFO 拦截（Win32 subclass，保证最小尺寸在系统级生效）
     private const int WM_GETMINMAXINFO = 0x0024;
     private const int GWLP_WNDPROC = -4;
@@ -341,6 +375,8 @@ public sealed partial class MainWindow : Window
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
                 AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("APPDATA")).Managed,
+            installRoot: UpdateLauncher.InstallRoot,
+            currentVersion: ShellVersionStamp().Split('+')[0],
             prepareGate: PrepareForUpdateAsync,
             handoffRecovery: RestartSidecarAfterHandoffFailureAsync,
             initialChannel: prefChannel,
@@ -356,6 +392,7 @@ public sealed partial class MainWindow : Window
         coordinator.AutoCheckCommitted += PostUpdateSnapshot;
         AppRestarter.Scheduled += ScheduleRestartShutdown;
         RpcBridge.AttachCoordinator(coordinator);
+        RpcBridge.AttachAppRoot(ResolveRepoRoot()); // 随包文件读取（关于页「开源许可」）
 
         // 进程内自动检查：首次立即、之后按间隔（锚点是最近一次检查收尾）。
         // 关窗时 Stop 取消等待与在途索引，UI 收尾不同步等 I/O。
@@ -372,7 +409,10 @@ public sealed partial class MainWindow : Window
 
         // 1. 启动 Python sidecar（唯一业务后端；失败不阻塞窗口，前端显示 backend unavailable）
         if (projectRoot is not null)
+        {
             _sidecar = CreateSidecar(projectRoot);
+            _ = ProbeBackendReadyAsync();
+        }
 
         web.WebMessageReceived += OnWebMessageReceived;
         Closed += OnClosed;
@@ -385,10 +425,19 @@ public sealed partial class MainWindow : Window
         // 滚轮修复：WM_MOUSEWHEEL 投递给键盘焦点窗口，WebView2 无焦点时收不到滚轮
         // （表现为滚轮滚不动、中键点击后才恢复）。页面加载完成后主动聚焦。
         // 同时主动上报一次初始最大化状态（自绘最大化/还原按钮图标需要对齐）
-        web.NavigationCompleted += (_, _) =>
+        web.NavigationCompleted += (_, args) =>
         {
             web.Focus(FocusState.Programmatic);
             SendMaximizedState();
+            // 升级后的首次启动：页面导航成功 + 后端可用，才向启动器回执，完成「试启动」确认。
+            // 导航失败或后端起不来时不回执，启动器超时后回滚到旧版本。
+            if (!args.IsSuccess)
+            {
+                ShellLog.Append("[update] 主页面导航未成功，不写升级健康回执");
+                return;
+            }
+            _pageReady = true;
+            TryAckHealth();
         };
         _ = InitializeWebViewAsync();
     }

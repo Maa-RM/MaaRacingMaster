@@ -145,6 +145,3 @@ SOFTWARE.
 本项目只把该着色器作为界面效果随程序一起使用，不单独售卖、再许可或分发组件本体；
 完整条款见上游 <https://github.com/DavidHDev/react-bits/blob/ed33ebe4acfe29e60fb759bcccc70a138ce2dcef/LICENSE.md>。
 
----
-
-_本声明不构成法律意见；有疑问请与上游组件方或专业律师确认。_
