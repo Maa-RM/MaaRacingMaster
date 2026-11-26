@@ -598,6 +598,23 @@ if ($Managed) {
 } else {
 # 旧 ZIP 模式（保留原逻辑）：根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见
 # apps/MaaRacingMaster.Launcher/launcher.c）。
+# 应用内更新的来源配置：两个地址同时提供时写入壳 exe 同目录（program\app），与受管模式
+# 同一命名行格式；只给一个属发行事故直接报错；都不给（本机打包/无声明的构建）跳过，
+# 客户端诚实报「未配置」并保留手动入口。
+if (-not [string]::IsNullOrWhiteSpace($UpdateSourceCnb) -or
+    -not [string]::IsNullOrWhiteSpace($UpdateSourceGithub)) {
+    if ([string]::IsNullOrWhiteSpace($UpdateSourceCnb) -or
+        [string]::IsNullOrWhiteSpace($UpdateSourceGithub)) {
+        $errors.Add('便携包要求 -UpdateSourceCnb 与 -UpdateSourceGithub 同时提供（同一货架的两个下载地址）')
+    } else {
+        $sourceLines = [System.Collections.Generic.List[string]]::new()
+        $sourceLines.Add("cnb|$($UpdateSourceCnb.Trim())")
+        $sourceLines.Add("github|$($UpdateSourceGithub.Trim())")
+        New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+        Set-Content -Path (Join-Path $appDir 'update-source.txt') -Value $sourceLines -Encoding ascii
+        Write-Host '[assemble] update-source.txt 已写入命名下载地址（cnb/github）'
+    }
+}
 # 根目录唯一入口 MaaRacingMaster.exe（薄 Launcher，见 apps/MaaRacingMaster.Launcher/launcher.c）。
 # 用 MSVC 编译为静态链接（/MT）GUI 子系统 exe，零外部 runtime 依赖；每次重新编译（体积小、快），不缓存。
 # 现在通过 launcher.rc 一次性嵌入两类 Win32 资源：图标（resources/icon）与内嵌申请清单

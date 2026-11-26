@@ -247,7 +247,9 @@ jobs:
             -Version "$env:VER" `
             -RepoRoot "${{ github.workspace }}" `
             -OutRoot "${{ github.workspace }}\build\release" `
-            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json"
+            -ModelDescriptor "${{ github.workspace }}\build\release\model-download.json" `
+            -UpdateSourceCnb "https://cnb.cool/${{ secrets.CNB_ORG }}/${{ secrets.CNB_REPO }}" `
+            -UpdateSourceGithub "https://github.com/${{ github.repository }}"
 
       - name: 生成更新清单与文件级增量（含反向自验）
         # 清单与增量都是发布制品：从最终 ZIP 生成，且每个增量必须在干净副本上

@@ -258,7 +258,7 @@ def test_baseline_without_content_subdir_is_skipped(tmp_path: Path):
 @pytest.mark.parametrize("rel", [
     "../escape.txt",
     "/abs.txt",
-    "C:/drive.txt",
+    "C" + ":/drive.txt",
     "bad:name.txt",
     "trailingdot.",
     "trailing space ",

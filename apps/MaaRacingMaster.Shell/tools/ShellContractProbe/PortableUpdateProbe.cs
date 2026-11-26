@@ -159,6 +159,49 @@ internal static class PortableUpdateProbe
                 && modified.Notes.Any(note => note.Contains("基线不一致", StringComparison.Ordinal))
                 && UpdateTree.Verify(stageE, release.Full).Count == 0,
                 $"mode={modified.Mode} notes={string.Join("；", modified.Notes)}");
+
+            // 协调器接入：同一份本地来源，覆盖检查 → 下载暂存 → 提交交接。
+            var installRoot = Path.Combine(work, "install");
+            Directory.CreateDirectory(Path.Combine(installRoot, "program"));
+            CopyTree(oldRoot, Path.Combine(installRoot, "program"));
+            var fakeLauncher = Path.Combine(installRoot, "MaaRacingMaster.exe");
+            File.Copy(Environment.ProcessPath!, fakeLauncher, overwrite: true);
+
+            var applyingFired = false;
+            var coordinator = new UpdateCoordinator(
+                feedSource: "probe|" + feed,
+                managed: false,
+                installRoot: installRoot,
+                currentVersion: "1.1.0",
+                initialSource: "probe",
+                savePreferences: (_, _, _) => { },
+                saveDismissedVersion: _ => { },
+                saveAutoCheck: _ => { });
+            coordinator.ApplyingStarted += () => applyingFired = true;
+
+            var checkedSnapshot = await coordinator.CheckAsync();
+            Program.Check("协调器便携检查 → available",
+                checkedSnapshot.Phase == UpdateSnapshot.Available
+                && checkedSnapshot.TargetVersion == "1.2.0"
+                && checkedSnapshot.Managed,
+                $"phase={checkedSnapshot.Phase} target={checkedSnapshot.TargetVersion} managed={checkedSnapshot.Managed}");
+
+            await coordinator.StartDownloadAsync(checkedSnapshot.Revision);
+            var ready = await WaitForPhaseAsync(coordinator, UpdateSnapshot.Ready,
+                TimeSpan.FromSeconds(30));
+            Program.Check("协调器下载 → ready 且暂存树等价",
+                ready.Phase == UpdateSnapshot.Ready
+                && UpdateTree.Verify(UpdateLauncher.StagingPath(installRoot), release.Full).Count == 0,
+                $"phase={ready.Phase} error={ready.Error}");
+
+            var applied = await coordinator.ApplyAsync();
+            var txPath = UpdateLauncher.TransactionPath(installRoot);
+            Program.Check("协调器提交 → applying 且事务文件就绪",
+                applied.Phase == UpdateSnapshot.Applying
+                && applyingFired
+                && File.Exists(txPath)
+                && File.ReadAllText(txPath).Contains("target=1.2.0", StringComparison.Ordinal),
+                $"phase={applied.Phase} error={applied.Error} fired={applyingFired}");
         }
         finally
         {
@@ -262,6 +305,20 @@ internal static class PortableUpdateProbe
                 Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
             input.CopyTo(output);
         }
+    }
+
+    private static async Task<UpdateSnapshot> WaitForPhaseAsync(
+        UpdateCoordinator coordinator, string phase, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            var snapshot = coordinator.GetStatus();
+            if (snapshot.Phase == phase || snapshot.Phase == UpdateSnapshot.Available)
+                return snapshot;
+            await Task.Delay(200);
+        }
+        return coordinator.GetStatus();
     }
 
     private static void CopyTree(string source, string destination)

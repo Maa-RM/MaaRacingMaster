@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 
 namespace MaaRacingMaster.Shell;
 
@@ -78,6 +80,71 @@ public static class UpdateLauncher
         catch (Exception ex)
         {
             ShellLog.Append($"[update] 健康回执写入失败（启动器将按回滚处理）: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 把已暂存好的候选树交给安装事务：写事务文件（state=prepared）并启动根启动器的
+    /// --apply 模式。启动器会等本进程退出后替换 program\ 并试启动新版本。
+    /// 返回 false 时调用方必须解冻并恢复后端（还没进入替换相位）。
+    /// </summary>
+    public static bool TryStartApply(string targetVersion, int shellPid, out string error,
+                                     string? installRoot = null)
+    {
+        error = string.Empty;
+        var root = installRoot ?? InstallRoot;
+        if (root is null)
+        {
+            error = "不是正式安装，无法自动升级";
+            return false;
+        }
+        var staging = StagingPath(root);
+        if (!Directory.Exists(staging))
+        {
+            error = "暂存目录不存在，请重新下载更新";
+            return false;
+        }
+        var launcher = Path.Combine(root, "MaaRacingMaster.exe");
+        if (!File.Exists(launcher))
+        {
+            error = "安装目录缺少启动器，无法自动升级";
+            return false;
+        }
+        try
+        {
+            var updateDir = UpdateDir(root);
+            Directory.CreateDirectory(updateDir);
+            var txPath = TransactionPath(root);
+            var temp = txPath + ".tmp";
+            var text =
+                $"state={StatePrepared}\n" +
+                $"install={root}\n" +
+                $"staging={staging}\n" +
+                $"backup={Path.Combine(updateDir, "backup")}\n" +
+                $"target={targetVersion}\n" +
+                $"shell_pid={shellPid}\n" +
+                $"launcher_pid={LauncherPid}\n" +
+                "watcher_pid=0\n";
+            File.WriteAllText(temp, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.Move(temp, txPath, overwrite: true);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = launcher,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = root,
+            };
+            startInfo.ArgumentList.Add("--apply");
+            startInfo.ArgumentList.Add(txPath);
+            Process.Start(startInfo);
+            ShellLog.Append($"[update] 安装事务已交接: {targetVersion}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"启动更新器失败: {ex.Message}";
+            return false;
         }
     }
 

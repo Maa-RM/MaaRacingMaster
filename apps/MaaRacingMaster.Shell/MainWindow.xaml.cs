@@ -341,6 +341,8 @@ public sealed partial class MainWindow : Window
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
                 AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("APPDATA")).Managed,
+            installRoot: UpdateLauncher.InstallRoot,
+            currentVersion: ShellVersionStamp().Split('+')[0],
             prepareGate: PrepareForUpdateAsync,
             handoffRecovery: RestartSidecarAfterHandoffFailureAsync,
             initialChannel: prefChannel,
