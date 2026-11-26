@@ -98,6 +98,10 @@ function Invoke-Launcher([string]$install, [string[]]$arguments, [int]$timeoutSe
         try { $process.Kill() } catch { }
         throw "$label 超过 $timeoutSeconds 秒未退出"
     }
+    if ($process.ExitCode -ne 0) {
+        Write-Host "$label 退出码 $($process.ExitCode)"
+        Show-Diagnostics $install
+    }
     return $process.ExitCode
 }
 
@@ -139,6 +143,26 @@ function Wait-StubCount([string]$install, [int]$count, [int]$timeoutSeconds) {
 
 # 只按演练记录的 PID 清理，并且核对可执行文件路径在本次临时安装目录内：
 # 假壳与正式壳同名，按进程名强杀会误关开发机上正在运行的正式应用。
+function Show-Diagnostics([string]$install) {
+    if (-not $install -or -not (Test-Path $install)) { return }
+    Write-Host "---- 诊断：$install ----"
+    $updateDir = Join-Path $install '.update'
+    if (Test-Path $updateDir) {
+        Get-ChildItem $updateDir -Force | Select-Object Name, Length | Format-Table |
+            Out-String | Write-Host
+        $log = Join-Path $updateDir 'apply.log'
+        if (Test-Path $log) {
+            Write-Host '---- apply.log ----'
+            Get-Content $log -Tail 80 | Write-Host
+        }
+        $tx = Join-Path $updateDir 'transaction.txt'
+        if (Test-Path $tx) {
+            Write-Host '---- transaction.txt ----'
+            Get-Content $tx | Write-Host
+        }
+    }
+}
+
 function Stop-Stubs([string[]]$installs) {
     foreach ($install in $installs) {
         if (-not $install -or -not (Test-Path $install)) { continue }
@@ -165,6 +189,7 @@ try {
     Set-DrillMode $install 'ack'
     New-Staging $install
     Write-Tx $install 'prepared' '9.9.9'
+    Assert (Test-Path (Join-Path $install 'program\app\MaaRacingMaster.Shell.exe')) '假壳已就位'
     $startedAt = [DateTime]::UtcNow
     $code = Invoke-Launcher $install @('--apply', (Join-Path $install '.update\transaction.txt')) 240 '正常升级'
     Assert ($code -eq 0) "正常升级返回 0（实际 $code）"
@@ -234,6 +259,11 @@ try {
     Stop-Stubs $script:drillInstalls
 
     Write-Host '更新事务演练全部通过'
+}
+catch {
+    Write-Host '---- 演练失败：输出全部安装目录诊断 ----'
+    foreach ($dir in $script:drillInstalls) { Show-Diagnostics $dir }
+    throw
 }
 finally {
     Stop-Stubs $script:drillInstalls
