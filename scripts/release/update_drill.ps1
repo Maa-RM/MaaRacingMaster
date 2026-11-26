@@ -183,6 +183,18 @@ function Stop-Stubs([string[]]$installs) {
 $drillInstalls = @()
 
 try {
+    # ---------- 用例 0：普通启动链路自检 ----------
+    # 先把「根入口 → 子入口 → 假壳」这一段单独验一遍：它红了就不必怀疑换目录逻辑。
+    Write-Host '== 用例 0：普通启动自检 =='
+    $install = New-Install 'install-smoke'
+    $code = Invoke-Launcher $install @() 60 '普通启动自检'
+    Assert ($code -eq 0) "普通启动返回 0（实际 $code）"
+    Assert (Test-Path (Join-Path $install '.update\drill-started.txt')) '假壳被启动'
+    Remove-Item (Join-Path $install '.update\drill-started.txt') -Force
+    Remove-Item (Join-Path $install '.update\drill-shell-pid.txt') -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $install '.update\drill-shell-pids.txt') -Force -ErrorAction SilentlyContinue
+    Stop-Stubs $script:drillInstalls
+
     # ---------- 用例 1：正常升级 ----------
     Write-Host '== 用例 1：正常升级 =='
     $install = New-Install 'install-ok'

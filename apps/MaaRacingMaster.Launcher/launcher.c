@@ -819,6 +819,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         HANDLE recoverMutex = AcquireApplyLock(APPLY_NORMAL_WAIT_MS);
         if (recoverMutex == NULL)
         {
+            LogLine(L"[start] 安装锁被占用，普通启动退出");
             FatalBox(L"程序正在更新，请稍候再试。");
             return 1;
         }
@@ -828,6 +829,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     BOOL portableLayout = DirExists(g_programDir);
     const wchar_t *contentRoot = portableLayout ? g_programDir : g_installRoot;
+    LogLine(L"[start] 启动：portable=%d child=%d install=%s",
+            portableLayout ? 1 : 0, g_isUpdateChild ? 1 : 0, g_installRoot);
 
     wchar_t childExe[PATH_CAP];
     if (portableLayout)
@@ -849,6 +852,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     if (GetFileAttributesW(childExe) == INVALID_FILE_ATTRIBUTES)
     {
+        LogLine(L"[start] 缺少核心程序: %s", childExe);
         wchar_t msg[PATH_CAP + 256];
         swprintf_s(msg, PATH_CAP + 256,
                    L"未找到核心程序：\n%ls\n\n请确认 MaaRacingMaster 安装完整。", childExe);
@@ -858,11 +862,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     if (!SetEnvironmentVariableW(L"MaaRM_APP_ROOT", contentRoot))
     {
+        LogLine(L"[start] 设置应用根环境变量失败");
         FatalBox(L"无法设置应用根环境变量。");
         return 1;
     }
     if (portableLayout && !SetEnvironmentVariableW(L"MAARM_UPDATE_INSTALL_ROOT", g_installRoot))
     {
+        LogLine(L"[start] 设置安装根环境变量失败");
         FatalBox(L"无法设置安装根环境变量。");
         return 1;
     }
@@ -883,12 +889,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
 
     if (!CreateProcessW(childExe, NULL, NULL, NULL, FALSE, 0, NULL, contentRoot, &si, &pi))
     {
+        LogLine(L"[start] 启动核心程序失败 err=%lu: %s",
+                (unsigned long)GetLastError(), childExe);
         wchar_t msg[PATH_CAP + 256];
         swprintf_s(msg, PATH_CAP + 256, L"无法启动核心程序：\n%ls\n\n错误码: %lu",
                    childExe, (unsigned long)GetLastError());
         FatalBox(msg);
         return 1;
     }
+    LogLine(L"[start] 已启动核心程序 pid=%lu child=%d",
+            (unsigned long)pi.dwProcessId, g_isUpdateChild ? 1 : 0);
 
     CloseHandle(pi.hThread);
     WaitForSingleObject(pi.hProcess, INFINITE);
@@ -896,5 +906,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     if (!GetExitCodeProcess(pi.hProcess, &exitCode))
         exitCode = 1;
     CloseHandle(pi.hProcess);
+    LogLine(L"[start] 核心程序退出码 %lu", (unsigned long)exitCode);
     return (int)exitCode;
 }
