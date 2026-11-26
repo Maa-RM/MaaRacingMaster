@@ -744,6 +744,7 @@ public sealed class UpdateCoordinator
         long epoch;
         Task<UpdateSnapshot>? draining = null;
         Task? drainingDownload = null;
+        var countingDrain = false;
         lock (_gate)
         {
             if (_phase is UpdateSnapshot.Preparing or UpdateSnapshot.Applying)
@@ -755,6 +756,10 @@ public sealed class UpdateCoordinator
                 {
                     draining = _checkTask; // ResetForNewEpoch 会清空在途引用，先留一份等它退出
                     drainingDownload = _downloadTask;
+                    // 计数与重置同锁：重置一把状态放成 Idle，下载闸门就必须已经生效，
+                    // 否则这里释放锁到下一行加计数之间存在并发窗口。
+                    _drainCount++;
+                    countingDrain = true;
                     _awaitingStable = value == UpdateSnapshot.ChannelStable
                         && _channel == UpdateSnapshot.ChannelPreview;
                     _channel = value;
@@ -770,21 +775,20 @@ public sealed class UpdateCoordinator
             epoch = _epoch;
         }
         if (!changed) return GetStatus();
+        // 先等旧下载真正退出，再做偏好落盘与后续检查：等待闸门已随重置一起生效。
+        if (countingDrain)
+        {
+            try
+            {
+                await DrainAsync(drainingDownload).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_gate) { _drainCount--; }
+            }
+        }
         _savePreferences(_channel, _source, _awaitingStable);
         if (!isChannel) return GetStatus();
-        // 等旧检查事务真正退出（取消后它在预算内结束）再放行新渠道检查：
-        // 两轮索引请求不并发，验收里「切渠道取消旧请求 + 发出新请求」才可数。
-        // 旧下载也必须等：它和下一次下载写同一个暂存目录与缓存。用计数而不是单个
-        // 任务引用：连续切换两次时，第二次不能把第一次的等待闸门覆盖掉。
-        lock (_gate) { _drainCount++; }
-        try
-        {
-            await DrainAsync(drainingDownload).ConfigureAwait(false);
-        }
-        finally
-        {
-            lock (_gate) { _drainCount--; }
-        }
         if (draining is { IsCompleted: false })
         {
             try { await draining.ConfigureAwait(false); }

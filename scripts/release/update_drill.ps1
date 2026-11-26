@@ -41,6 +41,7 @@ function New-Install([string]$name) {
     if (-not (Test-Path $appDir)) { throw "发布包缺 program\app: $dir" }
     Copy-Item (Join-Path $StubDir '*') $appDir -Recurse -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $dir '.update') | Out-Null
+    $script:drillInstalls += $dir
     return $dir
 }
 
@@ -136,10 +137,26 @@ function Wait-StubCount([string]$install, [int]$count, [int]$timeoutSeconds) {
     throw "等待第 $count 个假壳启动超时"
 }
 
-function Stop-Stubs {
-    Get-Process -Name 'MaaRacingMaster.Shell' -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
+# 只按演练记录的 PID 清理，并且核对可执行文件路径在本次临时安装目录内：
+# 假壳与正式壳同名，按进程名强杀会误关开发机上正在运行的正式应用。
+function Stop-Stubs([string[]]$installs) {
+    foreach ($install in $installs) {
+        if (-not $install -or -not (Test-Path $install)) { continue }
+        foreach ($processId in (Get-StubPids $install)) {
+            $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+            if ($null -eq $process) { continue }
+            try {
+                $path = $process.Path
+                if ($path -and $path.StartsWith($install, [StringComparison]::OrdinalIgnoreCase)) {
+                    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch { }
+        }
+    }
 }
+
+$drillInstalls = @()
 
 try {
     # ---------- 用例 1：正常升级 ----------
@@ -159,7 +176,7 @@ try {
     $pids = Get-StubPids $install
     Assert ($pids.Count -eq 1) "只启动一次新版本（实际 $($pids.Count) 次）"
     Wait-ProcessExit $pids[0] 15
-    Stop-Stubs
+    Stop-Stubs $script:drillInstalls
 
     # ---------- 用例 2：无回执 → 回滚 ----------
     Write-Host '== 用例 2：试启动无回执 → 回滚 =='
@@ -177,8 +194,8 @@ try {
     Wait-StubCount $install 2 30
     $pids = Get-StubPids $install
     Wait-ProcessExit $pids[0] 20
-    Assert (Get-Process -Id $pids[$pids.Count - 1] -ErrorAction SilentlyContinue) '回滚后重新拉起旧版'
-    Stop-Stubs
+    Assert ($null -ne (Get-Process -Id $pids[$pids.Count - 1] -ErrorAction SilentlyContinue)) '回滚后重新拉起旧版'
+    Stop-Stubs $script:drillInstalls
 
     # ---------- 用例 3a：替换中断（旧目录已移走） ----------
     Write-Host '== 用例 3a：旧目录已移走，普通启动恢复 =='
@@ -194,7 +211,7 @@ try {
     Assert ((Get-TreeSignature $program) -eq $before) '备份已回到 program'
     Assert (-not (Test-Path (Join-Path $install '.update\transaction.txt'))) '事务记录已清理'
     Assert-StubStarted $install $startedAt 60
-    Stop-Stubs
+    Stop-Stubs $script:drillInstalls
 
     # ---------- 用例 3b：新目录已就位但无回执 ----------
     Write-Host '== 用例 3b：新目录已就位、无回执，普通启动回滚 =='
@@ -214,10 +231,10 @@ try {
     Assert ((Get-TreeSignature $program) -eq $before) '旧树逐文件恢复'
     Assert (-not (Test-Path (Join-Path $install 'program\drill-new.txt'))) '新树文件未残留'
     Assert (-not (Test-Path (Join-Path $install '.update\transaction.txt'))) '事务记录已清理'
-    Stop-Stubs
+    Stop-Stubs $script:drillInstalls
 
     Write-Host '更新事务演练全部通过'
 }
 finally {
-    Stop-Stubs
+    Stop-Stubs $script:drillInstalls
 }

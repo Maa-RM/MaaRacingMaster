@@ -557,7 +557,9 @@
     return new Promise((resolve) => {
       let decided = false;
       const decide = (value) => { if (!decided) { decided = true; resolve(value); } };
-      const buttons = hasDiff
+      // 只要备份有意义就给备份按钮：无基线时即使没有可枚举的差异，也要能整目录备份
+      // （只改过官方文件的情况就落在这里，不能只写一句「可以备份」却没有入口）。
+      const buttons = (hasDiff || report.baseline_known === false)
         ? [
           {
             text: backupLabel, primary: true,
