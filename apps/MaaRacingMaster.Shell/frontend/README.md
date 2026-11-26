@@ -41,6 +41,10 @@ Shell 经 `file://` 绝对路径直接加载（见 `MainWindow.xaml.cs`），无
   `update_set_source` / `update_set_channel` 传枚举；地址由壳从安装树内随包配置读取，前端不持有、
   也不传 URL。浮窗里还能开关后台自动检查（`update_set_auto_check`），开关与选择都以快照回显。
   所有回包（含后台推送）经同一个 `renderSnapshot` 落到版本卡与提醒点，旧快照由 `revision` 守卫丢弃。
+- **浮窗开窗动画由 `hidden` 切换触发**：`.update-settings-popover` 在元素自身挂 `upd-pop-in`
+  （原点钉右上角、从上方 6px 落位），`display:none → block` 时动画自会重播，JS 不加类、不用
+  `@starting-style`；关窗仍是立即隐藏——退场动画会把隐藏与焦点归还拖成竞态。减动效走
+  `prefers-reduced-motion` 关掉该动画。
 - **动作以玩家看到的快照为前提**：下载与「本次更新不再提示」带上渲染时的 `revision`；后台已换目标
   时由壳拒绝，界面提示玩家对新目标重新操作，而不是替旧界面下载 / 忽略新版本。
 - **更新提醒点**：宿主快照出现可安装目标（`phase=available`）时，顶部「关于」标签文字右上角亮起橙点；

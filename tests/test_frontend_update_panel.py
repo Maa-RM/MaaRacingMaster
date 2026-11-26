@@ -51,6 +51,26 @@ def _case(view_src: str, phase: str) -> str:
     return m.group(1)
 
 
+def test_update_settings_popover_drops_in_from_the_gear(app_src: str):
+    """齿轮浮窗开窗时的下拉动画：原点钉在右上角、从上方 6px 落位并轻微放大，
+    由 hidden 切换触发（从 display:none 变可见时 CSS 动画自会重播），JS 不加类；
+    关窗保持同步——退场动画会把 hidden 与焦点归还拖成竞态。"""
+    css = STYLE_CSS.read_text(encoding="utf-8")
+    block = css.split(".update-settings-popover {", 1)[1].split("}", 1)[0]
+    assert "transform-origin: 100% 0;" in block, "原点应钉在入口所在的右上角"
+    assert "animation: upd-pop-in var(--maarm-duration-base) ease-out" in block
+    assert "@keyframes upd-pop-in" in css
+    assert "translateY(-6px) scale(0.97)" in css
+    assert ".update-settings-popover { animation: none; }" in css, "减动效要关掉"
+
+    open_fn = _js_function_body(app_src, "function openUpdateSettings()")
+    assert "pop.hidden = false" in open_fn
+    assert "classList" not in open_fn, "开窗不该靠 JS 加类触发动画"
+
+    close_fn = _js_function_body(app_src, "function closeUpdateSettings()")
+    assert "pop.hidden = true" in close_fn, "关窗要立即隐藏（同步归还焦点）"
+
+
 def test_up_to_date_copy_is_honest_about_channel_gap(app_src: str):
     """从测试轨切回且稳定版尚未追上时如实说「等待下一稳定版」，不假装「已是最新版本」；
     区分依据是后端快照的 awaiting_stable。"""

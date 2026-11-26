@@ -1515,8 +1515,20 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   border-radius: var(--maarm-radius-md);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   font-family: var(--maarm-font-sans);
+  /* 从齿轮下方的右上角「落」出来：入口在浮窗右上角，所以原点钉在 100% 0。
+     开窗走 hidden 切换，元素从 display:none 变可见时动画自会重播，不需要 JS 加类；
+     关窗不做退场——隐藏与焦点归还都同步完成，退场动画会把这两件事拖成竞态。 */
+  transform-origin: 100% 0;
+  animation: upd-pop-in var(--maarm-duration-base) ease-out;
 }
 .update-settings-popover[hidden] { display: none; }
+@keyframes upd-pop-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-settings-popover { animation: none; }
+}
 .upd-set-group + .upd-set-group { margin-top: 14px; }
 .upd-set-label {
   font-size: 11px; color: var(--maarm-foreground-muted);
