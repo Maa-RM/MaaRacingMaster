@@ -147,7 +147,7 @@ jobs:
   # 便携自更新已完整接线：随包含 update-source.txt（cnb/github 命名行），
   # 更新清单与文件级增量由下方步骤生成并随版本发布（scripts/release/make_update_artifacts.py），
   # 壳内完成检查/下载/暂存/提交，换目录与回滚由原生启动器执行。
-  # 受管（Velopack）发行链仍未接入 CI，不作为当前交付路线。
+  # 受管（Velopack）发行链尚未接入 CI，不作为当前交付路线。
   win-build:
     name: 构建解压即用 Windows 包
     runs-on: windows-latest
