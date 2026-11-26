@@ -96,15 +96,20 @@
           + ' data-key="' + f.key + '" data-kind="switch"></button>'
           + '</div>' + descLine(f.note, f.desc) + '</div>';
       }
+      if (f.kind === 'number') {
+        // 数字字段只留挂载位：胶囊由 renderBuiltinPanel 用 js/number-pill.js 装进去，
+        // 与插件配置面板是同一颗控件（输入 + 按住步进 + 滚动动效，写后端等落定）
+        return '<div class="cfg-row">'
+          + '<div class="cfg-row-label">' + esc(f.label) + '</div>'
+          + '<div class="cfg-row-control" data-num="' + f.key + '"></div>'
+          + descLine(f.hint, '')
+          + '</div>';
+      }
       const val = cfgValue(mid, f.key);
       // 启动参数是多个开关项拼成的长串，单行输入必然截断：改多行等宽，一眼能核对完整
-      const input = f.kind === 'number'
-        ? '<input type="number" data-key="' + f.key + '" data-kind="number" value="' + esc(val == null ? '' : val) + '"'
-          + ' min="' + (f.min || 0) + '" max="' + (f.max || 9999) + '" step="' + (f.step || 1) + '">'
-          + (f.suffix ? '<span class="field-suffix">' + esc(f.suffix) + '</span>' : '')
-        : (f.kind === 'args'
-          ? '<textarea rows="2" spellcheck="false" data-key="' + f.key + '" data-kind="args">' + esc(val == null ? '' : val) + '</textarea>'
-          : '<input type="text" data-key="' + f.key + '" data-kind="' + f.kind + '" value="' + esc(val == null ? '' : val) + '">');
+      const input = f.kind === 'args'
+        ? '<textarea rows="2" spellcheck="false" data-key="' + f.key + '" data-kind="args">' + esc(val == null ? '' : val) + '</textarea>'
+        : '<input type="text" data-key="' + f.key + '" data-kind="' + f.kind + '" value="' + esc(val == null ? '' : val) + '">';
       const extra = f.kind === 'path'
         ? '<button class="maarm-btn" type="button" data-act="browse">浏览…</button>'
         : (f.kind === 'args' ? '<button class="maarm-btn" type="button" data-act="reset" hidden>重置</button>' : '');
@@ -112,7 +117,7 @@
         + '<div class="cfg-row-label">' + esc(f.label) + '</div>'
         + '<div class="cfg-row-control"><div class="maarm-field-control-row'
         + (f.kind === 'args' ? ' maarm-field-control-row--multi' : '') + '">'
-        + '<div class="maarm-field-control' + (f.kind === 'number' ? ' maarm-field-control--narrow' : '') + '">'
+        + '<div class="maarm-field-control">'
         + input + '</div>' + extra + '</div></div>'
         + descLine(f.hint, '')
         + '</div>';
@@ -131,11 +136,43 @@
     }
   }
 
+  // 数字胶囊实例：面板一重建就收掉（旧实例的弹簧循环与落定定时器不该再跑）。
+  // 按模块分桶存放——内置步骤可能同时展开多张卡，重画其中一张不能顺手杀掉别家的实例
+  // （DOM 还在、实例却已死，会变成「拨得动但永远不落库」）。
+  const builtinPills = new Map();
+  function dropBuiltinPills(mid) {
+    if (mid == null) {
+      builtinPills.forEach((list) => list.forEach((pill) => pill.destroy()));
+      builtinPills.clear();
+      return;
+    }
+    (builtinPills.get(mid) || []).forEach((pill) => pill.destroy());
+    builtinPills.delete(mid);
+  }
+
   // 面板挂载 + 绑定（列表重建后面板随之重建，绑定一并重挂）
   function renderBuiltinPanel(mid) {
     const panel = document.querySelector('#task-list [data-id="' + mid + '"] [data-options]');
     if (!panel) return;
+    dropBuiltinPills(mid);
     panel.innerHTML = builtinPanelHtml(mid);
+    const pills = [];
+    (BUILTIN_FIELDS[mid] || []).filter((f) => f.kind === 'number').forEach((f) => {
+      const mount = panel.querySelector('[data-num="' + f.key + '"]');
+      if (!mount) return;
+      const pill = MaaRM.numberPill.create({
+        value: cfgValue(mid, f.key),
+        min: f.min || 0,
+        max: f.max,
+        step: f.step || 1,
+        suffix: f.suffix || '',
+        label: f.label,
+        onCommit: (v) => saveBuiltinCfg(mid, { [f.key]: v }),
+      });
+      mount.appendChild(pill.el);
+      pills.push(pill);
+    });
+    if (pills.length) builtinPills.set(mid, pills);
     const syncReset = () => {
       const argsEl = panel.querySelector('[data-key="args"]');
       const resetBtn = panel.querySelector('[data-act="reset"]');
@@ -151,9 +188,7 @@
     });
     panel.querySelectorAll('input[data-key], textarea[data-key]').forEach((el) => {
       el.addEventListener('change', () => {
-        const raw = el.dataset.kind === 'number' ? Number(el.value) : el.value;
-        if (el.dataset.kind === 'number' && !Number.isFinite(raw)) return;
-        saveBuiltinCfg(mid, { [el.dataset.key]: raw });
+        saveBuiltinCfg(mid, { [el.dataset.key]: el.value });
         syncReset();
       });
       if (el.dataset.kind === 'args') el.addEventListener('input', syncReset);
@@ -301,6 +336,7 @@
   function renderTaskList() {
     // 列表面板随卡片一起重建：旧表单与其在途请求全部作废（代际校验在 config-panel）
     if (MaaRM.configPanel) MaaRM.configPanel.reset();
+    dropBuiltinPills();
     const ul = $('task-list');
     ul.innerHTML = state.queue.order.map(cardHtml).join('');
     if (!state.queue.order.length) {

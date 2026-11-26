@@ -167,121 +167,10 @@
     };
   }
 
-  // number：与滚轮同一副外观的常驻输入胶囊；不滚动、不做列动画。
-  function buildNumber(entry, field) {
-    var min = field.min != null ? Number(field.min) : 0;
-    var max = field.max != null ? Number(field.max) : null;
-    var step = field.step != null ? Number(field.step) : 1;
-
-    var label = el('label', 'cfg-row-label');
-    label.textContent = field.label;
-    var control = el('div', 'cfg-row-control');
-    var pill = el('div', 'maarm-stepper maarm-stepper--plain');
-    var dec = el('button', 'stepper-btn', '\u2212');
-    dec.type = 'button';
-    dec.tabIndex = -1;
-    dec.setAttribute('aria-label', '减少');
-    var inc = el('button', 'stepper-btn', '+');
-    inc.type = 'button';
-    inc.tabIndex = -1;
-    inc.setAttribute('aria-label', '增加');
-    var win = el('div', 'stepper-window stepper-window--plain');
-    var input = el('input', 'stepper-edit');
-    input.type = 'text';
-    input.inputMode = 'numeric';
-    input.id = domId(entry, field, 'number');
-    input.setAttribute('aria-label', field.label);
-    label.setAttribute('for', input.id);
-    win.appendChild(input);
-    if (field.suffix) win.appendChild(el('span', 'stepper-suffix', field.suffix));
-    pill.appendChild(dec);
-    pill.appendChild(win);
-    pill.appendChild(inc);
-    control.appendChild(pill);
-    var shell = rowShell(label, control);
-
-    var shown = null;
-    function clamp(v) {
-      if (!Number.isFinite(v)) v = min;
-      if (v < min) v = min;
-      if (max != null && v > max) v = max;
-      return v;
-    }
-    function fitWidth() {
-      var len = Math.max(1, String(input.value == null ? '' : input.value).length);
-      input.style.width = 'calc(' + len + ' * 0.62em + 8px)';
-    }
-    function sync(value) {
-      var next = value == null || Number.isNaN(Number(value)) ? min : Number(value);
-      shown = next;
-      if (document.activeElement !== input) input.value = String(next);
-      fitWidth();
-    }
-    function commit(nextValue) {
-      if (locked || entry.locked) return;
-      var next = clamp(Number(nextValue));
-      input.value = String(next);
-      fitWidth();
-      if (next === shown) return;
-      shown = next;
-      var patch = {};
-      patch[field.key] = next;
-      savePatch(entry.mid, patch);
-    }
-    function bump(dir) {
-      commit(clamp(shown + dir * step));
-    }
-    input.addEventListener('change', function () { commit(input.value); });
-    input.addEventListener('input', fitWidth);
-    input.addEventListener('focus', function () { input.select(); });
-    input.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        commit(input.value);
-      } else if (event.key === 'Escape') {
-        input.value = String(shown);
-        fitWidth();
-        input.blur();
-      }
-    });
-    dec.addEventListener('click', function () { bump(-1); });
-    inc.addEventListener('click', function () { bump(1); });
-    function setLockedState(isLocked) {
-      dec.disabled = isLocked;
-      inc.disabled = isLocked;
-      input.disabled = isLocked;
-    }
-    return {
-      field: field, wrap: shell.wrap, input: input, title: label, desc: shell.desc,
-      syncNumber: sync, setLocked: setLockedState,
-    };
-  }
-
-  // ---------- 滚轮计数器（stepper 字段）----------
-  // 行为移植自 21st.dev 的 Rolling Counter（MIT，作者 Syed；vanilla JS 重写、
-  // 外观换本仓设计 token）：每列一个 rAF 弹簧模拟（高位错峰起步），速度越大
-  // 模糊越重；± 可按住加速连滚；数字窗竖向拖拽带惯性甩动；键盘走 spinbutton
-  // 语义；prefers-reduced-motion 全部瞬时落位。写后端的时机：一律等弹簧收敛
-  // （动画落定）才 savePatch——连滚/拖拽期间只在本地滚动，不逐变化发请求。
-  // unit_seconds 是模块下发的「每 1 单位配置值的预计秒数」，预计用时按当前值
-  // 即时重算；值为 0 表示不限，不出估计。
-
-  var CELL_H = 30;          // 数字窗高 = 单格高（滚动一行 = 一格）
-  var STAGGER_MS = 32;      // 列间错峰：高位晚这么久起步，滚出层次感
-  var BOUNCE = 40;          // 弹簧弹性（0~100，原控件默认）
-  var BLUR = 24;            // 速度模糊强度（0~100，原控件默认）
-  var HOLD_DELAY_MS = 320;  // 按住 ± 多久后开始连滚
-  var REDUCED_COMMIT_MS = 300;  // 无动画档的落定等待：连点只写最后一次
-  var FALLBACK_COMMIT_MS = 900; // 落定兜底：rAF 在窗口隐藏/遮挡时会暂停
-  var DRAG_PX = 12;         // 拖拽每走一格的像素
-  // 数字条 12 格：末尾补 0/1，9→0 向前绕回时不断带（减量走 mod 环绕同样成立）
-  var DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1];
-
-  function prefersReducedMotion() {
-    return !!(window.matchMedia
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  }
-
+  // 数字字段（number / stepper 两型共用一处）：胶囊本身由 js/number-pill.js 提供——
+  // 输入、按住步进、滚动动效与写后端的时机都在那里，这里只接字段语义：
+  // 标签、锁、以及 stepper 的 unit_seconds（每 1 单位配置值的预计秒数，数值来自插件）。
+  // 说明行前缀的「预计用时约 X」按当前值即时乘算；值为 0 表示不限，不出估计。
   function formatEstimateSeconds(seconds) {
     var minutes = Math.round(seconds / 60);
     if (minutes < 1) return '不足 1 分钟';
@@ -292,387 +181,57 @@
                 : '约 ' + hours + ' 小时';
   }
 
-  function buildStepper(entry, field) {
+  function buildNumeric(entry, field) {
     var min = field.min != null ? Number(field.min) : 0;
-    var max = Number(field.max);
+    var max = field.max != null ? Number(field.max) : null;
     var stepv = field.step != null ? Number(field.step) : 1;
     var unitSeconds = field.unit_seconds != null ? Number(field.unit_seconds) : null;
-    var places = String(max).length;
 
     var label = el('div', 'cfg-row-label', field.label);
     var control = el('div', 'cfg-row-control');
 
-    var stepper = el('div', 'maarm-stepper');
-    var dec = el('button', 'stepper-btn', '\u2212');
-    dec.type = 'button';
-    dec.tabIndex = -1;
-    dec.setAttribute('aria-label', '减少');
-    var inc = el('button', 'stepper-btn', '+');
-    inc.type = 'button';
-    inc.tabIndex = -1;
-    inc.setAttribute('aria-label', '增加');
-
-    var win = el('div', 'stepper-window');
-    win.tabIndex = 0;
-    win.setAttribute('role', 'spinbutton');
-    win.setAttribute('aria-label', field.label);
-    win.setAttribute('aria-valuemin', String(min));
-    win.setAttribute('aria-valuemax', String(max));
-
-    var edit = el('input', 'stepper-edit');
-    edit.type = 'text';
-    edit.inputMode = 'numeric';
-    edit.id = domId(entry, field, 'edit');
-    edit.setAttribute('aria-label', field.label);
-    win.appendChild(edit);
-
-    var columns = [];
-    for (var i = 0; i < places; i += 1) {
-      var p = places - 1 - i;   // DOM 从高位列到低位列；columns 仍按位权 p 索引
-      var colBox = el('div', 'stepper-col');
-      var strip = el('div', 'stepper-strip');
-      DIGITS.forEach(function (d) {
-        strip.appendChild(el('div', 'stepper-num', String(d)));
-      });
-      colBox.appendChild(strip);
-      win.appendChild(colBox);
-      columns[p] = { box: colBox, strip: strip, pos: 0, vel: 0, target: 0,
-                     due: [], next: [] };
-    }
-    if (field.suffix) win.appendChild(el('span', 'stepper-suffix', field.suffix));
-
-    stepper.appendChild(dec);
-    stepper.appendChild(win);
-    stepper.appendChild(inc);
-    control.appendChild(stepper);
-    var shell = rowShell(label, control);
-
-    var node = {
-      field: field, wrap: shell.wrap, stepper: stepper,
-      title: label, desc: shell.desc,
-    };
     function hintFor(v) {
       if (!unitSeconds) return field.hint || '';
       if (!v) return '不限轮数';
       return '预计用时' + formatEstimateSeconds(v * unitSeconds);
     }
+
+    var node = null;
+    var pill = MaaRM.numberPill.create({
+      min: min,
+      max: max,
+      step: stepv,
+      suffix: field.suffix,
+      label: field.label,
+      zeroLabel: field.type === 'stepper' ? '不限' : '',
+      locked: locked || entry.locked,
+      alive: function () { return ST.isAlive(entry, generation); },
+      onLive: function (v) {
+        // 连滚期间就重算说明行的预计用时：等落定再算，读到的是旧值
+        if (node && node.descHint && unitSeconds) node.descHint.textContent = hintFor(v);
+      },
+      onCommit: function (v) {
+        if (locked || entry.locked) return;
+        var patch = {};
+        patch[field.key] = v;
+        savePatch(entry.mid, patch);
+      },
+    });
+    control.appendChild(pill.el);
+    var shell = rowShell(label, control);
+
+    node = {
+      field: field, wrap: shell.wrap, pill: pill,
+      title: label, desc: shell.desc,
+    };
     node.hintFn = function (cfg) {
       var raw = cfg ? cfg[field.key] : null;
       return hintFor(raw == null ? min : Number(raw));
     };
-
-    var shown = null;        // 本地显示值；弹簧收敛前可与服务端配置暂时不同
-    var rafId = 0;
-    var lastTime = 0;
-    var flingRaf = 0;
-    var commitTimer = 0;
-
-    function clamp(v) {
-      if (Number.isNaN(v)) v = min;
-      if (v < min) v = min;
-      if (v > max) v = max;
-      return Math.round(v);
-    }
-
-    function valueText(v) {
-      return v <= 0 ? '不限' : v + (field.suffix ? ' ' + field.suffix : '');
-    }
-
-    function updateEstimate(v) {
-      if (node.descHint && unitSeconds) node.descHint.textContent = hintFor(v);
-    }
-
-    function paint() {
-      columns.forEach(function (col) {
-        var mod = ((col.pos % 10) + 10) % 10;
-        var smear = Math.min(2.2, Math.abs(col.vel) * 1.8) * (BLUR / 50);
-        col.strip.style.transform = 'translate3d(0,' + (-mod * CELL_H) + 'px,0)';
-        col.strip.style.filter = smear > 0.12
-          ? 'blur(' + smear.toFixed(2) + 'px)' : 'none';
-      });
-    }
-
-    function flushCommit() {
-      if (!ST.isAlive(entry, generation) || locked || entry.locked) return;
-      if (entry.cfg && entry.cfg[field.key] === shown) return;
-      var patch = {};
-      patch[field.key] = shown;
-      savePatch(entry.mid, patch);
-    }
-
-    function tick(time) {
-      if (!ST.isAlive(entry, generation)) {   // 面板重建：孤儿循环就地收
-        rafId = 0;
-        return;
-      }
-      var dt = lastTime ? Math.min(2.5, Math.max(0, (time - lastTime) / 16.67)) : 1;
-      lastTime = time;
-      // 弹簧参数随 BOUNCE 取（原控件同款：k 刚度 / d 阻尼）
-      var k = 0.1 + (BOUNCE / 100) * 0.16;
-      var damp = 0.64 + (BOUNCE / 100) * 0.18;
-      var now = performance.now();
-      var active = false;
-      columns.forEach(function (col) {
-        // 错峰队列：到点的目标才生效，快速连改在队列里排队不跳变
-        while (col.due.length && col.due[0] <= now) {
-          col.due.shift();
-          col.target = col.next.shift();
-        }
-        if (col.due.length) active = true;
-        var delta = col.target - col.pos;
-        if (Math.abs(delta) > 20) {
-          // 大跨度（Home/End、×10 连滚）：先按十位跳近，别让弹簧拉到失真
-          col.pos += Math.round((delta - (delta > 0 ? 20 : -20)) / 10) * 10;
-        }
-        col.vel += (col.target - col.pos) * k * dt;
-        col.vel *= Math.pow(damp, dt);
-        col.pos += col.vel * dt;
-        if (Math.abs(col.target - col.pos) < 0.003 && Math.abs(col.vel) < 0.003) {
-          col.pos = col.target;
-          col.vel = 0;
-        } else {
-          active = true;
-        }
-      });
-      paint();
-      if (active) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        rafId = 0;
-        lastTime = 0;
-        flushCommit();   // 动画落定才写后端（连滚期间只滚不写）
-      }
-    }
-
-    function runSimulation() {
-      if (!rafId) {
-        lastTime = 0;
-        rafId = requestAnimationFrame(tick);
-      }
-    }
-
-    function syncVisibility() {
-      var sig = Math.max(1, String(shown).length);
-      columns.forEach(function (col, p) {
-        col.box.classList.toggle('stepper-col--hidden', p >= sig);
-      });
-    }
-
-    function applyValue(nextVal) {
-      nextVal = clamp(nextVal);
-      var mount = shown == null;
-      if (!mount && nextVal === shown) return;
-      shown = nextVal;
-      var reduced = prefersReducedMotion();
-      columns.forEach(function (col, p) {
-        var to = Math.floor(nextVal / Math.pow(10, p));
-        if (mount || reduced) {
-          col.pos = col.target = to;
-          col.vel = 0;
-          col.due = [];
-          col.next = [];
-        } else {
-          col.due.push(performance.now() + p * STAGGER_MS);
-          col.next.push(to);
-        }
-      });
-      if (mount || reduced) {
-        paint();
-        if (!mount) {   // 无动画档也要攒一拍：连点只写最后一次
-          clearTimeout(commitTimer);
-          commitTimer = setTimeout(flushCommit, REDUCED_COMMIT_MS);
-        }
-      } else {
-        runSimulation();   // 落定后的 flushCommit 在 tick 收敛分支里
-        // 兜底：rAF 在窗口隐藏/遮挡时会暂停，模拟可能迟迟不收敛——定时器
-        // 保证最终值一定落库（弹簧先收敛时本定时器到点即空转）。
-        clearTimeout(commitTimer);
-        commitTimer = setTimeout(flushCommit, FALLBACK_COMMIT_MS);
-      }
-      syncVisibility();
-      win.setAttribute('aria-valuenow', String(nextVal));
-      win.setAttribute('aria-valuetext', valueText(nextVal));
-      updateEstimate(nextVal);
-    }
-
-    function bump(multiplier) {
-      if (shown == null) return;
-      applyValue(shown + multiplier * stepv);
-    }
-
-    function sync(value) {
-      if (value == null || !Number.isFinite(value)) return;
-      var target = clamp(value);
-      if (shown !== target) applyValue(target);
-      else updateEstimate(shown);   // _ui 重建带来新 unit_seconds 时重算估时
-    }
-
-    // 原地编辑：点数字把滚动的列换成输入框；输入宽度随位数增长。
-    // 编辑期间不参与拖拽/滚轮/方向键，避免两套输入同时改值。
-    var editing = false;
-    function fitEditWidth() {
-      var len = Math.max(1, String(edit.value || '').length);
-      edit.style.width = 'calc(' + len + ' * 0.62em + 8px)';
-    }
-    function startEdit() {
-      if (editing || locked || entry.locked || shown == null) return;
-      editing = true;
-      win.classList.add('stepper-window--editing');
-      edit.value = String(shown);
-      fitEditWidth();
-      edit.focus();
-      edit.select();
-    }
-    function stopEdit(apply) {
-      if (!editing) return;
-      editing = false;
-      win.classList.remove('stepper-window--editing');
-      var value = parseInt(edit.value, 10);
-      if (apply && !Number.isNaN(value)) {
-        var next = clamp(value);
-        if (next !== shown) applyValue(next);
-      } else if (shown != null) {
-        edit.value = String(shown);
-      }
-      fitEditWidth();
-      syncVisibility();
-    }
-    edit.addEventListener('input', fitEditWidth);
-    edit.addEventListener('keydown', function (event) {
-      event.stopPropagation();
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        stopEdit(true);
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        stopEdit(false);
-      }
-    });
-    edit.addEventListener('blur', function () { stopEdit(true); });
-
-    function bindHold(btn, dir) {
-      var holdTimer = 0;
-      var holdStart = 0;
-      function repeat() {
-        if (locked || entry.locked) { holdTimer = 0; return; }
-        // 原控件同款加速曲线：0.7s 后 ×5、1.4s 后 ×10，节拍 85ms → 55ms
-        var elapsed = performance.now() - holdStart;
-        var speedUp = elapsed > 1400 ? 10 : elapsed > 700 ? 5 : 1;
-        bump(dir * speedUp);
-        holdTimer = setTimeout(repeat, elapsed > 700 ? 55 : 85);
-      }
-      function stop() {
-        if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; }
-      }
-      btn.addEventListener('pointerdown', function (event) {
-        if (locked || entry.locked) return;
-        if (event.pointerType === 'mouse' && event.button !== 0) return;
-        try { btn.setPointerCapture(event.pointerId); } catch (e) { /* 无碍 */ }
-        bump(dir);
-        holdStart = performance.now();
-        holdTimer = setTimeout(repeat, HOLD_DELAY_MS);
-        event.preventDefault();
-      });
-      ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (type) {
-        btn.addEventListener(type, stop);
-      });
-      // 键盘激活（Enter/Space 的 click 无 pointer 来源）：补一次步进
-      btn.addEventListener('click', function (event) {
-        if (event.detail === 0 && !locked && !entry.locked) bump(dir);
-      });
-    }
-    bindHold(dec, -1);
-    bindHold(inc, 1);
-
-    win.addEventListener('keydown', function (event) {
-      if (locked || entry.locked) return;
-      if (editing) return;
-      if (event.key === 'Enter' || event.key === 'F2') {
-        event.preventDefault();
-        startEdit();
-        return;
-      }
-      var handled = true;
-      switch (event.key) {
-        case 'ArrowUp': case 'ArrowRight': bump(1); break;
-        case 'ArrowDown': case 'ArrowLeft': bump(-1); break;
-        case 'PageUp': bump(10); break;
-        case 'PageDown': bump(-10); break;
-        case 'Home': applyValue(min); break;
-        case 'End': applyValue(max); break;
-        default: handled = false;
-      }
-      if (handled) event.preventDefault();
-    });
-
-    win.addEventListener('wheel', function (event) {
-      if (locked || entry.locked || editing) return;
-      event.preventDefault();
-      bump(event.deltaY < 0 ? 1 : -1);
-    }, { passive: false });
-
-    // 竖向拖拽 + 惯性甩动（原控件同款：12px 一格，松手按速度衰减续滚）；
-    // 位移不足 4px 视为点击，进入原地编辑。
-    var drag = null;
-    function offsetTicks(acc) {
-      var ticks = acc > 0 ? Math.floor(acc / DRAG_PX) : Math.ceil(acc / DRAG_PX);
-      return { ticks: ticks, rest: acc - ticks * DRAG_PX };
-    }
-    win.addEventListener('pointerdown', function (event) {
-      if (locked || entry.locked || editing) return;
-      cancelAnimationFrame(flingRaf);
-      try { win.setPointerCapture(event.pointerId); } catch (e) { /* 无碍 */ }
-      drag = { y: event.clientY, acc: 0, vel: 0, time: performance.now(),
-               moved: false, dist: 0 };
-    });
-    win.addEventListener('pointermove', function (event) {
-      if (!drag) return;
-      var now = performance.now();
-      var dy = drag.y - event.clientY;
-      drag.y = event.clientY;
-      drag.dist += Math.abs(dy);
-      if (drag.dist > 4) drag.moved = true;
-      var dt = Math.max(1, now - drag.time);
-      drag.time = now;
-      drag.vel = drag.vel * 0.6 + (dy / dt) * 0.4;
-      var move = offsetTicks(drag.acc + dy);
-      if (move.ticks) bump(move.ticks);
-      drag.acc = move.rest;
-    });
-    function endDrag(event) {
-      if (!drag) return;
-      try { win.releasePointerCapture(event.pointerId); } catch (e) { /* 已释放 */ }
-      var track = drag;
-      drag = null;
-      if (!track.moved) {
-        startEdit();
-        return;
-      }
-      if (prefersReducedMotion()) return;
-      var v = (performance.now() - track.time > 80) ? 0 : track.vel * 16.67;
-      if (Math.abs(v) < 1.5) return;
-      var acc = 0;
-      (function coast() {
-        var move = offsetTicks(acc + v);
-        if (move.ticks) bump(move.ticks);
-        acc = move.rest;
-        v *= 0.93;
-        if (Math.abs(v) > 0.35) flingRaf = requestAnimationFrame(coast);
-      })();
-    }
-    win.addEventListener('pointerup', endDrag);
-    win.addEventListener('pointercancel', endDrag);
-
-    function setLockedState(isLocked) {
-      if (isLocked) stopEdit(false);
-      dec.disabled = isLocked;
-      inc.disabled = isLocked;
-      edit.disabled = isLocked;
-      stepper.classList.toggle('maarm-stepper--locked', isLocked);
-    }
-
-    node.sync = sync;
-    node.setLocked = setLockedState;
+    node.sync = function (value) {
+      pill.setValue(value == null || !Number.isFinite(Number(value)) ? min : Number(value));
+    };
+    node.setLocked = function (isLocked) { pill.setLocked(isLocked); };
     return node;
   }
 
@@ -828,8 +387,8 @@
       case 'switch': return buildSwitch(entry, field);
       case 'segmented': return buildSegmented(entry, field);
       case 'select': return buildSelect(entry, field);
-      case 'number': return buildNumber(entry, field);
-      case 'stepper': return buildStepper(entry, field);
+      case 'number': return buildNumeric(entry, field);
+      case 'stepper': return buildNumeric(entry, field);
       case 'text': return buildText(entry, field);
       default: return null;
     }
@@ -903,11 +462,8 @@
       });
     } else if (node.select) {
       syncSelect(node, cfg);
-    } else if (node.stepper) {
-      var raw = value == null ? null : Number(value);
-      node.sync(raw);
-    } else if (node.syncNumber) {
-      node.syncNumber(value);
+    } else if (node.pill) {
+      node.sync(value);
     } else if (node.input) {
       if (document.activeElement !== node.input) {
         node.input.value = value == null ? '' : String(value);
@@ -983,8 +539,18 @@
 
   // ---------- 构建与渲染 ----------
 
+  // 面板重建 / 整表重建时收掉数字胶囊的弹簧循环与落定定时器：DOM 一换，
+  // 旧实例没必要再转，pending 的写入也不该落到已经消失的字段上。
+  function destroyFields(nodes) {
+    if (!nodes || !nodes.fields) return;
+    nodes.fields.forEach(function (node) {
+      if (node.pill) node.pill.destroy();
+    });
+  }
+
   function build(entry, host, cfg) {
     host.textContent = '';
+    destroyFields(entry.nodes);
     var root = el('div', 'config-panel');
     var note = el('p', 'module-options-status config-panel-note');
     note.style.display = 'none';
@@ -1080,6 +646,7 @@
   function reset() {
     generation += 1;
     entries.forEach(function (entry) {
+      destroyFields(entry.nodes);
       ST.kill(entry);
       clearTimeout(entry._statusTimer);
     });

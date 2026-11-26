@@ -22,6 +22,7 @@ HTML = FRONTEND / "index.html"
 SETTINGS = FRONTEND / "js" / "settings.js"
 RUN = FRONTEND / "js" / "run.js"
 PANEL = FRONTEND / "js" / "config-panel.js"
+PILL = FRONTEND / "js" / "number-pill.js"
 STATE = FRONTEND / "js" / "config-panel-state.js"
 
 MODULE_TOKENS = (
@@ -101,17 +102,68 @@ def test_panel_renders_option_badges_and_notice_actions():
 
 
 def test_stepper_renderer_rolls_and_estimates():
-    """滚轮计数器：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端、原地编辑。"""
+    """数字胶囊：弹簧滚动、spinbutton 语义、预计用时乘算、落定才写后端、原地编辑。
+
+    胶囊本体 2026-11 起独立成 js/number-pill.js（宿主所有数字字段共用），
+    所以「怎么滚」在胶囊文件里锁，「怎么接字段」在渲染器里锁。
+    """
+    pill = PILL.read_text(encoding="utf-8")
+    for token in ("maarm-stepper", "prefers-reduced-motion", "spinbutton",
+                  "aria-valuenow", "requestAnimationFrame", "flush",
+                  "stepper-edit", "stepper-window--editing", "HOLD_DELAY_MS"):
+        assert token in pill, f"数字胶囊缺少 {token}"
     src = PANEL.read_text(encoding="utf-8")
-    for token in ("maarm-stepper", "unit_seconds", "prefers-reduced-motion",
-                  "spinbutton", "aria-valuenow", "formatEstimateSeconds",
-                  "requestAnimationFrame", "flushCommit",
-                  "stepper-edit", "stepper-window--editing"):
-        assert token in src, f"滚轮计数器缺少 {token}"
+    for token in ("unit_seconds", "formatEstimateSeconds", "numberPill"):
+        assert token in src, f"配置面板缺少 {token}"
     css = (FRONTEND / "style.css").read_text(encoding="utf-8")
     assert "stepper-col--hidden" in css
     assert "stepper-window--plain" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
+
+
+def test_numeric_fields_share_one_pill():
+    """数字字段只有一个实现：插件 number / stepper 与内置步骤的秒数都走数字胶囊。
+
+    改造前内置步骤是裸 input[type=number]（后缀在框外、不能按住调），插件面板另有
+    「常驻输入」与「滚轮」两套胶囊——三处外观与写入时机各不相同。这里锁住合并的结果：
+    裸 number 输入与旧的两个构建函数都不得回潮。
+    """
+    run = RUN.read_text(encoding="utf-8")
+    assert 'type="number"' not in run, "内置步骤又用回了裸 number 输入"
+    assert "numberPill.create" in run, "内置步骤没走数字胶囊"
+    assert 'data-num="' in run, "内置步骤的数字字段缺少胶囊挂载位"
+    panel = PANEL.read_text(encoding="utf-8")
+    assert "buildNumber" not in panel and "buildStepper" not in panel, \
+        "插件面板又分裂出第二套数字控件"
+    assert "numberPill.create" in panel
+    html = HTML.read_text(encoding="utf-8")
+    assert 'src="js/number-pill.js"' in html
+    assert html.index("js/number-pill.js") < html.index("js/config-panel.js"), \
+        "胶囊必须早于使用方加载（两个使用方都在加载期取用）"
+    assert html.index("js/number-pill.js") < html.index('src="js/run.js')
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    assert ".maarm-field-control .field-suffix" not in css, "框外后缀位已被胶囊内后缀取代"
+    assert "maarm-stepper--plain" not in css
+
+
+def test_number_pill_dimensions_come_from_tokens():
+    """胶囊的尺寸只有一个真源：CSS token 给像素换算，JS 不再存副本。
+
+    改造前 30px 格高与 0.62em 列宽在 style.css 与 config-panel.js 各有一份，
+    改一处另一处就错（列位移与编辑框宽度会立刻不对齐）。现在 JS 只写「第几格」
+    与「几位」，px / em 全由 --maarm-num-cell-h / --maarm-num-col-w 换算。
+    """
+    css = (FRONTEND / "style.css").read_text(encoding="utf-8")
+    for token in ("--maarm-control-h: 36px", "--maarm-num-cell-h: 30px",
+                  "--maarm-num-col-w: 0.62em"):
+        assert token in css, f"缺少控件刻度 token {token}"
+    assert "calc(var(--slot, 0) * -1 * var(--maarm-num-cell-h))" in css, \
+        "列位移没有交给 token 换算（JS 会重新存一份 30px）"
+    pill = PILL.read_text(encoding="utf-8")
+    assert "var(--maarm-num-col-w)" in pill, "编辑框宽度没引用列宽 token"
+    assert ".62em" not in pill, "列宽在 JS 里存了第二份"
+    assert "30px" not in pill, "格高在 JS 里存了第二份"
+    assert "translate3d" not in pill, "列位移又写回了 JS（像素应交给 CSS token）"
 
 
 def test_panel_layout_is_host_owned():
