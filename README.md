@@ -124,7 +124,10 @@
 
 1. 到 GitHub [Releases](https://github.com/Maa-RM/MaaRacingMaster/releases)（或 [CNB 镜像](https://cnb.cool/MaaRacingMaster/MAIN/-/releases)）下载最新 **`MaaRacingMaster-<版本>-win-x64.zip`**。
 2. 用资源管理器把它**解压到任意本地目录**。
-3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
+3. 打开该文件夹，**双击根目录的** **`MaaRacingMaster.exe`** 启动（包内唯一入口，薄 Launcher 会拉起 `program\app\` 下的 GUI；已自带 Python 运行时与全部依赖，启动时自动弹出 UAC 提权）。
+
+> **从旧版升级的首次操作**：请先**删除旧目录**再解压新包。旧包的程序文件直接铺在根目录，新包把它们收进 `program\`；覆盖解压虽然能正常启动，但根目录会留下一份再也用不到的旧文件（约两三百兆）。用户数据在 `%APPDATA%\MaaRacingMaster`，删目录不会丢配置与存档。搭上新布局之后，后续版本在「关于」页直接升级，无需再手动解压。
+
 4. 若使用后台点击或虚拟手柄，需先安装 [ViGEmBus 虚拟手柄驱动](https://github.com/nefarius/ViGEmBus/releases)；也可在「设置 → 环境中心 → 可选依赖」里检测并打开下载页。
 
 > **车道线驾驶需要额外安装模型包：** 主包默认不带大体积权重；模块配置面板出现「一键安装模型」时点击即可下载与当前程序匹配的模型包，完成后无需重启。也可从同一 Release 手动下载 `MaaRacingMaster-infinite_drive-models-<版本>.zip`，解压到用户数据目录的 `data/infinite_drive/models/`，重启后生效。安装细节与校验值见 [模型权重说明](maaracing_master/plugins/infinite_drive/resources/models/README.md)。

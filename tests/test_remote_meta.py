@@ -123,6 +123,25 @@ def test_resolve_download_page_defaults_on_invalid_values(source, channel, expec
     assert resolve_download_page(source, channel) == EXTERNAL_TARGETS[expected]
 
 
+def test_release_marker_channels_are_consistent():
+    """分渠道标记：顶层与同性质渠道必须一致，稳定渠道不得指向预发布。
+
+    应用内更新按渠道取标记；漏改或写反会让某一渠道长期收不到更新，
+    且这种漂移在发版当下不会报错，只能靠这条锁发现。
+    """
+    marker = json.loads(LATEST_RELEASE.read_text(encoding="utf-8"))
+    channels = marker.get("channels")
+    if channels is None:
+        pytest.skip("版本标记尚未分渠道")
+    assert set(channels) == {"stable", "preview"}
+    for name, entry in channels.items():
+        assert entry.get("tag") and entry.get("version"), f"{name} 渠道缺 tag/version"
+    assert "-" not in channels["stable"]["version"], "稳定渠道不得指向预发布版本"
+    top = marker["version"]
+    expected = channels["preview"]["version"] if "-" in top else channels["stable"]["version"]
+    assert expected == top, "顶层最新发布与同性质渠道不一致"
+
+
 def test_cnb_repo_constant_matches_published_marker():
     """CNB 站点路径是常量，发布标记里的地址必须仍在同一路径下——镜像搬家时先红。"""
     marker = json.loads(LATEST_RELEASE.read_text(encoding="utf-8"))
