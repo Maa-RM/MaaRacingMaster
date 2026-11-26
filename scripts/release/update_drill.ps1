@@ -39,6 +39,10 @@ function New-Install([string]$name) {
     [IO.Compression.ZipFile]::ExtractToDirectory($PackageZip, $dir)
     $appDir = Join-Path $dir 'program\app'
     if (-not (Test-Path $appDir)) { throw "发布包缺 program\app: $dir" }
+    # 整个 app 目录换成假壳自己的文件：真实 app 目录里有它自带的 hostfxr/运行时组件，
+    # 覆盖式混装会让假壳的 apphost 解析到不匹配的运行时（0x80008096）直接退出。
+    Remove-Item $appDir -Recurse -Force
+    New-Item -ItemType Directory -Force -Path $appDir | Out-Null
     Copy-Item (Join-Path $StubDir '*') $appDir -Recurse -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $dir '.update') | Out-Null
     $script:drillInstalls += $dir
