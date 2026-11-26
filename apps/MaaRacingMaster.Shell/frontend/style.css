@@ -269,7 +269,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .card-head h3 { font-size: 14px; font-weight: 600; color: var(--maarm-foreground); }
 .card-body { padding: 16px; }
-.card-body--fill { flex: 1; display: flex; flex-direction: column; justify-content: space-around; min-height: 0; }
 .card-body--col { display: flex; flex-direction: column; gap: 16px; }
 /* 弹性卡片最小安全高度：窗口不足时保持可读高度，剩余通过页面滚动查看 */
 /* flex: 0 1 auto：高度不随窗口增长而膨胀（留白固定），过矮时仍可被压缩或触发页面滚动 */
@@ -464,8 +463,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .task-panel-label { font-size: 11px; font-weight: 600; color: var(--maarm-foreground-muted); margin: 14px 0 12px; }
 .task-panel-label:first-child { margin-top: 0; }
 .task-options { display: flex; flex-direction: column; }
-.task-panel .module-options-row + .module-options-row { margin-top: 14px; }
-.task-panel .module-options-row + .option-row { margin-top: 16px; }
 .task-panel .option-row { padding: 0; }
 .bp-hint-breakpoint { font-size: 11px; color: var(--maarm-foreground-muted); margin-bottom: 6px; }
 /* 面板里的阶段列表：不带外层 .breakpoint-list 的撑满/滚动语义（列表本身跟随内容） */
@@ -643,20 +640,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 
 
 
-/* 模块选项（原主控卡内、现任务卡展开面板；行距/字段样式共用） */
-.module-options-row--stack { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: end; }
-.module-options-row + .module-options-row { margin-top: 14px; }
-.maarm-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.maarm-field-label {
-  font-size: 12px; font-weight: 500;
-  color: var(--maarm-foreground);
-  display: flex; align-items: baseline; gap: 4px;
-  line-height: 1.4;
-}
-.maarm-field-label .field-hint {
-  font-size: 11px; font-weight: 400;
-  color: var(--maarm-foreground-muted);
-}
+/* 模块选项（任务卡展开面板；行距/字段样式共用） */
 .maarm-field-control {
   position: relative;
   display: flex; align-items: stretch;
@@ -835,7 +819,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .cfg-row-control .maarm-field-control-row--multi { align-items: flex-end; }
 
 /* 断点列表 */
-.breakpoint-hint { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--maarm-foreground-muted); }
 .breakpoint-list { flex: 1; overflow-y: auto; min-height: 0; }
 .maarm-breakpoint-item {
   display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 16px;
@@ -1026,7 +1009,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .row-part--positive { color: var(--maarm-success-strong); }
 .row-part--warn { color: var(--maarm-warning-strong); }
 .board-sentinel { height: 1px; }
-.board-empty { font-size: 12px; color: var(--maarm-foreground-muted); text-align: center; padding: 8px 0; }
 /* 行：时间 / 正文 / 状态 / 结果；状态与结果各占固定列，换行时仍对齐 */
 .dash-row {
   display: grid;
@@ -1150,15 +1132,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .dash-stat-value.pos { color: var(--maarm-success-strong); }
 .dash-stat-value.neg { color: var(--maarm-danger); }
 .dash-stat-sub { display: block; font-size: 10px; line-height: 1.3; color: var(--maarm-foreground-muted); }
-.stat-eggs {
-  display: flex; gap: 7px; margin-top: 3px;
-  font-size: 11px; font-weight: 600; line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.stat-eggs .egg-red { color: var(--maarm-danger); }
-.stat-eggs .egg-yellow { color: var(--maarm-warning-strong); }
-.stat-eggs .egg-blue { color: var(--maarm-info); }
-.stat-eggs .is-zero { opacity: .32; }
 .egg-dots { display: flex; gap: 3px; margin-top: 4px; }
 .egg-dots i { width: 7px; height: 7px; border-radius: 50%; opacity: .8; }
 .egg-dots i:nth-child(1) { background: var(--maarm-danger); }
@@ -1259,29 +1232,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .capture-note { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 12px; }
 
-/* 性能监控 */
-.perf-item { margin-bottom: 16px; }
-.perf-item:last-child { margin-bottom: 0; }
-.perf-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.perf-label { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
-.perf-right { display: flex; align-items: center; gap: 8px; }
-.perf-value { font-size: 13px; font-weight: 600; color: var(--maarm-foreground); }
-.perf-badge { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }
-.perf-badge-dot { width: 6px; height: 6px; border-radius: 50%; }
-.perf-badge--ok { color: var(--maarm-success); }
-.perf-badge--ok .perf-badge-dot { background: var(--maarm-success); }
-.perf-badge--idle { color: var(--maarm-foreground-dim); }
-.perf-badge--idle .perf-badge-dot { background: var(--maarm-foreground-dim); }
-.perf-badge--warn { color: var(--maarm-warning); }
-.perf-badge--warn .perf-badge-dot { background: var(--maarm-warning); }
-.perf-badge--error { color: var(--maarm-danger); }
-.perf-badge--error .perf-badge-dot { background: var(--maarm-danger); }
-/* 性能卡迷你走势图：纯内联 SVG polyline，无 CDN（WebView2 离线可用） */
-.perf-spark { display: block; width: 100%; height: 22px; margin: 2px 0 4px; }
-.perf-spark polyline { fill: none; stroke: var(--maarm-foreground-muted); stroke-width: 1.4; vector-effect: non-scaling-stroke; }
-.maarm-perf-bar { height: 4px; border-radius: 2px; background-color: var(--maarm-border-light); overflow: hidden; }
-.maarm-perf-bar-fill { height: 100%; border-radius: 2px; transition: width var(--maarm-duration-slow) ease; }
-
 /* ---------- 性能卡（通用：资源面磁贴 + 模块行） ----------
    磁贴两列并排：整机与本程序对比着看才有意义（谁在吃）。
    模块行单行紧凑，值右对齐成一条线；只有偏高/异常上色，正常保持深色。 */
@@ -1371,10 +1321,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   color: var(--maarm-foreground-secondary); }
 .perf-tmore { font-size: 10.5px; color: var(--maarm-foreground-dim);
   padding: 5px 0 2px; }
-.maarm-perf-bar-fill--success { background-color: var(--maarm-success); }
-.maarm-perf-bar-fill--warning { background-color: var(--maarm-warning); }
-.maarm-perf-bar-fill--danger { background-color: var(--maarm-danger); }
-.perf-note { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 6px; }
 
 /* 实时预览 */
 .preview-wrap { flex: 1; padding: 12px; display: flex; flex-direction: column; min-height: 0; }.preview-canvas {
@@ -1388,7 +1334,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   color: rgba(255, 255, 255, 0.55); font-size: 12px;
 }
 .preview-empty svg { width: 32px; height: 32px; opacity: 0.6; }
-.preview-control { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-shrink: 0; }
 
 /* 悬浮窗接管期间：卡片内容让位给虚线占位框（三态互斥中的 floating 态） */
 .preview-away {
@@ -1400,8 +1345,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 }
 .preview-card--floating .preview-away { display: flex; }
 .preview-card--floating .card-head,
-.preview-card--floating .preview-wrap,
-.preview-card--floating .preview-meta { display: none; }
+.preview-card--floating .preview-wrap { display: none; }
 
 /* 实时预览：播放/暂停图标（默认播放态，由 JS 按 peep 状态切换） */
 #page-data .preview-card .icon-play { display: block; }
@@ -1427,14 +1371,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 #page-data.preview-fs-active .page-inner > .col-left { display: none; }
 #page-data.preview-fs-active .page-inner > .col-right { flex: 1 1 auto; align-self: stretch; }
 #page-data.preview-fs-active .page-inner > .col-right > .card:not(.preview-card--fullscreen) { display: none; }
-.preview-legend { display: flex; align-items: center; gap: 12px; }
-.legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--maarm-foreground-muted); }
-.legend-box { width: 12px; height: 12px; border-radius: 2px; }
-.legend-box--coin { border: 1px solid var(--maarm-warning); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-warning) 40%, transparent); }
-.legend-box--car { border: 1px solid var(--maarm-danger); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-danger) 40%, transparent); }
-.legend-box--cursor { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--maarm-success); box-shadow: 0 0 4px color-mix(in srgb, var(--maarm-success) 40%, transparent); }
-.preview-link { font-size: 10px; color: var(--maarm-primary); font-weight: 500; cursor: pointer; background: none; border: none; font-family: var(--maarm-font-sans); }
-.preview-link:hover { text-decoration: underline; }
 
 /* 快捷工具 */
 .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -1448,7 +1384,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .maarm-tool-btn:active { background-color: var(--maarm-surface-active); }
 .maarm-tool-btn-icon { width: 22px; height: 22px; color: var(--maarm-foreground-secondary); }
 .maarm-tool-btn-label { font-size: 11px; color: var(--maarm-foreground-secondary); }
-.maarm-tool-btn--block { width: 100%; }
 
 /* ============ 调试数据占用面板（设置页「调试文件夹」） ============ */
 /* 各目录配色：定义在共同祖先上，饼图扇区与图例圆点同源；JS 只拼 var 名不写死颜色 */
@@ -1783,20 +1718,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
 .about-announce-link:hover { text-decoration: underline; }
 .about-announce-empty { font-size: 12px; color: var(--maarm-foreground-dim); padding: 4px 0; }
 
-.tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.tech-item {
-  display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--maarm-radius-sm);
-  transition: background-color var(--maarm-duration-fast) ease;
-}
-.tech-item:hover { background: var(--maarm-surface-hover); }
-.tech-icon {
-  width: 32px; height: 32px; border-radius: var(--maarm-radius-sm); flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center;
-}
-.tech-icon svg { width: 16px; height: 16px; }
-.tech-name { font-size: 13px; font-weight: 500; color: var(--maarm-foreground); }
-.tech-sub { font-size: 11px; color: var(--maarm-foreground-muted); margin-top: 2px; }
-
 .about-links { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 0 8px; }
 .about-links .maarm-btn { width: auto; height: 36px; padding: 0 16px; }
 .about-links .maarm-btn svg { width: 16px; height: 16px; }
@@ -2127,18 +2048,6 @@ footer .spacer { flex: 1; }
 .maarm-segmented .seg-btn--selected:hover {
   background: var(--maarm-primary-hover);
   color: var(--maarm-primary-foreground);
-}
-/* 场次色点：绿 / 蓝 / 金 */
-.seg-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  display: inline-block;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
-}
-.seg-dot--intern { background: var(--maarm-success); }      /* 实习场：翠绿 */
-.seg-dot--expert { background: var(--maarm-info); }      /* 专家场：深蓝 */
-.seg-dot--master { background: linear-gradient(135deg,var(--maarm-warning),#FCD34D); }  /* 大师场：金渐变 */
-.seg-btn--selected .seg-dot {
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35), 0 0 0 1px rgba(0,0,0,0.08);
 }
 /* 选项徽章：缺模型等外部状态标记（不占选项文字宽度） */
 .seg-badge {
