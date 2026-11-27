@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import time
+
 from maaracing_master import SOURCE_MODE
 from maaracing_master.core.config_ui_contract import (
     CONFIG_UI_CONTRACT_VERSION,
@@ -1055,7 +1057,7 @@ def test_ui_nav_segments_save_images_and_drive_chain_does_not() -> None:
     src = Path(m.__file__).read_text(encoding="utf-8")
     for name in ("def _run_flow", "def _run_step", "def _pick_cards",
                  "def _wait_card_anchor", "def _sweep_transient_popup",
-                 "def _dismiss_settlement_overlays",
+                 "def _resume_from_hall",
                  "def _run_early_exit", "def _dismiss_exit_pages"):
         body = _function_body(src, name)
         calls = re.findall(r"self\._graph\.run\([^)]*\)", body)
@@ -1065,3 +1067,163 @@ def test_ui_nav_segments_save_images_and_drive_chain_does_not() -> None:
 
     drive = _function_body(src, "def _drive(")
     assert "save=" not in drive, "驾驶控制链不应声明存盘策略（与 drive 取证双写）"
+
+
+# ---------- 失联层：流程外页面（大厅）作废本轮并从入口重开 ----------
+
+class _HallSeenGraph:
+    """只读探测命中大厅；其余识别一律 miss（流程卡住、画面已回大厅）。"""
+
+    def __init__(self) -> None:
+        self.probes = 0
+
+    def run(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def probe(self, _node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        self.probes += 1
+        return ProbeOutcome.HIT
+
+
+def test_hall_probe_skipped_in_entry_chain(monkeypatch) -> None:
+    """入口链第 0 步本来就在大厅：不探测，避免重开自成死循环。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    graph = _HallSeenGraph()
+    mod = _step_module(graph)
+
+    assert mod._poll_hall() is False
+    assert graph.probes == 0
+
+    mod._stage_index = m._SETTLE_STAGE_INDEX
+    assert mod._poll_hall() is True
+    assert mod._hall_reset is True
+    assert graph.probes == 1
+
+
+def test_step_stops_immediately_when_hall_detected(monkeypatch) -> None:
+    """重发窗口里发现已回大厅：立刻收步，不再耗重发预算。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    graph = _HallSeenGraph()
+    mod = _step_module(graph)
+    mod._stage_index = m._SETTLE_STAGE_INDEX
+
+    assert mod._run_step("infinite_drive.点下一关", "结算·下一关") is False
+    assert mod._hall_reset is True
+    assert graph.probes >= 1
+
+
+def test_card_wait_aborts_on_hall(monkeypatch) -> None:
+    """选卡等待期发现已回大厅：立即收步（不等 15s 上限）。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    mod = _step_module(_HallSeenGraph())
+    mod._stage_index = m.LOOP_START_INDEX
+
+    assert mod._wait_card_anchor(want_present=True) is False
+    assert mod._hall_reset is True
+
+
+def test_drive_wait_aborts_when_hall_detected(monkeypatch) -> None:
+    """驾驶等待期发现已回大厅：立刻收步，不空等到阶段时限。"""
+    from maaracing_master.core.nav_graph import ProbeOutcome
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.01)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "_DRIVE_DURATION", {"p1": 5.0, "p2": 5.0})
+    monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 5.0)
+    graph = _SweepTrackingGraph()
+    graph.probe = lambda _node, **_kw: ProbeOutcome.HIT
+    mod = _step_module(graph)
+    mod._stage_index = 9
+    mod.set_module_config({"drive_mode": "depth", "record_mode": True})
+
+    started = time.monotonic()
+    assert mod._drive("p2") is False
+    assert mod._hall_reset is True
+    assert time.monotonic() - started < 4.0   # 未空等到 10s 阶段时限
+
+
+def test_flow_restarts_from_entry_when_hall_detected(monkeypatch) -> None:
+    """失联（回大厅）→ 作废本轮、从入口链重开；作废轮计入连刷轮数。"""
+    mod = _module()
+    mod._running = True
+    mod._graph = _AllOkGraph()
+    mod._round_total = 2
+    calls: list[str] = []
+    state = {"aborted": False}
+
+    def _step(node, stage):
+        calls.append(stage)
+        if stage == "结算·下一关" and not state["aborted"]:
+            state["aborted"] = True
+            mod._hall_reset = True
+            return False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", _step)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+
+    assert mod._run_flow(0) is True
+    assert calls.count("入口·比赛") == 2      # 第二轮从入口链重开
+    assert mod._round_no == 2                 # 作废轮计入连刷
+    assert mod._hall_restarts == 0            # 第二轮正常走完清零
+
+
+def test_flow_stops_when_hall_restarts_exhausted(monkeypatch) -> None:
+    """连续重开达上限即按原样收：不重开、本轮中止、运行判失败。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _module()
+    mod._running = True
+    mod._graph = _AllOkGraph()
+    mod._hall_restarts = m.HALL_RESTART_MAX
+
+    def _step(node, stage):
+        if stage == "结算·下一关":
+            mod._hall_reset = True
+            return False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", _step)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+
+    assert mod._run_flow(0) is False
+    assert mod._round_no == 1
+
+
+def test_drive_wait_probes_hall_but_keeps_waiting_on_miss(monkeypatch) -> None:
+    """大厅探测 miss 不改变驾驶等待：照常扫弹窗、到点收步（回归锁）。"""
+    from maaracing_master.core.nav_graph import ProbeOutcome
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.02)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.05)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "_DRIVE_DURATION", {"p1": 0.1, "p2": 0.1})
+    monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 0.1)
+    graph = _SweepTrackingGraph()
+    probes: list[str] = []
+    graph.probe = lambda node, **_kw: probes.append(node) or ProbeOutcome.MISS
+    mod = _step_module(graph)
+    mod._stage_index = 9
+    mod.set_module_config({"drive_mode": "depth", "record_mode": True})
+
+    assert mod._drive("p2") is False
+    assert graph.sweeps >= 1
+    assert probes and probes[0] == m._HALL_ANCHOR
+    assert mod._hall_reset is False

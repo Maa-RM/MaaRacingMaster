@@ -17,6 +17,11 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 跳过选卡2与阶段2直达结算步。退出序列中途失败自动回赶（取消/继续）续驾，触发自然
 重试；读数不可用只停用触发，不拖垮驾驶循环。
 
+**失联层**（流程外页面）：所有等页面的循环（步级重发、选卡等待、驾驶等待、结算读数
+前清场）低频只读探测大厅锚点，命中即判本轮已被打断——作废本轮、清迟到弹窗后从入口链
+重开，连续重开上限 3 次。探测只报事实、不点不导；重开由正常入口链完成。入口链第 0 步
+不探测（那一步本来就在大厅）。
+
 **连刷轮数**（配置项，默认 0 = 不限）：本次运行连跑的循环数，胜负都算一轮，
 刷满即正常收尾；预计用时按历史程序局结算记录的轮均间隔估出（无历史不下发），
 随每次结算落库刷新。
@@ -43,7 +48,7 @@ from pathlib import Path
 from maaracing_master import SOURCE_MODE
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
-from maaracing_master.core.nav_graph import NavGraph
+from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome
 from maaracing_master.core.ocr import RapidOcrEngine
 from maaracing_master.core.advance import normalize_text
 from maaracing_master.core.paths import debug_dir
@@ -123,6 +128,15 @@ _EVENT_DISMISS = "infinite_drive.关闭事件介绍"
 # 黑名单挡住购买类文案。
 _ADVANCE_DISMISS = "infinite_drive.驱赶偶发弹窗"
 ADVANCE_SWEEP_INTERVAL_S = 2.5
+# 失联层：活动流程以外的页面（回大厅 = 本轮已被打断，例如中途结算请求失败）。
+# 探测直接复用「点比赛」节点的识别（大厅右下角比赛按钮），只读 probe、不点不导；
+# 重开走正常入口链，识别到才点——兜底只报事实，不当导航器。
+_HALL_ANCHOR = "infinite_drive.点比赛"
+HALL_PROBE_INTERVAL_S = 1.5
+# 连续重开上限：反复掉回大厅（服务端持续异常）时不空转，达上限按原样收。
+HALL_RESTART_MAX = 3
+# 重开前的落定时间：服务端结算与奖励弹窗可能迟到，先停稳再扫一遍再进入口链。
+HALL_RESTART_SETTLE_S = 2.0
 _DRIVE_END = {"p1": "infinite_drive.__confirm.驾驶1结束",
               "p2": "infinite_drive.__confirm.驾驶2结束"}
 _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
@@ -385,6 +399,12 @@ class InfiniteDriveModule(ActivityModule):
         self._record_thread: threading.Thread | None = None
         # 偶发弹窗 OCR 兜底的限频时刻（单调钟；0 = 立即可扫）
         self._next_sweep_at = 0.0
+        # 失联层状态：大厅探测限频时刻 / 本轮作废标记 / 连续重开计数 / 当前步序号
+        # （序号供探测门用：入口链第 0 步本来就在大厅，探了没有新信息）
+        self._next_hall_at = 0.0
+        self._hall_reset = False
+        self._hall_restarts = 0
+        self._stage_index = 0
         # 提前结算触发框（区域真源 pve_score，右缘收在头像之前防 OCR 并读虚增）；
         # 缺键是插件资产残缺，启动即报错不静默降级
         regions = load_hud_regions()
@@ -687,11 +707,13 @@ class InfiniteDriveModule(ActivityModule):
             self._round_stamp = time.strftime("%Y%m%d_%H%M%S")
             # 组边界即轮次边界：开新组自动收上一阶段组，轮内日志归本轮卡片。
             self._open_grp(f"[极速狂飙] 第 {round_no} 轮", "session")
+            restarted = False
             while index < len(FLOW):
                 if not self._running:
                     return True
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
+                self._stage_index = index
                 if stage in OPTIONAL_STAGES:
                     if not self._graph.run(_CAR_SELECT_ANCHOR, _CAR_SELECT_ANCHOR,
                                            save=NAV_SAVE):
@@ -706,6 +728,9 @@ class InfiniteDriveModule(ActivityModule):
                     else:
                         ok = self._drive(phase)
                     if not ok:
+                        if self._resume_from_hall(stage):
+                            restarted = True
+                            break
                         self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止", "WARNING")
                         return self._stop_received()
                     if phase == "p1" and self._p1_settled_early:
@@ -716,9 +741,18 @@ class InfiniteDriveModule(ActivityModule):
                         continue
                 else:
                     if not self._run_step(node, stage):
+                        if self._resume_from_hall(stage):
+                            restarted = True
+                            break
                         self._tlog(f"[无限驾驶] 步骤「{stage}」未落地，本轮中止", "WARNING")
                         return self._stop_received()
+                self._hall_reset = False
                 index += 1
+            if restarted:
+                index = 0
+                continue
+            # 一轮正常走完：连续重开计数清零（失联层按连续次数设上限）
+            self._hall_restarts = 0
             index = LOOP_START_INDEX
         if self._running and self._round_total > 0:
             self._tlog(f"[极速狂飙] 已刷满设定的 {self._round_total} 轮，本次运行完成",
@@ -741,6 +775,8 @@ class InfiniteDriveModule(ActivityModule):
         """
         assert self._graph is not None
         assert self.ctx is not None
+        if self._hall_reset:
+            return False
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
             return self._graph.run(action_node, action_node, save=NAV_SAVE)
@@ -778,6 +814,8 @@ class InfiniteDriveModule(ActivityModule):
                 # docstring）；重发前做一次偶发弹窗兜底（限频）——奖励链/通行证
                 # 升级这类弹窗盖住按钮时，重发的识别永远落空，先赶再发。
                 self._sweep_transient_popup()
+                if self._hall_reset:
+                    return False
                 send_click = True
                 continue
             if cmd is Command.WAIT:
@@ -843,6 +881,8 @@ class InfiniteDriveModule(ActivityModule):
         deadline = time.monotonic() + wait_s
         last_seen = time.monotonic()
         while True:
+            if self._poll_hall():
+                return False
             if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR,
                                                 save=NAV_SAVE):
                 self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS, save=NAV_SAVE)
@@ -980,33 +1020,82 @@ class InfiniteDriveModule(ActivityModule):
     def _dismiss_settlement_overlays(self) -> None:
         """结算读数前清覆盖层：奖励链「点击屏幕继续」这类弹窗会盖住分数区。
 
-        文字兜底一次约 0.5s（已按下半屏裁剪），只在读数前做、最多两轮：命中一次
-        才重扫（弹窗可能不止一层），扫完停 0.5s 让页面落定。限频游标一并推后，
-        避免紧接着的等待循环立刻再扫一遍。
+        走同一个兜底（命中一次才重扫、最多两轮，弹窗可能不止一层），跳过限频：
+        读数前只此一次，扫完停 0.5s 让页面落定。顺带跑失联探测——读数前画面若
+        已是大厅，标记本轮作废，读数循环照常到期，流程在下一步收口重开。
         """
         assert self._graph is not None
         assert self.ctx is not None
         for _ in range(2):
-            if not self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE):
+            if not self._sweep_transient_popup(force=True):
                 break
             if not self.ctx.lifecycle.sleep(0.5):
                 break
-        self._next_sweep_at = time.monotonic() + ADVANCE_SWEEP_INTERVAL_S
 
-    def _sweep_transient_popup(self) -> None:
-        """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它。
+    def _sweep_transient_popup(self, *, force: bool = False) -> bool:
+        """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它；返回是否点了。
 
         奖励链「点击屏幕继续」、通行证升级「继续」这类偶发弹窗没有也不该逐个裁
         模板——通用解是 core advance 文案识别（启动链同款，词表真源在 core）。
         只在等待循环里按 ``ADVANCE_SWEEP_INTERVAL_S`` 限频调用：被挡住才扫，
         OCR 成本有界；黑名单挡住购买类文案，不会误点扣费按钮。
+
+        扫之前先探大厅（失联层）：流程已不在活动内时点文案没有意义，收步交
+        _run_flow 处置。``force`` 只给读数前/重开前的清场用（跳过限频）。
         """
         assert self._graph is not None
         now = time.monotonic()
-        if now < self._next_sweep_at:
-            return
+        if not force and now < self._next_sweep_at:
+            return False
         self._next_sweep_at = now + ADVANCE_SWEEP_INTERVAL_S
+        if self._poll_hall():
+            return False
+        return bool(self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE))
+
+    def _poll_hall(self) -> bool:
+        """失联层判据：流程外页面（大厅）在位即置「本轮作废」。
+
+        只读 probe（不点、不导航、不开调试段）；命中后调用方的等待循环立刻收步，
+        不再耗重发预算，重开统一由 _run_flow 的收口交给入口链。入口链第 0 步
+        不探测——那一步本来就在大厅，探了没有新信息。
+        """
+        if self._hall_reset:
+            return True
+        if self._stage_index <= 0:
+            return False
+        assert self._graph is not None
+        now = time.monotonic()
+        if now < self._next_hall_at:
+            return False
+        self._next_hall_at = now + HALL_PROBE_INTERVAL_S
+        if self._graph.probe(_HALL_ANCHOR) is not ProbeOutcome.HIT:
+            return False
+        self._hall_reset = True
+        return True
+
+    def _resume_from_hall(self, stage: str) -> bool:
+        """失联层出口：确认回到大厅就作废本轮、从入口链重开；否则 False 交回中止。
+
+        连续重开按次数设上限（一轮正常走完清零）：服务端持续异常时按原样收，
+        不空转。重开前先让画面停稳再扫一遍弹窗——迟到的结算/奖励弹窗会挡住
+        入口点击；扫完才清标记，重开起点就是大厅，这一步探测没有新信息。
+        """
+        if not self._hall_reset:
+            return False
+        if self._hall_restarts >= HALL_RESTART_MAX:
+            self._tlog(f"[无限驾驶] 「{stage}」失联（已回大厅），连续重开已达 "
+                       f"{HALL_RESTART_MAX} 次，停止运行", "ERROR")
+            return False
+        self._hall_restarts += 1
+        self._tlog(f"[无限驾驶] 「{stage}」失联（已回大厅），作废本轮并从入口重开"
+                   f"（第 {self._hall_restarts}/{HALL_RESTART_MAX} 次）", "WARNING")
+        assert self._graph is not None
+        if self.ctx is not None:
+            self.ctx.lifecycle.sleep(HALL_RESTART_SETTLE_S)
         self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE)
+        self._next_sweep_at = time.monotonic() + ADVANCE_SWEEP_INTERVAL_S
+        self._hall_reset = False
+        return True
 
     def _score_above_target(self, frame) -> bool:
         """OCR 驾驶页比分，判「已超本关目标分」（提前结算触发判据）。
@@ -1163,6 +1252,8 @@ class InfiniteDriveModule(ActivityModule):
                         if self._graph.run(end_node, end_node):
                             return True
                         self._sweep_transient_popup()
+                        if self._hall_reset:
+                            return False
                     if not self.ctx.lifecycle.sleep(STEP_POLL_S):
                         return False
                 return False
