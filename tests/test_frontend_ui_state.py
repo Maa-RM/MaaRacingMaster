@@ -49,6 +49,21 @@ def test_install_failure_writes_to_text_not_the_row():
     assert "nodes.install }" not in call, "安装失败仍把整行当状态元素"
 
 
+def test_install_entry_hides_with_mode_and_offers_removal():
+    """资产入口只在该档位可见；装好后按钮变成删除，删除走白名单 RPC 并先确认。"""
+    panel = _read(FRONTEND / "js" / "config-panel.js")
+    assert "evalCond(resp.visible_if, entry.cfg)" in panel, (
+        "安装入口没有按插件声明的条件显隐（全程直行档仍会显示）")
+    assert "removable ? '删除' + label : '一键安装' + label" in panel, (
+        "已装好时按钮仍是安装入口")
+    assert "install_asset_remove" in panel, "删除动作没有接后端白名单 RPC"
+    assert "删除后需要重新安装" in panel, "删除前没有确认提示"
+    # 入口排在状态行之前：空状态行不再把入口推到看不见的空白之后
+    assert panel.index("nodes.install = install") < panel.index("nodes.status = status")
+    css = _read(FRONTEND / "style.css")
+    assert ".module-options-status:empty" in css, "空状态行仍占位"
+
+
 def test_achievement_sheet_takes_and_returns_focus():
     """成就管理是整页覆盖层：打开要把焦点请进去（否则 Tab 先穿过背后的设置页），
     关闭要把焦点还给打开它的那个按钮（否则落在 body）。Tab/Shift+Tab 必须在层内回环，

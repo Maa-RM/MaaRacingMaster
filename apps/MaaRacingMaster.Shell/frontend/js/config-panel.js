@@ -330,41 +330,87 @@
       stopInstallPolling(entry);
       return;
     }
+    // 入口只在插件声明的条件满足时出现（例如没选需要该资产的档位就不显示）。
+    // 条件由后端原样下发、按配置当前值求值；隐藏时一并停掉轮询，切回后由保存刷新重开。
+    if (!evalCond(resp.visible_if, entry.cfg)) {
+      entry.installStatus = resp;
+      nodes.install.style.display = 'none';
+      stopInstallPolling(entry);
+      return;
+    }
     if (typeof resp.revision === 'number' &&
         typeof entry.installRev === 'number' && resp.revision < entry.installRev) return;
     if (typeof resp.revision === 'number') entry.installRev = resp.revision;
     entry.installStatus = resp;
     var label = resp.label || '资产';
     var phase = resp.phase || 'idle';
-    // 空闲且资产已就绪：整行隐藏，缺失提示消失，不留一个永远可点的安装入口。
-    // 缺不缺模型只认后端 needs_install（可刷新查询）。必须放在 revision 守卫之后——
-    // 旧响应的 needs_install 不能覆盖在途安装进度。
-    if (phase === 'idle' && !resp.needs_install) {
+    var active = !!INSTALL_ACTIVE[phase];
+    // 已就绪且没有可删除的受管目录（包内自带或用户手动解压）：没有可管理的东西，整行隐藏。
+    // 缺不缺资产只认后端 needs_install / can_remove（可刷新查询），前端不猜文件状态。
+    if (!resp.needs_install && !resp.can_remove && !active && phase !== 'failed') {
       nodes.install.style.display = 'none';
       stopInstallPolling(entry);
       return;
     }
     nodes.install.style.display = '';
     var text;
-    if (phase === 'idle') {
-      text = resp.missing_hint || (label + '未安装');
-    } else {
+    if (active) {
       text = INSTALL_PHASE_TEXT[phase] || phase;
       if (phase === 'downloading' && resp.total) {
         text += ' ' + Math.round(resp.downloaded * 100 / resp.total) + '%';
       }
       if (resp.error) text += ' · ' + resp.error;
+    } else if (phase === 'failed') {
+      text = INSTALL_PHASE_TEXT.failed + (resp.error ? ' · ' + resp.error : '');
+    } else if (!resp.needs_install) {
+      text = label + '已安装';
+    } else {
+      text = resp.missing_hint || (label + '未安装');
     }
+    // 已装好时按钮改成删除：安装入口不该在完成之后仍然可点地重复安装。
+    var removable = !active && !resp.needs_install && !!resp.can_remove;
     nodes.installText.textContent = text;
-    nodes.installBtn.textContent = INSTALL_ACTIVE[phase] ? '取消' : ('一键安装' + label);
+    nodes.installBtn.textContent = active ? '取消'
+      : (removable ? '删除' + label : '一键安装' + label);
     nodes.installBtn.disabled = !!(locked || entry.locked);
-    if (INSTALL_ACTIVE[phase]) ensureInstallPolling(entry);
+    if (active) ensureInstallPolling(entry);
     else stopInstallPolling(entry);
   }
 
-  async function runInstallAction(entry) {
-    var active = entry.installStatus && INSTALL_ACTIVE[entry.installStatus.phase];
+  function confirmRemove(entry, label) {
+    if (typeof MaaRM.openModal !== 'function') return;
+    MaaRM.openModal({
+      title: '删除' + label,
+      bodyHtml: '<p class="maarm-modal-text maarm-modal-text--flush">'
+        + '删除后需要重新安装才能使用依赖它的功能，确定删除吗？</p>',
+      buttons: [
+        { text: '取消', onClick: function (m) { m.close(); } },
+        { text: '删除', primary: true, onClick: function (m) { m.close(); runRemove(entry); } },
+      ],
+    });
+  }
+
+  async function runRemove(entry) {
     var label = (entry.installStatus && entry.installStatus.label) || '资产';
+    try {
+      // 方法名保持字面量：白名单测试按字面量扫调用点（见 tests/test_rpc_allowlist.py）
+      await MaaRM.maarm.call('install_asset_remove', { module_id: entry.mid });
+      await refreshInstall(entry);
+    } catch (e) {
+      if (!ST.isAlive(entry, generation)) return;
+      MaaRM.reportError('inline', label + '删除失败: ' + (e.message || e),
+        { el: entry.nodes && entry.nodes.installText });
+    }
+  }
+
+  async function runInstallAction(entry) {
+    var status = entry.installStatus || {};
+    var active = !!INSTALL_ACTIVE[status.phase];
+    var label = status.label || '资产';
+    if (!active && !status.needs_install && status.can_remove) {
+      confirmRemove(entry, label);
+      return;
+    }
     try {
       // 方法名保持字面量：白名单测试按字面量扫调用点（见 tests/test_rpc_allowlist.py）
       if (active) {
@@ -580,10 +626,8 @@
         nodes.groups.push({ el: groupEl, keys: keys });
       });
     }
-    var status = el('p', 'module-options-status');
-    root.appendChild(status);
-    nodes.status = status;
-
+    // 资产入口紧跟字段组，排在空状态行之前：没有状态文字时不留一段看不见的空白，
+    // 安装/删除入口直接贴着最后一个字段（如驾驶模式）出现。
     var install = el('div', 'field-notice config-install');
     install.style.display = 'none';
     var installText = el('span', 'field-notice-text', '');
@@ -596,6 +640,10 @@
     nodes.install = install;
     nodes.installText = installText;
     nodes.installBtn = installBtn;
+
+    var status = el('p', 'module-options-status');
+    root.appendChild(status);
+    nodes.status = status;
 
     host.appendChild(root);
     entry.sig = signature(cfg);
@@ -691,6 +739,8 @@
       entry.cfg = resp;
       applyNote(entry, resp);
       applyAll(entry, resp);
+      // 档位切换会改变资产入口的显隐与可用性，保存后立即重查一次。
+      refreshInstall(entry);
       if (MaaRM.noteConfigSaved) MaaRM.noteConfigSaved(mid, resp);
       // 成功不刷回执：状态行回落到模块自己的运行实况（界面只报阶段进度与影响结果的异常），
       // 失败仍走行内红字停留。这里必须解锁，否则状态行会停在「保存中」。
@@ -701,6 +751,7 @@
       entry.cfg = snapshot;
       applyNote(entry, snapshot);
       applyAll(entry, snapshot);
+      refreshInstall(entry);
       MaaRM.reportError('inline', '保存失败: ' + (e.message || e),
         { el: entry.nodes && entry.nodes.status });
     } finally {
