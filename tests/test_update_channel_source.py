@@ -178,6 +178,15 @@ def test_publisher_requires_both_named_addresses():
         assert banned not in ci, f"发行工作流残留受管发布链痕迹：{banned}"
 
 
+def test_delta_baselines_are_scoped_to_target_channel():
+    """增量基线只取同渠道，换渠道一律完整包；同渠道基线最多 3 个。"""
+    ci = RELEASE_YML.read_text(encoding="utf-8")
+    assert "$_.Contains('-') -eq $isPreview" in ci, "发布端未按目标渠道筛基线"
+    assert "if ($prevZips.Count -ge 3)" in ci, "同渠道基线数量未保持为 3"
+    gen = (REPO / "scripts" / "release" / "make_update_artifacts.py").read_text(encoding="utf-8")
+    assert "def channel_of(" in gen and "与目标渠道" in gen, "增量生成器未拒绝跨渠道基线"
+
+
 def test_rpc_exposes_setting_and_auto_check_actions():
     """RPC 白名单含两个设置动作与自动检查开关；设置动作只带枚举值/布尔值，前端不传 URL。"""
     src = RPC.read_text(encoding="utf-8")

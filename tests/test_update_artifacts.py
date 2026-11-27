@@ -224,6 +224,25 @@ def test_build_keeps_only_latest_baselines(tmp_path: Path):
     assert [item["from_version"] for item in result["deltas"]] == ["1.3.0", "1.2.0", "1.1.0"]
 
 
+def test_baselines_are_limited_to_target_channel(tmp_path: Path):
+    """基线必须与目标同渠道：稳定版不吃预览基线，渠道切换因此落到完整包。"""
+    _stable_tree, stable_zip = _release(tmp_path, "1.0.9", payload=b"stable payload")
+    _preview_tree, preview_zip = _release(tmp_path, "1.0.9-dev.3", payload=b"preview payload")
+
+    tree, zip_path = _release(tmp_path, "1.1.0")
+    result = art.build(tree, zip_path, "1.1.0", "v1.1.0", tmp_path / "stable-out",
+                       [preview_zip, stable_zip], "stable", max_delta_ratio=1.0)
+    assert [item["from_version"] for item in result["deltas"]] == ["1.0.9"]
+    assert any("渠道 preview" in item and "1.0.9-dev.3" in item for item in result["skipped"])
+
+    _preview_target_tree, preview_zip_new = _release(tmp_path, "1.1.0-dev.1")
+    preview_result = art.build(_preview_target_tree, preview_zip_new, "1.1.0-dev.1", "v1.1.0-dev.1",
+                               tmp_path / "preview-out", [preview_zip, stable_zip], "preview",
+                               max_delta_ratio=1.0)
+    assert [item["from_version"] for item in preview_result["deltas"]] == ["1.0.9-dev.3"]
+    assert any("渠道 stable" in item and "1.0.9" in item for item in preview_result["skipped"])
+
+
 def _packaged(tmp_path: Path, version: str, payload: bytes, *,
               subdir: str = "program") -> tuple[Path, Path]:
     """模拟正式发行包：根放稳定入口，可替换内容放子目录。"""

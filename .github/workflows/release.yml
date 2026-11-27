@@ -263,11 +263,14 @@ jobs:
           if (-not (Test-Path $stage)) { throw "程序树不存在: $stage" }
           if (-not (Test-Path $zip)) { throw "完整包不存在: $zip" }
 
-          # 直接增量只覆盖目标之前最近的几个发布。候选基线必须自带给便携更新生成的
-          # 清单且布局为 program-v1：早于便携更新的发布没有 program/ 子目录，拿来差分
-          # 只会被跳过。先按清单筛、再下载完整包——只取最近 4 个 tag 会漏掉更早的合格基线。
+          # 直接增量只覆盖同渠道目标之前的最近几个发布：基线渠道必须与目标一致，
+          # 换渠道一律走完整包。候选基线还需自带便携更新清单且布局为 program-v1：
+          # 早于便携更新的发布没有 program/ 子目录，拿来差分只会被跳过。
+          # 先按渠道与清单筛、再下载完整包；最多取 3 个同渠道基线。
+          $isPreview = $env:VER.Contains('-')
           $tags = @(git tag --sort=-v:refname |
                     Where-Object { $_ -ne $env:TAGNAME } |
+                    Where-Object { $_.Contains('-') -eq $isPreview } |
                     Select-Object -First 10)
           $prevZips = @()
           foreach ($tagName in $tags) {

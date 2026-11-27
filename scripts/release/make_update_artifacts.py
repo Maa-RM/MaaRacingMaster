@@ -264,6 +264,11 @@ def derive_version(zip_name: str) -> str:
     return match.group(1)
 
 
+def channel_of(version: str) -> str:
+    """版本所属渠道：带预发布段为 preview，否则为 stable（与清单 channel 同口径）。"""
+    return "preview" if "-" in version.split("+", 1)[0] else "stable"
+
+
 def version_key(version: str) -> tuple:
     """SemVer 口径的排序键：正式版高于同号预发布，数字段按数值比较。"""
     value = version.strip()
@@ -331,6 +336,10 @@ def build(new_tree: Path, new_zip: Path, version: str, tag: str,
         from_version = derive_version(prev_zip.name)
         if version_key(from_version) >= version_key(version):
             skipped.append(f"{from_version}: 不低于目标版本，跳过")
+            continue
+        prev_channel = channel_of(from_version)
+        if prev_channel != channel:
+            skipped.append(f"{from_version}: 渠道 {prev_channel} 与目标渠道 {channel} 不一致，跳过")
             continue
         with tempfile.TemporaryDirectory(prefix="maarm-delta-") as tmp:
             old_root = Path(tmp) / "old"
@@ -418,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--out", required=True)
     build_parser.add_argument("--max-delta-ratio", type=float, default=MAX_DELTA_RATIO)
     build_parser.add_argument("--max-deltas", type=int, default=3,
-                              help="最多生成的直接增量个数（默认 3）")
+                              help="最多生成的直接增量个数（默认 3，基线仅限同渠道）")
     build_parser.add_argument("--content-subdir", default="",
                               help="可替换内容在包内的子目录（如 program）；清单与增量路径相对它")
     build_parser.add_argument("--notes-file", default="",
