@@ -23,6 +23,10 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 （暂固定 1）就转放弃归零，正好前进一级且在目标内才继续打——中断后被服务端推进的进度
 因此自动对齐。目标分按当前关卡查表。
 
+**结算终局**：结算页右下按钮在晋级与终局两态下图形相同，只有文案从「下一关」
+变成「结束」，模板不区分、只按落点路由——晋级落下一关准备页，挑战失败或本轮
+关卡跑满落活动页（模式页），游戏在此自动把进度归零，本轮结束回关卡挑战开下一轮。
+
 **步级成功判据**：落地锚点在位即成功；点击只是让它出现的首选手段，
 落地页已在位时免点。
 
@@ -106,7 +110,7 @@ STEP_CONFIRM: dict[str, str] = {
     "关卡挑战": "infinite_drive.__confirm.准备页",
     "选车·确定": "infinite_drive.__confirm.准备页",
     "准备·开始": "infinite_drive.__confirm.卡牌选择",
-    "结算·下一关": "infinite_drive.__confirm.准备页",
+    "结算·下一关": "infinite_drive.__confirm.结算落地",
     "准备·放弃": "infinite_drive.__confirm.放弃确认框",
     "放弃·确认": "infinite_drive.__confirm.模式页",
     "提前结算·齿轮": "infinite_drive.__confirm.设置页",
@@ -170,6 +174,9 @@ _EARLY_EXIT_CONFIRM_READS = 3
 _SETTINGS_ANCHOR = "infinite_drive.__confirm.设置页"
 _EXIT_DIALOG_ANCHOR = "infinite_drive.__confirm.退出确认框"
 _SETTLE_ANCHOR = "infinite_drive.__confirm.结算页"
+# 活动页（模式页）：晋级的结算落在下一关准备页，终局的结算点「结束」落回这里，
+# 游戏在此自动把本轮进度归零——不需要、也不该再走放弃。
+_MODE_ANCHOR = "infinite_drive.__confirm.模式页"
 _EXIT_GEAR = "infinite_drive.提前退出.点齿轮"
 _EXIT_LEAVE = "infinite_drive.提前退出.点退出"
 _EXIT_CONFIRM = "infinite_drive.提前退出.点确认退出"
@@ -184,14 +191,13 @@ _PREP_START_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
                          if stage == "准备·开始")
 _GIVEUP_STAGE_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
                            if stage == "准备·放弃")
-# 目标关数：暂固定 1（结算失败分支未做；第1关几乎不失败）。放开时升为配置项，
-# 并补失败结算（无「下一关」按钮）的分支。
+# 目标关数：暂固定 1（第1关几乎不失败；终局结算分支已就绪）。放开时升为配置项。
 _TARGET_LEVEL = 1
 # 失败收口路由：按当前页面把流程接回去（只负责回流程，进度由准备页关卡规则保证）
 _RESUME_ROUTES: tuple[tuple[str, int, str], ...] = (
     (_SETTLE_ANCHOR, _SETTLE_STAGE_INDEX, "结算页"),
     ("infinite_drive.__confirm.准备页", _PREP_START_INDEX, "准备页"),
-    ("infinite_drive.__confirm.模式页", LOOP_START_INDEX, "模式页"),
+    (_MODE_ANCHOR, LOOP_START_INDEX, "模式页"),
     (_HALL_ANCHOR, 0, "大厅"),
 )
 
@@ -791,6 +797,11 @@ class InfiniteDriveModule(ActivityModule):
                             return self._stop_received()
                         index = resumed
                         continue
+                    if stage == "结算·下一关" and self._settle_ends_run():
+                        # 终局结算（挑战失败 / 本轮关卡跑满）：结算按钮是「结束」，已回
+                        # 活动页且游戏自动归零进度——本轮到此为止，回关卡挑战开
+                        # 下一轮（break 走轮尾的常规收尾，轮数照常计入）。
+                        break
                 self._hall_reset = False
                 index += 1
             # 一轮正常走完：连续恢复计数清零（收口按连续次数设上限）
@@ -986,12 +997,14 @@ class InfiniteDriveModule(ActivityModule):
         「点击屏幕继续」这类无专模板弹窗——「本场得分」标题在弹窗上方仍能命中，
         但分数区被盖住，OCR 会把「×40」读成「发40」（2026-11-23 实测）。所以先
         用文字兜底把覆盖层赶掉，再阻塞到读数稳定才返回；调用链的下一步就是点
-        下一关，提前放行会把弹窗文本写进战绩库（见 ``_read_settlement_stable``）。
+        结算按钮，提前放行会把弹窗文本写进战绩库（见 ``_read_settlement_stable``）。
 
         **结算页不在位就不读**（清场后确认一次）：中断后游戏可能停在准备页，同一批
         ROI 会把准备页的文本读成得分/进度，往看板写垃圾记录；此时只告警并返回。
+        读数先清空：终局判定读 ``last_settlement``，缺页时不能拿上一局的胜负冒充。
         """
         assert self.ctx is not None
+        self.last_settlement = {}
         self._dismiss_settlement_overlays()
         assert self._graph is not None
         if not self._graph.run(_SETTLE_ANCHOR, _SETTLE_ANCHOR, save=NAV_SAVE):
@@ -1131,6 +1144,37 @@ class InfiniteDriveModule(ActivityModule):
         if self._graph.probe(_HALL_ANCHOR) is not ProbeOutcome.HIT:
             return False
         self._hall_reset = True
+        return True
+
+    def _settle_ends_run(self) -> bool:
+        """结算步落点是活动页 = 本局终局（挑战失败，或本轮关卡跑满后点「结束」）。
+
+        结算页右下按钮在晋级与终局两态下图形相同（圆圈 + 箭头），只有右侧文案从
+        「下一关」变成「结束」——模板分不出，也不该为此裁文字模板：点击动作完全
+        一样，区别只在落点。所以判据取落点：晋级落到下一关准备页；终局点「结束」
+        回活动页（模式页），游戏自动把本轮进度归零，不需要再走放弃。胜负只用于
+        日志：结算进度到头且达标 = 本轮跑满，其余（含读数缺失）= 挑战失败或胜负面
+        未解析。分母取结算页进度条读数，不写死关数。
+        """
+        assert self._graph is not None
+        if self._graph.probe(_MODE_ANCHOR) is not ProbeOutcome.HIT:
+            return False
+        rec = self.last_settlement.get("record")
+        rec = rec if isinstance(rec, dict) else {}
+        level, total = rec.get("level"), rec.get("level_total")
+        where = (f"第 {level}/{total} 关"
+                 if isinstance(level, int) and isinstance(total, int) else "结算")
+        if (rec.get("cleared") is True and isinstance(level, int)
+                and isinstance(total, int) and level >= total):
+            self._tlog(f"[无限驾驶] {where}挑战成功，本轮关卡已跑满；点「结束」回活动页，"
+                       "进度已归零", "INFO")
+        elif rec.get("cleared") is False:
+            self._tlog(f"[无限驾驶] {where}挑战失败；点「结束」回活动页，进度已归零",
+                       "WARNING")
+        else:
+            self._tlog(f"[无限驾驶] {where}终局（胜负面未解析）；已回活动页，进度已归零",
+                       "WARNING")
+        self._current_level = 0
         return True
 
     def _resume_from(self, stage: str) -> int | None:

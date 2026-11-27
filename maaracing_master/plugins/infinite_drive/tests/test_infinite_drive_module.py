@@ -131,10 +131,18 @@ def test_round_total_field_carries_estimate_only_with_history(monkeypatch) -> No
 
 
 class _AllOkGraph:
-    """所有锚点/动作都成功的图桩：_run_flow 的轮次推进纯看桩返回。"""
+    """所有锚点/动作都成功的图桩：_run_flow 的轮次推进纯看桩返回。
+
+    只读探测一律 MISS（页面判定类分支不误命中），需要命中的测试自行覆盖 probe。
+    """
 
     def run(self, *args, **kwargs) -> bool:
         return True
+
+    def probe(self, *_args, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return ProbeOutcome.MISS
 
 
 def _stub_flow_steps(monkeypatch, mod) -> None:
@@ -1014,9 +1022,11 @@ def test_p1_early_settle_skips_card2_and_p2_in_flow(monkeypatch) -> None:
     """阶段1提前结算：流程跳过选卡2与阶段2，直达结算步并读结算。"""
     from types import SimpleNamespace
 
+    from maaracing_master.core.nav_graph import ProbeOutcome
     from maaracing_master.plugins.infinite_drive import module as m
 
-    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False,
+                                       probe=lambda *_a, **_k: ProbeOutcome.MISS))
     visited = []
     monkeypatch.setattr(mod, "_drive", lambda phase: visited.append(phase) or True)
     monkeypatch.setattr(mod, "_pick_cards", lambda phase: visited.append(phase) or True)
@@ -1246,7 +1256,7 @@ def test_drive_wait_probes_hall_but_keeps_waiting_on_miss(monkeypatch) -> None:
 # ---------- 步级成功判据：落地页已在位免点 ----------
 
 class _AlreadyLandedGraph:
-    """落地页（准备页）在点之前就在位；点「下一关」的动作节点本应不被触发。"""
+    """落地页（下一关准备页）在点之前就在位；点「下一关」的动作节点本应不被触发。"""
 
     def __init__(self) -> None:
         self.clicks = 0
@@ -1255,7 +1265,7 @@ class _AlreadyLandedGraph:
         if entry == "infinite_drive.点下一关":
             self.clicks += 1
             return True
-        return entry == "infinite_drive.__confirm.准备页"
+        return entry == "infinite_drive.__confirm.结算落地"
 
     def probe(self, _node: str, **_kwargs):
         from maaracing_master.core.nav_graph import ProbeOutcome
@@ -1389,3 +1399,77 @@ def test_resume_cap_stops_without_probing(monkeypatch) -> None:
 
     assert mod._resume_from("结算·下一关") is None
     assert graph.runs == []
+
+
+# ---------- 结算终局：挑战失败 / 五关跑满（按钮同形不同文案，按落点路由） ----------
+
+class _ModeLandedGraph(_AllOkGraph):
+    """结算按钮落在活动页（模式页）= 本局终局。"""
+
+    def probe(self, node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return (ProbeOutcome.HIT if node == "infinite_drive.__confirm.模式页"
+                else ProbeOutcome.MISS)
+
+
+def test_settle_end_returns_to_activity_and_starts_new_round(monkeypatch) -> None:
+    """终局结算（失败/本轮关卡跑满）不走放弃：回活动页后本轮结束，下一轮从关卡挑战重开。"""
+    mod = _module()
+    mod._running = True
+    mod._graph = _ModeLandedGraph()
+    mod._round_total = 2
+    seen: list[str] = []
+    logs: list[str] = []
+    monkeypatch.setattr(mod, "_run_step", lambda node, stage: seen.append(stage) or True)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+    monkeypatch.setattr(mod, "_read_level", lambda: 1)
+    monkeypatch.setattr(mod, "_tlog", lambda msg, level="INFO": logs.append(msg))
+
+    assert mod._run_flow(0) is True
+    assert mod._round_no == 2
+    assert seen.count("结算·下一关") == 2
+    assert seen.count("准备·放弃") == 0      # 终局游戏已自动归零，不走放弃
+    assert seen.count("关卡挑战") == 2       # 每轮都从活动页的关卡挑战重开
+    assert mod._current_level == 0           # 关卡缓存随终局清空
+    assert any("终局" in line for line in logs)
+
+
+def test_settle_end_logs_failure_and_full_clear(monkeypatch) -> None:
+    """终局日志按战绩记录区分失败与本轮跑满；活动页不在位不判终局。"""
+    mod = _step_module(_ModeLandedGraph())
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(mod, "_tlog", lambda msg, level="INFO": logs.append((msg, level)))
+
+    mod._current_level = 3
+    mod.last_settlement = {"record": {"level": 3, "level_total": 5, "cleared": False}}
+    assert mod._settle_ends_run() is True
+    assert "挑战失败" in logs[-1][0] and logs[-1][1] == "WARNING"
+    assert mod._current_level == 0
+
+    mod._current_level = 5
+    mod.last_settlement = {"record": {"level": 5, "level_total": 5, "cleared": True}}
+    assert mod._settle_ends_run() is True
+    assert "本轮关卡已跑满" in logs[-1][0] and logs[-1][1] == "INFO"
+
+    mod._graph = _AllOkGraph()
+    mod._current_level = 2
+    mod.last_settlement = {"record": {"level": 2, "level_total": 5, "cleared": True}}
+    assert mod._settle_ends_run() is False      # 晋级落准备页，不是终局
+    assert mod._current_level == 2
+
+
+def test_settle_land_confirm_covers_both_landings() -> None:
+    """结算步落地确认同时接受晋级准备页与终局活动页（同一按钮两种落点）。"""
+    import json
+
+    from maaracing_master.plugins.infinite_drive import PIPELINE_DIR
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    graph = json.loads((PIPELINE_DIR / "infinite_drive.json").read_text(encoding="utf-8"))
+    node = graph[m.STEP_CONFIRM["结算·下一关"]]
+    assert node["recognition"]["type"] == "Or"
+    assert set(node["recognition"]["param"]["any_of"]) == {
+        "infinite_drive.__confirm.准备页", m._MODE_ANCHOR}
