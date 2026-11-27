@@ -20,8 +20,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260710003" />
-    <!-- 应用升级 SDK（版本固定，与发布打包 CLI 同源同版）：升级运行时只接启动钩子（最小注入），下载/提交由宿主更新协调器驱动 -->
-    <PackageReference Include="Velopack" Version="1.2.161" />
   </ItemGroup>
 
   <!-- 壳专用工具（合同探针等）有自己的入口与工程，不进壳本体编译 -->

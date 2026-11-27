@@ -6,8 +6,7 @@ using System.Text.Json.Serialization;
 namespace MaaRacingMaster.Shell;
 
 /// <summary>用户级更新偏好（渠道 / 下载源 / 后台自动检查 / 提醒标记），落在用户数据根
-/// 的 config/update-prefs.json，与业务配置同目录、随整树升级保留（受管安装不触碰
-/// 用户数据根）。读失败（文件缺失/损坏/字段非法）一律回默认，不让偏好文件
+/// 的 config/update-prefs.json，与业务配置同目录、随整树升级保留（用户数据根不被升级触碰）。读失败（文件缺失/损坏/字段非法）一律回默认，不让偏好文件
 /// 阻断升级能力。</summary>
 public static class UpdatePreferences
 {
@@ -154,8 +153,7 @@ public static class UpdatePreferences
         var appRoot = AppRootResolver.Resolve(
             Environment.GetCommandLineArgs(),
             Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
-            AppContext.BaseDirectory,
-            appData).Root;
+            AppContext.BaseDirectory).Root;
         var baseDir = UserDataRoot.Resolve(appRoot, appData);
         return baseDir is null ? null : Path.Combine(baseDir, "config", "update-prefs.json");
     }

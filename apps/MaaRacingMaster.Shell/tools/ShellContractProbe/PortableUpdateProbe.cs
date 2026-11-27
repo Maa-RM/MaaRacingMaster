@@ -192,8 +192,10 @@ internal static class PortableUpdateProbe
                 $"mode={prefixedStaged.Mode} notes={string.Join("；", prefixedStaged.Notes)}");
 
             // 恢复被故意破坏的增量与清单，再验证「额外文件不阻断增量」。
+            // ZIP 重写后字节摘要会变（时间戳），必须按新清单重解析再交给暂存器。
             ZipTree(newRoot, payload, deltaZip);
             WriteManifest(feed, tag, oldEntries, newEntries, removed, fullZip, deltaZip);
+            release = UpdateProtocol.Parse(File.ReadAllText(manifestPath));
 
             File.WriteAllText(Path.Combine(oldRoot, "user-note.txt"), "user data");
             var stageD = Path.Combine(work, "stage-d");
@@ -230,7 +232,6 @@ internal static class PortableUpdateProbe
             var applyingFired = false;
             var coordinator = new UpdateCoordinator(
                 feedSource: "probe|" + feed,
-                managed: false,
                 installRoot: installRoot,
                 currentVersion: "1.1.0",
                 initialSource: "probe",

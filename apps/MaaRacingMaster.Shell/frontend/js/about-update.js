@@ -129,7 +129,7 @@
     try {
       const d = await maarm.call('update_set_source', { value });
       renderSnapshot(d);
-      if (d && d.error) showError(d.error); // 临界区/非受管被拒：别让设置看起来生效了
+      if (d && d.error) showError(d.error); // 临界区/当前运行方式不支持时被拒：别让设置看起来生效了
     } catch (e) {
       showError('切换下载源失败：' + e.message);
       await refreshUpdateStatus();
@@ -202,12 +202,12 @@
         return {
           icon: 'alert', tone: 'err',
           title: '自动升级当前不可用',
-          meta: snapshot.error || '非受管安装，请使用手动下载入口',
+          meta: snapshot.error || '当前运行方式不支持自动升级，请使用手动下载入口',
           action: { label: '前往下载', icon: 'arrow-up-right', run: openDownloadPage },
         };
       case 'idle':
         if (snapshot.error) {
-          // 非受管安装 / 来源未配置：自动升级这条路本来就不通，给手动入口而不是
+          // 当前运行方式不支持自动升级 / 来源未配置：给手动入口而不是
           // 「重新检查」——后者只会把同一句错误再刷一遍，玩家找不到出口。
           const manual = snapshot.managed === false || /未配置/.test(snapshot.error);
           return manual

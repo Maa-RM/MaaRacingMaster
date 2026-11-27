@@ -7,7 +7,7 @@ namespace MaaRacingMaster.Shell;
 /// <summary>
 /// 进程内后台自动检查调度：首轮立即发起（不额外延迟，窗口与业务后端照常启动），
 /// 之后从「最近一次检查收尾」起算一个间隔。它只决定「什么时候问协调器」——
-/// 开关、受管安装、相位准入与结果提交都由协调器判断；到期遇到忙态由协调器
+/// 开关、运行方式、相位准入与结果提交都由协调器判断；到期遇到忙态由协调器
 /// 记录锚点，本轮跳过、下个周期再试。
 ///
 /// 等待一律用 <see cref="TimeProvider"/> + 带令牌的 <see cref="Task.Delay(TimeSpan, TimeProvider, CancellationToken)"/>：

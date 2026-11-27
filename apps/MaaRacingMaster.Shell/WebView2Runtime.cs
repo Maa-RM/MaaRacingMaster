@@ -10,7 +10,7 @@ namespace MaaRacingMaster.Shell;
 
 /// <summary>
 /// WebView2 共享运行时：用户数据目录显式指定到用户数据根（升级不触碰前端存储）。
-/// 不指定时 WebView2 默认落在 exe 旁（{exe}.exe.WebView2）——受管升级整体替换内容树，
+/// 不指定时 WebView2 默认落在 exe 旁（{exe}.exe.WebView2）——升级整体替换程序目录，
 /// 前端存储随升级丢失；显式指定到安装树之外后升级不再触碰。
 /// 界面使用常规资料分区（非隐私模式）：InPrivate 分区只有内存版 GPU 缓存，着色器程序
 /// 无法跨启动复用（见 MainWindow 初始化注释与 shell README「WebView2 渲染与编译缓存」）。
@@ -27,7 +27,7 @@ public static class WebView2Runtime
     /// <summary>
     /// 取共享环境；首次调用创建（数据目录 = 用户数据根\webview2）。创建失败返回 null，
     /// 调用方以默认位置回落初始化并记 shell.log——源码 / 旧 ZIP 模式的兜底；
-    /// 受管模式 %APPDATA% 缺失已在启动前拒绝，不会落到这里。
+    /// %APPDATA% 缺失时回退到应用根旁 data（源码 / 解压即用 ZIP）。
     /// </summary>
     public static async Task<CoreWebView2Environment?> GetOrCreateAsync()
     {
@@ -41,8 +41,7 @@ public static class WebView2Runtime
             var appRoot = AppRootResolver.Resolve(
                 Environment.GetCommandLineArgs(),
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
-                AppContext.BaseDirectory,
-                appData).Root;
+                AppContext.BaseDirectory).Root;
             var userData = UserDataRoot.Resolve(appRoot, appData);
             if (userData is null)
             {

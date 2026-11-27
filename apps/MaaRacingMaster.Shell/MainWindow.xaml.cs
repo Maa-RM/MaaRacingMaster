@@ -41,7 +41,7 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>读安装树内随包的更新源配置（壳 exe 同目录 update-source.txt，发行时写入）。
-    /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随受管树整体替换，受信任。</summary>
+    /// 缺失/空白 = 来源未配置（协调器诚实返回不可用）；文件随程序目录整体替换，受信任。</summary>
     private static string? ReadUpdateSourceFile()
     {
         try
@@ -255,16 +255,14 @@ public sealed partial class MainWindow : Window
     /// <summary>
     /// 定位仓库根 / AppRoot（含 pyproject.toml 的目录，发布版为安装根）。
     /// 解析单一真源在 AppRootResolver（Program 启动前检查与这里共用；进程内缓存，
-    /// 启动期只解析一次）：非受管沿用「--app-root 参数 > MaaRM_APP_ROOT 环境变量 > 向上探测」，
-    /// 受管安装以内容根为唯一权威并拒绝冲突覆盖值。
+    /// 启动期只解析一次）：按「--app-root 参数 > MaaRM_APP_ROOT 环境变量 > 向上探测」解析。
     /// 找不到返回 null。
     /// </summary>
     private static string? ResolveRepoRoot()
         => AppRootResolver.Resolve(
             Environment.GetCommandLineArgs(),
             Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
-            AppContext.BaseDirectory,
-            Environment.GetEnvironmentVariable("APPDATA")).Root;
+            AppContext.BaseDirectory).Root;
 
     /// <summary>
     /// 从仓库根向上查找指定相对路径的资源文件（sidecar / venv 等一律以仓库根为锚）。
@@ -370,11 +368,6 @@ public sealed partial class MainWindow : Window
         var prefAutoCheck = UpdatePreferences.LoadAutoCheck();
         var coordinator = new UpdateCoordinator(
             feedSource: ReadUpdateSourceFile(),
-            managed: AppRootResolver.Resolve(
-                Environment.GetCommandLineArgs(),
-                Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
-                AppContext.BaseDirectory,
-                Environment.GetEnvironmentVariable("APPDATA")).Managed,
             installRoot: UpdateLauncher.InstallRoot,
             currentVersion: ShellVersionStamp().Split('+')[0],
             prepareGate: PrepareForUpdateAsync,
@@ -949,7 +942,7 @@ public sealed partial class MainWindow : Window
                     .GetAwaiter().GetResult();
                 if (!shutdown.ConfirmedExit)
                 {
-                    // 未确认退出的事实不吞掉：日志留痕（受管升级前由更新协调以此判断能否提交）
+                    // 未确认退出的事实不吞掉：日志留痕（升级前由更新协调以此判断能否提交）
                     ShellLog.Append("[sidecar] 关窗关停未确认退出（grace 3s + 强杀确认 5s 内仍未退出）");
                 }
             }

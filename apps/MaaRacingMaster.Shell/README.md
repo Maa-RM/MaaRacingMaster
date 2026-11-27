@@ -29,7 +29,7 @@
 
 PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用 `frontend/peep-consumer.js`。互斥由「数据页是否可见 + 悬浮窗是否打开」决定，同一时刻只有一处真正拉帧；悬浮窗存在期间主界面卡片退化为占位符。悬浮窗不记忆位置/尺寸，随主窗口退出连带销毁。
 
-更新有两条路径：受管安装走 Velopack；ZIP 分发走便携自更新——`UpdateProtocol`（清单与兼容闸门）、`UpdateSourceClient`（来源配置与版本标记）、`UpdateTransport`（HTTP / 本地目录取包）、`UpdateTree`（树摘要）、`UpdateStager`（整包按清单裁剪、增量按旧树应用）、`UpdateLauncher`（事务、交接汇报、健康回执）在壳内完成准备，换目录、回执超时回滚与崩溃残留恢复由原生薄启动器 [`apps/MaaRacingMaster.Launcher`](../MaaRacingMaster.Launcher/launcher.c) 执行。
+更新走便携 ZIP 自更新——`UpdateProtocol`（清单与兼容闸门）、`UpdateSourceClient`（来源配置与版本标记）、`UpdateTransport`（HTTP / 本地目录取包）、`UpdateTree`（树摘要）、`UpdateStager`（整包按清单裁剪、增量按旧树应用）、`UpdateLauncher`（事务、交接汇报、健康回执）在壳内完成准备，换目录、回执超时回滚与崩溃残留恢复由原生薄启动器 [`apps/MaaRacingMaster.Launcher`](../MaaRacingMaster.Launcher/launcher.c) 执行。
 
 ## 锁定版本与依赖
 
@@ -115,17 +115,16 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 | 部件 | 决定什么 |
 |---|---|
 | `UpdateCoordinator` | 渠道与来源顺序、已验证目标、下载事务与提交闸门；检查事务串行化（任意时刻一轮），同世代的手动/自动请求合并在途结果；切渠道取消旧索引并等它退出后放行新检查 |
-| `UpdateAutoCheck` | 什么时候问协调器：启动即查，之后按固定间隔（间隔常量住在本文件）；准入（开关 / 受管 / 相位）仍由协调器判断 |
+| `UpdateAutoCheck` | 什么时候问协调器：启动即查，之后按固定间隔（间隔常量住在本文件）；准入（开关 / 运行方式 / 相位）仍由协调器判断 |
 | `UpdatePreferences` | 偏好落盘；读改写加锁，渠道/源、提醒标记、自动检查开关三条保存路径互不覆盖字段 |
 | `RpcBridge` | `update_*` 固定意图；下载与忽略携带玩家看到的 `revision`，过期即由协调器拒绝 |
 | `MainWindow` | 后台检查提交成功后经 `DispatcherQueue` 推 `{type:'update-status'}`；入队回调先核对关窗态与 WebView2 可用性 |
 
 **玩家可见行为**
 
-- 受管安装且自动检查开启：每次启动安排一轮后台检查，应用常开时继续按间隔检查；发现新版本后关于标签亮橙点，已忽略的版本继续隐藏。
+- 便携安装且自动检查开启：每次启动安排一轮后台检查，应用常开时继续按间隔检查；发现新版本后关于标签亮橙点，已忽略的版本继续隐藏。
 - 自动检查全源失败只留日志，已有目标、相位与按钮都保留；手动检查失败如实显示错误，主按钮回到可检查状态（不留在「检查中…」）。
 - 设置浮窗可开关后台自动检查，重启回显；关掉后手动检查与切渠道照常可用。
-- 安装器仍持有更新锁时发起下载：回到可下载状态并给可重试提示，不逐镜像重试、不留在下载中。
 
 **不变量**
 
@@ -136,7 +135,7 @@ PEEP 帧消费有两个展示位：数据页预览卡与独立悬浮窗，共用
 **验证入口**
 
 ```powershell
-# 渠道/源设置与世代守卫（真实 Velopack + 本地源）
+# 渠道/源设置与世代守卫（本地便携源）
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- settings
 # 自动检查：调度锚点、并发合并、切渠道取消、单镜像短预算、锁占用短路、修订准入、推送回调
 dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe -c Debug -- auto
@@ -148,16 +147,12 @@ scripts\release\update_drill.ps1 -PackageZip <真实包.zip> -StubDir <假壳目
 
 静态锁：`tests/test_update_channel_source.py`（渠道/源语义）、`tests/test_update_autocheck.py`（自动检查与并发）、`tests/test_update_artifacts.py`（清单与增量）、`tests/test_frontend_update_panel.py`（前端入口）。后两者在有 dotnet 的环境里会直接驱动探针对应模式，不做「静态全绿但功能没接线」的假通过。
 
-**受管树实测结论**
+**运行实测结论**
 
-- 更新钩子必须是主入口最早执行的一段并支持早退；`SetAutoApplyOnStartup(false)` 让已下载的包在普通启动保持待应用，只有显式提交才替换内容树。
-- 受管模式的根以内容根为唯一权威：`--app-root` 参数与 `MaaRM_APP_ROOT` 环境变量指向别处时必须忽略并在壳日志记录，否则新版壳会被旧根带跑（启动旧 Python / 旧前端）。
 - 用户数据根在 C# 与 Python 两侧都取 `APPDATA` 环境变量：.NET 已知目录 API 不认环境变量重定向，两边口径分叉会让 WebView2 数据与侧车数据落到不同地方。
-- 受管树内直接运行「非注册主程序」的 exe 会挂起默认定位器解析，与路径、提权无关。任何在受管树里跑的辅助程序都必须住树外，并用显式定位器指定受管根（`ShellContractProbe` 的 `update` 模式即此形态）。
 - 侧车主循环读 stdin，父壳死亡即 EOF 自退，但存在延迟窗口；启动清场因此保留（扫描命令行匹配本程序的侧车，毫秒级终止）。
-- 已知未解异常：带注入探针的发布产物曾在受管树内出现 WebView2 环境创建挂起（无异常、无 WER、无壳日志），最小注入与正式形态均未复现，根因未明；路径、构建配置、发布方式、APPDATA、定位器访问已逐个排除，排查时不必重走。
 
-**边界**：便携路径覆盖主壳运行期间的全量/增量更新与启动器回滚；真实应用包的健康确认、跨账号 UAC 与断电场景仍需人工验收。受管安装的自动检查依赖受管产物与更新源接入发布链。
+**边界**：覆盖主壳运行期间的全量/增量更新与启动器回滚；真实应用包的健康确认、跨账号 UAC 与断电场景仍需人工验收。源码运行或绕过根启动器直接运行壳 exe 时拿不到安装根，自动升级不可用，关于页提供手动下载入口。
 
 ## 构建坑
 

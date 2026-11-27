@@ -4,19 +4,17 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using MaaRacingMaster.Shell;
-using Velopack;
-using Velopack.Locators;
 
 namespace MaaRacingMaster.Shell.ContractProbe;
 
 /// <summary>
-/// 壳合同探针：对正式源码的路径解析/更新钩子/侧车退出/更新协调器行为做可机检断言。
+/// 壳合同探针：对正式源码的路径解析/更新设置/自动检查/侧车退出做可机检断言。
 /// 全过 → 退出码 0；任何失败逐条打印并退出码 1。
-/// 用法：dotnet run --project tools/ShellContractProbe -- approot|hook|sidecar
-///   update 用例需显式夹具：-- --root <受管安装树> --feed <更新源目录>
+/// 用法：dotnet run --project tools/ShellContractProbe -- approot|sidecar|cleanup|settings|auto|portable|stage
 /// </summary>
 internal static class Program
 {
@@ -30,332 +28,129 @@ internal static class Program
 
     private static int Main(string[] args)
     {
-        // 子进程形态：先跑更新钩子（与正式壳同一位置语义），普通启动才会到达标记写入。
-        var markerIdx = Array.IndexOf(args, "--hook-child");
-        if (markerIdx >= 0)
-        {
-            VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-            File.WriteAllText(args[markerIdx + 1], "after-run");
-            return 0;
-        }
-
         var mode = args.Length > 0 ? args[0] : "";
         switch (mode)
         {
             case "approot": CheckAppRoot(); break;
-            case "hook": CheckHook(args); break;
             case "sidecar": CheckSidecarAsync(args).GetAwaiter().GetResult(); break;
             case "cleanup": CheckCleanup(args); break;
-            case "update": CheckUpdateCoordinator(args).GetAwaiter().GetResult(); break;
             case "settings": CheckUpdateSettingsAsync().GetAwaiter().GetResult(); break;
             case "auto": CheckUpdateAutoCheckAsync().GetAwaiter().GetResult(); break;
             case "portable": PortableUpdateProbe.RunAsync(args).GetAwaiter().GetResult(); break;
             case "stage": PortableUpdateProbe.StageRealPackage(args); break;
             default:
                 Console.Error.WriteLine(
-                    "用法: ShellContractProbe approot|hook|sidecar|cleanup|update|settings|auto|portable|stage");
+                    "用法: ShellContractProbe approot|sidecar|cleanup|settings|auto|portable|stage");
                 return 2;
         }
         Console.WriteLine(s_failures == 0 ? "ALL PASS" : $"FAILURES: {s_failures}");
         return s_failures == 0 ? 0 : 1;
     }
 
-    // ---------- 更新钩子自退出 ----------
+    // ---------- 便携更新夹具 ----------
 
-    /// <summary>以子进程实测固定版本库的钩子契约：钩子参数 → 库内自退出（后续代码不执行）；
-    /// 普通启动 → Run 返回继续执行。P0 打包契约检查只能证明「钩子会退出」，这里补证明
-    /// 「退出发生在库内、早于任何后续启动逻辑」。</summary>
-    private static void CheckHook(string[] args)
+    private sealed record ProbeChannel(string Channel, string Tag, string Version);
+
+    private static ProbeChannel Ch(string channel, string version)
+        => new(channel, "v" + version, version);
+
+    /// <summary>最小便携来源：latest_release.json（分渠道标记）+ 每渠道一份清单。
+    /// 同时铺两份清单路径：assets/&lt;tag&gt;/… 给本地目录源，&lt;tag&gt;/… 给自建 HTTP 源
+    /// （UpdateSourceCatalog.Build 把「其他主机」的资产根就定为服务根，没有 assets 段）。</summary>
+    private static string MakePortableFeed(string root, string label, params ProbeChannel[] channels)
     {
-        var self = Environment.ProcessPath
-            ?? throw new InvalidOperationException("探针需要以独立进程方式运行");
-        var work = MakeTempDir("hook");
-        var hookMarker = Path.Combine(work, "hook.marker");
-        var normalMarker = Path.Combine(work, "normal.marker");
-        var hookDir = Path.Combine(work, "install-target");
-        Directory.CreateDirectory(hookDir);
-
-        var sw = Stopwatch.StartNew();
-        // 钩子参数必须在命令行首位（更新器真实调起形态）；子进程里 Run 之后的参数仅用于定位标记
-        var hookRun = RunChild(self, $"--veloapp-install {Quote(hookDir)} --hook-child {Quote(hookMarker)}");
-        var hookElapsed = sw.ElapsedMilliseconds;
-        Check("钩子进程快速自退出（<10s）", hookRun.TimedOut == false && hookElapsed < 10_000,
-              hookRun.TimedOut == true ? "超时被强杀" : $"{hookElapsed}ms");
-        // 退出码是库自己的选择（合成假目标下实测 -1，真实钩子流程的退出码归受管链复验）；
-        // 壳侧契约只钉：库内自退出、早于任何后续启动逻辑。
-        Check("钩子路径不执行后续代码（标记未写）", !File.Exists(hookMarker), "钩子后标记文件存在");
-
-        var normalRun = RunChild(self, $"--hook-child {Quote(normalMarker)}");
-        Check("普通启动子进程退出码 0", normalRun.TimedOut == false && normalRun.ExitCode == 0,
-              normalRun.TimedOut == true ? "超时被强杀" : $"exit={normalRun.ExitCode?.ToString() ?? "<未知>"}");
-        Check("普通启动 Run 返回后继续执行（标记已写）", File.Exists(normalMarker),
-              "无钩子参数时 Run 未返回或未继续");
-
-        // 静态断言的另一半：同一进程内无钩子参数时 Run 直接返回（能走到这里本身就是证据）
-        VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-        Check("探针自身普通启动 Run 直通（能执行到这里）", true, "");
+        var dir = Path.Combine(root, label);
+        WritePortableFeed(dir, channels);
+        return dir;
     }
 
-    private sealed record ChildRun(int? ExitCode, bool TimedOut);
-
-    // ---------- 宿主更新协调器合同 ----------
-
-    /// <summary>协调器合同（真实库 + 本地源 + 显式定位器，树外驱动）：
-    /// ①非受管降级 ②来源未配置诚实不可用 ③受管检查→下载启动即回包→状态查询观察到
-    /// 就绪→重复下载幂等→非下载态取消被拒→提交闸门拒绝回 ready 且带原因→revision 单调
-    /// ④镜像回退检查 ⑤下载失败镜像同目标回退 ⑥交接失败回 ready 且不排关窗。
-    /// 夹具显式传入：--root &lt;受管安装树&gt; --feed &lt;更新源目录&gt;。</summary>
-    private static async Task CheckUpdateCoordinator(string[] args)
+    private static void WritePortableFeed(string dir, params ProbeChannel[] channels)
     {
-        var (live, feedRaw) = ResolveUpdateFixture(args);
-        var marker = Path.Combine(live, "current", "payload-version.txt");
-        var liveVersion = File.ReadAllText(marker).Trim();
-        // 协调器总是显式传渠道（默认 stable）：夹具索引若是历史 win 命名，
-        // 先在临时目录改名 staging，夹具本身保持渠道无关。
-        var feed = EnsureStableIndex(feedRaw);
-
-        // ① 非受管：所有动作诚实降级
-        var degraded = new UpdateCoordinator(null, managed: false);
-        var s0 = await degraded.CheckAsync();
-        Check("非受管 → 检查返回降级快照", s0.Phase == UpdateSnapshot.Unavailable
-              && (s0.Error ?? "").Contains("非受管", StringComparison.Ordinal),
-              $"phase={s0.Phase} error={s0.Error}");
-
-        // ② 来源未配置：不伪造检查结果
-        var noFeed = new UpdateCoordinator(null, managed: true);
-        var s1 = await noFeed.CheckAsync();
-        Check("来源未配置 → 诚实不可用", (s1.Error ?? "").Contains("未配置", StringComparison.Ordinal),
-              $"error={s1.Error}");
-
-        // ③ 受管 + 本地源 + 显式定位器（树外驱动，规避树内次要 exe 挂起）
-        var gateCalls = 0;
-        string? gateReason = null;
-        var coordinator = new UpdateCoordinator(feed, managed: true,
-            locator: MakeExplicitLocator(live, liveVersion),
-            prepareGate: () => { gateCalls++; return Task.FromResult(gateReason); });
-
-        var s2 = await coordinator.CheckAsync();
-        Check("受管检查 → available 且带目标版本",
-              s2.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(s2.TargetVersion),
-              $"phase={s2.Phase} target={s2.TargetVersion} error={s2.Error}");
-
-        // ③-1 启动即回包（评审回归：等待整段下载会让首次下载期间界面拿不到进度、无法取消）：
-        // 清掉包缓存走真实拷贝，启动调用应立即返回 downloading，进度由独立状态查询推进。
-        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
-            File.Delete(cached);
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var s3 = await coordinator.StartDownloadAsync();
-        sw.Stop();
-        Check("下载启动即回包 → downloading（不等整段下载）",
-              s3.Phase == UpdateSnapshot.Downloading && sw.ElapsedMilliseconds < 1500,
-              $"phase={s3.Phase} elapsed={sw.ElapsedMilliseconds}ms error={s3.Error}");
-        var deadline = DateTime.UtcNow.AddSeconds(120);
-        UpdateSnapshot polled;
-        do
+        Directory.CreateDirectory(dir);
+        var head = channels[0];
+        var marker = new
         {
-            await Task.Delay(200).ConfigureAwait(false); // 前端状态轮询的等价物
-            polled = coordinator.GetStatus();
-        } while (polled.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < deadline);
-        Check("独立状态查询观察下载完成 → ready 且进度满",
-              polled.Phase == UpdateSnapshot.Ready && polled.Progress == 100,
-              $"phase={polled.Phase} progress={polled.Progress} error={polled.Error}");
-
-        var s4 = await coordinator.StartDownloadAsync();
-        Check("就绪后重复下载 → 幂等返回就绪", s4.Phase == UpdateSnapshot.Ready
-              && s4.Revision >= polled.Revision, $"phase={s4.Phase} rev={s4.Revision}");
-
-        var s5 = coordinator.CancelDownload();
-        Check("非下载态取消 → 拒绝", s5.Phase == UpdateSnapshot.Ready
-              && (s5.Error ?? "").Contains("不允许", StringComparison.Ordinal),
-              $"phase={s5.Phase} error={s5.Error}");
-
-        gateReason = "任务运行中，等待停止后再升级"; // 模拟后端拒绝冻结
-        var s6 = await coordinator.ApplyAsync();
-        Check("提交闸门拒绝 → 状态回 ready 且带原因",
-              s6.Phase == UpdateSnapshot.Ready && (s6.Error ?? "").Contains("任务运行中", StringComparison.Ordinal),
-              $"phase={s6.Phase} error={s6.Error}");
-        Check("闸门拒绝路径确实询问过后端", gateCalls == 1, $"gateCalls={gateCalls}");
-
-        gateReason = null; // 模拟闸门放行——探针到此为止：真实提交留给受管整链（会触发整树替换）
-        var revBefore = coordinator.GetStatus().Revision;
-        var s7 = await coordinator.CheckAsync(); // 刷新目标：状态实质变化 → revision 前进
-        Check("revision 随状态实质变化单调前进", s7.Revision > revBefore,
-              $"rev {revBefore} → {s7.Revision}");
-        Check("闸门放行前不触发提交（本轮未调 Apply）", gateCalls == 1, $"gateCalls={gateCalls}");
-
-        // ④ 镜像回退（同目标）：多行来源按序尝试，主源失败锁镜像；全部失败诚实报错不换目标
-        var deadDir = Path.Combine(MakeTempDir("dead-source"), "empty");
-        Directory.CreateDirectory(deadDir);
-        var mirror = new UpdateCoordinator(deadDir + "\n" + feed, managed: true,
-            locator: MakeExplicitLocator(live, liveVersion));
-        var sm = await mirror.CheckAsync();
-        Check("主源不可达 → 镜像回退检查成功",
-              sm.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(sm.TargetVersion),
-              $"phase={sm.Phase} target={sm.TargetVersion} error={sm.Error}");
-
-        var allDead = new UpdateCoordinator(deadDir + "\n" + deadDir, managed: true,
-            locator: MakeExplicitLocator(live, liveVersion));
-        var sd = await allDead.CheckAsync();
-        Check("全部源不可达 → 诚实失败（可重试，不换目标）",
-              sd.Phase == UpdateSnapshot.Idle && (sd.Error ?? "").Contains("不可达", StringComparison.Ordinal),
-              $"phase={sd.Phase} error={sd.Error}");
-
-        // ⑤ 下载失败镜像回退（评审回归：索引可达不等于包可达）——主源只有索引没有包，
-        // 镜像完整；下载失败自动换到同目标镜像并完成，最终 ready。
-        var indexOnly = Path.Combine(MakeTempDir("index-only"), "feed");
-        Directory.CreateDirectory(indexOnly);
-        foreach (var f in Directory.GetFiles(feed))
-            if (!f.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase))
-                File.Copy(f, Path.Combine(indexOnly, Path.GetFileName(f)));
-        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
-            File.Delete(cached);
-        var fallback = new UpdateCoordinator(indexOnly + "\n" + feed, managed: true,
-            locator: MakeExplicitLocator(live, liveVersion));
-        var sf1 = await fallback.CheckAsync();
-        Check("索引可达包缺失 → 检查仍 available", sf1.Phase == UpdateSnapshot.Available,
-              $"phase={sf1.Phase} error={sf1.Error}");
-        var sf2 = await fallback.StartDownloadAsync();
-        var fbDeadline = DateTime.UtcNow.AddSeconds(120);
-        UpdateSnapshot fb;
-        do
-        {
-            await Task.Delay(200).ConfigureAwait(false);
-            fb = fallback.GetStatus();
-        } while (fb.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < fbDeadline);
-        Check("包下载失败 → 镜像同目标回退完成下载 → ready",
-              fb.Phase == UpdateSnapshot.Ready && fb.Progress == 100,
-              $"phase={fb.Phase} progress={fb.Progress} target={fb.TargetVersion} error={fb.Error}");
-
-        // ⑥ 交接失败恢复（评审回归二轮）：真实闸门在通过前会确认后端退出——闸门桩把
-        // 后端置为已退出，交接失败（定位器指向不存在的 Update.exe）后必须恢复后端，
-        // 否则「旧版可继续使用」是假话（业务查询与重试升级都撞上已退出的后端）。
-        var applyFired = 0;
-        var backendAlive = true;
-        var brokenGateCalls = 0;
-        var recoveryCalls = 0;
-        var broken = new UpdateCoordinator(feed, managed: true,
-            locator: new TestVelopackLocator("MaaRM.RealShellProbe", liveVersion,
-                Path.Combine(live, "packages"), Path.Combine(live, "current"), live,
-                Path.Combine(live, "missing-dir", "Update.exe")),
-            prepareGate: () => { brokenGateCalls++; backendAlive = false; return Task.FromResult<string?>(null); },
-            handoffRecovery: () => { recoveryCalls++; backendAlive = true; return Task.FromResult(true); });
-        broken.ApplyingStarted += () => applyFired++;
-        var sb1 = await broken.CheckAsync();
-        var sb2 = await broken.StartDownloadAsync();
-        var sbDeadline = DateTime.UtcNow.AddSeconds(120);
-        UpdateSnapshot sb;
-        do
-        {
-            await Task.Delay(200).ConfigureAwait(false);
-            sb = broken.GetStatus();
-        } while (sb.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < sbDeadline);
-        var sb3 = await broken.ApplyAsync();
-        Check("更新器启动失败 → 状态回 ready 带原因（非 applying）",
-              sb3.Phase == UpdateSnapshot.Ready && (sb3.Error ?? "").Contains("启动失败", StringComparison.Ordinal),
-              $"phase={sb3.Phase} error={sb3.Error}");
-        Check("更新器启动失败 → 关窗事件未触发", applyFired == 0, $"applyFired={applyFired}");
-        Check("交接失败 → 恢复委托被调用且后端恢复可用",
-              backendAlive && recoveryCalls == 1, $"backendAlive={backendAlive} recoveryCalls={recoveryCalls}");
-        Check("恢复成功 → 提示与实际能力一致（可重试升级）",
-              (sb3.Error ?? "").Contains("可重试", StringComparison.Ordinal), $"error={sb3.Error}");
-        var sb4 = await broken.ApplyAsync(); // 恢复后重试升级：闸门再次走完整生命周期
-        Check("恢复后重试升级 → 闸门再次冻结并再次恢复",
-              sb4.Phase == UpdateSnapshot.Ready && brokenGateCalls == 2 && recoveryCalls == 2 && backendAlive,
-              $"phase={sb4.Phase} gateCalls={brokenGateCalls} recoveryCalls={recoveryCalls} backendAlive={backendAlive}");
-
-        // ⑥-2 恢复失败路径：提示必须诚实（不谎称旧版可继续使用）
-        var broken2 = new UpdateCoordinator(feed, managed: true,
-            locator: new TestVelopackLocator("MaaRM.RealShellProbe", liveVersion,
-                Path.Combine(live, "packages"), Path.Combine(live, "current"), live,
-                Path.Combine(live, "missing-dir", "Update.exe")),
-            prepareGate: () => Task.FromResult<string?>(null),
-            handoffRecovery: () => Task.FromResult(false));
-        await broken2.CheckAsync();
-        var b2d = await broken2.StartDownloadAsync();
-        var b2Deadline = DateTime.UtcNow.AddSeconds(120);
-        UpdateSnapshot b2w;
-        do
-        {
-            await Task.Delay(200).ConfigureAwait(false);
-            b2w = broken2.GetStatus();
-        } while (b2w.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < b2Deadline);
-        var b3 = await broken2.ApplyAsync();
-        Check("恢复失败 → 提示明确要求重启应用（不谎称可继续使用）",
-              (b3.Error ?? "").Contains("重启", StringComparison.Ordinal), $"error={b3.Error}");
-
-        // ⑦ 检查与下载并发（评审回归二轮）：已有目标后再次检查、检查在途时点击仍在
-        // 显示的下载按钮——迟到的检查结果不得覆盖 downloading（否则进度消失、取消失效、
-        // 下载完成进不了 ready）。本地慢 HTTP 源：索引响应延迟制造检查窗口。
-        using var slowHttp = new SlowHttpServer(
-            File.ReadAllText(Path.Combine(feed, "releases.stable.json")),
-            TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(6));
-        var concurrent = new UpdateCoordinator($"http://127.0.0.1:{slowHttp.Port}", managed: true,
-            locator: MakeExplicitLocator(live, liveVersion));
-        foreach (var cached in Directory.GetFiles(Path.Combine(live, "packages"), "*.nupkg"))
-            File.Delete(cached);
-        var s7a = await concurrent.CheckAsync(); // 第一次检查（慢）→ 锁定 HTTP 源
-        Check("HTTP 源检查 → available 且带目标版本",
-              s7a.Phase == UpdateSnapshot.Available && !string.IsNullOrEmpty(s7a.TargetVersion),
-              $"phase={s7a.Phase} target={s7a.TargetVersion} error={s7a.Error}");
-        var lateCheck = concurrent.CheckAsync(); // 第二次检查在途（索引延迟中）
-        await Task.Delay(100);
-        var s7b = await concurrent.StartDownloadAsync(); // 检查在途时点仍显示的下载按钮
-        Check("检查在途时下载可发起 → downloading",
-              s7b.Phase == UpdateSnapshot.Downloading, $"phase={s7b.Phase} error={s7b.Error}");
-        var s7c = await lateCheck; // 迟到的检查结果返回
-        Check("迟到的检查结果不覆盖下载状态",
-              s7c.Phase == UpdateSnapshot.Downloading, $"phase={s7c.Phase} error={s7c.Error}");
-        var s7d = concurrent.CancelDownload();
-        var c7Deadline = DateTime.UtcNow.AddSeconds(15);
-        UpdateSnapshot s7e;
-        do
-        {
-            await Task.Delay(100).ConfigureAwait(false); // 前端状态轮询的等价物：取消异步生效
-            s7e = concurrent.GetStatus();
-        } while (s7e.Phase == UpdateSnapshot.Downloading && DateTime.UtcNow < c7Deadline);
-        Check("下载中取消有效（不被迟到检查破坏）",
-              s7e.Phase == UpdateSnapshot.Available && (s7e.Error ?? "").Contains("取消", StringComparison.Ordinal),
-              $"phase={s7e.Phase} error={s7e.Error}");
+            tag = head.Tag,
+            version = head.Version,
+            channels = channels.ToDictionary(c => c.Channel,
+                c => new { tag = c.Tag, version = c.Version }),
+        };
+        File.WriteAllText(Path.Combine(dir, "latest_release.json"),
+            JsonSerializer.Serialize(marker, new JsonSerializerOptions { WriteIndented = true }));
+        foreach (var channel in channels)
+            WritePortableManifest(dir, channel);
     }
 
-    /// <summary>渠道/下载源设置的真实行为验证：自建最小 feed 索引，让协调器真的跑 Velopack。
-    /// 静态文本锁抓不到「切了到底有没有换索引」——这里覆盖：渠道是用户设置（默认显式
-    /// stable）、切回稳定轨真的换索引、从测试轨切回且稳定版未追上时如实标记等待（不降级）、
-    /// 下载源只是同一货架的地址选择（切换保留就绪目标、下次检查换新首选）、首选不可达
-    /// 回退其余地址、渠道切换作废旧世代检查。不依赖任何实验输出目录，夹具自包含。</summary>
+    private static void WritePortableManifest(string feedDir, ProbeChannel channel)
+    {
+        var entry = new UpdateFileEntry("program/MaaRacingMaster.Shell.exe", 1, new string('a', 64));
+        var tree = UpdateProtocol.TreeDigest(new[] { entry });
+        var manifest = new
+        {
+            schema = 1,
+            tag = channel.Tag,
+            version = channel.Version,
+            channel = channel.Channel,
+            platform = "win-x64",
+            compat = new
+            {
+                layout = UpdateProtocol.SupportedLayout,
+                launcher_api = UpdateProtocol.SupportedLauncherApi,
+            },
+            full = new
+            {
+                file = $"MaaRacingMaster-{channel.Version}-win-x64.zip",
+                size = 1,
+                sha256 = new string('b', 64),
+                tree_sha256 = tree,
+                files = new object[] { new object[] { entry.Path, entry.Size, entry.Sha256 } },
+            },
+            deltas = Array.Empty<object>(),
+            limits = new { max_delta_ratio = 0.30 },
+        };
+        var text = JsonSerializer.Serialize(manifest,
+            new JsonSerializerOptions { WriteIndented = true });
+        foreach (var assets in new[] { Path.Combine(feedDir, "assets"), feedDir })
+        {
+            var tagDir = Path.Combine(assets, channel.Tag);
+            Directory.CreateDirectory(tagDir);
+            File.WriteAllText(
+                Path.Combine(tagDir, $"MaaRacingMaster-{channel.Version}-update.json"), text);
+        }
+    }
+
+    // ---------- 更新设置合同 ----------
+
+    /// <summary>渠道/下载源设置的真实行为：自检只针对便携协议（版本标记 + 清单）。
+    /// 覆盖：默认稳定轨、切渠道换索引、等待稳定轨不降级、切源保留目标、首选不可达
+    /// 回退、世代守卫、本次更新不再提示，以及非便携运行 ResetForNewEpoch 后仍不可用。
+    /// 夹具自包含，不依赖任何实验输出目录。</summary>
     private static async Task CheckUpdateSettingsAsync()
     {
         var root = MakeTempDir("settings");
-        Directory.CreateDirectory(Path.Combine(root, "packages"));
-        Directory.CreateDirectory(Path.Combine(root, "current"));
-        var locator = new TestVelopackLocator(
-            "MaaRM.RealShellProbe", "1.0.0",
-            Path.Combine(root, "packages"), Path.Combine(root, "current"), root,
-            Path.Combine(root, "Update.exe"));
+        var installRoot = Path.Combine(root, "install");
+        Directory.CreateDirectory(installRoot);
 
-        // 一个目录里按渠道各放一份索引，版本刻意错开，便于断言「切了真的换了读取目标」。
-        string MakeFeed(string label, params (string Channel, string Version)[] channels)
-        {
-            var dir = Path.Combine(root, label);
-            Directory.CreateDirectory(dir);
-            foreach (var (channel, version) in channels)
-                File.WriteAllText(Path.Combine(dir, $"releases.{channel}.json"), FeedIndex(version));
-            return dir;
-        }
+        UpdateCoordinator Coord(string? feed = null, string? channel = null,
+                                string? source = null, string? dismissed = null,
+                                Action<string?>? saveDismissed = null)
+            => new(feed, initialChannel: channel, initialSource: source,
+                   initialDismissedVersion: dismissed, installRoot: installRoot,
+                   currentVersion: "1.0.0", saveDismissedVersion: saveDismissed);
 
         // ① 渠道是用户设置：默认显式 stable，不依赖安装包烧录的渠道。
-        var defaultFeed = MakeFeed("default", ("stable", "9.0.0"), ("preview", "2.0.0"));
-        var def = new UpdateCoordinator(defaultFeed, managed: true, locator: locator);
-        var defSnap = await def.CheckAsync();
+        var defaultFeed = MakePortableFeed(root, "default",
+            Ch("stable", "9.0.0"), Ch("preview", "2.0.0"));
+        var defSnap = await Coord(defaultFeed).CheckAsync();
         Check("默认构造 → 显式走稳定轨索引",
               defSnap.Phase == UpdateSnapshot.Available && defSnap.TargetVersion == "9.0.0"
               && defSnap.Channel == UpdateSnapshot.ChannelStable,
               $"phase={defSnap.Phase} channel={defSnap.Channel} target={defSnap.TargetVersion} error={defSnap.Error}");
 
         // ② 切渠道：preview → stable，真的换索引。
-        var channelFeed = MakeFeed("channel", ("stable", "9.0.0"), ("preview", "2.0.0"));
-        var ch = new UpdateCoordinator(channelFeed, managed: true, locator: locator,
-            initialChannel: UpdateSnapshot.ChannelPreview);
+        var channelFeed = MakePortableFeed(root, "channel",
+            Ch("stable", "9.0.0"), Ch("preview", "2.0.0"));
+        var ch = Coord(channelFeed, channel: UpdateSnapshot.ChannelPreview);
         var chPreview = await ch.CheckAsync();
         Check("显式测试渠道 → 读 preview 索引",
               chPreview.Phase == UpdateSnapshot.Available && chPreview.TargetVersion == "2.0.0",
@@ -367,9 +162,9 @@ internal static class Program
 
         // ③ 等待标记：stable 索引版本低于已装版本 → 不做降级安装、无目标，
         //    如实标记「等待稳定轨追上」，不假装「已是最新」。
-        var downgradeFeed = MakeFeed("downgrade", ("stable", "0.5.0"), ("preview", "2.0.0"));
-        var dg = new UpdateCoordinator(downgradeFeed, managed: true, locator: locator,
-            initialChannel: UpdateSnapshot.ChannelPreview);
+        var downgradeFeed = MakePortableFeed(root, "downgrade",
+            Ch("stable", "0.5.0"), Ch("preview", "2.0.0"));
+        var dg = Coord(downgradeFeed, channel: UpdateSnapshot.ChannelPreview);
         await dg.CheckAsync();
         var dgSwitch = await dg.SetChannelAsync(UpdateSnapshot.ChannelStable);
         Check("切回稳定轨且稳定版未追上 → 等待标记为真且无降级目标",
@@ -378,9 +173,10 @@ internal static class Program
               $"phase={dgSwitch.Phase} awaiting={dgSwitch.AwaitingStable} target={dgSwitch.TargetVersion} error={dgSwitch.Error}");
 
         // ④ 下载源是同一货架的地址选择：切换只换首选——就绪目标保留，下次检查换新首选。
-        var cnbFeed = MakeFeed("cnb", ("stable", "3.0.0"));
-        var ghFeed = MakeFeed("github", ("stable", "4.0.0"));
-        var sc = new UpdateCoordinator($"cnb|{cnbFeed}\ngithub|{ghFeed}", managed: true, locator: locator);
+        //    便携协议按「全源最高版本」选目标，故 github 地址先不就绪，切源后再补上清单。
+        var cnbFeed = MakePortableFeed(root, "cnb", Ch("stable", "3.0.0"));
+        var ghPending = Path.Combine(root, "github");
+        var sc = Coord($"cnb|{cnbFeed}\ngithub|{ghPending}");
         var scCnb = await sc.CheckAsync();
         Check("首选 cnb → available 且带目标",
               scCnb.Phase == UpdateSnapshot.Available && scCnb.TargetVersion == "3.0.0",
@@ -390,6 +186,7 @@ internal static class Program
               scGh.Phase == UpdateSnapshot.Available && scGh.TargetVersion == "3.0.0"
               && scGh.Source == UpdateSnapshot.SourceGithub,
               $"phase={scGh.Phase} target={scGh.TargetVersion} source={scGh.Source} error={scGh.Error}");
+        WritePortableFeed(ghPending, Ch("stable", "4.0.0"));
         var scRecheck = await sc.CheckAsync();
         Check("切源后重查 → 按新首选读到 github 索引",
               scRecheck.Phase == UpdateSnapshot.Available && scRecheck.TargetVersion == "4.0.0",
@@ -398,20 +195,21 @@ internal static class Program
         // ⑤ 首选不可达 → 回退其余等价地址（同一货架，不存在「跨组回退」）。
         var deadDir = Path.Combine(root, "dead");
         Directory.CreateDirectory(deadDir); // 空目录 = 镜像未就绪
-        var fallback = new UpdateCoordinator($"cnb|{deadDir}\ngithub|{ghFeed}", managed: true, locator: locator);
+        var fallback = Coord($"cnb|{deadDir}\ngithub|{ghPending}");
         var fbSnap = await fallback.CheckAsync();
         Check("首选不可达 → 回退其余地址完成检查",
               fbSnap.Phase == UpdateSnapshot.Available && fbSnap.TargetVersion == "4.0.0",
               $"phase={fbSnap.Phase} target={fbSnap.TargetVersion} error={fbSnap.Error}");
 
-        // ⑥ 世代守卫：慢检查在途时切渠道（开启新世代），旧世代的迟到结果
-        // 不得覆盖新渠道的结果。慢源不分渠道（固定返回旧版本内容），因此
-        // 切渠道后再换首选地址重查：快检查先落定，慢检查后返回必须被丢弃。
-        using var slow = new SlowHttpServer(FeedIndex("2.0.0"),
+        // ⑥ 世代守卫：慢源在途检查时切渠道（开启新世代），旧世代的迟到结果
+        //    不得覆盖新渠道的结果。慢源按渠道给出不同版本（同 tag/version 不能同时
+        //    属于两个渠道），切渠道后再换首选地址重查：快检查先落定，慢检查后返回被丢弃。
+        var slowFeed = MakePortableFeed(root, "slow-epoch",
+            Ch("stable", "2.0.0"), Ch("preview", "1.5.0"));
+        using var slow = new SlowHttpServer(slowFeed,
             TimeSpan.FromMilliseconds(1000), TimeSpan.FromSeconds(6));
-        var epochFeed = $"cnb|http://127.0.0.1:{slow.Port}\ngithub|{ghFeed}";
-        var ep = new UpdateCoordinator(epochFeed, managed: true, locator: locator,
-            initialChannel: UpdateSnapshot.ChannelPreview);
+        var epochFeed = $"cnb|http://127.0.0.1:{slow.Port}\ngithub|{cnbFeed}";
+        var ep = Coord(epochFeed, channel: UpdateSnapshot.ChannelPreview);
         var inFlight = ep.CheckAsync();
         await Task.Delay(100);
         var epSwitch = await ep.SetChannelAsync(UpdateSnapshot.ChannelStable);
@@ -422,20 +220,19 @@ internal static class Program
         await ep.SetSourceAsync(UpdateSnapshot.SourceGithub); // 换首选地址，不动世代
         var recheck = await ep.CheckAsync();
         Check("按新首选重查 → 拿到稳定轨目标",
-              recheck.Phase == UpdateSnapshot.Available && recheck.TargetVersion == "4.0.0",
+              recheck.Phase == UpdateSnapshot.Available && recheck.TargetVersion == "3.0.0",
               $"phase={recheck.Phase} target={recheck.TargetVersion} error={recheck.Error}");
-        var late = await inFlight; // 同步点：确保旧事务彻底结束（丢弃分支的返回快照不保证携带新结果）
+        var late = await inFlight; // 同步点：确保旧事务彻底结束
         var final = ep.GetStatus();
         Check("旧世代的迟到检查不覆盖新渠道结果",
-              final.TargetVersion == "4.0.0" && final.Channel == UpdateSnapshot.ChannelStable
+              final.TargetVersion == "3.0.0" && final.Channel == UpdateSnapshot.ChannelStable
               && !final.AwaitingStable,
               $"late={late.TargetVersion} final={final.TargetVersion}/{final.Channel}/{final.AwaitingStable}");
 
         // ⑦ 本次更新不再提示：按目标版本记住并落盘；取消后清除。
-        var dismissFeed = MakeFeed("dismiss", ("stable", "6.0.0"));
+        var dismissFeed = MakePortableFeed(root, "dismiss", Ch("stable", "6.0.0"));
         string? savedDismissed = null;
-        var dm = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
-            saveDismissedVersion: v => savedDismissed = v);
+        var dm = Coord(dismissFeed, saveDismissed: v => savedDismissed = v);
         var dmUp = await dm.CheckAsync();
         var dmSet = dm.SetDismissed(true);
         Check("标记本次更新不再提示 → 记住目标版本并落盘",
@@ -447,13 +244,31 @@ internal static class Program
         Check("取消不再提示 → 清除标记并落盘",
               dmClear.DismissedVersion is null && savedDismissed is null,
               $"dismissed={dmClear.DismissedVersion} saved={savedDismissed}");
-        var dmRestart = new UpdateCoordinator(dismissFeed, managed: true, locator: locator,
-            initialDismissedVersion: "6.0.0");
+        var dmRestart = Coord(dismissFeed, dismissed: "6.0.0");
         var dmRestartUp = await dmRestart.CheckAsync();
         Check("重启后同一目标仍保持不再提示",
               dmRestartUp.DismissedVersion == "6.0.0",
               $"dismissed={dmRestartUp.DismissedVersion} target={dmRestartUp.TargetVersion}");
+
+        // ⑧ 回归：非便携运行（不传 installRoot）没有自动升级能力，ResetForNewEpoch
+        //    之后必须保持 Unavailable 且带原因，不能被切渠道/切源刷成「源未配置」。
+        var nonPortable = new UpdateCoordinator(dismissFeed);
+        var np0 = nonPortable.GetStatus();
+        Check("非便携运行 → 初始 unavailable 且 Managed=false",
+              np0.Phase == UpdateSnapshot.Unavailable && !np0.Managed
+              && !string.IsNullOrEmpty(np0.Error),
+              $"phase={np0.Phase} managed={np0.Managed} error={np0.Error}");
+        var npChannel = await nonPortable.SetChannelAsync(UpdateSnapshot.ChannelPreview);
+        var npSource = await nonPortable.SetSourceAsync(UpdateSnapshot.SourceGithub);
+        Check("非便携运行 → 切渠道/切源后仍 unavailable 且 error 非空",
+              npChannel.Phase == UpdateSnapshot.Unavailable && !npChannel.Managed
+              && !string.IsNullOrEmpty(npChannel.Error)
+              && npSource.Phase == UpdateSnapshot.Unavailable && !npSource.Managed
+              && !string.IsNullOrEmpty(npSource.Error),
+              $"channel={npChannel.Phase}/{npChannel.Error} source={npSource.Phase}/{npSource.Error}");
     }
+
+    // ---------- 自动检查合同 ----------
 
     /// <summary>自动检查合同（调度决策 + 并发/取消 + 预算 + 修订准入），全部用环回 HTTP
     /// 直接计数或用可注入时钟断言，不靠耗时猜测：
@@ -461,26 +276,25 @@ internal static class Program
     /// ② 同世代并发检查只发一次索引；切渠道取消旧请求并发出新请求；
     /// ③ 单镜像短预算：黑洞镜像被放弃、回退到可用源，整轮不拖到默认 30 分钟；
     /// ④ 自动检查全源失败保留已有目标；手动检查失败如实切空闲并报错；
-    /// ⑤ 更新锁被占用：回可下载 + 可重试提示，且不逐镜像白读索引；
-    /// ⑥ 修订号准入：过期界面的下载/忽略被拒，当前修订生效；
-    /// ⑦ 自动检查提交成功触发推送回调，手动检查不触发；
-    /// ⑧ 调度器启动立即执行首轮。</summary>
+    /// ⑤ 修订号准入：过期界面的下载/忽略被拒，当前修订生效；
+    /// ⑥ 自动检查提交成功触发推送回调，手动检查不触发；
+    /// ⑦ 调度器启动立即执行首轮。
+    /// 所有来源均为便携协议：latest_release.json + &lt;tag&gt;/清单，资产判据 .zip。</summary>
     private static async Task CheckUpdateAutoCheckAsync()
     {
         var root = MakeTempDir("auto");
-        var packages = Path.Combine(root, "packages");
-        var current = Path.Combine(root, "current");
-        Directory.CreateDirectory(packages);
-        Directory.CreateDirectory(current);
-        var locator = new TestVelopackLocator(
-            "MaaRM.RealShellProbe", "1.0.0",
-            packages, current, root, Path.Combine(root, "Update.exe"));
+        var installRoot = Path.Combine(root, "install");
+        Directory.CreateDirectory(Path.Combine(installRoot, "program"));
         var interval = TimeSpan.FromHours(1);
+
+        UpdateCoordinator Coord(string feed, TimeProvider? clock = null, TimeSpan? timeout = null)
+            => new(feed, installRoot: installRoot, currentVersion: "1.0.0",
+                   timeProvider: clock, indexTimeout: timeout);
 
         // ① 调度锚点（可控时钟）
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-        var schedFeed = MakeFeedDir(root, "sched", "stable", "6.0.0");
-        var sched = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: clock);
+        var schedFeed = MakePortableFeed(root, "sched", Ch("stable", "6.0.0"));
+        var sched = Coord(schedFeed, clock);
         Check("调度：启动即到期（首次检查不额外延迟）",
               sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
               $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
@@ -512,7 +326,7 @@ internal static class Program
               sched.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
               $"delay={sched.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
         var resumeClock = new ManualTimeProvider(new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
-        var resume = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: resumeClock);
+        var resume = Coord(schedFeed, resumeClock);
         await resume.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
         resume.SetAutoCheck(false);
         resumeClock.Advance(TimeSpan.FromMinutes(10));
@@ -520,16 +334,17 @@ internal static class Program
         Check("调度：重新启用且锚点未过期 → 剩余等待",
               resume.NextAutoCheckDelay(resumeClock.GetUtcNow(), interval) == TimeSpan.FromMinutes(50),
               $"delay={resume.NextAutoCheckDelay(resumeClock.GetUtcNow(), interval)}");
-        var restarted = new UpdateCoordinator(schedFeed, managed: true, locator: locator, timeProvider: clock);
+        var restarted = Coord(schedFeed, clock);
         Check("调度：重启进程（本进程无已完成检查）→ 立即到期",
               restarted.NextAutoCheckDelay(clock.GetUtcNow(), interval) == TimeSpan.Zero,
               $"delay={restarted.NextAutoCheckDelay(clock.GetUtcNow(), interval)}");
 
         // 忙态跳过：下载在途时自动检查不入场，但同样推进锚点（下个周期再试）
-        using (var slowPackage = new SlowHttpServer(FeedIndex("7.0.0"), TimeSpan.Zero, TimeSpan.FromSeconds(30)))
+        var busyFeed = MakePortableFeed(root, "busy", Ch("stable", "7.0.0"));
+        using (var slowPackage = new SlowHttpServer(busyFeed,
+                   TimeSpan.Zero, TimeSpan.FromSeconds(30)))
         {
-            var busy = new UpdateCoordinator($"cnb|http://127.0.0.1:{slowPackage.Port}", managed: true,
-                locator: locator, timeProvider: clock);
+            var busy = Coord($"cnb|http://127.0.0.1:{slowPackage.Port}", clock);
             await busy.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
             var dl = await busy.StartDownloadAsync().ConfigureAwait(false);
             var skipped = await busy.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
@@ -544,10 +359,12 @@ internal static class Program
         }
 
         // ② 同世代并发检查合并 + 切渠道取消旧请求
-        using (var slowIndex = new SlowHttpServer(FeedIndex("5.0.0"), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3)))
+        var ccFeed = MakePortableFeed(root, "concurrent",
+            Ch("stable", "3.0.0"), Ch("preview", "4.0.0"));
+        using (var slowIndex = new SlowHttpServer(ccFeed,
+                   TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3)))
         {
-            var cc = new UpdateCoordinator($"cnb|http://127.0.0.1:{slowIndex.Port}", managed: true,
-                locator: locator);
+            var cc = Coord($"cnb|http://127.0.0.1:{slowIndex.Port}");
             var first = cc.CheckAsync();
             await Task.Delay(150).ConfigureAwait(false);
             var second = cc.CheckAsync(); // 同世代在途 → 合并
@@ -557,7 +374,7 @@ internal static class Program
                   slowIndex.IndexRequests == 1,
                   $"requests={slowIndex.IndexRequests}");
             Check("并发：两次调用得到同一结果",
-                  r1.TargetVersion == "5.0.0" && r2.TargetVersion == "5.0.0",
+                  r1.TargetVersion == "3.0.0" && r2.TargetVersion == "3.0.0",
                   $"r1={r1.TargetVersion} r2={r2.TargetVersion}");
 
             var before = slowIndex.IndexRequests;
@@ -576,15 +393,17 @@ internal static class Program
             Check("切渠道：新渠道结果生效",
                   switched.Phase == UpdateSnapshot.Available
                   && switched.Channel == UpdateSnapshot.ChannelPreview
-                  && switched.TargetVersion == "5.0.0",
+                  && switched.TargetVersion == "4.0.0",
                   $"phase={switched.Phase} channel={switched.Channel} target={switched.TargetVersion} error={switched.Error}");
         }
 
         // 关窗取消：在途索引请求随令牌立即结束，不必等满默认超时
-        using (var hang = new SlowHttpServer(FeedIndex("1.1.0"), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
+        var hangFeed = MakePortableFeed(root, "hang", Ch("stable", "1.1.0"));
+        using (var hang = new SlowHttpServer(hangFeed,
+                   TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
         {
-            var closing = new UpdateCoordinator($"cnb|http://127.0.0.1:{hang.Port}", managed: true,
-                locator: locator, indexTimeout: TimeSpan.FromSeconds(20));
+            var closing = Coord($"cnb|http://127.0.0.1:{hang.Port}",
+                                timeout: TimeSpan.FromSeconds(20));
             var inflight = closing.CheckAsync();
             await Task.Delay(150).ConfigureAwait(false);
             var sw = Stopwatch.StartNew();
@@ -598,12 +417,15 @@ internal static class Program
         }
 
         // ③ 单镜像短预算：黑洞镜像放弃、回退可用源；④ 自动失败保留 / 手动失败如实报错
-        using (var blackhole = new SlowHttpServer(FeedIndex("7.0.0"), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
-        using (var good = new SlowHttpServer(FeedIndex("8.0.0"), TimeSpan.Zero, TimeSpan.Zero))
+        var blackholeFeed = MakePortableFeed(root, "blackhole", Ch("stable", "7.0.0"));
+        var goodFeed = MakePortableFeed(root, "good", Ch("stable", "8.0.0"));
+        using (var blackhole = new SlowHttpServer(blackholeFeed,
+                   TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)))
+        using (var good = new SlowHttpServer(goodFeed, TimeSpan.Zero, TimeSpan.Zero))
         {
-            var hedge = new UpdateCoordinator(
+            var hedge = Coord(
                 $"cnb|http://127.0.0.1:{blackhole.Port}\ngithub|http://127.0.0.1:{good.Port}",
-                managed: true, locator: locator, indexTimeout: TimeSpan.FromMilliseconds(600));
+                timeout: TimeSpan.FromMilliseconds(600));
             var sw = Stopwatch.StartNew();
             var hedged = await hedge.CheckAsync().ConfigureAwait(false);
             sw.Stop();
@@ -612,7 +434,7 @@ internal static class Program
                   $"phase={hedged.Phase} target={hedged.TargetVersion} error={hedged.Error}");
             Check("短预算：整轮在预算量级内结束（不拖到默认 30 分钟）",
                   sw.ElapsedMilliseconds < 5000, $"{sw.ElapsedMilliseconds}ms");
-            Check("短预算：黑洞源请求数受预算约束（含大小写重试）",
+            Check("短预算：黑洞源请求数受预算约束",
                   blackhole.IndexRequests <= 2, $"requests={blackhole.IndexRequests}");
 
             good.Down = true;
@@ -632,54 +454,9 @@ internal static class Program
             blackhole.Down = false;
         }
 
-        // ⑤ 更新锁被占用：回可下载 + 可重试提示，且不逐镜像白读索引
-        var lockRoot = MakeTempDir("lock");
-        var lockPackages = Path.Combine(lockRoot, "packages");
-        var lockCurrent = Path.Combine(lockRoot, "current");
-        Directory.CreateDirectory(lockPackages);
-        Directory.CreateDirectory(lockCurrent);
-        var lockLocator = new TestVelopackLocator(
-            "MaaRM.RealShellProbe", "1.0.0",
-            lockPackages, lockCurrent, lockRoot, Path.Combine(lockRoot, "Update.exe"));
-        var lockFeed = MakeFeedDir(root, "lockfeed", "stable", "9.0.0");
-        using (var mirror = new SlowHttpServer(FeedIndex("9.0.0"), TimeSpan.Zero, TimeSpan.Zero))
-        {
-            var lockCoord = new UpdateCoordinator(
-                $"cnb|{lockFeed}\ngithub|http://127.0.0.1:{mirror.Port}", managed: true, locator: lockLocator);
-            var lockUp = await lockCoord.CheckAsync().ConfigureAwait(false);
-            Check("锁用例：先拿到可下载目标",
-                  lockUp.Phase == UpdateSnapshot.Available && lockUp.TargetVersion == "9.0.0",
-                  $"phase={lockUp.Phase} target={lockUp.TargetVersion} error={lockUp.Error}");
-            var lockPath = Path.Combine(lockPackages, ".velopack_lock");
-            using (new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
-            {
-                await lockCoord.StartDownloadAsync().ConfigureAwait(false);
-                var settled = await WaitUntilAsync(
-                    s => s.Phase != UpdateSnapshot.Downloading, lockCoord.GetStatus, 20000).ConfigureAwait(false);
-                Check("锁被占用：回到可下载（不留在下载中）",
-                      settled.Phase == UpdateSnapshot.Available,
-                      $"phase={settled.Phase} error={settled.Error}");
-                if (OperatingSystem.IsWindows())
-                {
-                    Check("锁被占用：给出可重试提示",
-                          (settled.Error ?? "").Contains("稍后重试", StringComparison.Ordinal),
-                          $"error={settled.Error}");
-                    Check("锁被占用：不进入镜像回退（镜像索引请求为 0）",
-                          mirror.IndexRequests == 0, $"requests={mirror.IndexRequests}");
-                }
-                else
-                {
-                    // 这把包目录锁只在 Windows 上阻断下载：非 Windows 实测会照常发起下载
-                    // （本地 feed 只有索引、没有 nupkg，于是报「包缺失」并进镜像回退）。
-                    // 产品只发 Windows 包，这里不假装验过。
-                    Console.WriteLine("[SKIP] 锁被占用：可重试提示与镜像回退计数（锁语义仅 Windows 生效）");
-                }
-            }
-        }
-
-        // ⑥ 修订号准入：过期界面的下载/忽略被拒，当前修订生效
-        var revFeed = MakeFeedDir(root, "rev", "stable", "4.0.0");
-        var rev = new UpdateCoordinator(revFeed, managed: true, locator: locator);
+        // ⑤ 修订号准入：过期界面的下载/忽略被拒，当前修订生效
+        var revFeed = MakePortableFeed(root, "rev", Ch("stable", "4.0.0"));
+        var rev = Coord(revFeed);
         var revSnap = await rev.CheckAsync().ConfigureAwait(false);
         var stale = revSnap.Revision + 100; // 一定不是当前修订
         var staleDownload = await rev.StartDownloadAsync(stale).ConfigureAwait(false);
@@ -698,12 +475,16 @@ internal static class Program
               okDismiss.DismissedVersion == "4.0.0",
               $"dismissed={okDismiss.DismissedVersion} error={okDismiss.Error}");
 
-        // ⑦ 推送回调：自动检查成功触发，手动检查不触发
-        var pushFeed = MakeFeedDir(root, "push", "stable", "3.0.0");
-        var push = new UpdateCoordinator(pushFeed, managed: true, locator: locator);
+        // ⑥ 推送回调：自动检查成功触发，手动检查不触发
+        var pushFeed = MakePortableFeed(root, "push", Ch("stable", "3.0.0"));
+        var push = Coord(pushFeed);
         UpdateSnapshot? pushed = null;
         push.AutoCheckCommitted += s => pushed = s;
         await push.CheckAsync(UpdateCheckTrigger.Auto).ConfigureAwait(false);
+        // 回调在检查任务的完成信号之后触发：给续体一个到达窗口，再判定是否推送。
+        var pushDeadline = DateTime.UtcNow.AddSeconds(2);
+        while (pushed is null && DateTime.UtcNow < pushDeadline)
+            await Task.Delay(50).ConfigureAwait(false);
         Check("推送：自动检查提交成功 → 回调收到快照",
               pushed is not null && pushed.TargetVersion == "3.0.0",
               $"pushed={pushed?.TargetVersion}");
@@ -711,9 +492,9 @@ internal static class Program
         await push.CheckAsync().ConfigureAwait(false);
         Check("推送：手动检查不触发后台推送", pushed is null, $"pushed={pushed?.TargetVersion}");
 
-        // ⑧ 调度器启动立即执行首轮
-        var loopFeed = MakeFeedDir(root, "loop", "stable", "2.0.0");
-        var loopCoord = new UpdateCoordinator(loopFeed, managed: true, locator: locator);
+        // ⑦ 调度器启动立即执行首轮
+        var loopFeed = MakePortableFeed(root, "loop", Ch("stable", "2.0.0"));
+        var loopCoord = Coord(loopFeed);
         using (var scheduler = new UpdateAutoCheck(loopCoord, interval: interval))
         {
             scheduler.Start();
@@ -738,14 +519,6 @@ internal static class Program
         public void Advance(TimeSpan delta) => _now += delta;
     }
 
-    private static string MakeFeedDir(string root, string label, string channel, string version)
-    {
-        var dir = Path.Combine(root, label);
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, $"releases.{channel}.json"), FeedIndex(version));
-        return dir;
-    }
-
     /// <summary>轮询等待条件成立（检查/下载都是后台任务）：返回最后一次快照。</summary>
     private static async Task<UpdateSnapshot> WaitUntilAsync(Func<UpdateSnapshot, bool> done,
                                                             Func<UpdateSnapshot> read, int timeoutMs)
@@ -760,68 +533,28 @@ internal static class Program
         return last;
     }
 
-    /// <summary>最小可用渠道索引：检查阶段只解析 JSON，不需要真实 nupkg（探针既有
-    /// 「索引可达包缺失」用例已证实）。SHA 用占位值，只用于版本比较。</summary>
-    private static string FeedIndex(string version) =>
-        "{\"Assets\":[{\"PackageId\":\"MaaRM.RealShellProbe\",\"Version\":\"" + version +
-        "\",\"Type\":\"Full\",\"FileName\":\"MaaRM.RealShellProbe-" + version +
-        "-full.nupkg\",\"SHA1\":\"" + new string('0', 40) +
-        "\",\"SHA256\":\"" + new string('0', 64) + "\",\"Size\":1}]}";
-
-    /// <summary>显式定位器：与实验 HookProbe 同形态，从树外驱动指定受管根。</summary>
-    private static TestVelopackLocator MakeExplicitLocator(string live, string liveVersion)
-    {
-        return new TestVelopackLocator(
-            "MaaRM.RealShellProbe", liveVersion,
-            Path.Combine(live, "packages"),
-            Path.Combine(live, "current"), live,
-            Path.Combine(live, "Update.exe"));
-    }
-
-    private static (string Live, string Feed) ResolveUpdateFixture(string[] args)
-    {
-        // 夹具显式传入（正式工具不依赖任何实验输出目录）：--root 受管安装树，
-        // --feed 更新源目录。隔离夹具的准备属于验证环境，不进正式工程。
-        var root = GetOption(args, "--root");
-        var feed = GetOption(args, "--feed");
-        if (root is null || feed is null)
-            throw new InvalidOperationException(
-                "update 用例必须显式给夹具：--root <受管安装树> --feed <更新源目录>");
-        return (root, feed);
-    }
-
-    /// <summary>协调器总是显式传渠道（默认 stable）：夹具索引若是历史 win 命名，
-    /// 复制到临时目录并改名，原夹具保持渠道无关、不被写入。</summary>
-    private static string EnsureStableIndex(string feed)
-    {
-        if (File.Exists(Path.Combine(feed, "releases.stable.json"))) return feed;
-        var staged = Path.Combine(MakeTempDir("feed-stable"), "feed");
-        Directory.CreateDirectory(staged);
-        foreach (var f in Directory.GetFiles(feed))
-            File.Copy(f, Path.Combine(staged, Path.GetFileName(f)));
-        var win = Path.Combine(staged, "releases.win.json");
-        if (File.Exists(win))
-            File.Move(win, Path.Combine(staged, "releases.stable.json"));
-        return staged;
-    }
-
-    /// <summary>本地最小 HTTP 源（TcpListener，无 URL ACL 依赖）：索引响应延迟制造
-    /// 检查在途窗口，包请求挂起模拟大文件下载（取消会打断真实 HTTP 下载任务）。
-    /// 仅 update 用例并发场景用；Dispose 即停服。</summary>
+    /// <summary>本地最小 HTTP 便携源（TcpListener，无 URL ACL 依赖）：
+    /// latest_release.json 计索引请求，标记与清单共用 _indexDelay/Down/取消令牌，
+    /// .zip 请求挂起模拟大文件下载。Dispose 即停服。</summary>
     private sealed class SlowHttpServer : IDisposable
     {
         private readonly TcpListener _listener;
         private readonly CancellationTokenSource _cts = new();
-        private readonly string _indexJson;
+        private readonly Dictionary<string, byte[]> _files;
         private TimeSpan _indexDelay;
         private readonly TimeSpan _packageDelay;
         private int _indexRequests;
 
-        public SlowHttpServer(string indexJson, TimeSpan indexDelay, TimeSpan packageDelay)
+        public SlowHttpServer(string root, TimeSpan indexDelay, TimeSpan packageDelay)
         {
-            _indexJson = indexJson;
             _indexDelay = indexDelay;
             _packageDelay = packageDelay;
+            _files = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(root, file).Replace('\\', '/');
+                _files[rel] = File.ReadAllBytes(file);
+            }
             _listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
             _listener.Start();
             Port = ((System.Net.IPEndPoint)_listener.LocalEndpoint).Port;
@@ -830,15 +563,13 @@ internal static class Program
 
         public int Port { get; }
 
-        /// <summary>到达本服务的索引请求数（含大小写 URL 的重试）。取消/合并/镜像短路
-        /// 都可据此直接计数，而不是靠耗时推断。</summary>
+        /// <summary>到达本服务的标记请求数。取消/合并/镜像短路都可据此直接计数。</summary>
         public int IndexRequests => Volatile.Read(ref _indexRequests);
 
-        /// <summary>true = 所有索引请求返回 500（模拟全源故障，不依赖延迟）。</summary>
+        /// <summary>true = 所有请求返回 500（模拟全源故障，不依赖延迟）。</summary>
         public bool Down { get; set; }
 
-        /// <summary>调整后续请求的索引延迟（已开始的请求仍按旧值等待）。
-        /// 用于「取消旧慢请求、放行新渠道检查」的场景。</summary>
+        /// <summary>调整后续请求的索引延迟（已开始的请求仍按旧值等待）。</summary>
         public void SetIndexDelay(TimeSpan delay) => _indexDelay = delay;
 
         private async Task AcceptLoopAsync()
@@ -864,35 +595,36 @@ internal static class Program
                 var m0 = text.IndexOf(' ') + 1;
                 var m1 = m0 > 0 ? text.IndexOf(' ', m0) : -1;
                 var path = m1 > m0 ? text[m0..m1] : "/";
-                if (path.Contains("releases", StringComparison.OrdinalIgnoreCase))
-                {
-                    Interlocked.Increment(ref _indexRequests);
-                    if (Down)
-                    {
-                        await stream.WriteAsync(
-                            System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
-                            _cts.Token);
-                        return;
-                    }
-                    await Task.Delay(_indexDelay, _cts.Token);
-                    var body = System.Text.Encoding.UTF8.GetBytes(_indexJson);
-                    await stream.WriteAsync(
-                        System.Text.Encoding.ASCII.GetBytes(
-                            $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"),
-                        _cts.Token);
-                    await stream.WriteAsync(body, _cts.Token);
-                }
-                else if (path.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase))
+                var relative = path.TrimStart('/');
+                if (relative.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
                     // 挂起不响应：模拟大文件下载；取消后由 Dispose/断连收尾
                     await Task.Delay(_packageDelay, _cts.Token);
+                    return;
                 }
-                else
+                var isMarker = relative.EndsWith("latest_release.json",
+                    StringComparison.OrdinalIgnoreCase);
+                if (isMarker) Interlocked.Increment(ref _indexRequests);
+                if (Down)
+                {
+                    await stream.WriteAsync(
+                        System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                        _cts.Token);
+                    return;
+                }
+                await Task.Delay(_indexDelay, _cts.Token);
+                if (!_files.TryGetValue(relative, out var body))
                 {
                     await stream.WriteAsync(
                         System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
                         _cts.Token);
+                    return;
                 }
+                await stream.WriteAsync(
+                    System.Text.Encoding.ASCII.GetBytes(
+                        $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"),
+                    _cts.Token);
+                await stream.WriteAsync(body, _cts.Token);
             }
             catch
             {
@@ -1091,29 +823,6 @@ internal static class Program
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
 
-    private static ChildRun RunChild(string fileName, string arguments)
-    {
-        using var p = Process.Start(new ProcessStartInfo
-        {
-            FileName = fileName,
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        });
-        if (p is null)
-            return new ChildRun(null, TimedOut: true);
-        if (!p.WaitForExit(30_000))
-        {
-            p.Kill(entireProcessTree: true);
-            return new ChildRun(null, TimedOut: true);
-        }
-        return new ChildRun(p.ExitCode, TimedOut: false);
-    }
-
-    private static string Quote(string s) => "\"" + s + "\"";
-
-    // ---------- 应用根解析 ----------
-
     private static string MakeTempDir(string label)
     {
         var dir = Path.Combine(Path.GetTempPath(),
@@ -1122,58 +831,13 @@ internal static class Program
         return dir;
     }
 
-    /// <summary>受管标准布局夹具：install/Update.exe + install/current（壳 exe 所在内容根）。</summary>
-    private static (string InstallRoot, string ContentRoot) MakeManagedFixture()
-    {
-        var tmp = MakeTempDir("managed");
-        var content = Path.Combine(tmp, "install", "current");
-        Directory.CreateDirectory(content);
-        File.WriteAllText(Path.Combine(tmp, "install", "Update.exe"), string.Empty);
-        return (Path.Combine(tmp, "install"), content);
-    }
-
     private static string Norm(string p) => Path.GetFullPath(p);
+
+    // ---------- 应用根解析 ----------
 
     private static void CheckAppRoot()
     {
-        // 受管：旧环境变量覆盖值与内容根冲突 → 忽略并记录，内容根为准
-        var (installRoot, contentRoot) = MakeManagedFixture();
-        var envOverride = Norm(Path.Combine(MakeTempDir("oldenv"), "old-root"));
-        Directory.CreateDirectory(envOverride);
-        var r = AppRootResolver.ResolveFresh(
-            new[] { "MaaRM.Shell.exe" }, envOverride, contentRoot, @"AppData\Roaming");
-        Check("受管+冲突环境覆盖 → 内容根为准", r.Root == contentRoot && r.Managed,
-              $"Root={r.Root} Managed={r.Managed}");
-        Check("受管+冲突环境覆盖 → 记录被拒覆盖值",
-              r.IgnoredOverride is not null && r.IgnoredOverride.Contains(envOverride, StringComparison.OrdinalIgnoreCase),
-              $"IgnoredOverride={r.IgnoredOverride}");
-        Check("受管+冲突环境覆盖 → 不拒绝启动", r.RefusedReason is null, $"RefusedReason={r.RefusedReason}");
-
-        // 受管：--app-root 参数覆盖值与内容根冲突 → 同样忽略
-        var argOverride = Norm(Path.Combine(MakeTempDir("oldarg"), "old-root"));
-        Directory.CreateDirectory(argOverride);
-        var r2 = AppRootResolver.ResolveFresh(
-            new[] { "MaaRM.Shell.exe", "--app-root", argOverride }, null, contentRoot, @"AppData\Roaming");
-        Check("受管+冲突参数覆盖 → 内容根为准", r2.Root == contentRoot && r2.Managed,
-              $"Root={r2.Root} Managed={r2.Managed}");
-        Check("受管+冲突参数覆盖 → 记录被拒覆盖值",
-              r2.IgnoredOverride is not null && r2.IgnoredOverride.Contains(argOverride, StringComparison.OrdinalIgnoreCase),
-              $"IgnoredOverride={r2.IgnoredOverride}");
-
-        // 受管：覆盖值指向内容根本身（大小写/尾分隔符差异）→ 不算冲突
-        var r3 = AppRootResolver.ResolveFresh(
-            new[] { "MaaRM.Shell.exe", "--app-root", contentRoot + "\\" }, null, contentRoot, @"AppData\Roaming");
-        Check("受管+覆盖值=内容根 → 非冲突", r3.Root == contentRoot && r3.IgnoredOverride is null,
-              $"Root={r3.Root} IgnoredOverride={r3.IgnoredOverride}");
-
-        // 受管：%APPDATA% 缺失 → 拒绝启动（用户数据不得落进可被整体替换的内容树）
-        var r4 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, contentRoot, "");
-        Check("受管+APPDATA 缺失 → 拒绝启动", r4.RefusedReason is not null,
-              $"RefusedReason={r4.RefusedReason ?? "<空>"}");
-        var r5 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, contentRoot, @"AppData\Roaming");
-        Check("受管+APPDATA 可用 → 不拒绝", r5.RefusedReason is null, $"RefusedReason={r5.RefusedReason}");
-
-        // 非受管：历史口径不变（参数 > 环境变量 > 向上探测）
+        // 历史口径不变（参数 > 环境变量 > 向上探测）
         var proj = MakeTempDir("proj");
         var deep = Path.Combine(proj, "sub", "deep");
         Directory.CreateDirectory(deep);
@@ -1181,21 +845,25 @@ internal static class Program
 
         var argRoot = Norm(Path.Combine(proj, "via-arg"));
         var r6 = AppRootResolver.ResolveFresh(
-            new[] { "MaaRM.Shell.exe", "--app-root", argRoot }, @"ignored-env", deep, @"AppData\Roaming");
-        Check("非受管+参数 → 参数优先", r6.Root == argRoot && !r6.Managed, $"Root={r6.Root}");
+            new[] { "MaaRM.Shell.exe", "--app-root", argRoot }, @"ignored-env", deep);
+        Check("参数 → 参数优先", r6.Root == argRoot,
+              $"Root={r6.Root} Decision={r6.Decision}");
 
         var envRoot = Norm(Path.Combine(proj, "via-env"));
         var r7 = AppRootResolver.ResolveFresh(
-            new[] { "MaaRM.Shell.exe" }, envRoot, deep, @"AppData\Roaming");
-        Check("非受管+环境变量 → 环境变量优先于探测", r7.Root == envRoot && !r7.Managed, $"Root={r7.Root}");
+            new[] { "MaaRM.Shell.exe" }, envRoot, deep);
+        Check("环境变量 → 优先于探测", r7.Root == envRoot,
+              $"Root={r7.Root} Decision={r7.Decision}");
 
-        var r8 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, deep, @"AppData\Roaming");
-        Check("非受管+无覆盖 → 向上探测 pyproject.toml", r8.Root == proj && !r8.Managed, $"Root={r8.Root}");
+        var r8 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, deep);
+        Check("无覆盖 → 向上探测 pyproject.toml", r8.Root == proj,
+              $"Root={r8.Root} Decision={r8.Decision}");
 
         var emptyBase = Path.Combine(MakeTempDir("bare"), "a", "b");
         Directory.CreateDirectory(emptyBase);
-        var r9 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, emptyBase, @"AppData\Roaming");
-        Check("非受管+无任何锚 → null（壳自行降级）", r9.Root is null && !r9.Managed, $"Root={r9.Root}");
+        var r9 = AppRootResolver.ResolveFresh(new[] { "MaaRM.Shell.exe" }, null, emptyBase);
+        Check("无任何锚 → null（壳自行降级）", r9.Root is null,
+              $"Root={r9.Root} Decision={r9.Decision}");
 
         // 用户数据根：与 paths.py 同口径（夹具用相对路径，避免源码落本机绝对路径）
         Check("用户数据根:APPDATA 优先",
