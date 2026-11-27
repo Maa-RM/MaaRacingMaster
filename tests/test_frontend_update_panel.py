@@ -3,7 +3,7 @@
 
 **为什么是静态锁**：页面装载验收只覆盖「检查更新」这一条按钮通路，其余契约仍可从源码
 文本判定——更新主流程实际调用哪些宿主动作、相位到视图的映射、进度响应是否带修订守卫、
-提交临界区是否不给取消、非受管是否有手动入口、动作的主次分级。真正链路验证由提权整链
+提交临界区是否不给取消、不支持自动升级的运行方式是否有手动入口、动作的主次分级。真正链路验证由提权整链
 （真实 WebView 按钮驱动）完成，本文件的价值是让回退在 CI 即红。
 
 **结构**：渲染被拆成两张表——`describe()`（相位 → 图标/标题/说明/动作/附加区）与
@@ -131,11 +131,11 @@ def test_apply_critical_section_hides_cancel(app_src: str):
     assert "disabled: true" in critical, "提交临界区主按钮未禁用"
 
 
-def test_unmanaged_install_offers_manual_entry(app_src: str):
-    """非受管安装：动作明确给出「前往下载」，而不是只留一句错误。"""
+def test_unsupported_runtime_offers_manual_entry(app_src: str):
+    """不支持自动升级的运行方式：动作明确给出「前往下载」，而不是只留一句错误。"""
     view = _js_function_body(app_src, "function describe(snapshot)")
     branch = _case(view, "unavailable")
-    assert "前往下载" in branch, "非受管安装缺少手动下载入口"
+    assert "前往下载" in branch, "不支持自动升级的运行方式缺少手动下载入口"
     assert "openDownloadPage" in branch, "手动下载按钮未绑定前往下载动作"
 
 
@@ -208,11 +208,11 @@ def test_available_error_keeps_a_download_retry(app_src: str):
     assert "label: '重新检查'" not in branch, "下载未完成不该只给重新检查"
 
 
-def test_unmanaged_or_unconfigured_falls_back_to_manual_download(app_src: str):
-    """非受管安装与来源未配置：自动升级这条路本来不通，给手动下载入口，
+def test_unsupported_or_unconfigured_falls_back_to_manual_download(app_src: str):
+    """当前运行方式不支持自动升级与来源未配置：给手动下载入口，
     而不是让「重新检查」反复刷同一句错误。"""
     branch = _case(_js_function_body(app_src, "function describe(snapshot)"), "idle")
-    assert "snapshot.managed === false" in branch, "未按 managed 判非受管"
+    assert "snapshot.managed === false" in branch, "未按 managed 判自动升级不可用"
     assert "未配置" in branch, "未按「来源未配置」判手动入口"
     assert "前往下载" in branch and "openDownloadPage" in branch, "缺少手动下载动作"
 
@@ -299,7 +299,7 @@ def test_settings_popover_wires_to_host_actions(app_src: str):
     # 设置回包必须经同一渲染入口：卡头文案、动作与提醒点都要跟着快照走
     assert "renderSnapshot(d)" in ch, "渠道回包未落到统一渲染入口"
     assert "renderSnapshot(d)" in src, "下载源回包未落到统一渲染入口"
-    # 临界区/非受管拒绝时要当场说明，不能让设置看起来生效了
+    # 临界区/运行方式不支持拒绝时要当场说明，不能让设置看起来生效了
     assert "showError(d.error)" in ch and "showError(d.error)" in src, "设置被拒未给反馈"
     render = _js_function_body(app_src, "function renderSnapshot(snapshot)")
     assert "applySettingsSnapshot(snapshot)" in render, "统一渲染入口未回显渠道/源/开关"
@@ -364,7 +364,7 @@ def test_announcement_refresh_follows_update_check_and_tab_entry(app_src: str):
     shell = SHELL_APP_JS.read_text(encoding="utf-8")
     switch = _js_function_body(shell, "function switchTab(name)")
     assert "pollDashboard()" in switch, "switchTab 抽取结果可疑，静态锁会空过"
-    assert "fetchAnnouncement()" in switch, "切进关于页缺少公告补拉（非受管安装没有重试入口）"
+    assert "fetchAnnouncement()" in switch, "切进关于页缺少公告补拉（不支持自动升级时没有重试入口）"
     assert "force" not in switch, "切页补拉不得绕过最小间隔"
 
     check = _js_function_body(app_src, "async function checkUpdate()")

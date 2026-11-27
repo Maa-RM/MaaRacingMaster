@@ -4,7 +4,7 @@
 **为什么单独成文件**：这套行为跨壳层四个部件——协调器的检查事务、进程内调度器、
 偏好落盘、原生推送与前端渲染入口；静态锁只钉「入口与形状不被改回」，真实语义
 （请求计数、取消时序、预算、锚点）由合同探针 `-- auto` 模式承担，它直连本仓库
-的 `UpdateCoordinator.cs` / `UpdateAutoCheck.cs` 与 Velopack 1.2.161：
+的 `UpdateCoordinator.cs` / `UpdateAutoCheck.cs` 与便携源夹具：
 
     dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe \\
         -c Debug -- auto
@@ -70,46 +70,21 @@ def test_coordinator_merges_inflight_checks_and_guards_actions():
     assert "ResetForNewEpoch()" in switch, "切渠道未清空在途与就绪"
 
 
-def test_check_uses_cancellable_short_budget_index_downloader():
-    """索引读取走注入下载器：检查令牌 + 单镜像短预算（含 SDK 大小写重试），
-    包下载保留 SDK 原实现与超时；镜像校验用同一令牌。"""
+def test_portable_check_uses_cancellable_short_budget():
+    """便携检查预算：标记+清单读取绑定检查令牌与单源短预算，取消时不被 catch 吞成源不可达。"""
     src = COORD.read_text(encoding="utf-8")
-    assert "class CheckIndexDownloader : HttpClientFileDownloader" in src, "缺少索引专用下载器"
-    body = _cs_method(
-        src,
-        "public override async Task<string> DownloadString(string url,",
-    )
-    assert "CreateLinkedTokenSource(_checkToken)" in body and "CancelAfter(_budget)" in body, (
-        "索引请求未绑定检查令牌与短预算"
-    )
-    assert "TryDownloadThenLowercase" in body, "未复用 SDK 的大小写 URL 重试"
-    assert "_checkToken.ThrowIfCancellationRequested()" in body, (
-        "SDK 的 catch-all 会把取消包成普通失败，取消语义必须还原"
-    )
-    mirror = _cs_method(
-        src,
-        "private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)",
-    )
-    assert "CreateManager(intent, source, ct)" in mirror, "镜像索引读取未绑下载令牌"
+    checker = _cs_method(src, "private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,")
+    assert "CreateLinkedTokenSource(ct)" in checker, "检查预算未绑定检查令牌"
+    assert "budget.CancelAfter(_indexTimeout)" in checker, "单源索引预算未生效"
+    assert "if (markerAhead) sawUnavailableNewer = true" in checker, "超时源不应误判已是最新"
 
 
-def test_lock_failure_short_circuits_mirror_fallback():
-    """更新锁被占用与源无关：第一出口就回可重试状态，不逐镜像白读索引。"""
+def test_portable_mirror_reuses_same_target_manifest():
+    """镜像回退：只换地址不换发行，按已选定的 tag/版本取清单并核对整包摘要。"""
     src = COORD.read_text(encoding="utf-8")
-    download = _cs_method(
-        src, "private async Task DownloadAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)"
-    )
-    assert download.count("catch (AcquireLockFailedException") >= 2, (
-        "锁定源下载与镜像回退都要识别锁失败"
-    )
-    assert "RetryableLockMessage" in download, "锁失败未给可重试文案"
-    mirror = _cs_method(
-        src,
-        "private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)",
-    )
-    assert "catch (AcquireLockFailedException) { throw; }" in mirror, (
-        "镜像候选吞掉锁失败身份（会丢失可重试语义并重复撞锁）"
-    )
+    stage = _cs_method(src, "private async Task<StagedUpdate> StagePortableAsync(UpdateRelease release,")
+    assert "FetchManifestAtAsync(candidate, release.Tag, release.Version" in stage, "镜像未取同目标清单"
+    assert "mirror.Full.Sha256, release.Full.Sha256" in stage, "镜像整包摘要未核对"
 
 
 def test_auto_check_failure_keeps_state_and_manual_failure_reports():
@@ -117,7 +92,7 @@ def test_auto_check_failure_keeps_state_and_manual_failure_reports():
     src = COORD.read_text(encoding="utf-8")
     check = _cs_method(
         src,
-        "private async Task<UpdateSnapshot> DoCheckAsync(CheckIntent intent, UpdateCheckTrigger trigger,",
+        "private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,",
     )
     assert "if (trigger == UpdateCheckTrigger.Auto)" in check, "全源失败未区分发起方"
     assert "自动检查全源失败，保留当前状态" in check, "自动失败未保留状态"
@@ -140,8 +115,8 @@ def test_auto_check_events_and_anchor():
         "忙态/不可用时的自动尝试未推进锚点（会立刻重试）"
     )
     delay = _cs_method(src, "public TimeSpan? NextAutoCheckDelay(DateTimeOffset now, TimeSpan interval)")
-    assert "if ((!_managed && !_portable) || !_autoCheckEnabled) return null" in delay, (
-        "非受管且非便携/关闭时仍会安排检查"
+    assert "if (!_portable || !_autoCheckEnabled) return null" in delay, (
+        "非便携运行/关闭时仍会安排检查"
     )
     assert "return TimeSpan.Zero" in delay, "首次检查未立即到期"
 
@@ -194,7 +169,7 @@ def test_contract_probe_auto_mode_is_reachable():
         "IndexRequests",
         "SetIndexDelay",
         "indexTimeout",
-        ".velopack_lock",
+        "installRoot",
         "StartDownloadAsync(stale)",
         "AutoCheckCommitted",
         "CancelPendingCheck",
@@ -205,7 +180,7 @@ def test_contract_probe_auto_mode_is_reachable():
 
 
 def test_contract_probe_auto_assertions_actually_pass():
-    """有 dotnet 的环境直接跑真实 Velopack 行为断言；无 dotnet 时明确跳过，
+    """有 dotnet 的环境直接跑便携源行为断言；无 dotnet 时明确跳过，
     不把「没跑」伪装成通过。"""
     if shutil.which("dotnet") is None:
         pytest.skip("本机无 dotnet；行为真值由合同探针 auto 模式在开发机验证")

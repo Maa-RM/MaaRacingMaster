@@ -6,7 +6,7 @@
 从测试轨切回后等稳定轨追上（数据只升不降）。
 
 **分工**：本文件只锁「形态不被改回旧 bug」，不冒充行为验证。行为真值由壳
-合同探针承担，它直接链接本仓库的 UpdateCoordinator.cs 并跑 Velopack 1.2.161：
+合同探针承担，它直接链接本仓库的 UpdateCoordinator.cs 并跑便携源夹具：
 
     dotnet run --project apps/MaaRacingMaster.Shell/tools/ShellContractProbe \\
         -c Debug -- settings
@@ -51,10 +51,9 @@ def test_channel_is_always_explicit_and_never_downgrades():
     src = COORD.read_text(encoding="utf-8")
     assert "AllowVersionDowngrade" not in src, "降级开关应已整体删除"
     assert "_channelExplicit" not in src, "「未选过渠道」隐藏态应已删除"
-    manager = _cs_method(src, "private UpdateManager CreateManager(CheckIntent intent, string source, CancellationToken checkToken)")
-    assert "ExplicitChannel = intent.Channel" in manager, "未向更新器显式传渠道"
-    assert "new SimpleWebSource(uri, downloader" in manager, "http 源未注入索引下载器（短预算/可取消）"
-    assert "_locator is null" in manager, "本地源应沿用 SDK 默认行为"
+    checker = _cs_method(src, "private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,")
+    assert "FetchMarkerAsync(endpoint, intent.Channel" in checker, "未按用户选择的渠道读标记"
+    assert "release.Channel, intent.Channel" in checker, "清单渠道与请求渠道不符时未拒绝"
     switch = _cs_method(src, "private async Task<UpdateSnapshot> SwitchSettingAsync(string? value, bool isChannel)")
     assert "_awaitingStable = value == UpdateSnapshot.ChannelStable" in switch, (
         "切回稳定轨时未如实设置等待标记"
@@ -65,13 +64,11 @@ def test_channel_is_always_explicit_and_never_downgrades():
 def test_sources_are_named_addresses_not_shelves():
     """配置 = 命名地址行，名字只决定首选顺序：偏好在前、其余地址作回退；
     不存在分组筛选。无标签行按无名地址参与回退，空地址行跳过。"""
-    src = COORD.read_text(encoding="utf-8")
-    assert "private sealed class SourceCatalog" in src, "来源目录抽象缺失"
-    for_body = src[src.index("public string[] For(string preference)"):]
-    for_body = for_body[:for_body.index("\n\n")]
-    assert "OrderByDescending" in for_body, "偏好未排到首位"
-    assert "string.Equals(e.Tag, preference" in for_body, "未按偏好排序"
-    assert "Where(e => e.Url.Length > 0)" in src, "空地址行未跳过"
+    catalog = REPO / "apps" / "MaaRacingMaster.Shell" / "UpdateSourceClient.cs"
+    cat_src = catalog.read_text(encoding="utf-8")
+    parse = _cs_method(cat_src, "public static IReadOnlyList<UpdateSourceEndpoint> Parse(string? config, string preference)")
+    assert "OrderByDescending(e => string.Equals(e.Tag, preference" in parse, "偏好未排到首位"
+    assert "Where(e => e.Base.Length > 0)" in parse, "空地址行未跳过"
 
 
 def test_switch_semantics_differ_by_dimension():
@@ -91,8 +88,11 @@ def test_switch_semantics_differ_by_dimension():
     assert "_savePreferences(_channel, _source, _awaitingStable)" in switch, "偏好未落盘"
     reset = _cs_method(src, "private void ResetForNewEpoch()")
     assert "_epoch++" in reset, "渠道切换未开启新世代"
-    assert "_activeIntent = null" in reset and "_pending = null" in reset
+    assert "_activeIntent = null" in reset and "_release = null" in reset
     assert "_checkCts?.Cancel()" in reset, "切入新世代未取消旧索引请求"
+    assert "_phase = _portable ? UpdateSnapshot.Idle : UpdateSnapshot.Unavailable" in reset, (
+        "非便携运行切渠道后必须保持 unavailable，不得刷成 Idle+更新源未配置"
+    )
 
 
 def test_epoch_guards_every_async_write():
@@ -106,13 +106,11 @@ def test_epoch_guards_every_async_write():
     assert "if (epoch != _epoch) return Snapshot();" in setter, "状态翻转出口未校验世代"
     back = _cs_method(src, "private void BackToAvailable(CheckIntent intent, string error)")
     assert "intent.Epoch == _epoch" in back, "旧下载取消后的回写未校验世代（竞态窗口）"
-    ready = _cs_method(src, "private void MarkReadyIfDownloading(CheckIntent intent)")
-    assert "intent.Epoch == _epoch" in ready, "下载完成翻转未校验世代"
-    progress = _cs_method(src, "private async Task DownloadOnManagerAsync(UpdateManager manager, UpdateInfo update,")
-    assert "intent.Epoch == _epoch" in progress, "进度回调未校验世代"
-    mirror = _cs_method(src, "private async Task<bool> TryDownloadMirrorAsync(UpdateInfo update, CheckIntent intent, CancellationToken ct)")
-    assert "intent.Epoch != _epoch" in mirror, "镜像回退未校验世代"
-    assert "foreach (var source in intent.Sources)" in mirror, "镜像候选未取自事务上下文"
+    stage = _cs_method(src, "private async Task<StagedUpdate> StagePortableAsync(UpdateRelease release,")
+    assert "intent.Epoch == _epoch" in stage, "增量暂存进度回调未校验世代"
+    mirror = _cs_method(src, "private async Task<StagedUpdate> StagePortableAsync(UpdateRelease release,")
+    assert "intent.Endpoints" in mirror, "镜像候选未取自事务上下文"
+    assert "FetchManifestAtAsync(candidate, release.Tag, release.Version" in mirror, "镜像未按同目标版本取清单"
     assert "epoch != Epoch || phase != StartPhase" in src, "检查意图缺相位/世代双重作废判据"
 
 
@@ -122,7 +120,7 @@ def test_awaiting_marker_persists_and_clears():
     src = COORD.read_text(encoding="utf-8")
     checker = _cs_method(
         src,
-        "private async Task<UpdateSnapshot> DoCheckAsync(CheckIntent intent, UpdateCheckTrigger trigger,",
+        "private async Task<UpdateSnapshot> DoPortableCheckAsync(CheckIntent intent,",
     )
     assert "_awaitingStable = false" in checker, "稳定轨追上时未清除等待标记"
     assert "_savePreferences(_channel, _source, false)" in checker, (
@@ -198,7 +196,7 @@ def test_contract_probe_settings_mode_is_reachable():
 
 
 def test_contract_probe_settings_assertions_actually_pass():
-    """有 dotnet 的环境直接跑真实 Velopack 行为断言；无 dotnet 时明确跳过，
+    """有 dotnet 的环境直接跑便携源行为断言；无 dotnet 时明确跳过，
     不把「没跑」伪装成通过。"""
     if shutil.which("dotnet") is None:
         import pytest

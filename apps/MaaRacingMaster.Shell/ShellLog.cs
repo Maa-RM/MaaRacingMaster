@@ -19,8 +19,7 @@ public static class ShellLog
             var appRoot = AppRootResolver.Resolve(
                 Environment.GetCommandLineArgs(),
                 Environment.GetEnvironmentVariable("MaaRM_APP_ROOT"),
-                AppContext.BaseDirectory,
-                appData).Root;
+                AppContext.BaseDirectory).Root;
             var baseDir = UserDataRoot.Resolve(appRoot, appData);
             if (baseDir is null) return;
             var dir = Path.Combine(baseDir, "logs");

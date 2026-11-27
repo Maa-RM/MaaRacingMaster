@@ -2,7 +2,7 @@
 """活动模块注册表：扫描插件根下的 */manifest.py 发现插件，并提供查询与创建。
 
 - 双插件根并行扫描：内置根 = maaracing_master/plugins（随包发行，
-  受管升级时整体替换）；用户根 = 用户数据根/plugins（升级不触碰，用户复制的插件
+  升级时整体替换）；用户根 = 用户数据根/plugins（升级不触碰，用户复制的插件
   住这里，跨升级保留）。内置根先扫，用户根后扫；
 - 同 ID 冲突以内置为准（随包版本与产品契约绑定），用户根副本跳过并记 WARNING；
 - 用户插件按独立目录整包装载（包内相对导入可用，无 __init__.py 也接受），
@@ -37,7 +37,7 @@ from maaracing_master.core.paths import user_data_dir
 
 MODULE_REGISTRY: dict[str, type[ActivityModule]] = {}
 
-# 内置插件根目录：maaracing_master/plugins（随包发行，受管升级时整体替换）
+# 内置插件根目录：maaracing_master/plugins（随包发行，升级时整体替换）
 _PLUGINS_ROOT = Path(__file__).resolve().parent.parent / "plugins"
 
 # 用户插件装载用的合成顶层包名：所有用户插件目录以 <合成包>.<目录名> 装入，
