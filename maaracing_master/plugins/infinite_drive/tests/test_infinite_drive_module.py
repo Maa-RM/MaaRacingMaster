@@ -671,6 +671,7 @@ def test_lane_mode_switches_camera_once_at_first_hud_in_p1_and_drives_both_phase
 
     def steer(frame, fid, timestamp):
         detected.append((frame, fid, timestamp))
+        # 驾驶控制即使带有旧版收油信号，手柄仍须下发固定满量程。
         mod._lane_drive.throttle_scale = 0.0 if fid == 1 else 1.0
         return 0.2
 
@@ -681,7 +682,7 @@ def test_lane_mode_switches_camera_once_at_first_hud_in_p1_and_drives_both_phase
     assert len(armed) == 2
     assert detected == [(drive_frame, fid, fid) for fid in (1, 2, 4)]
     assert directions[0] == directions[1] == directions[2] > 0
-    assert throttles == [0, m._DRIVE_THROTTLE, m._DRIVE_THROTTLE]
+    assert throttles == [255, 255, 255]
 
 
 def test_view_switch_releases_camera_button(monkeypatch) -> None:
@@ -1023,6 +1024,28 @@ def test_drive_p1_early_exit_sets_jump_flag(monkeypatch) -> None:
     assert exits == [True]
     assert mod._p1_settled_early is True
     assert released == [True]           # 先松杆再走退出序列
+
+
+def test_drive_only_checks_score_while_pwm_is_neutral(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _step_module(SimpleNamespace(run=lambda entry, *_: entry == m._DRIVE_END["p2"]))
+    steering = {1: 1.0, 2: 0.0, 3: -1.0, 4: 0.0}
+    checked = []
+    fid = None
+
+    def steer(_frame, frame_id, _timestamp):
+        nonlocal fid
+        fid = frame_id
+        return steering[fid]
+
+    mod._lane_drive = SimpleNamespace(begin=lambda **_: None, steer=steer, release=lambda: None)
+    _drive_frames_with_ocr(mod, monkeypatch, "0", 4)
+    monkeypatch.setattr(mod, "_score_above_target", lambda _frame: checked.append(fid) or False)
+    assert mod._drive("p2")
+    assert checked == [2, 4]
 
 
 def test_drive_p2_early_exit_no_jump_flag(monkeypatch) -> None:

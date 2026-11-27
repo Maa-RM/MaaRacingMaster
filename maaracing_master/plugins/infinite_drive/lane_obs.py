@@ -1273,7 +1273,7 @@ class LineTracker:
                         # 角度来源记账（只进诊断）：来源帧/采集戳/融合线数。
                         self.theta_updated = True
                         self.theta_src_fid = int(fid)
-                    self.theta_src_ts_ns = frame_ts_ns
+                        self.theta_src_ts_ns = frame_ts_ns
                     self.theta_n_src = len(ths)
             relock_src = "line"
             pred = hold

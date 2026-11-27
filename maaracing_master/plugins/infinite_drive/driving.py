@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""无限驾驶的道路定位、擦边点位维持与车头角闭环。"""
+"""无限驾驶的道路定位、净空路线选择与横向控制。"""
 
 from __future__ import annotations
 
@@ -21,47 +21,30 @@ _DRIVE_HUD = (
 )
 _MAX_HEADING_AGE_S = 0.22
 _FRAME_GAP_S = 0.8
-# 执行链平滑（自 v1 下发链搬来的最小集，2026-11-25）：
-# - 杆值一阶低通（v1 tau_steer_s=0.1）：去掉逐拍阶跃，让执行延迟吃掉突变；
-# - 每拍变化上限（v1 rate_limit_raw=22000/32767≈0.67 归一化）：满行程约 3 拍，
-#   本侧杆幅上限只有 0.45，同比例取 0.30；
-# - 浅杆段补偿：v1 按「命令车头角 − 观测车头角」缺口积分。本侧观测是线角
-#   （含道路方向，无慢基线，见 lane_obs `theta` 定义），直接积分会把曲率积进去，
-#   故改为对持续横位偏差积分，目的相同（补浅杆段响应不足），上限保守。
-_STEER_TAU_S = 0.10
-_STEER_STEP_MAX = 0.30
-_BOOST_GAIN = 0.8          # 杆/(道·s)
-_BOOST_MAX = 0.12          # 杆
-_BOOST_DECAY_S = 1.0
-# 混合横向控制（2026-11-25，由两局实测定口径）：
-# - 杆 → 横速不是即时量：打杆后 0.25/0.5/1.0s 的横速增益约 0.39/0.75/1.21 道/s，
-#   存在约 0.5s 的执行滞后，纯位置 P 在这条链上必然振荡；
-# - 车头角对打杆的响应只有 0.2°/0.5s，且三成检测拍沿用旧角，不能单独当阻尼；
-#   但它与未来 0.5s 横移的相关系数 0.61，仍可作趋势项。
-# 因此：位置误差 → 期望横速 → 内环按「在线估计的杆增益」归一化成杆；车头角
-# 只作弱趋势，角速度作弱阻尼。换车/换速时杆增益在线跟随，增益失配不会失稳。
-_K_POS = 0.5               # 位置环：期望横速 = 0.5 × 横位误差（道/s）；误差 1 道约 0.25 杆
-_K_HEAD = 2.0              # 车头角趋势项（原 3.5，降权，避开弱观测）
-_K_R = 0.3                 # 车头角速度阻尼
-_VLAT_TAU_S = 0.40         # 横位速度 EMA（检测间隔 0.1s，0.2 压不住差分噪声）
-_GAIN_DEFAULT = 1.0        # 杆→横速初始增益（道/s per 归一杆）
-_GAIN_MIN, _GAIN_MAX = 0.6, 3.0
-_GAIN_TAU_S = 3.0          # 增益在线估计的时间常数
-_GAIN_PROBE_OUT = 0.35     # 只在未饱和段做增益辨识（饱和时观测横速被限幅，会低估增益）
+# 满杆脉宽按现有 20 Hz 控制拍取整。角速度标尺和等待时长取自历史杆响应，
+# 用于初始控制参数，按后续观测反馈校正方向。
+DRIVE_TICK_S = 0.05
+_MAX_PULSE_TICKS = 3
+_FULL_STICK_YAW_RAD_S = 0.70
+_STEER_RESPONSE_S = 0.20
+_PWM_COAST_NS = 150_000_000
+_HEADING_DEADBAND_RAD = 0.020
+_MAX_TARGET_HEADING_RAD = 0.10
+_LATERAL_PREVIEW_S = 0.50
+_VLAT_TAU_S = 0.25
 # 擦边点位：三条白线两侧各偏 0.2 道共六个横向维持点。0.2 道偏置使本车与
 # 相邻车道居中车的横向中心距 ≈2.45m，落入极限超车判定阈（两车半宽和 +
 # 0.8m ≈ 2.6m，RULES §2.1）——贴线保持本身就是擦边超车姿态，点位只在
 # 被堵时更换，不在道心与擦边之间来回切换。
 _EDGE_OFFSET = 0.20
 _EDGE_POINTS = tuple(round(b + s * _EDGE_OFFSET, 2) for b in (-1, 0, 1) for s in (-1, 1))
-_CLEARANCE = 0.60                    # 车身净空（道）：点位与街车中心距小于此视为堵
-_DECISION_HORIZON_M = MID_MAX_M      # 换点判定视界：40m ≈ 一次变道来得及起手的下限
-_THROTTLE_HORIZON_M = 2 * NEAR_MAX_M  # 收油视界：30m 内六点全堵才收油
-# 点位承诺（2026-11-25）：实测车流密时目标每 0.42s 换一次、二成跨 2~4 个点，
-# 车被要求来回横跳。选定后至少保持，只有近处车逼到本位才重估；重估优先相邻
-# 擦边点，相邻都堵才允许跨道回退（安全兜底，仍受承诺期约束）。
-_TARGET_HOLD_S = 1.0                 # 最短驻留
-_NEAR_THREAT_M = 25.0                # 近处威胁视界：这个距离内的车才许可提前换点
+_LANE_CENTERS = tuple(k + 0.5 for k in range(-ROAD_HALF_LANES, ROAD_HALF_LANES))
+_CLEARANCE = 0.60                    # 横向车身净空（道）
+_ROAD_EDGE_MARGIN = _CLEARANCE / 2   # 从路缘给自车预留半个车身净空
+_CENTER_OVERLAP_TOLERANCE = 0.08     # 街车投影在自车中心附近的抖动容差（道）
+_DECISION_HORIZON_M = MID_MAX_M       # 给绕行留出起手距离
+_WALL_DIAGNOSTIC_HORIZON_M = 2 * NEAR_MAX_M
+_DISTANT_ROUTE_CONFIRMATIONS = 3      # 同一绕行目标须由独立检测帧确认
 LOOKAHEAD_M = 12.0                   # 前视转向预瞄（米）
 
 
@@ -115,16 +98,29 @@ def _point_blocked(point: float, cars: list[tuple[float, float]], horizon_m: flo
                for car_x, z in cars)
 
 
-def _pick_edge_point(anchor: float, cars: list[tuple[float, float]]) -> float | None:
-    """选离锚点最近的净擦边点；六点全堵返回 None。并列时靠路中心优先。"""
-    clear = [p for p in _EDGE_POINTS if not _point_blocked(p, cars, _DECISION_HORIZON_M)]
-    if not clear:
-        return None
-    return min(clear, key=lambda p: (abs(p - anchor), abs(p)))
+def _path_blocked(ego_x: float, target: float, cars: list[tuple[float, float]],
+                  horizon_m: float = _DECISION_HORIZON_M) -> bool:
+    """用自车到目标的横向扫掠带检查视界内街车。"""
+    left, right = sorted((ego_x, target))
+    for car_x, distance in cars:
+        if not 0.0 < distance <= horizon_m:
+            continue
+        if abs(target - car_x) < _CLEARANCE:
+            return True
+        if not left - _CLEARANCE < car_x < right + _CLEARANCE:
+            continue
+        # 起点已贴近街车时可向外退出。两车中心几乎重合时，投影噪声足以
+        # 翻转左右判定，按有净空的落点脱离；其余重叠仍须朝远离街车的一侧。
+        offset = car_x - ego_x
+        if abs(offset) >= _CLEARANCE or (
+            abs(offset) > _CENTER_OVERLAP_TOLERANCE and (target - ego_x) * offset > 0
+        ):
+            return True
+    return False
 
 
 class HeadingControl:
-    """横位误差给目标车头角，按实测车头角与角速度出杆。"""
+    """根据预估横位与车头角，用满杆脉冲调整朝向。"""
 
     def __init__(self, lane_w_m: float) -> None:
         self._lane_w_m = lane_w_m
@@ -132,86 +128,81 @@ class HeadingControl:
 
     def reset(self) -> None:
         self._ts_ns = 0
+        self._heading_ts_ns = 0
         self._heading = 0.0
+        self._x_prev: float | None = None
+        self.v_lat = 0.0
         self.yaw_rate = 0.0
         self.desired_heading = 0.0
+        self.heading_error = 0.0
         self._steer = 0.0
-        self._out = 0.0          # 上一拍下发值（低通与变化限幅的起点）
-        self._boost = 0.0        # 浅杆补偿量
-        self.boost = 0.0         # 只读诊断
-        self._x_prev: float | None = None
-        self.v_lat = 0.0         # 横位速度 EMA（道/s）
-        self.gain = _GAIN_DEFAULT  # 杆→横速在线增益（道/s per 归一杆）
+        self._pulse_end_ns = 0
+        self._next_pulse_ns = 0
+        self._feedback_after_ns = 0
+
+    def neutralize(self, now_ns: int) -> None:
+        """松杆后给车辆留出响应时间，包括观测短暂中断的情况。"""
+        if self._steer:
+            self._steer = 0.0
+            self._next_pulse_ns = now_ns + _PWM_COAST_NS
 
     def update(self, lateral_error_lane: float, heading: float, ts_ns: int, *,
-               preview_m: float | None = None,
-               lateral_x: float | None = None) -> float:
-        if ts_ns <= self._ts_ns:
-            return self._steer
-        dt = (ts_ns - self._ts_ns) / 1e9
-        if self._ts_ns and dt <= _MAX_HEADING_AGE_S:
-            rate = (heading - self._heading) / dt
-            self.yaw_rate += dt / (0.16 + dt) * (rate - self.yaw_rate)
-        else:
-            self.yaw_rate = 0.0
-        self._ts_ns, self._heading = ts_ns, heading
-        # 可用拍之间可能隔着不可用拍，步长按控制拍兜底，避免低通/积分吃进长空窗。
-        dt_eff = dt if 0.0 < dt <= 0.10 else 0.05
-        dt_meas = dt if 0.0 < dt <= 0.20 else 0.10
+               lateral_x: float | None = None, heading_ts_ns: int | None = None,
+               now_ns: int | None = None, near_edge: bool = False) -> float:
+        now_ns = ts_ns if now_ns is None else now_ns
+        angle_ns = ts_ns if heading_ts_ns is None else heading_ts_ns
+        self._observe(lateral_x, heading, ts_ns, angle_ns)
 
-        # 横位速度：位置环的阻尼源。车头角只作趋势，不用它算微分。
-        if lateral_x is not None:
-            if self._x_prev is not None:
-                raw_v = (lateral_x - self._x_prev) / dt_meas
-                a_v = 1.0 - math.exp(-dt_meas / _VLAT_TAU_S)
-                self.v_lat += a_v * (raw_v - self.v_lat)
-            self._x_prev = lateral_x
+        # 已在横移时，按预计到达的位置收小期望角。偏航率补偿松杆后
+        # 仍会发生的转动，反打前后都按预计角度判定，避免等过点才动作。
+        lateral_error = lateral_error_lane - self.v_lat * _LATERAL_PREVIEW_S
+        desired = math.atan2(lateral_error * self._lane_w_m, LOOKAHEAD_M)
+        self.desired_heading = max(-_MAX_TARGET_HEADING_RAD, min(_MAX_TARGET_HEADING_RAD, desired))
+        predicted_heading = heading + self.yaw_rate * _STEER_RESPONSE_S
+        self.heading_error = error = self.desired_heading - predicted_heading
 
-        # 空间预瞄生成温和的目标角，D 项只看测得的角速度，目标更新不踢杆。
-        lookahead = 45.0 if preview_m is None else preview_m
-        desired = math.atan2(lateral_error_lane * self._lane_w_m, lookahead)
-        self.desired_heading = max(-0.10, min(0.10, desired))
+        # 脉冲按下发时钟结束，复用检测帧也能松杆。路缘只允许向内出杆。
+        direction = math.copysign(1.0, error)
+        if near_edge and direction * lateral_error_lane <= 0:
+            direction = 0.0
+        if self._steer:
+            if (now_ns < self._pulse_end_ns and direction == self._steer
+                    and abs(error) > _HEADING_DEADBAND_RAD / 2):
+                return self._steer
+            self.neutralize(now_ns)
+        if (now_ns < self._next_pulse_ns or angle_ns < self._feedback_after_ns
+                or abs(error) <= _HEADING_DEADBAND_RAD or direction == 0):
+            return 0.0
 
-        # 浅杆补偿：对持续横位偏差慢速积分，偏差消失后按时间常数衰减。
-        self._boost += _BOOST_GAIN * lateral_error_lane * dt_eff
-        self._boost *= math.exp(-dt_eff / _BOOST_DECAY_S)
-        self._boost = max(-_BOOST_MAX, min(_BOOST_MAX, self._boost))
-        self.boost = self._boost
+        width_ticks = round(abs(error) / (_FULL_STICK_YAW_RAD_S * DRIVE_TICK_S))
+        width_s = DRIVE_TICK_S * max(1, min(_MAX_PULSE_TICKS, width_ticks))
+        self._pulse_end_ns = now_ns + round(width_s * 1e9)
+        self._feedback_after_ns = now_ns + round(_STEER_RESPONSE_S * 1e9)
+        self._steer = direction
+        return direction
 
-        # 位置环 → 期望横速 → 用在线杆增益换回杆；车头角趋势与角速度阻尼只做修正。
-        v_des = _K_POS * lateral_error_lane
-        raw = ((v_des - self.v_lat) / self.gain
-               + _K_HEAD * (self.desired_heading - heading)
-               - _K_R * self.yaw_rate + self._boost)
-        # 换车/换速时对象增益会变（同杆值横速不同）：用「上一拍实际下发值 → 当前
-        # 横速」慢速更新。只在未饱和段辨识——杆打到限幅时观测横速被限住，会把
-        # 增益估计拉低，下一拍就要求更大杆值，形成饱和正反馈（实测杆幅中位已顶
-        # 到 0.45 上限）。
-        if (abs(self._out) < _GAIN_PROBE_OUT
-                and abs(self._out) > 0.08
-                and abs(self.v_lat) > 0.05):
-            g_sample = self.v_lat / self._out
-            if _GAIN_MIN <= g_sample <= _GAIN_MAX:
-                a_g = 1.0 - math.exp(-dt_meas / _GAIN_TAU_S)
-                self.gain += a_g * (g_sample - self.gain)
-        # 小指令归真零，留给游戏自己的回正。死区放在低通**之前**：低通首拍只
-        # 给到 39%，若先低通再判死区，正常修正会被首拍衰减吞掉（杆幅上限
-        # 0.45、死区 0.05，占比远大于 v1 的 0.008）。
-        deadzone = 0.10 if preview_m is None else 0.05
-        cmd = 0.0 if abs(raw) < deadzone else raw
-        # 杆值低通 → 每拍变化上限：执行链上的两道平滑，再进杆幅限幅。
-        alpha = 1.0 - math.exp(-dt_eff / _STEER_TAU_S)
-        smooth = self._out + alpha * (cmd - self._out)
-        step = max(self._out - _STEER_STEP_MAX,
-                   min(self._out + _STEER_STEP_MAX, smooth))
-        # 限幅避开卡牌触发的满杆换道。
-        self._out = max(-0.45, min(0.45, step))
-        self._steer = self._out
-        return self._steer
+    def _observe(self, lateral_x: float | None, heading: float, ts_ns: int, angle_ns: int) -> None:
+        # 横位与车头角各按真实采集时钟更新。沿用的车头角不参与差分。
+        if angle_ns > self._heading_ts_ns:
+            dt = (angle_ns - self._heading_ts_ns) / 1e9
+            if self._heading_ts_ns and dt <= _MAX_HEADING_AGE_S:
+                rate = (heading - self._heading) / dt
+                self.yaw_rate += dt / (0.10 + dt) * (rate - self.yaw_rate)
+            else:
+                self.yaw_rate = 0.0
+            self._heading_ts_ns, self._heading = angle_ns, heading
+        if ts_ns > self._ts_ns:
+            dt = (ts_ns - self._ts_ns) / 1e9
+            if self._x_prev is not None and lateral_x is not None and dt <= _MAX_HEADING_AGE_S:
+                speed = (lateral_x - self._x_prev) / dt
+                self.v_lat += dt / (_VLAT_TAU_S + dt) * (speed - self.v_lat)
+            else:
+                self.v_lat = 0.0
+            self._ts_ns, self._x_prev = ts_ns, lateral_x
 
 
 class LaneDrive:
-    """用黄线路缘给白线定位，维持六个擦边点位之一，被堵才换点。"""
+    """优先保持可通行的路线，在净空允许时贴线超车。"""
 
     def __init__(self) -> None:
         from maaracing_master.plugins.infinite_drive import (
@@ -231,6 +222,7 @@ class LaneDrive:
                 car_error = repr(exc)
         if perception is None:
             logger.log(f"[无限驾驶] 街车模型不可用，本次只保持车道：{car_error}", "WARNING")
+        self._traffic_enabled = perception is not None
         # hz=0：按控制拍提交（此前按 10Hz 节流，控制拍 20Hz 下一半拍拿不到新
         # 检测，是可用率的大头）。实测 DML+FP16 单帧约 9~11ms（前向 4~6ms、
         # 后处理约 5ms）；是否跟得上以 trace 的弃帧计数为准。
@@ -256,14 +248,15 @@ class LaneDrive:
         self._last_frame_ns = 0
         self._last_fid = -1
         self._target: float | None = None
-        self._target_since_ns = 0
         self._gross_reanchor = 0
         self._dbg_refs = None
         self.release()
 
     def release(self) -> None:
         self._control.reset()
-        self.throttle_scale = 1.0
+        self._last_route_fid = None
+        self._pending_target: float | None = None
+        self._pending_count = 0
 
     def debug_snapshot(self) -> dict | None:
         """本拍调试图快照（只给观测量，不做任何决策计算）。
@@ -290,42 +283,34 @@ class LaneDrive:
                     clearance=_CLEARANCE, horizon_m=_DECISION_HORIZON_M)
 
     def _hold_edge_point(self, ego_x: float, cars: list[tuple[float, float]]) -> str | None:
-        """点位决策：初选最近的净点，之后带承诺期，只有近车逼到才重估。
-
-        - 初选：同过去，按 40m 视界选离自车最近的净擦边点。
-        - 承诺期（``_TARGET_HOLD_S``）内不换，除非目标点被 25m 内的车堵住；
-          远处的车不算——它们进入近处时再判，避免车流密集时目标每拍变。
-        - 重估优先相邻擦边点；相邻都堵才跨道回退到最近净点（安全兜底）。
-        - 保持中的点不因净空恢复切回，切换只由「近车逼到 + 承诺期已过」触发。
-        返回本拍点位事件（"pick"/"switch"），无变化返回 None。"""
-        now_ns = time.perf_counter_ns()
-        if self._target is None:
-            picked = _pick_edge_point(ego_x, cars)
-            if picked is not None:
-                self._target = picked
-                self._target_since_ns = now_ns
-                logger.log(f"[无限驾驶] 擦边点位锁定（{picked:+.1f}）", "DEBUG")
-                return "pick"
+        """沿用净空路线，被堵时按自车位置选最近的可达点。"""
+        previous = self._target
+        if previous is not None and not _path_blocked(ego_x, previous, cars):
+            self._pending_count = 0
             return None
-        if not _point_blocked(self._target, cars, _NEAR_THREAT_M):
-            return None
-        if now_ns - self._target_since_ns < _TARGET_HOLD_S * 1e9:
-            return None
-        anchor = self._target
-        near = [p for p in _EDGE_POINTS
-                if abs(_EDGE_POINTS.index(p) - _EDGE_POINTS.index(anchor)) == 1
-                and not _point_blocked(p, cars, _DECISION_HORIZON_M)]
-        clear = near or [p for p in _EDGE_POINTS
-                         if not _point_blocked(p, cars, _DECISION_HORIZON_M)]
-        if not clear:
-            return None
-        picked = min(clear, key=lambda p: abs(p - ego_x))
-        if picked == self._target:
-            return None
-        logger.log(f"[无限驾驶] 点位被堵，换点 {self._target:+.1f} → {picked:+.1f}"
-                   + ("" if near else "（跨道回退）"), "DEBUG")
+        urgent = _path_blocked(ego_x, ego_x if previous is None else previous, cars, NEAR_MAX_M)
+        horizons = (_DECISION_HORIZON_M, NEAR_MAX_M) if urgent else (_DECISION_HORIZON_M,)
+        clear = []
+        for horizon in horizons:
+            clear = [p for p in _EDGE_POINTS if not _path_blocked(ego_x, p, cars, horizon)]
+            if not clear:
+                clear = [p for p in _LANE_CENTERS if not _path_blocked(ego_x, p, cars, horizon)]
+            if clear:
+                break
+        picked = min(clear, key=lambda p: (abs(p - ego_x), abs(p)), default=None)
+        if previous is not None and not urgent:
+            self._pending_count = self._pending_count + 1 if picked == self._pending_target else 1
+            self._pending_target = picked
+            if self._pending_count < _DISTANT_ROUTE_CONFIRMATIONS:
+                return None
+        self._pending_count = 0
         self._target = picked
-        self._target_since_ns = now_ns
+        if self._target is None:
+            return "blocked" if previous is not None else None
+        if previous is None:
+            logger.log(f"[无限驾驶] 巡航点位锁定（{self._target:+.1f}）", "DEBUG")
+            return "pick"
+        logger.log(f"[无限驾驶] 路线被堵，换点 {previous:+.1f} → {self._target:+.1f}", "DEBUG")
         return "switch"
 
     def steer(self, frame, fid: int, ts_ns: int) -> float:
@@ -360,8 +345,7 @@ class LaneDrive:
         track_ready = fresh and position_measured and lane.get("usable")
         usable = (track_ready
                   and heading is not None and math.isfinite(heading)
-                  and heading_fid == lane.get("det_fid")
-                  and heading_ns >= self._phase_start_ns
+                  and self._phase_start_ns <= heading_ns <= det_ns
                   and 0 <= now_ns - heading_ns <= _MAX_HEADING_AGE_S * 1e9)
         # 线已有绝对道号，点位用同一坐标系。道号锚重定（黄线复核/丢失）时
         # 绝对坐标整体平移，旧点位作废重选。
@@ -369,37 +353,41 @@ class LaneDrive:
             self._gross_reanchor = lane["gross_reanchor"]
             self._target = None
             self.release()
-        cars = None
+        cars = _road_cars(lane, x, self._camera_height) if track_ready else None
+        det_fid = lane.get("det_fid")
         edge_event = None
-        if track_ready and x is not None:
-            cars = _road_cars(lane, x, self._camera_height)
-            # 同拍车账缺席（traffic 未跟上检测拍）按无证据处理：初选照常，
-            # 换点判定不做——拿旧车账换点会切进真实存在的车。
-            evidence: list[tuple[float, float]] = cars if cars is not None else []
-            if cars is None or abs(x) < ROAD_HALF_LANES:
-                edge_event = self._hold_edge_point(x, evidence)
-        walled = False
-        if cars is not None and x is not None and abs(x) < ROAD_HALF_LANES:
-            walled = all(_point_blocked(p, cars, _THROTTLE_HORIZON_M)
-                         for p in _EDGE_POINTS)
-        self.throttle_scale = 0.0 if walled else 1.0
-
-        target = self._target
-        if usable and target is not None and x is not None and heading is not None:
-            steer = self._control.update(target - x, heading, heading_ns,
-                                         preview_m=LOOKAHEAD_M, lateral_x=x)
-            target_heading, yaw_rate = self._control.desired_heading, self._control.yaw_rate
+        if track_ready and (cars is not None or not self._traffic_enabled):
+            if det_fid != self._last_route_fid:
+                edge_event = self._hold_edge_point(x, cars or [])
+                self._last_route_fid = det_fid
         else:
-            self._control.reset()
+            self._pending_count = 0
+            # 刚锁定位置时可先保持贴线点。已有车流证据判定无路可走时，等新证据再选。
+            if track_ready and self._last_route_fid is None and self._target is None:
+                edge_event = self._hold_edge_point(x, [])
+        target = self._target
+        near_edge = fresh and position_measured and abs(x) >= ROAD_HALF_LANES - _ROAD_EDGE_MARGIN
+        walled = cars is not None and all(
+            _point_blocked(p, cars, _WALL_DIAGNOSTIC_HORIZON_M) for p in _EDGE_POINTS
+        )
+
+        if usable and target is not None:
+            steer = self._control.update(target - x, heading, det_ns, lateral_x=x,
+                                         heading_ts_ns=heading_ns, now_ns=now_ns, near_edge=near_edge)
+            target_heading = self._control.desired_heading
+            yaw_rate = self._control.yaw_rate
+            heading_error = self._control.heading_error
+        else:
+            self._control.neutralize(now_ns)
             steer = 0.0
-            target_heading = yaw_rate = None
+            target_heading = yaw_rate = heading_error = None
 
         # 调试图快照只留引用（lane 快照与车账均为本拍新建对象），点位堵/净
         # 在 debug_snapshot 里按需算一次，调试关闭时零额外开销。
         self._dbg_refs = {
             "lane": lane, "ego_x": x, "target": target, "cars": cars,
             "walled": walled, "steer": steer,
-            "throttle_scale": self.throttle_scale, "heading": heading,
+            "heading": heading,
             "target_heading": target_heading, "yaw_rate": yaw_rate,
             "usable": bool(usable), "fresh": bool(fresh),
             "track_ready": bool(track_ready),
@@ -428,7 +416,8 @@ class LaneDrive:
         self._trace.append({"fid": fid, "ts_ns": ts_ns,
                             "ego_lane": x, "target_lane": target, "heading_rad": heading,
                             "edge_event": edge_event, "walled": walled,
-                            "road_cars": cars, "throttle_scale": self.throttle_scale,
+                            "road_cars": cars,
+                            "gross_reanchor": self._gross_reanchor,
                             "yellow_anchor_lane": lane.get("yellow_anchor"),
                             "traffic_error": lane.get("traffic_error"),
                             "target_heading_rad": target_heading, "yaw_rate_rad_s": yaw_rate,
@@ -436,9 +425,8 @@ class LaneDrive:
                             "lane_state": lane.get("state"), "lane_locked": lane.get("n_locked"),
                             "heading_fid": heading_fid, "heading_ts_ns": heading_ns or None,
                             "usable": bool(usable), "steer": steer,
-                            "boost": self._control.boost,
-                            "v_lat": round(self._control.v_lat, 3),
-                            "gain": round(self._control.gain, 3),
+                            "heading_error_rad": heading_error,
+                            "v_lat": round(self._control.v_lat, 3) if target_heading is not None else None,
                             "usable_reason": reason, "pred": lane.get("pred"),
                             "hold": lane.get("hold"), "lock_count": lane.get("locked"),
                             "det_age_ms": (round((now_ns - det_ns) / 1e6, 1)

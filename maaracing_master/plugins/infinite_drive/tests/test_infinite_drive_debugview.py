@@ -39,7 +39,7 @@ def _drive_snapshot() -> dict:
     return {
         "lane": lane, "ego_x": 0.2, "target": 0.2,
         "cars": [(0.2, 12.0)], "walled": False, "steer": 0.1,
-        "throttle_scale": 1.0, "heading": 0.01, "target_heading": 0.02,
+        "heading": 0.01, "target_heading": 0.02,
         "yaw_rate": 0.001, "usable": True, "fresh": True, "half_lanes": 2,
         "edge_states": [(-1.2, False), (-0.8, False), (-0.2, True),
                         (0.2, True), (0.8, False), (1.2, False)],

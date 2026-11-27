@@ -288,12 +288,6 @@ def _draw_lane_strip(img: np.ndarray, drive: dict) -> None:
             _put_text(img, f"{z:.0f}m", (min(max(x + 3, 2), W - 38),
                                           y0 + 56), scale=0.32, color=col)
 
-    throttle = _num(drive.get("throttle_scale"))
-    if throttle is not None and throttle <= 0.0:
-        _put_text(img, "THROTTLE CUT", (6, y0 + 14), scale=0.38,
-                  color=_POINT_BLOCKED_BGR)
-
-
 def _draw_readout(img: np.ndarray, snap: dict) -> None:
     """顶部读数带：当拍观测与决策的关键数值，缺测一律画 "-"。"""
     drive = snap.get("drive")
@@ -322,8 +316,7 @@ def _draw_readout(img: np.ndarray, snap: dict) -> None:
             f" psi={fmt(_num(drive.get('heading')), '%+.3f')}"
             f" psi*={fmt(_num(drive.get('target_heading')), '%+.3f')}"
             f" yaw={fmt(_num(drive.get('yaw_rate')), '%+.3f')}"
-            f" steer={fmt(_num(drive.get('steer')), '%+.2f')}"
-            f" thr={fmt(_num(drive.get('throttle_scale')), '%.2f')}",
+            f" steer={fmt(_num(drive.get('steer')), '%+.2f')}",
         ]
         color = _TEXT_BGR if usable else _WARN_BGR
 

@@ -66,7 +66,7 @@ from maaracing_master.core.step_machine import Command, StepMachine, Verdict
 from maaracing_master.plugins.infinite_drive import IMAGE_DIR, PIPELINE_DIR
 from maaracing_master.plugins.infinite_drive import dashboard_store
 from maaracing_master.plugins.infinite_drive import flow_data
-from maaracing_master.plugins.infinite_drive.driving import LaneDrive, drive_hud_visible
+from maaracing_master.plugins.infinite_drive.driving import DRIVE_TICK_S, LaneDrive, drive_hud_visible
 from maaracing_master.plugins.infinite_drive.hud import load_hud_regions, parse_int
 from maaracing_master.plugins.infinite_drive.debugview import DebugPairWriter
 from maaracing_master.plugins.infinite_drive.recorder import DriveRecorder, make_session_dir
@@ -152,10 +152,10 @@ _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
                    "p2": flow_data.STAGE2_DURATION_S}
 # 驾驶阶段的阶段名（人工接管期判定用：录制轮驾驶阶段可由用户物理手柄驾驶）
 _DRIVE_STAGES = frozenset({"驾驶·阶段1", "驾驶·阶段2"})
-_DRIVE_TICK_S = 0.05
 _MAX_DRIVE_FRAME_AGE_MS = 200.0
 _DRIVE_HUD_GAP_S = 0.65
-_DRIVE_THROTTLE = 220  # 直行油门与自动驾驶的油门上限
+_DRIVE_THROTTLE = 220  # 全程直行档油门
+_AUTO_DRIVE_THROTTLE = 255  # 自动驾驶固定使用扳机满量程
 _CAMERA_SETTLE_S = 0.25
 # 已保存的 depth 档继续指向自动转向模式。
 _DRIVE_MODES = {"straight": "全程直行", "depth": "自动驾驶"}
@@ -1340,12 +1340,12 @@ class InfiniteDriveModule(ActivityModule):
                             if not self._running or not self.ctx.lifecycle.running:
                                 return False
                             pad.left_joystick(x_value=round(steer * 32767))
-                            throttle_scale = 1.0 if driver is None else driver.throttle_scale
-                            pad.right_trigger(value=round(_DRIVE_THROTTLE * throttle_scale))
+                            pad.right_trigger(value=_DRIVE_THROTTLE if driver is None else _AUTO_DRIVE_THROTTLE)
                             pad.update()
                             if dbg_snap is not None and dbg is not None:
                                 dbg.tick(frame, dbg_snap)
-                            if tick - last_score_check >= _SCORE_CHECK_INTERVAL_S:
+                            # 同步 OCR 可能跨过一个控制拍，只在松杆时读分。
+                            if steer == 0.0 and tick - last_score_check >= _SCORE_CHECK_INTERVAL_S:
                                 last_score_check = tick
                                 if self._score_above_target(frame):
                                     score_streak += 1
@@ -1363,7 +1363,7 @@ class InfiniteDriveModule(ActivityModule):
                                             self._p1_settled_early = True
                                         return True
                                     score_streak = 0
-                            if not self.ctx.lifecycle.sleep(max(0.0, _DRIVE_TICK_S - (time.monotonic() - tick))):
+                            if not self.ctx.lifecycle.sleep(max(0.0, DRIVE_TICK_S - (time.monotonic() - tick))):
                                 return False
                             continue
 
@@ -1378,7 +1378,7 @@ class InfiniteDriveModule(ActivityModule):
                             driver.release()
                     if not self._record_mode and tick - last_hud_at < _DRIVE_HUD_GAP_S:
                         # 短暂遮挡先归还手柄，快速等回驾驶画面，避免在赛道上启动 OCR。
-                        if not self.ctx.lifecycle.sleep(_DRIVE_TICK_S):
+                        if not self.ctx.lifecycle.sleep(DRIVE_TICK_S):
                             return False
                         continue
                     if self._record_mode or fresh:
