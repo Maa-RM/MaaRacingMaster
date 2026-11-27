@@ -190,7 +190,7 @@ Chromium 不提供待编译清单，漏登记只影响该弹窗首次打开的�
   `test_numeric_fields_share_one_pill`（两种类型共用同一实现）与
   `test_number_pill_dimensions_come_from_tokens`（尺寸只从 token 来）；
   纯逻辑（clamp / 位数 / 可否滚动 / 读数文本）由 `tests/js/number_pill_model.test.mjs` 覆盖。
-- 资产安装：插件 manifest 声明 `ASSET_INSTALLER` 时，面板额外显示一行安装入口（按钮文字与缺失提示来自插件的 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT`，宿主不认识模块语义）及进度、取消与错误；数据来自 `install_asset_status/start/cancel`，前端只传模块 id，不传 URL、目标路径或哈希，旧 revision 的响应丢弃。安装器由插件实现，宿主只做白名单转发与生命周期协调。
+- 资产安装：插件 manifest 声明 `ASSET_INSTALLER` 时，面板额外显示一行安装入口（按钮文字与缺失提示来自插件的 `ASSET_INSTALLER_LABEL` / `ASSET_INSTALLER_MISSING_HINT`，宿主不认识模块语义）及进度、取消与错误；入口紧跟字段组、排在状态行之前，空状态行不占位。显隐由 `ASSET_INSTALLER_VISIBLE_IF`（与配置字段同一套条件结构）按当前配置求值，条件不满足时整行隐藏并停掉轮询。已装好且安装器声明可删除（`can_remove`）时，按钮改为「删除<名词>」，删除前弹确认；包内自带或手动解压的权重没有受管目录，不显示该入口。数据来自 `install_asset_status/start/cancel/remove`，前端只传模块 id，不传 URL、目标路径或哈希，旧 revision 的响应丢弃。安装器由插件实现，宿主只做白名单转发与生命周期协调。
 - `partial`：渲染可用字段，顶部一行「部分配置项声明无效，详见日志」；`invalid` /
   `unsupported_version`：只显示宿主提示、不渲染控件；`none`：面板区留空（按设计）。
 - 数据约定：`_choices` 填下拉（表单里的 `choices` 只是引用键）、`_summary` 是任务卡 chips、

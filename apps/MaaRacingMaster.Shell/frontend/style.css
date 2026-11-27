@@ -757,6 +757,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   font-size: 11px; color: var(--maarm-foreground-muted);
   line-height: 1.5;
 }
+/* 空状态行不占位：没有要报的进度/异常时，不把下一块内容往下推一段看不见的空白 */
+.module-options-status:empty { display: none; }
 .module-options-status.maarm-status--ok { color: var(--maarm-success-strong); }
 .module-options-status.maarm-status--warn { color: var(--maarm-warning-strong); }
 .module-options-status.maarm-status--error { color: var(--maarm-danger-strong); }

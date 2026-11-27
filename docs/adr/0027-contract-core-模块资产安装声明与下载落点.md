@@ -15,7 +15,7 @@
 
 1. **落点**：模块发起的下载字节一律落在用户数据根的 `data/<manifest.ID>/` 内，程序内容根永不作下载落点；暂存（未完成下载、解压中间态）与已安装资产分层，已安装资产按内容摘要分目录，摘要不变则跨程序版本复用。目录只能经 `paths.module_data_dir()` 获取，该入口拒绝绝对路径、盘符、`.`/`..`、分隔符与解析后越界。
 2. **信源归属**：文件级清单、尺寸、SHA256 归插件代码；发布 tag、资产文件名、包哈希与展开尺寸由构建生成的下载描述随主包分发。宿主不复制清单、不从展示版本字符串反推文件名，也不回读自己写出的生成物。
-3. **宿主接缝**：插件在 manifest 声明 `ASSET_INSTALLER` 指向自己的安装器，并声明安装入口的显示名词与缺失提示；宿主按声明加载与转发，状态只收模块无关的公共字段，前端只传模块 id。宿主不认识任何模块的资产语义。
+3. **宿主接缝**：插件在 manifest 声明 `ASSET_INSTALLER` 指向自己的安装器，并声明安装入口的显示名词、缺失提示与显隐条件（`ASSET_INSTALLER_VISIBLE_IF`，与配置字段共用一套条件结构）；宿主按声明加载与转发，状态只收模块无关的公共字段，前端只传模块 id。安装器可选提供 `can_remove` / `remove`，使「用户决定何时回收磁盘」有入口；宿主不认识任何模块的资产语义。
 4. **生命周期**：安装与游戏运行、升级冻结在同层双向互斥，且判定在后端受理锁内完成，不依赖前端置灰；关闭时先拒绝新动作，再取消安装并做有界收尾。
 5. **不建通用下载管理器、资源商店或独立更新服务**。第二个真实下载模块出现之前不抽公共传输层；届时抽取也只能在插件之上做，不得改变本条第 1–4 款的归属。
 
@@ -38,7 +38,7 @@
 
 ## 证据
 
-- 代码：`maaracing_master/core/paths.py`（`module_data_dir`）、`core/registry.py`（`plugin_declared_ref` / `load_plugin_ref`）、`core/sidecar.py`（`install_asset_*`、`start`、`prepare_update`、`close`）、`plugins/infinite_drive/model_installer.py`、`scripts/release/make_model_pack.py`、`.github/workflows/release.yml`（描述注入与同 tag 资产不可变检查）。
+- 代码：`maaracing_master/core/paths.py`（`module_data_dir`）、`core/registry.py`（`plugin_declared_ref` / `plugin_declared_value` / `load_plugin_ref`）、`core/sidecar.py`（`install_asset_*`、`start`、`prepare_update`、`close`）、`plugins/infinite_drive/model_installer.py`、`scripts/release/make_model_pack.py`、`.github/workflows/release.yml`（描述注入与同 tag 资产不可变检查）。
 - 机检：`tests/test_core_module_data_dir.py`（落点与越界）、`tests/test_sidecar_asset_install.py`（声明加载、双向准入、关闭收尾、第二模块路由、宿主无模块语义）、`tests/test_model_download_descriptor.py`（tag/资产/哈希/摘要绑定与可复现归档）、`plugins/infinite_drive/tests/`（安装器与模型包）。
 - 一手核查（2026-11-20）：Velopack *Preserving Files & Settings*（二进制目录在更新时被整体替换）；VS Code API *Data Storage*（宿主授予每扩展存储根、扩展自定内容）；NuGet *Managing the global packages*（按 id/version 分目录，缓存与已安装分层）；MaaFramework PI V2（资源声明承载 hash、发版组件版本一致）。
 - 实现提交：`9b2ba6c`（#21 压扁交付，模型包一键安装与同 tag 发布绑定）。

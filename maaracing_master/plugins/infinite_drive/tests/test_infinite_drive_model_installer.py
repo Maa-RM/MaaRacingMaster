@@ -28,6 +28,9 @@ def _patch(monkeypatch, tmp_path):
     managed = tmp_path / "data" / "infinite_drive" / "models" / "digest"
     monkeypatch.setattr(model_assets, "managed_pack_dir", lambda: managed)
     monkeypatch.setattr(
+        model_assets, "previous_pack_dir",
+        lambda: tmp_path / "data" / "infinite_drive" / "models" / "previous")
+    monkeypatch.setattr(
         model_installer, "module_data_dir",
         lambda module_id, *parts: tmp_path / "data" / module_id / Path(*parts),
     )
@@ -129,6 +132,40 @@ def test_existing_valid_model_skips_download(monkeypatch, tmp_path):
     status = _wait(installer)
     assert status.phase == "done"
     assert target.read_bytes() == GOOD
+
+
+def test_remove_deletes_managed_pack_and_reports_missing(monkeypatch, tmp_path):
+    """删除模型只清安装器自己写过的受管目录，删后按缺失重新提示安装。"""
+    managed = _patch(monkeypatch, tmp_path)
+    target = managed / PACKED
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(GOOD)
+    model_assets.clear_cache()
+    installer = model_installer.ModelInstaller(tmp_path / "missing.json")
+    assert installer.needs_install() is False
+    assert installer.can_remove() is True
+
+    accepted, status = installer.remove()
+
+    assert accepted
+    assert status.phase == "idle"
+    assert not managed.exists()
+    assert installer.can_remove() is False
+    assert installer.needs_install() is True
+
+
+def test_remove_refused_while_install_thread_is_alive(monkeypatch, tmp_path):
+    _patch(monkeypatch, tmp_path)
+    archive = _make_zip(tmp_path / "model.zip")
+    blocking = threading.Event()
+    with _Server(archive, block=blocking) as server:
+        installer = model_installer.ModelInstaller(_descriptor(archive, tmp_path, server.url))
+        installer.start()
+        assert server.started.wait(timeout=5)
+        accepted, message = installer.remove()
+        assert not accepted and "安装进行中" in str(message)
+        blocking.set()
+        _wait(installer)
 
 
 def test_wrong_zip_hash_fails_without_touching_models(monkeypatch, tmp_path):

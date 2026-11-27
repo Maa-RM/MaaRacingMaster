@@ -71,6 +71,11 @@ def managed_pack_dir() -> Path:
     return module_data_dir(MODULE_ID, "models", manifest_digest())
 
 
+def previous_pack_dir() -> Path:
+    """兼容读旧版受管包的目录；删除模型时与当前受管目录一并清理。"""
+    return module_data_dir(MODULE_ID, "models", _PREVIOUS_PACK_DIGEST)
+
+
 def packed_rel(rel: str) -> str:
     """插件相对路径 → 模型包内相对路径。"""
     return rel[len(PACK_PREFIX):] if rel.startswith(PACK_PREFIX) else rel
@@ -88,8 +93,8 @@ def installed_path(rel: str) -> Path:
 def candidates(rel: str) -> tuple[Path, ...]:
     """候选文件，按优先级：现行受管包、旧受管包、手动解压和包内权重。"""
     relative = packed_rel(rel)
-    previous = module_data_dir(MODULE_ID, "models", _PREVIOUS_PACK_DIGEST)
-    return (managed_pack_dir() / relative, previous / relative, pack_path(rel), MODELS_DIR / relative)
+    return (managed_pack_dir() / relative, previous_pack_dir() / relative,
+            pack_path(rel), MODELS_DIR / relative)
 
 
 def resolve(rel: str) -> Path | None:

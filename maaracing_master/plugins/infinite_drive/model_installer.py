@@ -122,6 +122,33 @@ class ModelInstaller:
         """轻量可用性检查：缺必需模型（按尺寸）即需要补装。"""
         return bool(model_assets.missing())
 
+    def can_remove(self) -> bool:
+        """是否存在可删除的一键安装目录（包内/手动解压的权重不归本安装器清理）。"""
+        return any(path.is_dir() for path in (
+            model_assets.managed_pack_dir(), model_assets.previous_pack_dir()))
+
+    def remove(self) -> tuple[bool, InstallStatus | str]:
+        """删除一键安装的受管模型目录；在途安装时拒绝。
+
+        只清安装器自己写过的目录（当前清单摘要与兼容旧摘要），不碰用户手动
+        解压到 models/ 根目录的权重。删除后由 needs_install 重新判断可用性。
+        """
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False, "安装进行中，无法删除"
+            for target in (model_assets.managed_pack_dir(), model_assets.previous_pack_dir()):
+                if target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+            remaining = [path for path in (
+                model_assets.managed_pack_dir(), model_assets.previous_pack_dir()) if path.is_dir()]
+            if remaining:
+                return False, "删除失败：模型文件可能正被占用"
+            model_assets.clear_cache()
+            self._status = InstallStatus(
+                task_id="", phase="idle", revision=self._status.revision + 1,
+                manifest_digest=model_assets.manifest_digest())
+            return True, self._status
+
     def start(self) -> tuple[bool, InstallStatus | str]:
         """启动或复用在途任务。返回 (accepted, status_or_error)。"""
         with self._lock:

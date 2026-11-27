@@ -14,3 +14,5 @@ ASSET_INSTALLER = "model_installer.ModelInstaller"
 # 安装入口的显示名词与缺失提示：宿主只渲染声明，不硬编码模块语义
 ASSET_INSTALLER_LABEL = "模型"
 ASSET_INSTALLER_MISSING_HINT = "车道线模型未安装（发布包不含权重）"
+# 安装入口只在需要模型的档位出现；与配置字段共用同一套显隐条件结构
+ASSET_INSTALLER_VISIBLE_IF = {"key": "drive_mode", "op": "not_equals", "value": "straight"}

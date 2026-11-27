@@ -41,6 +41,7 @@ class FakeInstaller:
         self._tag = tag
         self.cancelled = False
         self.joined = False
+        self.removed = False
 
     def status(self):
         return SimpleNamespace(
@@ -62,6 +63,14 @@ class FakeInstaller:
 
     def needs_install(self):
         return True
+
+    def can_remove(self):
+        return True
+
+    def remove(self):
+        self.removed = True
+        self._phase = "idle"
+        return True, self.status()
 
 
 def _svc() -> SidecarService:
@@ -227,12 +236,65 @@ def test_second_module_routes_to_its_own_installer(monkeypatch):
     assert ok and data["supported"] is False
 
 
+def test_status_carries_removable_flag_and_plugin_visibility(monkeypatch, with_installer):
+    """删除入口与显隐条件都由插件声明驱动，宿主只转发。"""
+    monkeypatch.setattr(
+        sc, "plugin_declared_value",
+        lambda mid, field: ({"key": "drive_mode", "op": "not_equals", "value": "straight"}
+                            if field == "ASSET_INSTALLER_VISIBLE_IF" else None))
+    svc = _svc()
+    ok, data, err = svc.install_asset_status({"module_id": MODULE_ID})
+    assert ok and not err
+    assert data["visible_if"] == {
+        "key": "drive_mode", "op": "not_equals", "value": "straight"}
+    assert data["can_remove"] is True
+
+
+def test_remove_routes_to_installer(with_installer):
+    svc = _svc()
+    _ok, _data, _err = svc.install_asset_status({"module_id": MODULE_ID})  # 懒加载安装器
+    with_installer[0]._phase = "done"  # 安装已结束，非在途
+    ok, data, err = svc.install_asset_remove({"module_id": MODULE_ID})
+    assert ok and not err and data["phase"] == "idle"
+    assert with_installer[0].removed
+    assert data["label"] == "测试资产"
+
+
+def test_remove_refused_while_install_is_busy(with_installer):
+    svc = _svc()
+    assert svc.install_asset_start({"module_id": MODULE_ID})[0]
+    ok, _data, err = svc.install_asset_remove({"module_id": MODULE_ID})
+    assert not ok and "资产安装进行中" in err
+
+
+def test_remove_refused_while_module_worker_runs(with_installer):
+    svc = _svc()
+    svc._worker = threading.Thread(target=lambda: None)
+    ok, _data, err = svc.install_asset_remove({"module_id": MODULE_ID})
+    assert not ok and "任务运行中" in err
+
+
+def test_remove_refused_for_installer_without_capability(monkeypatch):
+    """未声明删除能力的安装器照常可安装：只拒绝删除这一个动作。"""
+
+    class NoRemoveInstaller(FakeInstaller):
+        remove = None
+
+    monkeypatch.setitem(sc.MODULE_REGISTRY, MODULE_ID, object)
+    monkeypatch.setattr(sc, "plugin_declared_ref", lambda mid, field: _DECL.get(field))
+    monkeypatch.setattr(sc, "load_plugin_ref", lambda mid, ref: NoRemoveInstaller)
+    svc = _svc()
+    ok, _data, err = svc.install_asset_remove({"module_id": MODULE_ID})
+    assert not ok and "不支持删除" in err
+
+
 def test_actions_tolerate_malformed_params():
     """参数不是 dict 时按「未知模块」拒绝，不抛异常打断 RPC 派发。"""
     svc = _svc()
     ok, data, err = svc.install_asset_status(None)
     assert ok and not err and data["supported"] is False and data["label"] == "资产"
-    for method in (svc.install_asset_start, svc.install_asset_cancel):
+    for method in (svc.install_asset_start, svc.install_asset_cancel,
+                   svc.install_asset_remove):
         ok, _data, err = method([])
         assert not ok and "未知模块" in err
 

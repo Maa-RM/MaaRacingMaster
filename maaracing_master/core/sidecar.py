@@ -49,6 +49,7 @@ from maaracing_master.core.registry import (
     load_plugin_ref,
     module_expired,
     plugin_declared_ref,
+    plugin_declared_value,
 )
 from maaracing_master.core.builtin_steps import (
     BUILTIN_STEPS,
@@ -56,6 +57,7 @@ from maaracing_master.core.builtin_steps import (
 )
 from maaracing_master.core.base import declares_dashboard, overrides_classmethod
 from maaracing_master.core.config_ui_contract import (
+    normalize_condition,
     normalize_config_ui,
     normalize_status,
     normalize_summary,
@@ -579,6 +581,7 @@ HANDLERS = frozenset({
     "open_vigembus_download", "open_external_url", "open_user_data_folder",
     # 插件自有资产安装（core 只按 manifest 声明加载，前端不传 URL/路径）
     "install_asset_start", "install_asset_cancel", "install_asset_status",
+    "install_asset_remove",
     # 用户数据目录占用（设置页「调试文件夹」面板）
     "get_data_usage",
     # 注册表优化建议
@@ -630,6 +633,16 @@ def _install_status_dict(status) -> dict:
         "source": status.source,
         "error": status.error,
     }
+
+
+def _install_visible_if(module_id) -> dict | None:
+    """插件声明的安装入口显隐条件；非法声明按常显处理（不让入口诡异地消失）。"""
+    raw = plugin_declared_value(module_id, "ASSET_INSTALLER_VISIBLE_IF")
+    if raw is None:
+        return None
+    cond, _problem = normalize_condition(raw)
+    return cond
+
 
 # ---------- 成就：核心 UI 事实 ----------
 # 前端只报原始事件，时间窗判定在这里做。安全口径：UI 事实由前端上报，不保证
@@ -1867,12 +1880,50 @@ class SidecarService:
         data.update(self._install_display_fields(_install_module_id(params)))
         return (True, data, None)
 
+    def install_asset_remove(self, params):
+        """删除插件自有的受管资产；与安装、任务运行同样双向互斥。"""
+        with self._lock:
+            if self._closed:
+                return (False, None, "正在关闭，无法删除资产")
+            if self._update_freeze:
+                return (False, None, "升级准备中，暂不能删除资产")
+            if self._worker is not None:
+                return (False, None, "任务运行中，暂不能删除资产")
+            if self._install_busy():
+                return (False, None, "资产安装进行中")
+            installer, err = self._asset_installer_for(params)
+            if err or installer is None:
+                return (False, None, err or "模块未声明资产安装能力")
+            remover = getattr(installer, "remove", None)
+            if not callable(remover):
+                return (False, None, "该模块不支持删除资产")
+            result = cast("Any", remover())
+            accepted, payload = result
+        if not accepted:
+            return (False, None, str(payload))
+        data = _install_status_dict(payload)
+        data.update(self._install_display_fields(_install_module_id(params)))
+        return (True, data, None)
+
     @staticmethod
     def _install_display_fields(module_id) -> dict:
-        """安装入口的显示文案来自插件声明，宿主不硬编码任何模块语义。"""
+        """安装入口的显示文案与显隐条件来自插件声明，宿主不硬编码任何模块语义。"""
         label = plugin_declared_ref(module_id, "ASSET_INSTALLER_LABEL") or "资产"
         hint = plugin_declared_ref(module_id, "ASSET_INSTALLER_MISSING_HINT") or ""
-        return {"label": label, "missing_hint": hint}
+        data: dict[str, Any] = {"label": label, "missing_hint": hint}
+        cond = _install_visible_if(module_id)
+        if cond:
+            data["visible_if"] = cond
+        return data
+
+    @staticmethod
+    def _install_can_remove(installer) -> bool:
+        """安装器是否声明了可删除的受管资产；未声明按不可删除处理。"""
+        probe = getattr(installer, "can_remove", None)
+        try:
+            return bool(probe()) if callable(probe) else False
+        except Exception:  # 插件探测出错只让删除入口不出现，不打断状态 RPC
+            return False
 
     def install_asset_status(self, params):
         module_id = _install_module_id(params)
@@ -1887,7 +1938,7 @@ class SidecarService:
             data = {
                 "task_id": "", "phase": "idle", "revision": 0, "downloaded": 0,
                 "total": 0, "source": "", "error": None,
-                "supported": supported, "needs_install": False,
+                "supported": supported, "needs_install": False, "can_remove": False,
             }
             data.update(self._install_display_fields(module_id))
             return (True, data, None)
@@ -1900,6 +1951,7 @@ class SidecarService:
             logger.log(f"[资产安装] {module_id} 可用性查询失败，按无需安装处理: {exc!r}",
                        "WARNING")
             data["needs_install"] = False
+        data["can_remove"] = self._install_can_remove(installer)
         data.update(self._install_display_fields(module_id))
         return (True, data, None)
 

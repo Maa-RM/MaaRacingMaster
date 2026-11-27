@@ -99,6 +99,11 @@ def _normalize_cond(raw) -> tuple[dict | None, str | None]:
     return {"key": key, "op": op, "value": value}, None
 
 
+def normalize_condition(raw) -> tuple[dict | None, str | None]:
+    """校验并重建显隐条件；配置字段与宿主安装入口共用同一套条件结构。"""
+    return _normalize_cond(raw)
+
+
 def _normalize_badge(raw) -> tuple[dict | None, str | None]:
     """选项徽章：{text, level}；只用于分段控件。"""
     if not isinstance(raw, dict):
