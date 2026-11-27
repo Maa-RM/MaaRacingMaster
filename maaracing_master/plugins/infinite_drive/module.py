@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -312,6 +313,17 @@ def _refresh_config_ui() -> None:
     重新赋值才对下一次配置读取可见。记录只由本模块落库写入，落库点重建即
     覆盖全部真实变化；面板在运行结束重建任务列表时重取配置，届时可见。"""
     InfiniteDriveModule.CONFIG_UI = _build_config_ui(SOURCE_MODE)
+
+
+def _best_card_slot(names: Sequence[str]) -> int:
+    """按卡面名优先级选槽；纯函数，选卡与离线仿真共用。"""
+    best_rank = flow_data.CARD_PRIORITY_DEFAULT
+    best_slot = flow_data.CARD_PICK_SLOT
+    for i, name in enumerate(names):
+        rank = flow_data.CARD_PRIORITY.get(normalize_text(name), flow_data.CARD_PRIORITY_DEFAULT)
+        if rank < best_rank:
+            best_rank, best_slot = rank, i
+    return best_slot
 
 
 def _settlement_readable(score_text: str, progress_text: str) -> bool:
@@ -968,22 +980,18 @@ class InfiniteDriveModule(ActivityModule):
                 return False
 
     def _choose_card_slot(self) -> int:
-        """OCR 读三槽名字 → 按优先级表取最优槽；读不出回退默认槽。"""
+        """OCR 读三槽卡面名 → 按优先级表取最优槽；读不出回退默认槽。"""
         assert self.ctx is not None
         rgb = self.ctx.capture.frame_with_age()[0]
         if rgb is None:
             return flow_data.CARD_PICK_SLOT
         if self._ocr is None:
             self._ocr = RapidOcrEngine()
-        best_rank = flow_data.CARD_PRIORITY_DEFAULT
-        best_slot = flow_data.CARD_PICK_SLOT
-        for i, roi in enumerate(flow_data.CARD_NAME_ROIS):
+        names = []
+        for roi in flow_data.CARD_NAME_ROIS:
             result = self._ocr.recognize(rgb, roi)
-            name = normalize_text(getattr(result, "text", "") or "")
-            rank = flow_data.CARD_PRIORITY.get(name, flow_data.CARD_PRIORITY_DEFAULT)
-            if rank < best_rank:
-                best_rank, best_slot = rank, i
-        return best_slot
+            names.append(getattr(result, "text", "") or "")
+        return _best_card_slot(names)
 
     def _read_settlement(self) -> None:
         """读结算变动量；非录制局落一条战绩记录（看板只收程序局）。
