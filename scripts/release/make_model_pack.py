@@ -70,13 +70,15 @@ def build(version: str, out_dir: Path, github_repo: str = "",
         info.external_attr = 0o644 << 16
         zf.writestr(info, data)
 
+    sums_bytes = ("\n".join(sums) + "\n").encode("utf-8")
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for packed, src in files:
             add_member(zf, packed, src.read_bytes())
         if readme.is_file():
             add_member(zf, "README.md", readme.read_bytes())
         add_member(zf, "LICENSE-BDD100K.txt", license_file.read_bytes())
-        add_member(zf, "SHA256SUMS", ("\n".join(sums) + "\n").encode("utf-8"))
+        add_member(zf, "SHA256SUMS", sums_bytes)
 
     digest = _sha256(zip_path)
     sha_path = Path(str(zip_path) + ".sha256")
@@ -94,10 +96,13 @@ def build(version: str, out_dir: Path, github_repo: str = "",
     if github_repo:
         sources["github"] = (
             f"https://github.com/{github_repo}/releases/download/{tag}/{zip_path.name}")
+    # 声明的展开尺寸必须覆盖包内每个成员（含 README / 许可 / SHA256SUMS）：
+    # 安装器对解压总量做严格上限判定，少算一个成员就会被判超限。
     unpacked = sum(src.stat().st_size for _packed, src in files)
     for extra in (readme, license_file):
         if extra.is_file():
             unpacked += extra.stat().st_size
+    unpacked += len(sums_bytes)
     descriptor = {
         "tag": tag,
         "asset": zip_path.name,
