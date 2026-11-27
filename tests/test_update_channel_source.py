@@ -173,7 +173,9 @@ def test_publisher_requires_both_named_addresses():
     )
     assert "同时提供" in script, "缺任一地址未报错"
     ci = RELEASE_YML.read_text(encoding="utf-8")
-    assert "尚未接入 CI" in ci, "CI 需如实标注受管发行链未接线（脚本能力 != 发行事实）"
+    assert "assemble.ps1" in ci, "发行工作流未调用组装脚本"
+    for banned in ("-Managed", "vpk", "make_update_release"):
+        assert banned not in ci, f"发行工作流残留受管发布链痕迹：{banned}"
 
 
 def test_rpc_exposes_setting_and_auto_check_actions():
