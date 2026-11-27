@@ -17,6 +17,19 @@ OCR 比分（区域真源 ``pve_score``）连续超本关目标即经设置页�
 跳过选卡2与阶段2直达结算步。退出序列中途失败自动回赶（取消/继续）续驾，触发自然
 重试；读数不可用只停用触发，不拖垮驾驶循环。
 
+**恢复与关卡**：所有等页面的循环低频只读探测大厅锚点（流程外页面），命中即判本轮被
+打断、立刻收步。失败收口按当前页面把流程接回去（结算页 / 准备页 / 模式页 / 大厅），
+认不出页面才中止；连续恢复上限 3 次。准备页的「第N关」是关卡号唯一来源：超过目标关数
+（暂固定 1）就转放弃归零，正好前进一级且在目标内才继续打——中断后被服务端推进的进度
+因此自动对齐。目标分按当前关卡查表。
+
+**结算终局**：结算页右下按钮在晋级与终局两态下图形相同，只有文案从「下一关」
+变成「结束」，模板不区分、只按落点路由——晋级落下一关准备页，挑战失败或本轮
+关卡跑满落活动页（模式页），游戏在此自动把进度归零，本轮结束回关卡挑战开下一轮。
+
+**步级成功判据**：落地锚点在位即成功；点击只是让它出现的首选手段，
+落地页已在位时免点。
+
 **连刷轮数**（配置项，默认 0 = 不限）：本次运行连跑的循环数，胜负都算一轮，
 刷满即正常收尾；预计用时按历史程序局结算记录的轮均间隔估出（无历史不下发），
 随每次结算落库刷新。
@@ -43,7 +56,7 @@ from pathlib import Path
 from maaracing_master import SOURCE_MODE
 from maaracing_master.core.base import ActivityContext, ActivityModule
 from maaracing_master.core.logger import logger
-from maaracing_master.core.nav_graph import NavGraph
+from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome
 from maaracing_master.core.ocr import RapidOcrEngine
 from maaracing_master.core.advance import normalize_text
 from maaracing_master.core.paths import debug_dir
@@ -97,7 +110,7 @@ STEP_CONFIRM: dict[str, str] = {
     "关卡挑战": "infinite_drive.__confirm.准备页",
     "选车·确定": "infinite_drive.__confirm.准备页",
     "准备·开始": "infinite_drive.__confirm.卡牌选择",
-    "结算·下一关": "infinite_drive.__confirm.准备页",
+    "结算·下一关": "infinite_drive.__confirm.结算落地",
     "准备·放弃": "infinite_drive.__confirm.放弃确认框",
     "放弃·确认": "infinite_drive.__confirm.模式页",
     "提前结算·齿轮": "infinite_drive.__confirm.设置页",
@@ -123,6 +136,15 @@ _EVENT_DISMISS = "infinite_drive.关闭事件介绍"
 # 黑名单挡住购买类文案。
 _ADVANCE_DISMISS = "infinite_drive.驱赶偶发弹窗"
 ADVANCE_SWEEP_INTERVAL_S = 2.5
+# 流程外页面（回大厅 = 本轮已被打断，例如中途结算请求失败）：探测直接复用
+# 「点比赛」节点的识别（大厅右下角比赛按钮），只读 probe、不点不导。命中后等待
+# 循环立刻收步，由失败收口按当前页面续跑——兜底只报事实，不当导航器。
+_HALL_ANCHOR = "infinite_drive.点比赛"
+HALL_PROBE_INTERVAL_S = 1.5
+# 失败收口：连续恢复上限（一轮正常走完清零）与回到流程前的落定时间
+# （服务端结算与奖励弹窗可能迟到，先停稳再清一遍再续跑）。
+RESUME_MAX = 3
+RESUME_SETTLE_S = 2.0
 _DRIVE_END = {"p1": "infinite_drive.__confirm.驾驶1结束",
               "p2": "infinite_drive.__confirm.驾驶2结束"}
 _DRIVE_DURATION = {"p1": flow_data.STAGE1_DURATION_S,
@@ -141,17 +163,20 @@ _ROUND_TOTAL_DEFAULT = 0
 _ROUND_TOTAL_MAX = 99
 
 # 提前结算（分数达标中途退出，省时路径）：一关 = 阶段1+阶段2，目标分整关累计
-# （真源 flow_data.PVE_STAGE_TARGETS），驾驶中任一阶段超分即可退出立即结算。
+# （真源 flow_data.PVE_STAGE_TARGETS，按准备页读出的关卡号查表），驾驶中任一阶段
+# 超分即可退出立即结算。
 # 触发判据 = 低频 OCR 比分连续 N 拍超目标：分数只增不减，多等两拍没有损失，
 # 连续拍数挡的是单帧误读（漏读只会晚触发，方向安全）。读数间隔取 0.7s：OCR
 # 单框 10~30ms 发生在出杆之后的热路径上，逐拍读会拖垮 20Hz 控制循环。
-_ROUND_TARGET = flow_data.PVE_STAGE_TARGETS[1]
 _SCORE_CHECK_INTERVAL_S = 0.7
 _EARLY_EXIT_CONFIRM_READS = 3
 # 提前结算的页面锚点与回赶动作（序列中途失败时点取消/继续回到驾驶）
 _SETTINGS_ANCHOR = "infinite_drive.__confirm.设置页"
 _EXIT_DIALOG_ANCHOR = "infinite_drive.__confirm.退出确认框"
 _SETTLE_ANCHOR = "infinite_drive.__confirm.结算页"
+# 活动页（模式页）：晋级的结算落在下一关准备页，终局的结算点「结束」落回这里，
+# 游戏在此自动把本轮进度归零——不需要、也不该再走放弃。
+_MODE_ANCHOR = "infinite_drive.__confirm.模式页"
 _EXIT_GEAR = "infinite_drive.提前退出.点齿轮"
 _EXIT_LEAVE = "infinite_drive.提前退出.点退出"
 _EXIT_CONFIRM = "infinite_drive.提前退出.点确认退出"
@@ -161,6 +186,20 @@ _EXIT_RESUME = "infinite_drive.提前退出.点继续"
 # （结算页点下一关 → 下一关准备页，与阶段2自然结束后的链路共用同一批步骤）
 _SETTLE_STAGE_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
                            if stage == "结算·下一关")
+# 准备页两处决策点：开始挑战（进关前）与放弃（结算后的下一关准备页）
+_PREP_START_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
+                         if stage == "准备·开始")
+_GIVEUP_STAGE_INDEX = next(i for i, (stage, _, _) in enumerate(FLOW)
+                           if stage == "准备·放弃")
+# 目标关数：暂固定 1（第1关几乎不失败；终局结算分支已就绪）。放开时升为配置项。
+_TARGET_LEVEL = 1
+# 失败收口路由：按当前页面把流程接回去（只负责回流程，进度由准备页关卡规则保证）
+_RESUME_ROUTES: tuple[tuple[str, int, str], ...] = (
+    (_SETTLE_ANCHOR, _SETTLE_STAGE_INDEX, "结算页"),
+    ("infinite_drive.__confirm.准备页", _PREP_START_INDEX, "准备页"),
+    (_MODE_ANCHOR, LOOP_START_INDEX, "模式页"),
+    (_HALL_ANCHOR, 0, "大厅"),
+)
 
 # 结算读数稳定窗：结算页刚出现时比分会滚动、面板逐块渲染，单拍读到的可能是空串
 # 或滚动中间值（2026-11-23 实测 4 轮：3 轮空、1 轮 64/「一」）。落库与「点下一关」
@@ -385,6 +424,14 @@ class InfiniteDriveModule(ActivityModule):
         self._record_thread: threading.Thread | None = None
         # 偶发弹窗 OCR 兜底的限频时刻（单调钟；0 = 立即可扫）
         self._next_sweep_at = 0.0
+        # 流程外页面探测（限频时刻）/ 本轮被打断标记 / 连续恢复计数 / 当前步序号
+        # （序号供探测门用：入口链第 0 步本来就在大厅，探了没有新信息）
+        self._next_hall_at = 0.0
+        self._hall_reset = False
+        self._resume_attempts = 0
+        self._stage_index = 0
+        # 当前关卡号：准备页横幅读出（决定目标分与多关推进），0 = 尚未读到
+        self._current_level = 0
         # 提前结算触发框（区域真源 pve_score，右缘收在头像之前防 OCR 并读虚增）；
         # 缺键是插件资产残缺，启动即报错不静默降级
         regions = load_hud_regions()
@@ -692,10 +739,32 @@ class InfiniteDriveModule(ActivityModule):
                     return True
                 stage, node, phase = FLOW[index]
                 self._stage_name = stage
+                self._stage_index = index
                 if stage in OPTIONAL_STAGES:
                     if not self._graph.run(_CAR_SELECT_ANCHOR, _CAR_SELECT_ANCHOR,
                                            save=NAV_SAVE):
                         index += 1
+                        continue
+                if stage == "准备·开始":
+                    # 进关前读关卡号：超过目标（含中断后被服务端推进）就转放弃，
+                    # 由放弃把进度归零回第1关，下一次进关自然对齐。
+                    level = self._read_level()
+                    if level is not None and level <= _TARGET_LEVEL:
+                        self._current_level = level
+                        self._tlog(f"[无限驾驶] 第 {level} 关开始"
+                                   f"（目标分 {self._target_score()}）", "INFO")
+                    else:
+                        self._tlog(f"[无限驾驶] 准备页关卡 {level}（目标 {_TARGET_LEVEL} 关），"
+                                   "转放弃归零", "INFO")
+                        index = _GIVEUP_STAGE_INDEX
+                        continue
+                elif stage == "准备·放弃":
+                    # 结算后的下一关准备页：关卡正好前进一级且仍在目标内才继续打，
+                    # 其余（不前进 / 读不出 / 超目标）一律放弃归零。
+                    level = self._read_level()
+                    if (level is not None and level == self._current_level + 1
+                            and level <= _TARGET_LEVEL):
+                        index = _PREP_START_INDEX
                         continue
                 if stage == "结算·下一关":
                     self._read_settlement()
@@ -706,8 +775,13 @@ class InfiniteDriveModule(ActivityModule):
                     else:
                         ok = self._drive(phase)
                     if not ok:
-                        self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止", "WARNING")
-                        return self._stop_received()
+                        resumed = self._resume_from(stage)
+                        if resumed is None:
+                            self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止",
+                                       "WARNING")
+                            return self._stop_received()
+                        index = resumed
+                        continue
                     if phase == "p1" and self._p1_settled_early:
                         # 第1关已提前整关结算：跳过选卡2与阶段2直达结算步——
                         # 结算页已在位，与阶段2自然结束共用同一批后续步骤。
@@ -716,9 +790,22 @@ class InfiniteDriveModule(ActivityModule):
                         continue
                 else:
                     if not self._run_step(node, stage):
-                        self._tlog(f"[无限驾驶] 步骤「{stage}」未落地，本轮中止", "WARNING")
-                        return self._stop_received()
+                        resumed = self._resume_from(stage)
+                        if resumed is None:
+                            self._tlog(f"[无限驾驶] 步骤「{stage}」未落地，本轮中止",
+                                       "WARNING")
+                            return self._stop_received()
+                        index = resumed
+                        continue
+                    if stage == "结算·下一关" and self._settle_ends_run():
+                        # 终局结算（挑战失败 / 本轮关卡跑满）：结算按钮是「结束」，已回
+                        # 活动页且游戏自动归零进度——本轮到此为止，回关卡挑战开
+                        # 下一轮（break 走轮尾的常规收尾，轮数照常计入）。
+                        break
+                self._hall_reset = False
                 index += 1
+            # 一轮正常走完：连续恢复计数清零（收口按连续次数设上限）
+            self._resume_attempts = 0
             index = LOOP_START_INDEX
         if self._running and self._round_total > 0:
             self._tlog(f"[极速狂飙] 已刷满设定的 {self._round_total} 轮，本次运行完成",
@@ -729,7 +816,12 @@ class InfiniteDriveModule(ActivityModule):
         return not self._running
 
     def _run_step(self, action_node: str, stage: str) -> bool:
-        """发一次 UI 点击并有限重发；成功 = 源按钮消失 或 落地锚点从无到有，且锚点此刻在位。
+        """发一次 UI 点击并有限重发；成功 = 落地锚点在位（点击只是让它出现的首选手
+        段，不是成功条件）。
+
+        落地页在点之前就在位时直接算落地、不发点击：中断后服务端把流程推进到
+        下一屏（本步的落地页）时，「点完之后页面才变化」永远不成立，旧判据会把
+        已经到位的页面判成失败。
 
         **落地确认不过窗就重发点击**——settle 的「源按钮已消失」只是提前成功的
         旁证，不是免重发的豁免凭据：它盯着的是模板分数，页面焦点抖动/转场动画
@@ -741,6 +833,8 @@ class InfiniteDriveModule(ActivityModule):
         """
         assert self._graph is not None
         assert self.ctx is not None
+        if self._hall_reset:
+            return False
         confirm_node = STEP_CONFIRM.get(stage)
         if confirm_node is None:
             return self._graph.run(action_node, action_node, save=NAV_SAVE)
@@ -750,6 +844,12 @@ class InfiniteDriveModule(ActivityModule):
         landed_ever = False
         clicked_once = False
         confirm_pre = self._graph.run(confirm_node, confirm_node, save=NAV_SAVE)
+        if confirm_pre:
+            # 落地页已在位（游戏自己走到了、或上一次点击迟到落地）：本步免点。
+            # 点击只是手段，成功条件统一为「落地页在位」——中断后服务端把流程
+            # 推进到下一屏时，旧判据「必须点完之后页面才变化」永远不成立。
+            self._tlog(f"[无限驾驶] 「{stage}」落地页已在位，免点", "DEBUG")
+            return True
         while self._running and self.ctx.lifecycle.running:
             if send_click:
                 machine.arm()
@@ -778,6 +878,8 @@ class InfiniteDriveModule(ActivityModule):
                 # docstring）；重发前做一次偶发弹窗兜底（限频）——奖励链/通行证
                 # 升级这类弹窗盖住按钮时，重发的识别永远落空，先赶再发。
                 self._sweep_transient_popup()
+                if self._hall_reset:
+                    return False
                 send_click = True
                 continue
             if cmd is Command.WAIT:
@@ -843,6 +945,8 @@ class InfiniteDriveModule(ActivityModule):
         deadline = time.monotonic() + wait_s
         last_seen = time.monotonic()
         while True:
+            if self._poll_hall():
+                return False
             if want_present and self._graph.run(_EVENT_ANCHOR, _EVENT_ANCHOR,
                                                 save=NAV_SAVE):
                 self._graph.run(_EVENT_DISMISS, _EVENT_DISMISS, save=NAV_SAVE)
@@ -893,10 +997,19 @@ class InfiniteDriveModule(ActivityModule):
         「点击屏幕继续」这类无专模板弹窗——「本场得分」标题在弹窗上方仍能命中，
         但分数区被盖住，OCR 会把「×40」读成「发40」（2026-11-23 实测）。所以先
         用文字兜底把覆盖层赶掉，再阻塞到读数稳定才返回；调用链的下一步就是点
-        下一关，提前放行会把弹窗文本写进战绩库（见 ``_read_settlement_stable``）。
+        结算按钮，提前放行会把弹窗文本写进战绩库（见 ``_read_settlement_stable``）。
+
+        **结算页不在位就不读**（清场后确认一次）：中断后游戏可能停在准备页，同一批
+        ROI 会把准备页的文本读成得分/进度，往看板写垃圾记录；此时只告警并返回。
+        读数先清空：终局判定读 ``last_settlement``，缺页时不能拿上一局的胜负冒充。
         """
         assert self.ctx is not None
+        self.last_settlement = {}
         self._dismiss_settlement_overlays()
+        assert self._graph is not None
+        if not self._graph.run(_SETTLE_ANCHOR, _SETTLE_ANCHOR, save=NAV_SAVE):
+            self._tlog("[无限驾驶] 结算页不在位，跳过读数（本步没有结算画面）", "WARNING")
+            return
         score_text, progress_text, stable = self._read_settlement_stable()
         self.last_settlement = {"score": score_text, "progress": progress_text}
         logger.log(f"[无限驾驶] 结算读数: 得分={score_text} 进度={progress_text}", "DEBUG")
@@ -980,41 +1093,147 @@ class InfiniteDriveModule(ActivityModule):
     def _dismiss_settlement_overlays(self) -> None:
         """结算读数前清覆盖层：奖励链「点击屏幕继续」这类弹窗会盖住分数区。
 
-        文字兜底一次约 0.5s（已按下半屏裁剪），只在读数前做、最多两轮：命中一次
-        才重扫（弹窗可能不止一层），扫完停 0.5s 让页面落定。限频游标一并推后，
-        避免紧接着的等待循环立刻再扫一遍。
+        走同一个兜底（命中一次才重扫、最多两轮，弹窗可能不止一层），跳过限频：
+        读数前只此一次，扫完停 0.5s 让页面落定。顺带跑大厅探测——读数前画面若
+        已是大厅，标记本轮被打断，后续由失败收口按页面续跑。
         """
         assert self._graph is not None
         assert self.ctx is not None
         for _ in range(2):
-            if not self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE):
+            if not self._sweep_transient_popup(force=True):
                 break
             if not self.ctx.lifecycle.sleep(0.5):
                 break
-        self._next_sweep_at = time.monotonic() + ADVANCE_SWEEP_INTERVAL_S
 
-    def _sweep_transient_popup(self) -> None:
-        """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它。
+    def _sweep_transient_popup(self, *, force: bool = False) -> bool:
+        """偶发弹窗兜底（限频）：OCR 白名单扫下半屏，命中推进文案就点它；返回是否点了。
 
         奖励链「点击屏幕继续」、通行证升级「继续」这类偶发弹窗没有也不该逐个裁
         模板——通用解是 core advance 文案识别（启动链同款，词表真源在 core）。
         只在等待循环里按 ``ADVANCE_SWEEP_INTERVAL_S`` 限频调用：被挡住才扫，
         OCR 成本有界；黑名单挡住购买类文案，不会误点扣费按钮。
+
+        扫之前先探大厅（失联层）：流程已不在活动内时点文案没有意义，收步交
+        _run_flow 处置。``force`` 只给读数前/重开前的清场用（跳过限频）。
         """
         assert self._graph is not None
         now = time.monotonic()
-        if now < self._next_sweep_at:
-            return
+        if not force and now < self._next_sweep_at:
+            return False
         self._next_sweep_at = now + ADVANCE_SWEEP_INTERVAL_S
-        self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE)
+        if self._poll_hall():
+            return False
+        return bool(self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE))
+
+    def _poll_hall(self) -> bool:
+        """失联层判据：流程外页面（大厅）在位即置「本轮被打断」。
+
+        只读 probe（不点、不导航、不开调试段）；命中后调用方的等待循环立刻收步，
+        不再耗重发预算，续跑统一由 _run_flow 的失败收口按页面路由。入口链第 0 步
+        不探测——那一步本来就在大厅，探了没有新信息。
+        """
+        if self._hall_reset:
+            return True
+        if self._stage_index <= 0:
+            return False
+        assert self._graph is not None
+        now = time.monotonic()
+        if now < self._next_hall_at:
+            return False
+        self._next_hall_at = now + HALL_PROBE_INTERVAL_S
+        if self._graph.probe(_HALL_ANCHOR) is not ProbeOutcome.HIT:
+            return False
+        self._hall_reset = True
+        return True
+
+    def _settle_ends_run(self) -> bool:
+        """结算步落点是活动页 = 本局终局（挑战失败，或本轮关卡跑满后点「结束」）。
+
+        结算页右下按钮在晋级与终局两态下图形相同（圆圈 + 箭头），只有右侧文案从
+        「下一关」变成「结束」——模板分不出，也不该为此裁文字模板：点击动作完全
+        一样，区别只在落点。所以判据取落点：晋级落到下一关准备页；终局点「结束」
+        回活动页（模式页），游戏自动把本轮进度归零，不需要再走放弃。胜负只用于
+        日志：结算进度到头且达标 = 本轮跑满，其余（含读数缺失）= 挑战失败或胜负面
+        未解析。分母取结算页进度条读数，不写死关数。
+        """
+        assert self._graph is not None
+        if self._graph.probe(_MODE_ANCHOR) is not ProbeOutcome.HIT:
+            return False
+        rec = self.last_settlement.get("record")
+        rec = rec if isinstance(rec, dict) else {}
+        level, total = rec.get("level"), rec.get("level_total")
+        where = (f"第 {level}/{total} 关"
+                 if isinstance(level, int) and isinstance(total, int) else "结算")
+        if (rec.get("cleared") is True and isinstance(level, int)
+                and isinstance(total, int) and level >= total):
+            self._tlog(f"[无限驾驶] {where}挑战成功，本轮关卡已跑满；点「结束」回活动页，"
+                       "进度已归零", "INFO")
+        elif rec.get("cleared") is False:
+            self._tlog(f"[无限驾驶] {where}挑战失败；点「结束」回活动页，进度已归零",
+                       "WARNING")
+        else:
+            self._tlog(f"[无限驾驶] {where}终局（胜负面未解析）；已回活动页，进度已归零",
+                       "WARNING")
+        self._current_level = 0
+        return True
+
+    def _resume_from(self, stage: str) -> int | None:
+        """失败收口：按当前页面把流程接回去；认不出页面返回 None（交回中止）。
+
+        路由只负责「回到流程里」——进度正确性交给准备页的关卡规则（超目标即放弃
+        归零），所以这里不再假设必须回大厅。连续恢复按次数设上限（一轮正常走完
+        清零），服务端持续异常时不空转。回到活动入口/模式页时先让画面停稳并清一遍
+        迟到弹窗——它们会挡住入口点击。
+        """
+        if self._resume_attempts >= RESUME_MAX:
+            self._tlog(f"[无限驾驶] 「{stage}」中断，连续恢复已达 {RESUME_MAX} 次，"
+                       "停止运行", "ERROR")
+            return None
+        assert self._graph is not None
+        for node, index, label in _RESUME_ROUTES:
+            if self._graph.probe(node) is ProbeOutcome.HIT:
+                break
+        else:
+            return None
+        self._resume_attempts += 1
+        self._hall_reset = False
+        self._next_hall_at = 0.0
+        self._tlog(f"[无限驾驶] 「{stage}」中断（当前页：{label}），从该页续跑"
+                   f"（第 {self._resume_attempts}/{RESUME_MAX} 次）", "WARNING")
+        if index in (0, LOOP_START_INDEX):
+            if self.ctx is not None:
+                self.ctx.lifecycle.sleep(RESUME_SETTLE_S)
+            self._graph.run(_ADVANCE_DISMISS, _ADVANCE_DISMISS, save=NAV_SAVE)
+            self._next_sweep_at = time.monotonic() + ADVANCE_SWEEP_INTERVAL_S
+        return index
+
+    def _read_level(self) -> int | None:
+        """读准备页「第N关」横幅，返回关卡号；读不出返回 None（调用方按超目标处理）。"""
+        assert self.ctx is not None
+        if self._ocr is None:
+            self._ocr = RapidOcrEngine()
+        try:
+            rgb = self.ctx.capture.frame_with_age()[0]
+            if rgb is None:
+                return None
+            result = self._ocr.recognize(rgb, flow_data.LEVEL_BANNER_ROI)
+        except Exception as exc:  # noqa: BLE001 —— 读数失败走安全侧（转放弃），不拖垮流程
+            self._tlog(f"[无限驾驶] 关卡号读数失败: {exc!r}", "WARNING")
+            return None
+        return parse_int(getattr(result, "text", "") or "")
+
+    def _target_score(self) -> int:
+        """本关目标分：按准备页读出的关卡号查表（真源 flow_data.PVE_STAGE_TARGETS）。"""
+        return flow_data.PVE_STAGE_TARGETS.get(self._current_level,
+                                               flow_data.PVE_STAGE_TARGETS[1])
 
     def _score_above_target(self, frame) -> bool:
         """OCR 驾驶页比分，判「已超本关目标分」（提前结算触发判据）。
 
         目标分真源是 flow_data.PVE_STAGE_TARGETS（一关两阶段整关累计，阶段1/2 共用
-        同一目标）。读不出 / 解析失败一律 False：分数只增不减，晚一拍触发没有损失；
-        读数区域右缘收在头像之前，目标分框（在区域外）与头像都不进读数。OCR 异常
-        只告警一次并停用触发——判据是省时旁路，绝不拖垮驾驶循环。
+        同一目标），按当前关卡查表。读不出 / 解析失败一律 False：分数只增不减，
+        晚一拍触发没有损失；读数区域右缘收在头像之前，目标分框（在区域外）与头像
+        都不进读数。OCR 异常只告警一次并停用触发——判据是省时旁路，绝不拖垮驾驶循环。
         """
         if self._score_trigger_disabled:
             return False
@@ -1027,29 +1246,26 @@ class InfiniteDriveModule(ActivityModule):
             self._tlog(f"[无限驾驶] 比分读数不可用，本次运行停用提前结算: {exc!r}", "WARNING")
             return False
         value = parse_int(getattr(result, "text", "") or "")
-        return value is not None and value > _ROUND_TARGET
+        return value is not None and value > self._target_score()
 
     def _run_early_exit(self) -> bool:
         """提前结算序列：齿轮 → 设置页退出 → 确认框确认，落地过关结算页。
 
         分数超目标后的省时路径：中途退出按当前分数立即结算本关（游戏机制见
-        RULES.md §0.5）。各步走 _run_step 的落地确认与重发；「今日不再提示」
-        生效日确认框会被跳过、点完退出直达结算页，故确认步先查结算页在位即免点。
-        任一步没落地先回赶（确认框点取消 / 设置页点继续）回到驾驶——分数只增
-        不减，触发稍后自然再次成立；结算页之后的链路由流程表照常接手。
+        RULES.md §0.5）。各步走 _run_step 的落地确认与重发（落地页已在位时免点，
+        覆盖「今日不再提示」跳过确认框直达结算页的情形）。任一步没落地先回赶
+        （确认框点取消 / 设置页点继续）回到驾驶——分数只增不减，触发稍后自然
+        再次成立；结算页之后的链路由流程表照常接手。
         """
         assert self._graph is not None
         for stage, node in (("提前结算·齿轮", _EXIT_GEAR),
                             ("提前结算·退出", _EXIT_LEAVE),
                             ("提前结算·确认", _EXIT_CONFIRM)):
-            if stage == "提前结算·确认" and self._graph.run(
-                    _SETTLE_ANCHOR, _SETTLE_ANCHOR, save=NAV_SAVE):
-                break   # 确认框被跳过，结算页已直接在位：确认步免点
             if self._run_step(node, stage):
                 continue
             self._dismiss_exit_pages()
             return False
-        self._tlog(f"[无限驾驶] 分数超目标（{_ROUND_TARGET}），提前结算", "INFO")
+        self._tlog(f"[无限驾驶] 分数超目标（{self._target_score()}），提前结算", "INFO")
         return True
 
     def _dismiss_exit_pages(self) -> None:
@@ -1163,6 +1379,8 @@ class InfiniteDriveModule(ActivityModule):
                         if self._graph.run(end_node, end_node):
                             return True
                         self._sweep_transient_popup()
+                        if self._hall_reset:
+                            return False
                     if not self.ctx.lifecycle.sleep(STEP_POLL_S):
                         return False
                 return False

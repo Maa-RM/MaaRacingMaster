@@ -852,6 +852,36 @@
         "post_delay": 0,
         "timeout": 400
     },
+    "infinite_drive.__confirm.结算落地": {
+        "attach": {
+            "_page": "confirm",
+            "_label": "结算按钮落地：晋级落到下一关准备页；挑战失败或本轮关卡跑满点「结束」回模式页（活动页）",
+            "_owner": "infinite_drive",
+            "_anchor_only": true,
+            "_module_driven": true
+        },
+        "recognition": {
+            "type": "Or",
+            "param": {
+                "any_of": [
+                    "infinite_drive.__confirm.准备页",
+                    "infinite_drive.__confirm.模式页"
+                ]
+            }
+        },
+        "action": {
+            "type": "DoNothing",
+            "param": {}
+        },
+        "rate_limit": 0,
+        "pre_wait_freezes": {
+            "time": 300,
+            "timeout": 1500
+        },
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 400
+    },
     "infinite_drive.__confirm.放弃确认框": {
         "attach": {
             "_page": "confirm",

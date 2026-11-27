@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import time
+
 from maaracing_master import SOURCE_MODE
 from maaracing_master.core.config_ui_contract import (
     CONFIG_UI_CONTRACT_VERSION,
@@ -129,16 +131,25 @@ def test_round_total_field_carries_estimate_only_with_history(monkeypatch) -> No
 
 
 class _AllOkGraph:
-    """所有锚点/动作都成功的图桩：_run_flow 的轮次推进纯看桩返回。"""
+    """所有锚点/动作都成功的图桩：_run_flow 的轮次推进纯看桩返回。
+
+    只读探测一律 MISS（页面判定类分支不误命中），需要命中的测试自行覆盖 probe。
+    """
 
     def run(self, *args, **kwargs) -> bool:
         return True
+
+    def probe(self, *_args, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return ProbeOutcome.MISS
 
 
 def _stub_flow_steps(monkeypatch, mod) -> None:
     monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
     monkeypatch.setattr(mod, "_drive", lambda phase: True)
     monkeypatch.setattr(mod, "_run_step", lambda node, stage: True)
+    monkeypatch.setattr(mod, "_read_level", lambda: 1)
 
 
 def test_run_flow_stops_after_round_total(monkeypatch) -> None:
@@ -152,6 +163,7 @@ def test_run_flow_stops_after_round_total(monkeypatch) -> None:
     monkeypatch.setattr(m, "_drive", lambda phase: seen.append(phase) or True)
     monkeypatch.setattr(m, "_run_step", lambda node, stage: True)
     monkeypatch.setattr(m, "_read_settlement", lambda: seen.append("settle"))
+    monkeypatch.setattr(m, "_read_level", lambda: 1)
     assert m._run_flow(0) is True
     assert seen.count("settle") == 2 and m._round_no == 2
 
@@ -1010,9 +1022,11 @@ def test_p1_early_settle_skips_card2_and_p2_in_flow(monkeypatch) -> None:
     """阶段1提前结算：流程跳过选卡2与阶段2，直达结算步并读结算。"""
     from types import SimpleNamespace
 
+    from maaracing_master.core.nav_graph import ProbeOutcome
     from maaracing_master.plugins.infinite_drive import module as m
 
-    mod = _step_module(SimpleNamespace(run=lambda *_a: False))
+    mod = _step_module(SimpleNamespace(run=lambda *_a: False,
+                                       probe=lambda *_a, **_k: ProbeOutcome.MISS))
     visited = []
     monkeypatch.setattr(mod, "_drive", lambda phase: visited.append(phase) or True)
     monkeypatch.setattr(mod, "_pick_cards", lambda phase: visited.append(phase) or True)
@@ -1055,8 +1069,8 @@ def test_ui_nav_segments_save_images_and_drive_chain_does_not() -> None:
     src = Path(m.__file__).read_text(encoding="utf-8")
     for name in ("def _run_flow", "def _run_step", "def _pick_cards",
                  "def _wait_card_anchor", "def _sweep_transient_popup",
-                 "def _dismiss_settlement_overlays",
-                 "def _run_early_exit", "def _dismiss_exit_pages"):
+                 "def _resume_from", "def _read_settlement",
+                 "def _dismiss_exit_pages"):
         body = _function_body(src, name)
         calls = re.findall(r"self\._graph\.run\([^)]*\)", body)
         assert calls, f"{name} 里应有 run 调用"
@@ -1065,3 +1079,397 @@ def test_ui_nav_segments_save_images_and_drive_chain_does_not() -> None:
 
     drive = _function_body(src, "def _drive(")
     assert "save=" not in drive, "驾驶控制链不应声明存盘策略（与 drive 取证双写）"
+
+
+# ---------- 失联层：流程外页面（大厅）作废本轮并从入口重开 ----------
+
+class _HallSeenGraph:
+    """只读探测命中大厅；其余识别一律 miss（流程卡住、画面已回大厅）。"""
+
+    def __init__(self) -> None:
+        self.probes = 0
+
+    def run(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def probe(self, _node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        self.probes += 1
+        return ProbeOutcome.HIT
+
+
+def test_hall_probe_skipped_in_entry_chain(monkeypatch) -> None:
+    """入口链第 0 步本来就在大厅：不探测，避免重开自成死循环。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    graph = _HallSeenGraph()
+    mod = _step_module(graph)
+
+    assert mod._poll_hall() is False
+    assert graph.probes == 0
+
+    mod._stage_index = m._SETTLE_STAGE_INDEX
+    assert mod._poll_hall() is True
+    assert mod._hall_reset is True
+    assert graph.probes == 1
+
+
+def test_step_stops_immediately_when_hall_detected(monkeypatch) -> None:
+    """重发窗口里发现已回大厅：立刻收步，不再耗重发预算。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    graph = _HallSeenGraph()
+    mod = _step_module(graph)
+    mod._stage_index = m._SETTLE_STAGE_INDEX
+
+    assert mod._run_step("infinite_drive.点下一关", "结算·下一关") is False
+    assert mod._hall_reset is True
+    assert graph.probes >= 1
+
+
+def test_card_wait_aborts_on_hall(monkeypatch) -> None:
+    """选卡等待期发现已回大厅：立即收步（不等 15s 上限）。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    mod = _step_module(_HallSeenGraph())
+    mod._stage_index = m.LOOP_START_INDEX
+
+    assert mod._wait_card_anchor(want_present=True) is False
+    assert mod._hall_reset is True
+
+
+def test_drive_wait_aborts_when_hall_detected(monkeypatch) -> None:
+    """驾驶等待期发现已回大厅：立刻收步，不空等到阶段时限。"""
+    from maaracing_master.core.nav_graph import ProbeOutcome
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.01)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "_DRIVE_DURATION", {"p1": 5.0, "p2": 5.0})
+    monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 5.0)
+    graph = _SweepTrackingGraph()
+    graph.probe = lambda _node, **_kw: ProbeOutcome.HIT
+    mod = _step_module(graph)
+    mod._stage_index = 9
+    mod.set_module_config({"drive_mode": "depth", "record_mode": True})
+
+    started = time.monotonic()
+    assert mod._drive("p2") is False
+    assert mod._hall_reset is True
+    assert time.monotonic() - started < 4.0   # 未空等到 10s 阶段时限
+
+
+class _HallProbeGraph(_AllOkGraph):
+    """只读探测只在「点比赛」节点命中（= 大厅在位）。"""
+
+    def probe(self, node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return ProbeOutcome.HIT if node == "infinite_drive.点比赛" else ProbeOutcome.MISS
+
+
+def test_flow_resumes_from_hall_within_same_round(monkeypatch) -> None:
+    """回大厅 → 同一轮内从入口链续跑；不额外消耗连刷轮数。"""
+    mod = _module()
+    mod._running = True
+    mod._graph = _HallProbeGraph()
+    mod._round_total = 2
+    calls: list[str] = []
+    state = {"aborted": False}
+
+    def _step(node, stage):
+        calls.append(stage)
+        if stage == "结算·下一关" and not state["aborted"]:
+            state["aborted"] = True
+            mod._hall_reset = True
+            return False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", _step)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+    monkeypatch.setattr(mod, "_read_level", lambda: 1)
+
+    assert mod._run_flow(0) is True
+    # 首轮中断后同轮从入口链续跑；第二轮从关卡挑战开跑：入口链共 2 次
+    assert calls.count("入口·比赛") == 2
+    assert mod._round_no == 2                 # 中断轮不额外计数
+    assert mod._resume_attempts == 0          # 第二轮正常走完清零
+
+
+def test_flow_stops_when_resume_exhausted(monkeypatch) -> None:
+    """连续恢复达上限即按原样收：不再路由、本轮中止、运行判失败。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _module()
+    mod._running = True
+    mod._graph = _AllOkGraph()
+    mod._resume_attempts = m.RESUME_MAX
+
+    def _step(node, stage):
+        if stage == "结算·下一关":
+            mod._hall_reset = True
+            return False
+        return True
+
+    monkeypatch.setattr(mod, "_run_step", _step)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+    monkeypatch.setattr(mod, "_read_level", lambda: 1)
+
+    assert mod._run_flow(0) is False
+    assert mod._round_no == 1
+
+
+def test_drive_wait_probes_hall_but_keeps_waiting_on_miss(monkeypatch) -> None:
+    """大厅探测 miss 不改变驾驶等待：照常扫弹窗、到点收步（回归锁）。"""
+    from maaracing_master.core.nav_graph import ProbeOutcome
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.02)
+    monkeypatch.setattr(m, "ADVANCE_SWEEP_INTERVAL_S", 0.05)
+    monkeypatch.setattr(m, "HALL_PROBE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(m, "_DRIVE_DURATION", {"p1": 0.1, "p2": 0.1})
+    monkeypatch.setattr(m.flow_data, "DRIVE_END_MARGIN_S", 0.1)
+    graph = _SweepTrackingGraph()
+    probes: list[str] = []
+    graph.probe = lambda node, **_kw: probes.append(node) or ProbeOutcome.MISS
+    mod = _step_module(graph)
+    mod._stage_index = 9
+    mod.set_module_config({"drive_mode": "depth", "record_mode": True})
+
+    assert mod._drive("p2") is False
+    assert graph.sweeps >= 1
+    assert probes and probes[0] == m._HALL_ANCHOR
+    assert mod._hall_reset is False
+
+
+# ---------- 步级成功判据：落地页已在位免点 ----------
+
+class _AlreadyLandedGraph:
+    """落地页（下一关准备页）在点之前就在位；点「下一关」的动作节点本应不被触发。"""
+
+    def __init__(self) -> None:
+        self.clicks = 0
+
+    def run(self, entry: str, _reached: str | None = None, **_kwargs) -> bool:
+        if entry == "infinite_drive.点下一关":
+            self.clicks += 1
+            return True
+        return entry == "infinite_drive.__confirm.结算落地"
+
+    def probe(self, _node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return ProbeOutcome.MISS
+
+
+def test_step_skips_click_when_landing_page_already_present(monkeypatch) -> None:
+    """中断后被服务端推进到落地页：识别到即在位，免点直接成功。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    monkeypatch.setattr(m, "STEP_WINDOW_S", 0.05)
+    monkeypatch.setattr(m, "STEP_POLL_S", 0.001)
+    graph = _AlreadyLandedGraph()
+
+    assert _step_module(graph)._run_step("infinite_drive.点下一关", "结算·下一关") is True
+    assert graph.clicks == 0
+
+
+# ---------- 结算读数只在结算页在位时进行 ----------
+
+def test_settlement_read_skipped_without_settlement_page(monkeypatch) -> None:
+    """准备页/大厅等非结算画面：不读数、不落库（防把别页文本当结算写进看板）。"""
+    from types import SimpleNamespace
+
+    mod = _step_module(SimpleNamespace(run=lambda *_a, **_k: False))
+    monkeypatch.setattr(mod, "_dismiss_settlement_overlays", lambda: None)
+    called = []
+    monkeypatch.setattr(mod, "_read_settlement_stable",
+                        lambda: called.append(1) or ("", "", False))
+
+    mod._read_settlement()
+
+    assert called == []
+
+
+# ---------- 准备页关卡规则（目标关数暂固定 1） ----------
+
+def _run_level_flow(levels, monkeypatch, *, target=1, round_total=1):
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _module()
+    mod._running = True
+    mod._graph = _AllOkGraph()
+    mod._round_total = round_total
+    monkeypatch.setattr(m, "_TARGET_LEVEL", target)
+    seq = iter(levels)
+    monkeypatch.setattr(mod, "_read_level", lambda: next(seq, None))
+    seen: list[str] = []
+    monkeypatch.setattr(mod, "_run_step", lambda node, stage: seen.append(stage) or True)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+    assert mod._run_flow(0) is True
+    return mod, seen
+
+
+def test_prep_over_target_abandons_and_resets(monkeypatch) -> None:
+    """中断后游戏停在第2关：准备页读到 2 > 目标 1 → 放弃归零，下一轮按第1关开跑。"""
+    mod, seen = _run_level_flow([2, 2, 1, 2], monkeypatch, round_total=2)
+
+    assert seen.count("准备·放弃") == 2      # 进入时放弃一次，正常结算后放弃一次
+    assert seen.count("准备·开始") == 1      # 只在第1关开打
+    assert mod._current_level == 1
+
+
+def test_prep_within_target_plays_next_level(monkeypatch) -> None:
+    """目标 3 关：结算后下一关正好前进一级且未超目标 → 直接开打，不放弃。"""
+    mod, seen = _run_level_flow([1, 2, 2, 3, 3, 4], monkeypatch, target=3)
+
+    assert seen.count("准备·开始") == 3
+    assert seen.count("准备·放弃") == 1      # 第4关超出目标才放弃
+    assert mod._current_level == 3
+
+
+def test_target_score_follows_current_level(monkeypatch) -> None:
+    """提前结算的目标分按当前关卡查表（第2关 12,000，不是第1关的 6,000）。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    mod = _module()
+    mod._current_level = 2
+    assert mod._target_score() == m.flow_data.PVE_STAGE_TARGETS[2] == 12000
+    mod._current_level = 1
+    assert mod._target_score() == 6000
+
+
+# ---------- 失败收口：按页面路由 ----------
+
+class _RouteGraph:
+    def __init__(self, hit_node: str) -> None:
+        self.hit_node = hit_node
+        self.runs: list[str] = []
+
+    def run(self, entry: str, *_args, **_kwargs) -> bool:
+        self.runs.append(entry)
+        return True
+
+    def probe(self, node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return ProbeOutcome.HIT if node == self.hit_node else ProbeOutcome.MISS
+
+
+def test_resume_routes_by_current_page(monkeypatch) -> None:
+    """四类页面各回各的阶段；认不出页面返回 None。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    cases = {
+        m._SETTLE_ANCHOR: m._SETTLE_STAGE_INDEX,
+        "infinite_drive.__confirm.准备页": m._PREP_START_INDEX,
+        "infinite_drive.__confirm.模式页": m.LOOP_START_INDEX,
+        m._HALL_ANCHOR: 0,
+    }
+    for node, index in cases.items():
+        mod = _step_module(_RouteGraph(node))
+        mod._stage_index = m._SETTLE_STAGE_INDEX
+        assert mod._resume_from("结算·下一关") == index
+        assert mod._resume_attempts == 1
+
+    mod = _step_module(_RouteGraph("nowhere"))
+    assert mod._resume_from("结算·下一关") is None
+
+
+def test_resume_cap_stops_without_probing(monkeypatch) -> None:
+    """连续恢复达上限：直接停止，不再探测页面。"""
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    graph = _RouteGraph(m._HALL_ANCHOR)
+    mod = _step_module(graph)
+    mod._resume_attempts = m.RESUME_MAX
+
+    assert mod._resume_from("结算·下一关") is None
+    assert graph.runs == []
+
+
+# ---------- 结算终局：挑战失败 / 五关跑满（按钮同形不同文案，按落点路由） ----------
+
+class _ModeLandedGraph(_AllOkGraph):
+    """结算按钮落在活动页（模式页）= 本局终局。"""
+
+    def probe(self, node: str, **_kwargs):
+        from maaracing_master.core.nav_graph import ProbeOutcome
+
+        return (ProbeOutcome.HIT if node == "infinite_drive.__confirm.模式页"
+                else ProbeOutcome.MISS)
+
+
+def test_settle_end_returns_to_activity_and_starts_new_round(monkeypatch) -> None:
+    """终局结算（失败/本轮关卡跑满）不走放弃：回活动页后本轮结束，下一轮从关卡挑战重开。"""
+    mod = _module()
+    mod._running = True
+    mod._graph = _ModeLandedGraph()
+    mod._round_total = 2
+    seen: list[str] = []
+    logs: list[str] = []
+    monkeypatch.setattr(mod, "_run_step", lambda node, stage: seen.append(stage) or True)
+    monkeypatch.setattr(mod, "_pick_cards", lambda phase: True)
+    monkeypatch.setattr(mod, "_drive", lambda phase: True)
+    monkeypatch.setattr(mod, "_read_settlement", lambda: None)
+    monkeypatch.setattr(mod, "_read_level", lambda: 1)
+    monkeypatch.setattr(mod, "_tlog", lambda msg, level="INFO": logs.append(msg))
+
+    assert mod._run_flow(0) is True
+    assert mod._round_no == 2
+    assert seen.count("结算·下一关") == 2
+    assert seen.count("准备·放弃") == 0      # 终局游戏已自动归零，不走放弃
+    assert seen.count("关卡挑战") == 2       # 每轮都从活动页的关卡挑战重开
+    assert mod._current_level == 0           # 关卡缓存随终局清空
+    assert any("终局" in line for line in logs)
+
+
+def test_settle_end_logs_failure_and_full_clear(monkeypatch) -> None:
+    """终局日志按战绩记录区分失败与本轮跑满；活动页不在位不判终局。"""
+    mod = _step_module(_ModeLandedGraph())
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(mod, "_tlog", lambda msg, level="INFO": logs.append((msg, level)))
+
+    mod._current_level = 3
+    mod.last_settlement = {"record": {"level": 3, "level_total": 5, "cleared": False}}
+    assert mod._settle_ends_run() is True
+    assert "挑战失败" in logs[-1][0] and logs[-1][1] == "WARNING"
+    assert mod._current_level == 0
+
+    mod._current_level = 5
+    mod.last_settlement = {"record": {"level": 5, "level_total": 5, "cleared": True}}
+    assert mod._settle_ends_run() is True
+    assert "本轮关卡已跑满" in logs[-1][0] and logs[-1][1] == "INFO"
+
+    mod._graph = _AllOkGraph()
+    mod._current_level = 2
+    mod.last_settlement = {"record": {"level": 2, "level_total": 5, "cleared": True}}
+    assert mod._settle_ends_run() is False      # 晋级落准备页，不是终局
+    assert mod._current_level == 2
+
+
+def test_settle_land_confirm_covers_both_landings() -> None:
+    """结算步落地确认同时接受晋级准备页与终局活动页（同一按钮两种落点）。"""
+    import json
+
+    from maaracing_master.plugins.infinite_drive import PIPELINE_DIR
+    from maaracing_master.plugins.infinite_drive import module as m
+
+    graph = json.loads((PIPELINE_DIR / "infinite_drive.json").read_text(encoding="utf-8"))
+    node = graph[m.STEP_CONFIRM["结算·下一关"]]
+    assert node["recognition"]["type"] == "Or"
+    assert set(node["recognition"]["param"]["any_of"]) == {
+        "infinite_drive.__confirm.准备页", m._MODE_ANCHOR}

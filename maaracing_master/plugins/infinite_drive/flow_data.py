@@ -71,3 +71,7 @@ CARD2_MAX_PICKS = 2
 # 固定量（过关条件=目标分、进度分母5）不 OCR，见 PVE_STAGE_TARGETS。
 RESULT_SCORE_ROI: tuple[float, float, float, float] = (0.3234, 0.4958, 0.6883, 0.5986)
 RESULT_PROGRESS_ROI: tuple[float, float, float, float] = (0.2656, 0.7431, 0.7344, 0.7917)
+
+# 准备页「第N关」横幅（归一化）：关卡号的唯一读取点。目标分查表与多关推进都以
+# 它为准（实测两帧读出「第1关」「第2关」，同一 ROI 稳定命中）。
+LEVEL_BANNER_ROI: tuple[float, float, float, float] = (0.275, 0.207, 0.365, 0.268)
