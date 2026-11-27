@@ -16,11 +16,13 @@ from maaracing_master.core.config_ui_contract import (
     UI_OK,
     normalize_config_ui,
 )
+from maaracing_master.plugins.infinite_drive import flow_data
 from maaracing_master.plugins.infinite_drive.module import (
     REC_DRIVE_FPS,
     REC_NAV_FPS,
     InfiniteDriveModule,
     _DRIVE_STAGES,
+    _best_card_slot,
     _build_config_ui,
     _record_fps,
 )
@@ -515,6 +517,43 @@ def test_pick_cards_budget_exhausted_fails_explicitly(monkeypatch) -> None:
 
     assert ok is False
     assert graph.clicks == 3  # card1 预算 = max_picks(1) + PICK_RESEND_BUDGET(2)
+
+
+# ---------- 卡面名优先级表（离线仿真） ----------
+
+def test_card_priority_covers_released_pool() -> None:
+    """94 张正式卡全部有唯一秩；末档是脚本不主动走的极限变道。"""
+    ranks = list(flow_data.CARD_PRIORITY.values())
+    assert len(ranks) == 94
+    assert len(set(ranks)) == 94
+    assert min(ranks) == 0 and max(ranks) == 93
+    assert set(flow_data.CARD_PRIORITY) == {
+        name for tier in flow_data.CARD_PRIORITY_TIERS for name in tier
+    }
+    assert flow_data.CARD_PRIORITY["冲击波"] == 0
+    assert flow_data.CARD_PRIORITY["距离掌控"] == 92
+    assert flow_data.CARD_PRIORITY["平移底盘"] == 93
+
+
+def test_card_priority_follows_approved_order() -> None:
+    """退场/清障在前，之后依次是冲刺、幽灵/失重、速度、闪烁、金币、跳跃、飞行。"""
+    p = flow_data.CARD_PRIORITY
+    assert p["冲击波"] < p["无敌"] < p["弹射"] < p["冲刺"]
+    assert p["变道冲击波"] < p["冲刺"] and p["变道弹射"] < p["冲刺"]
+    assert p["加速回馈"] < p["冲刺"]
+    assert p["冲刺"] < p["幽灵化"] < p["极速"] < p["闪烁"]
+    assert p["闪烁"] < p["金币掉落"] < p["跳跃"] < p["飞行"] < p["距离掌控"]
+
+
+def test_best_card_slot_from_real_shop_frames() -> None:
+    """调试录像三帧的实际 OCR 结果：取秩最高的槽，读不出回退 0。"""
+    assert _best_card_slot(["冲击波", "极速", "加速"]) == 0
+    assert _best_card_slot(["加速", "冲刺", "变道冲击波"]) == 2
+    assert _best_card_slot(["幽灵化", "闪烁", "弹射"]) == 2
+    assert _best_card_slot(["飞行", "金币掉落", "跳跃"]) == 1
+    assert _best_card_slot(["冲 击 波", "极速", "加速"]) == 0
+    assert _best_card_slot(["", "", ""]) == 0
+    assert _best_card_slot(["未知甲", "未知乙", "未知丙"]) == 0
 
 
 # ---------- 偶发弹窗 OCR 兜底（限频） ----------
