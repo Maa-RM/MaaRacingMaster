@@ -8,7 +8,7 @@
   const {
     maarm, $, state, showError, reportError, postWindowAction, escHtml,
     waitFor, twoFrames,
-    openModal, showGamepadNotice,
+    openModal,
     setPreviewPlayState, enterPreviewFullscreen, exitPreviewFullscreen,
   } = window.MaaRM;
 

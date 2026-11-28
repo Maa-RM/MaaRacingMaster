@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""点击器：统一「前台(鼠标) / 后台(手柄)」两种点击方式。
+"""点击器：统一「前台(鼠标) / 后台(消息)」点击方式与「仅显示意图」开关。
 
-重构背景（2026-09-02 用户拍板，替代原 intent/real/background 三态）：
   - 前台(鼠标) real：SetCursorPos（可见移动）+ SendInput 左键。需游戏在前台。
-  - 后台(手柄) gamepad：手柄光标导航（签名剖面识别 + 闭环趋近到位）+ 按 A 键确认。
-    cursor_refactor 实现已沉淀进 core.gamepad_cursor（与鼠标逻辑同层）。
+  - 后台(游戏动·鼠标不动) bg_winpos：SendMessage 消息点击，点击瞬间把游戏窗口
+    瞬移对齐鼠标后立即复位（run 开始时由 controller.begin_run 把窗口压到 Z 序底部）。
+  - 后台(鼠标动·游戏不动) bg_cursor：SendMessage 消息点击，光标瞬移到目标后
+    立即归位，游戏窗口全程不动。
+  - 「后台(手柄)」gamepad 方式入口已下线（CLICK_MODES 不再收录，历史配置由
+    sidecar 迁移为 bg_winpos）；手柄光标引擎保留在 core.gamepad_cursor，
+    纯视觉识别已抽至 core.cursor_detector。
   - 意图开关（仅显示意图，独立于点击方式）：
       开启时程序只「导航到目标位置」，不执行确认点击——由用户自己按下/操作。
-      鼠标 → 只移光标到目标；手柄 → 只导航到位不按 A。同一开关两者共用。
+      鼠标 → 只移光标到目标。各方式共用同一意图语义。
 
 用法：模块在"首部"持有 Clicker 并同步当前模式，所有点击统一走 click()；
 切换只发生在设置页（sidecar set_click_mode → controller.click_mode → ctx.click_mode）。
@@ -51,9 +55,10 @@ CURSOR_POS_MAX_AGE_S = 2.0
 class Clicker:
     """统一点击执行器：按 mode 执行点击/光标意图。
 
-    mode：real（前台=鼠标 SendInput）/ gamepad（后台=手柄导航+A 键确认）。
+    mode：real（前台=鼠标 SendInput）/ bg_winpos / bg_cursor（后台=SendMessage 消息点击，
+    实现见 window_utils.bg_click_window_pos / bg_click_cursor_pos）。
     intent：意图开关（仅显示意图）。置位时只导航到目标、不确认点击，由用户自己按。
-            两种 mode 共用同一 intent 语义。
+            各 mode 共用同一 intent 语义。
     所有调用点共用同一个实例（模块持有），模式只在"首部"（构造/设置页）切换。
     """
 

@@ -115,28 +115,11 @@
     return modal;
   }
 
-  // ---------- 后台(手柄)使用须知：每次切入 gamepad 点击方式都会弹出 ----------
-  function showGamepadNotice() {
-    openModal({
-      title: '后台(手柄)使用须知',
-      titleColor: 'var(--maarm-info,#38bdf8)',
-      bodyHtml:
-        '<div class="maarm-modal-notice">' +
-        '<p><b>适用场景</b>：游戏留在后台挂机，前台可正常聊聊天、看视频等——这些<b>不接收手柄操作</b>的程序不受影响，可放心共存。</p>' +
-        '<p><b>不能与其他游戏并存</b>：本项目用虚拟手柄（ViGEmBus）输入，手柄状态对系统是<b>全局</b>的。运行期间<b>不要</b>同时启动<b>会识别手柄、接收手柄输入</b>的程序（如其他游戏、Steam 等），否则它们也会收到手柄输入，可能被误操作。</p>' +
-        '<p class="maarm-modal-notice-hint">挂机结束建议切回前台(鼠标)或停止程序，避免空闲时手柄误触。</p>' +
-        '</div>',
-      buttons: [
-        { text: '知道了', primary: true, onClick: (modal) => modal.close() },
-      ],
-    });
-  }
-
   /// 一次性关掉当前所有弹窗（预热收尾专用：遮罩撤下时不该还挂着预热开的窗）。
   function closeAllModals() {
     Array.from(openDialogs).forEach((modal) => modal.close());
   }
 
   // ---------- 导出到 window.MaaRM ----------
-  Object.assign(window.MaaRM, { openModal, showGamepadNotice, closeAllModals });
+  Object.assign(window.MaaRM, { openModal, closeAllModals });
 })();

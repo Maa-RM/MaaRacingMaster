@@ -155,7 +155,7 @@ class MaaRacingMasterController:
         self.debug = NavigationDebugger(debug_dir() / str(session))
         self.debug.set_frame_source(self._debug_frame_source)
         self._debug_mode = False  # 调试模式开关（由 GUI 控制）
-        self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / gamepad(后台=手柄导航+A键)
+        self._click_mode = "real"  # 点击方式：real(前台=鼠标 SendInput) / bg_winpos / bg_cursor(后台=SendMessage 消息点击)
         self._intent_mode = False  # 意图开关（仅显示意图）：只导航不确认，由用户自己按
         self._running = False  # 模块运行标志（start_module 生命周期内为 True）
         self._step_active = False  # 内置步骤执行中（与 _running 并列，互不赋值）
