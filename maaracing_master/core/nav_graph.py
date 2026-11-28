@@ -751,7 +751,10 @@ class NavGraph:
         self._probe_records: dict[str, _ProbeRecord] = {}
         self._probe_lock = threading.Lock()
         self._stop_lock = threading.Lock()
-        self._stop_requested = False  # 本轮是否已投递停止请求（两处并发触发时去重）
+        # 最近一次停止请求覆盖到的任务句柄（按任务代次去重）：post_stop 只覆盖
+        # 投递时在跑的任务，同一任务重复投递只会白等满一个超时；停止之后又投出的
+        # 新任务是新的代次，需要自己的停止请求。
+        self._stop_covered_job = None
         self._loaded = False
         self._last_frame = None   # 最近一次识别帧（只为动作桥换算框中心提供尺寸）
         # 本图当前挂靠的业务组号：由插件在开组/收组时同步（派发时刻快照），
@@ -1140,6 +1143,11 @@ class NavGraph:
         串行前提：同一实例上 `run()` / `probe()` 不得重叠，由调用方保证（模块
         单线程驾驶流程）。这里不加串行锁，锁只保护结果记录的状态转换。
         """
+        # 投递前判停，与 run() 同口径：停止在途（或刚受理完成）时框架收下的探测
+        # 也是全新任务——「stopping 期间框架忽略新任务」只覆盖请求在途窗口。返回
+        # NOT_READY 而非 MISS：这次根本没查成，上层不得按「页面不在」去重试或续跑。
+        if not self.ctx.lifecycle.running:
+            return ProbeOutcome.NOT_READY
         if not self.load():
             return ProbeOutcome.NOT_READY
         tasker = self._tasker
@@ -1202,7 +1210,6 @@ class NavGraph:
             rec = self._probe_records.get(probe_id)
             if rec is not None:
                 rec.status = "stale"
-        self._stop_requested = False  # 新一轮任务：允许投递一次停止请求
         settled = self._stop_framework("probe-timeout", settle_timeout_s=PROBE_SETTLE_TIMEOUT_S)
         still_stopping = bool(getattr(tasker, "stopping", False))
         if settled and not still_stopping:
@@ -1236,6 +1243,9 @@ class NavGraph:
           5. 任务成功且终点节点完成   → reached
           6. 其余                     → task_failed
         停止与时限在同一轮轮询里同时成立时取 stopped（用户显式动作优先于计时器）。
+        轮询可能输给 `job.done`（停止请求受理后句柄先变 done，循环带着
+        interrupted=None 退出）：退出后补判一次 `lifecycle.running`，已停即按
+        stopped 记——补上这条，判定顺序才真正不依赖调度竞争。
 
         手柄租约只在跑图期间持有：跑图结束立刻归还，模块外层的
         reset_device()（销毁手柄复位）才不会被租约不变量挡住。
@@ -1243,6 +1253,14 @@ class NavGraph:
         self._outcome = None
         with self._fatal_lock:
             self._fatal = None
+        # 投递前判停（门，不是失败后的判据）：停止请求受理完成后框架收下的任何
+        # 新任务都是全新正常任务——「stopping 期间框架忽略新任务」只覆盖请求在途
+        # 窗口，受理完成 stopping 即归零。停止在途还起跑，等于在用户叫停后继续
+        # 操作游戏，并把收尾等待拖到超时（2026-11-27 真机日志 20261127_230258）。
+        if not self.ctx.lifecycle.running:
+            self._outcome = "stopped"
+            self._log("[跳转图] 停止在途，不起跑", "DEBUG")
+            return False
         if not self.load():
             self._outcome = "load_failed"
             self._log(f"[跳转图] 图加载失败：「{entry}」未起跑", "ERROR")
@@ -1267,7 +1285,6 @@ class NavGraph:
             self._log(f"[跳转图] 起跑「{entry}」", "DEBUG")
             job = self._tasker.post_task(entry)
             self._job = job  # stop()/shutdown() 要能等到它收摊，不能只留局部变量
-            self._stop_requested = False  # 新一轮：允许投递一次停止请求
             # 完成轮询用**自适应短间隔**（见 RUN_POLL_MIN_S 的注释）：毫秒级完成的图
             # 立刻返回，长图靠退避上限兜住 CPU。中断检查每轮都做，语义不变。
             delay = RUN_POLL_MIN_S
@@ -1288,6 +1305,10 @@ class NavGraph:
                     break
                 time.sleep(delay)
                 delay = min(delay * 2, RUN_POLL_MAX_S)
+            if interrupted is None and not self.ctx.lifecycle.running:
+                # 判定顺序补判（见 docstring）：job.done 抢在轮询前退出时，
+                # 这里把被停止的任务兜回 stopped，不落到 ok=job.succeeded。
+                interrupted = "stopped"
             if interrupted is not None:
                 # 停止请求完成 ≠ 任务句柄结束：两者都确认后再返回。调用方
                 # 紧接着就进收尾，若此时框架 worker 仍在收摊，随后销毁
@@ -1329,7 +1350,13 @@ class NavGraph:
         self._send_stop_request()
 
     def _send_stop_request(self):
-        """投递停止请求（每轮最多一次）。返回本次投递的句柄，已发过则 None。"""
+        """投递停止请求（按任务代次去重）。返回本次投递的句柄，无需投递则 None。
+
+        post_stop 只覆盖投递时在跑的任务，去重判据因此是「当前任务是否已被上次
+        停止请求覆盖」，不是「本轮是否投过」：同一任务重复投递的句柄不会推进，
+        只会白等满一个超时（真机日志实测 10s）；停止之后又投出的新任务是新的
+        代次，需要自己的停止请求（上层另有投递前判停门，这里按代次兜底）。
+        """
         if self._tasker is None:  # 已 shutdown：停止路径幂等
             return None
         job = self._job
@@ -1337,9 +1364,9 @@ class NavGraph:
             # 任务已结束（或从未起跑）：没有可停的东西，投出去的请求没人消费
             return None
         with self._stop_lock:
-            if self._stop_requested:
+            if job is self._stop_covered_job:
                 return None
-            self._stop_requested = True
+            self._stop_covered_job = job
         try:
             return self._tasker.post_stop()
         except Exception:  # noqa: BLE001 —— 未起跑时停止是正常路径
@@ -1361,8 +1388,9 @@ class NavGraph:
 
         两条免发条件——停止请求只对**正在跑的任务**有意义：
           - 任务已结束（或从未起跑）：没有可停的东西，请求发出去也没人消费；
-          - 本轮已发过：停止会从模块停止路径与跑图线程两处并发触发，重复投递
-            的句柄不会推进，只会白等满一个超时（真机日志实测 10s）。
+          - 当前任务已被上次停止请求覆盖：停止会从模块停止路径与跑图线程两处
+            并发触发，同一任务重复投递的句柄不会推进，只会白等满一个超时
+            （真机日志实测 10s）。
         """
         settled = True
         stop_job = self._send_stop_request()
