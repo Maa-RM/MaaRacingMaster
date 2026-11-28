@@ -33,6 +33,7 @@ def _bare_module() -> idmod.InfiniteDriveModule:
     m.ctx.lifecycle.running = True
     m._graph = MagicMock()
     m._log_grp = MagicMock()  # 阶段日志归桩组，不落全局 logger
+    m._stage_index = 0        # 入口步：偶发弹窗清扫不探大厅（见 _poll_hall）
     m._resume_attempts = 1
     m._hall_reset = False
     m._next_hall_at = 0.0

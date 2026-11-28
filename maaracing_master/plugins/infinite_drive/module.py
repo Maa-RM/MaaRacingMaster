@@ -792,7 +792,7 @@ class InfiniteDriveModule(ActivityModule):
                     if not ok:
                         resumed = self._resume_from(stage)
                         if resumed is None:
-                            if self._running and self.ctx.lifecycle.running:
+                            if self._alive():
                                 self._tlog(f"[无限驾驶] 「{stage}」未正常结束，本轮中止",
                                            "WARNING")
                             return self._stop_received()
@@ -808,7 +808,7 @@ class InfiniteDriveModule(ActivityModule):
                     if not self._run_step(node, stage):
                         resumed = self._resume_from(stage)
                         if resumed is None:
-                            if self._running and self.ctx.lifecycle.running:
+                            if self._alive():
                                 self._tlog(f"[无限驾驶] 步骤「{stage}」未落地，本轮中止",
                                            "WARNING")
                             return self._stop_received()
@@ -829,13 +829,22 @@ class InfiniteDriveModule(ActivityModule):
                        "INFO")
         return True
 
+    def _alive(self) -> bool:
+        """运行中且宿主生命周期还在跑。
+
+        ctx 只会在未完成装配的测试夹具里为 None：真实运行必已绑定，这里按
+        「已停止」处理，不让它变成一个抛到流程外的 AttributeError。
+        """
+        return bool(self._running and self.ctx is not None
+                    and self.ctx.lifecycle.running)
+
     def _stop_received(self) -> bool:
         """本次收束是否源于停止（模块已停，或控制器停止事件已置位）。
 
         controller.stop 先置停止事件再调模块 stop()，事件先于通知到达——只看
         _running 会把「事件已置位、通知未到」的窗口误判成失败。
         """
-        return not self._running or not self.ctx.lifecycle.running
+        return not self._alive()
 
     def _run_step(self, action_node: str, stage: str) -> bool:
         """发一次 UI 点击并有限重发；成功 = 落地锚点在位（点击只是让它出现的首选手
@@ -1207,7 +1216,7 @@ class InfiniteDriveModule(ActivityModule):
         前者必须就地收束；路由回去会在停止受理完成后向框架投全新任务（继续操作
         游戏），并把收尾等待拖到超时。返回 None 交回调用方中止，不计恢复次数。
         """
-        if not self._running or not self.ctx.lifecycle.running:
+        if not self._alive():
             return None
         if self._resume_attempts >= RESUME_MAX:
             self._tlog(f"[无限驾驶] 「{stage}」中断，连续恢复已达 {RESUME_MAX} 次，"
