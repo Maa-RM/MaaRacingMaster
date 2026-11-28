@@ -28,6 +28,8 @@ sys.path.insert(0, str(ROOT))
 
 from maaracing_master.plugins._archive.speedrush import depth_geo as dg  # noqa: E402
 
+# 检测缓存随实验区退役（2026-11-28）：speedrush_depthart_prod 的实验数据已删，
+# 复算需重跑 probe_adjacent_seq 一类探针生成同构缓存。
 CACHE = (ROOT / "tools" / "experiments" / "speedrush_depthart_prod"
          / "adjacent_seq_out" / "scan_cache.json")
 ADJ_X_M = 1.2

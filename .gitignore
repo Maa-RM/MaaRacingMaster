@@ -138,9 +138,3 @@ maaracing_master/plugins/_archive/*/experiments/**/teachers/
 maaracing_master/plugins/_archive/*/experiments/**/*_out/
 maaracing_master/plugins/_archive/*/experiments/**/bin/
 maaracing_master/plugins/_archive/*/experiments/**/obj/
-
-# 线观测模型随可选模型包分发并入库；适用 models/LICENSE-BDD100K.txt
-# （教育/科研/非营利可分发，商业用途需另行授权）
-
-tools/experiments/speedrush_lane_model/bdd100k/
-tools/experiments/speedrush_lane_model/fine_tune_out/
