@@ -224,15 +224,15 @@
               <button class="maarm-toggle" id="${mid}-toggle-debug" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">DEBUG 截图与记录</div>
-                <p class="option-desc">保存调试图、读数与取证画面，约 300MB/分钟，仅排查时短时开启</p>
+                <p class="option-desc">保存调试图与运行数据，供排查问题使用</p>
               </div>
-              <span class="option-note">约占用 300MB/分钟磁盘空间</span>
+              <span class="option-note">约 300MB/分钟，用完记得关</span>
             </div>
             <div class="option-row">
               <button class="maarm-toggle" id="${mid}-toggle-estop" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">紧急停止快捷键</div>
-                <p class="option-desc">程序接管操作时，同时按下键盘任意 2 个及以上按键立即停止运行逻辑；人工驾驶/录制阶段不检测（否则键盘驾驶会被误触发）</p>
+                <p class="option-desc">程序自动操作时，同时按下任意两个键立即停止</p>
               </div>
               <span class="option-note">仅本次启动有效，重启后需重开</span>
             </div>
@@ -240,17 +240,17 @@
               <button class="maarm-toggle" id="${mid}-toggle-filelog" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">日志记录</div>
-                <p class="option-desc">开启后运行日志、玩法流水与性能记录写入会话目录；关闭时仅保留在界面</p>
+                <p class="option-desc">把运行日志与玩法记录写入本地文件，关闭时只在界面显示</p>
               </div>
-              <span class="option-note">默认关闭，排查问题时开启</span>
+              <span class="option-note">默认关闭</span>
             </div>
             <div class="option-row">
               <button class="maarm-toggle" id="${mid}-toggle-intent" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">仅显示意图</div>
-                <p class="option-desc">打开后程序只把光标/手柄导航到目标位置，<strong>不执行点击</strong>，由你自己按下/确认；关闭时按选中的点击方式自动点击</p>
+                <p class="option-desc">程序只把光标移到目标位置，由你自己点击</p>
               </div>
-              <span class="option-note">前台鼠标 / 后台手柄共用此开关</span>
+              <span class="option-note">关闭时自动点击</span>
             </div>
           </div>
         </div>
@@ -263,17 +263,17 @@
               <button class="maarm-toggle" id="${mid}-toggle-mutegame" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">运行时静音游戏</div>
-                <p class="option-desc">运行期间把游戏音量静音（方便听别的），停止/结束后自动恢复运行前的音量</p>
+                <p class="option-desc">运行期间静音游戏，方便听其他声音</p>
               </div>
-              <span class="option-note">结束恢复原音量</span>
+              <span class="option-note">结束后恢复原音量</span>
             </div>
             <div class="option-row">
               <button class="maarm-toggle" id="${mid}-toggle-boostprio" role="switch" aria-checked="false"></button>
               <div class="option-main">
                 <div class="option-title">性能优先</div>
-                <p class="option-desc">提高本程序进程的 CPU 优先级，感知与控制在系统繁忙时少排队；立即生效，重启后保持</p>
+                <p class="option-desc">提高本程序的 CPU 优先级，系统繁忙时更跟手</p>
               </div>
-              <span class="option-note">GPU/IO 提级系统未开放</span>
+              <span class="option-note">立即生效，重启后保持</span>
             </div>
           </div>
         </div>
@@ -288,11 +288,10 @@
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
                     <div class="radio-title"><strong>前台(鼠标)</strong><span class="badge-recommend">稳定</span></div>
-                    <p class="radio-desc">光标移到目标后 SendInput 点击；需游戏在前台</p>
+                    <p class="radio-desc">把游戏切到前台，移动鼠标点击</p>
                   </div>
                 </div>
                 <div class="clickmode-popover" role="tooltip">
-                  <div class="clickmode-popover-title">前台(鼠标) · 原理演示</div>
                   <svg class="mg-svg" viewBox="0 0 280 124" aria-label="前台鼠标原理演示">
                     <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
                     <!-- 其他工作窗口 -->
@@ -312,7 +311,6 @@
                       <path d="M0,0 L0,15 L4.2,11.8 L7.5,18 L9.8,16.8 L6.5,10.6 L11.2,10.6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="1.2" />
                     </g>
                   </svg>
-                  <p class="clickmode-popover-desc">自动把游戏切到最前，移动鼠标完成点击；兼容性最高。</p>
                 </div>
               </div>
 
@@ -321,11 +319,10 @@
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
                     <div class="radio-title"><strong>后台(游戏动·鼠标不动)</strong><span class="badge-recommend">推荐单屏</span></div>
-                    <p class="radio-desc">瞬移底层游戏窗口对齐鼠标后点击并立即复位；被遮挡时完全无感</p>
+                    <p class="radio-desc">鼠标不动，游戏窗口瞬移到鼠标下点击后复位</p>
                   </div>
                 </div>
                 <div class="clickmode-popover" role="tooltip">
-                  <div class="clickmode-popover-title">游戏动、鼠标不动 · 原理演示</div>
                   <svg class="mg-svg" viewBox="0 0 280 124" aria-label="游戏动鼠标不动原理演示">
                     <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
                     <!-- 底层瞬移的游戏窗口 -->
@@ -346,7 +343,6 @@
                       <text x="14" y="12" font-size="8" font-weight="700" fill="#0f172a">不动</text>
                     </g>
                   </svg>
-                  <p class="clickmode-popover-desc">鼠标全程不动；底层游戏窗口瞬移对齐（约 120ms）后立即复位。</p>
                 </div>
               </div>
 
@@ -355,11 +351,10 @@
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
                     <div class="radio-title"><strong>后台(鼠标动·游戏不动)</strong><span class="badge-recommend">推荐副屏/多屏</span></div>
-                    <p class="radio-desc">游戏窗口保持静止，光标瞬移点击后立即归位；防跨屏拉扯与缩放错位</p>
+                    <p class="radio-desc">游戏窗口全程不动，光标瞬移点击后归位</p>
                   </div>
                 </div>
                 <div class="clickmode-popover" role="tooltip">
-                  <div class="clickmode-popover-title">鼠标动、游戏不动 · 原理演示</div>
                   <svg class="mg-svg" viewBox="0 0 280 124" aria-label="鼠标动游戏不动原理演示">
                     <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
                     <!-- 静止的游戏窗口 -->
@@ -377,12 +372,11 @@
                       <path d="M0,0 L0,15 L4.2,11.8 L7.5,18 L9.8,16.8 L6.5,10.6 L11.2,10.6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="1.2" />
                     </g>
                   </svg>
-                  <p class="clickmode-popover-desc">游戏窗口全程静止，光标瞬移点击（约 130ms）后立刻归位。</p>
                 </div>
               </div>
             </div>
 
-            <p class="capture-note">切换后立即生效；悬浮任意选项 1 秒可查看原理动画演示；开启「仅显示意图」时只导航不确认</p>
+            <p class="capture-note">切换立即生效；悬停选项可查看原理演示</p>
           </div>
         </div>
 
