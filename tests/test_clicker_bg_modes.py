@@ -206,7 +206,7 @@ def test_controller_begin_run_sends_to_bottom_in_bg_winpos(monkeypatch):
     bottomed: list[int] = []
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: bool(hwnd))
     monkeypatch.setattr(ctl, "activate_window", lambda hwnd: activated.append(hwnd) or True)
-    monkeypatch.setattr(wu, "send_window_to_bottom", lambda hwnd: bottomed.append(hwnd) or True)
+    monkeypatch.setattr(ctl, "send_window_to_bottom", lambda hwnd: bottomed.append(hwnd) or True)
 
     c.begin_run()
     assert activated == []

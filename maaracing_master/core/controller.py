@@ -27,6 +27,7 @@ from maaracing_master.core.window_utils import (
     is_window_on_screen,
     is_window_valid,
     resize_game_window_720p,
+    send_window_to_bottom,
 )
 from maaracing_master.core.logger import logger
 from maaracing_master.core.base import ActivityContext, ModuleDependencyError
@@ -258,7 +259,6 @@ class MaaRacingMasterController:
                     "WARNING",
                 )
         elif self._click_mode == "bg_winpos" and is_window_valid(self._hwnd):
-            from maaracing_master.core.window_utils import send_window_to_bottom
             send_window_to_bottom(self._hwnd)
 
     def end_run(self) -> None:

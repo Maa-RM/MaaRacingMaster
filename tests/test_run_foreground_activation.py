@@ -44,6 +44,9 @@ def _ctl(monkeypatch):
     monkeypatch.setattr(ctl, "is_window_valid", lambda hwnd: bool(hwnd))
     monkeypatch.setattr(ctl, "activate_window",
                         lambda hwnd: calls.append(hwnd) or True)
+    # bg_winpos 的窗口压底不在「切前台」判据里：打桩隔离平台原语（Linux CI 无 Win32），
+    # 压底行为本身由 test_clicker_bg_modes 看护
+    monkeypatch.setattr(ctl, "send_window_to_bottom", lambda hwnd: True)
     return c, calls, rec
 
 
