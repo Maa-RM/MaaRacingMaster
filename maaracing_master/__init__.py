@@ -50,13 +50,28 @@ def _find_git_root(start: Path) -> Path | None:
     return None
 
 
+def _normalize_describe(out: str) -> str:
+    """把 git describe 输出归一成显示用版本串（纯函数，可脱离 git 环境断言）。
+
+    两种 tag 形状都要认，正式 tag 归一后不带 dev 段：
+      预览 tag "v0.13.0-dev.4-0-g0f5c5bf" → "0.13.0.dev4"（恰好停在 tag 上）
+              "v0.13.0-dev.4-3-g0f5c5bf" → "0.13.0.dev4+3"（距 tag 3 个 commit）
+      正式 tag "v0.32.5-0-g0f5c5bf"      → "0.32.5"
+              "v0.32.5-2-g0f5c5bf"      → "0.32.5+2"
+    不是 describe 版本形态的输出（仓库无 tag 时的短 hash）原样返回。
+    """
+    m = re.match(r"^v?(.+)-(\d+)-g[0-9a-f]+$", out)
+    if not m:
+        return out
+    base, dist = m.group(1), int(m.group(2))
+    ver = base.replace("-dev.", ".dev").replace(".dev.", ".dev")
+    return ver if dist == 0 else f"{ver}+{dist}"
+
+
 def _git_describe_version() -> str | None:
     """源码模式：git describe 推导当前 checkout 版本（轻量解析，仅显示用途）。
 
-    git describe --tags --long 输出形如 "v0.13.0-dev.4-0-g0f5c5bf"：
-      base=0.13.0-dev.4, dist=0 → "0.13.0.dev4"（恰好停在 tag 上）
-      dist>0 → "0.13.0.dev4+3"（距 tag 3 个 commit，附本地版本号）
-    任何失败（无 git/无 tag/命令超时）返回 None，由调用方回退。
+    解析规则见 _normalize_describe；任何失败（无 git/无 tag/命令超时）返回 None。
     """
     git_root = _find_git_root(Path(__file__).resolve().parent)
     if git_root is None:
@@ -70,15 +85,7 @@ def _git_describe_version() -> str | None:
         return None
     if not out:
         return None
-    m = re.match(r"^v?(.+)-(\d+)-g[0-9a-f]+$", out)
-    if m:
-        base, dist = m.group(1), int(m.group(2))
-        ver = base.replace("-dev.", ".dev").replace(".dev.", ".dev")
-        if dist == 0:
-            return ver
-        return f"{ver}+{dist}"  # 距 tag 若干 commit 的本地开发版本
-    # 仓库一个 tag 都没有：直接返回 describe 输出（如短 hash）
-    return out
+    return _normalize_describe(out)
 
 
 def _read_release_marker(git_root: Path) -> str | None:
