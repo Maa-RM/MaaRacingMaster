@@ -187,6 +187,36 @@
         "timeout": 500,
         "rate_limit": 0
     },
+    "startup.popup.exit": {
+        "attach": {
+            "_label": "全屏公告/活动页左上角的返回箭头与主页按钮（全局模板）：只经兜底门出手，点任一都退出该页。搜索区限左上 179x72——放宽会把大厅其余控件纳进候选"
+        },
+        "recognition": {
+            "type": "Custom",
+            "param": {
+                "custom_recognition": "MaaRM_Template",
+                "custom_recognition_param": {
+                    "mode": "template",
+                    "rect": [0.0, 0.0, 0.14, 0.1],
+                    "templates": ["common_back.png", "common_home.png"],
+                    "threshold": 0.85
+                }
+            }
+        },
+        "action": {
+            "type": "Custom",
+            "param": {
+                "custom_action": "MaaRM_Click",
+                "custom_action_param": {"wait_after_ms": 1200}
+            }
+        },
+        "next": ["startup.boot"],
+        "on_error": ["startup.boot"],
+        "pre_delay": 0,
+        "post_delay": 0,
+        "timeout": 500,
+        "rate_limit": 0
+    },
     "startup.login.engine_start": {
         "attach": {
             "_label": "登录页「引擎启动」：手柄模式按 Y（焦点默认在按钮上，不做光标导航），鼠标模式点识别框"
@@ -310,7 +340,7 @@
         },
         "recognition": {"type": "DirectHit", "param": {}},
         "action": {"type": "DoNothing", "param": {}},
-        "next": ["startup.advance", "startup.boot"],
+        "next": ["startup.advance", "startup.popup.exit", "startup.boot"],
         "on_error": ["startup.boot"],
         "pre_delay": 0,
         "post_delay": 1200,

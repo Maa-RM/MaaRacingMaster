@@ -40,8 +40,31 @@ def test_startup_advance_is_gated() -> None:
     assert "startup.advance" not in nxt, "未知页 OCR 不能直接挂在汇聚节点每轮候选里"
     gate = graph["startup.advance.gate"]
     # 兜底未命中必须能回到汇聚节点：只写 advance 一条会让门等超时后把整张图带死。
-    assert gate["next"] == ["startup.advance", "startup.boot"]
+    # 返回箭头排在文字识别之后：OCR 认不出图形，但文字按钮更精准，先试它不让既有兜底降级。
+    assert gate["next"] == ["startup.advance", "startup.popup.exit", "startup.boot"]
     assert gate["on_error"] == ["startup.boot"]
+
+
+def test_startup_exit_controls_stay_out_of_main_candidates() -> None:
+    """退出控件（返回箭头 / 主页按钮）只能从兜底门出手，搜索区限左上角控件区。
+
+    它们不进主候选表的原因：大厅、活动页与比赛页每轮都会评估候选，误命中就变成
+    日常误点；走兜底门只在「已知页面全部落空」时出手。
+    """
+    graph = _load(STARTUP)
+    exit_node = graph["startup.popup.exit"]
+    for name in ("startup.boot", "startup.hall.confirm.1",
+                 "startup.hall.confirm.2", "startup.hall.confirm.3"):
+        assert "startup.popup.exit" not in graph[name]["next"], name
+    assert exit_node["next"] == ["startup.boot"]
+    assert exit_node["on_error"] == ["startup.boot"]
+
+    param = exit_node["recognition"]["param"]["custom_recognition_param"]
+    assert param["templates"] == ["common_back.png", "common_home.png"]
+    rect = param["rect"]
+    assert rect[2] <= 0.15 and rect[3] <= 0.11, f"搜索区越出左上控件区: {rect}"
+    # 两张模板都是紧裁的本体（跨页同分），门槛按弹窗模板的通用口径，别为兼容旧图放宽
+    assert param["threshold"] >= 0.85
 
 
 def test_startup_gate_waits_and_timeout_covers_ocr() -> None:
