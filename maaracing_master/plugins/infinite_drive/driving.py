@@ -333,8 +333,13 @@ class LaneDrive:
                              frame_ts_ns=ts_ns)
             self._last_fid, self._last_frame_ns = fid, ts_ns
 
-        x = lane.get("x")
-        heading = lane.get("theta")
+        raw_x = lane.get("x")
+        # 观测层的 x 类型不可靠（Unknown | None）：先收敛成 float | None，后续判据
+        # 都靠它做非 None 收窄，别让类型检查与运行期各猜一套。
+        x: float | None = float(raw_x) if isinstance(raw_x, (int, float)) else None
+        raw_heading = lane.get("theta")
+        heading: float | None = (float(raw_heading)
+                                 if isinstance(raw_heading, (int, float)) else None)
         heading_fid = lane.get("theta_src_fid")
         heading_ns = lane.get("theta_src_ts_ns") or 0
         # hold=本拍横位被步长门限速（x 已按物理步长限幅，仍是平滑后的位置
@@ -353,25 +358,28 @@ class LaneDrive:
             self._gross_reanchor = lane["gross_reanchor"]
             self._target = None
             self.release()
-        cars = _road_cars(lane, x, self._camera_height) if track_ready else None
+        cars = (_road_cars(lane, x, self._camera_height)
+                if track_ready and x is not None else None)
         det_fid = lane.get("det_fid")
         edge_event = None
-        if track_ready and (cars is not None or not self._traffic_enabled):
+        if track_ready and x is not None and (cars is not None or not self._traffic_enabled):
             if det_fid != self._last_route_fid:
                 edge_event = self._hold_edge_point(x, cars or [])
                 self._last_route_fid = det_fid
         else:
             self._pending_count = 0
             # 刚锁定位置时可先保持贴线点。已有车流证据判定无路可走时，等新证据再选。
-            if track_ready and self._last_route_fid is None and self._target is None:
+            if (track_ready and x is not None and self._last_route_fid is None
+                    and self._target is None):
                 edge_event = self._hold_edge_point(x, [])
         target = self._target
-        near_edge = fresh and position_measured and abs(x) >= ROAD_HALF_LANES - _ROAD_EDGE_MARGIN
+        near_edge = (fresh and x is not None and position_measured
+                     and abs(x) >= ROAD_HALF_LANES - _ROAD_EDGE_MARGIN)
         walled = cars is not None and all(
             _point_blocked(p, cars, _WALL_DIAGNOSTIC_HORIZON_M) for p in _EDGE_POINTS
         )
 
-        if usable and target is not None:
+        if usable and target is not None and x is not None and heading is not None:
             steer = self._control.update(target - x, heading, det_ns, lateral_x=x,
                                          heading_ts_ns=heading_ns, now_ns=now_ns, near_edge=near_edge)
             target_heading = self._control.desired_heading
