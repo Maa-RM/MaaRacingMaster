@@ -69,7 +69,7 @@ class _Session:
 
 
 @pytest.fixture()
-def gate_on(monkeypatch, tmp_path):
+def gate_on(monkeypatch, tmp_path, no_ambient_game_window):
     """闸门打开 + 启动器交互全部打桩。"""
     monkeypatch.setenv("MAARM_APP_LAUNCHER_CHECK", "1")
     launcher = tmp_path / "Launcher.exe"

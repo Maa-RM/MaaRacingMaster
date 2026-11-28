@@ -40,6 +40,14 @@ def _launcher_check_off(monkeypatch):
 
 
 @pytest.fixture
+def no_ambient_game_window(monkeypatch):
+    """启动测试默认看不到本机游戏窗口；接管场景在用例内指定窗口句柄。"""
+    from maaracing_master.core import game_process
+
+    monkeypatch.setattr(game_process, "find_window_by_process", lambda: 0)
+
+
+@pytest.fixture
 def pure_maa(monkeypatch):
     """用 Python 桩替代导航图的 Maa 工厂，避免创建原生句柄。"""
     from maaracing_master.core import nav_graph as ng
