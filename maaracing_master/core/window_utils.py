@@ -69,9 +69,16 @@ MOUSEEVENTF_LEFTUP = 0x0004
 KEYEVENTF_KEYUP = 0x0002
 # F13：标准键盘不存在该键，无任何系统/应用组合键副作用，用于解除前台锁定的安全注入键
 VK_F13 = 0x7C
+SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
+_HWND_BOTTOM = wintypes.HWND(1)
+_WM_MOUSEMOVE = 0x0200
+_WM_LBUTTONDOWN = 0x0201
+_WM_LBUTTONUP = 0x0202
+_MK_LBUTTON = 0x0001
+_MONITOR_DEFAULTTONEAREST = 0x0002
 # GetAsyncKeyState 的「当前按下」高位
 _ASYNC_DOWN = 0x8000
 
@@ -124,8 +131,21 @@ _UD.SetFocus.argtypes = [wintypes.HWND]
 _UD.SetFocus.restype = wintypes.HWND
 _UD.IsIconic.argtypes = [wintypes.HWND]
 _UD.IsIconic.restype = wintypes.BOOL
+_UD.IsZoomed.argtypes = [wintypes.HWND]
+_UD.IsZoomed.restype = wintypes.BOOL
 _UD.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 _UD.ShowWindow.restype = wintypes.BOOL
+_UD.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+_UD.GetCursorPos.restype = wintypes.BOOL
+_UD.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+_UD.ClientToScreen.restype = wintypes.BOOL
+_UD.SendMessageW.argtypes = [
+    wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_UD.SendMessageW.restype = ctypes.c_ssize_t
+_UD.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+_UD.MonitorFromWindow.restype = wintypes.HMONITOR
+_UD.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+_UD.MonitorFromPoint.restype = wintypes.HMONITOR
 _UD.EnumDisplayMonitors.argtypes = [
     wintypes.HDC, ctypes.POINTER(wintypes.RECT),
     _WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
@@ -237,6 +257,115 @@ def send_left_click(down_up_gap_ms: int = 30) -> bool:
         return False
     time.sleep(max(0.02, down_up_gap_ms / 1000.0))
     return _event(MOUSEEVENTF_LEFTUP)
+
+
+# =====================================================================
+#  后台消息点击（不抢前台焦点：移窗口对齐 / 瞬移光标 + SendMessage）
+# =====================================================================
+
+def send_window_to_bottom(hwnd: int) -> bool:
+    """将窗口置于 Z 序最底层（不移动、不改尺寸、不抢焦点）。"""
+    if not hwnd or not _UD.IsWindow(hwnd) or _UD.IsIconic(hwnd):
+        return False
+    return bool(_UD.SetWindowPos(
+        hwnd, _HWND_BOTTOM, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    ))
+
+
+def _send_bg_mouse_click(hwnd: int, client_x: int, client_y: int,
+                         down_up_gap_ms: int) -> None:
+    """向目标窗口客户区坐标发送同步鼠标消息（Move → Down → Up）。"""
+    lparam = ((int(client_y) & 0xFFFF) << 16) | (int(client_x) & 0xFFFF)
+    _UD.SendMessageW(hwnd, _WM_MOUSEMOVE, 0, lparam)
+    _UD.SendMessageW(hwnd, _WM_LBUTTONDOWN, _MK_LBUTTON, lparam)
+    if down_up_gap_ms > 0:
+        time.sleep(max(0.01, down_up_gap_ms / 1000.0))
+    _UD.SendMessageW(hwnd, _WM_LBUTTONUP, 0, lparam)
+
+
+def bg_click_window_pos(hwnd: int, client_x: int, client_y: int,
+                        down_up_gap_ms: int = 30) -> bool:
+    """游戏动、鼠标不动：不抢焦点瞬移窗口对齐当前鼠标 → SendMessage → 立即复位。
+
+    包含两项防呆护栏：
+    1. 窗口最小化或最大化时拒绝移动（防止破坏最大化几何或无效移动）。
+    2. 鼠标位于副屏或偏移后窗口中心跨屏时拒绝拉扯窗口（防跨屏闪现与异构 DPI 重绘）。
+    """
+    if not hwnd or not _UD.IsWindow(hwnd):
+        return False
+    if _UD.IsIconic(hwnd):
+        logger.log("[后台点击] 游戏窗口已最小化，跳过移窗口点击", "WARNING")
+        return False
+    if _UD.IsZoomed(hwnd):
+        logger.log("[后台点击] 游戏窗口处于最大化状态，跳过移窗口点击", "WARNING")
+        return False
+
+    cur = wintypes.POINT()
+    if not _UD.GetCursorPos(ctypes.byref(cur)):
+        return False
+    # 若用户正在快速甩动鼠标，短暂等待一拍减少 ~120ms 点击窗口期内的偏移
+    cur_check = wintypes.POINT()
+    time.sleep(0.025)
+    if _UD.GetCursorPos(ctypes.byref(cur_check)):
+        if abs(cur_check.x - cur.x) > 15 or abs(cur_check.y - cur.y) > 15:
+            cur = cur_check
+            time.sleep(0.03)
+            if _UD.GetCursorPos(ctypes.byref(cur_check)):
+                cur = cur_check
+
+    rect = wintypes.RECT()
+    if not _UD.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    target_pt = wintypes.POINT(int(client_x), int(client_y))
+    if not _UD.ClientToScreen(hwnd, ctypes.byref(target_pt)):
+        return False
+
+    new_left = rect.left + (cur.x - target_pt.x)
+    new_top = rect.top + (cur.y - target_pt.y)
+    win_w = rect.right - rect.left
+    win_h = rect.bottom - rect.top
+
+    hmon_win = _UD.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+    hmon_cur = _UD.MonitorFromPoint(cur, _MONITOR_DEFAULTTONEAREST)
+    dest_center = wintypes.POINT(new_left + win_w // 2, new_top + win_h // 2)
+    hmon_dest = _UD.MonitorFromPoint(dest_center, _MONITOR_DEFAULTTONEAREST)
+    if hmon_win and ((hmon_cur and hmon_cur != hmon_win)
+                     or (hmon_dest and hmon_dest != hmon_win)):
+        logger.log(
+            "[后台点击] 鼠标位于副屏或跨屏交界处，已拦截移窗口点击（多屏用户建议改用「鼠标动、游戏不动」）",
+            "WARNING",
+        )
+        return False
+
+    flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+    if not _UD.SetWindowPos(hwnd, 0, new_left, new_top, 0, 0, flags):
+        return False
+    try:
+        _send_bg_mouse_click(hwnd, client_x, client_y, down_up_gap_ms)
+    finally:
+        _UD.SetWindowPos(hwnd, 0, rect.left, rect.top, 0, 0, flags)
+    return True
+
+
+def bg_click_cursor_pos(hwnd: int, client_x: int, client_y: int,
+                        down_up_gap_ms: int = 30) -> bool:
+    """鼠标动、游戏不动：游戏窗口保持静止，光标瞬移点击后立即归位（适合多屏用户）。"""
+    if not hwnd or not _UD.IsWindow(hwnd) or _UD.IsIconic(hwnd):
+        return False
+    orig_cur = wintypes.POINT()
+    if not _UD.GetCursorPos(ctypes.byref(orig_cur)):
+        return False
+    target_pt = wintypes.POINT(int(client_x), int(client_y))
+    if not _UD.ClientToScreen(hwnd, ctypes.byref(target_pt)):
+        return False
+    if not _UD.SetCursorPos(target_pt.x, target_pt.y):
+        return False
+    try:
+        _send_bg_mouse_click(hwnd, client_x, client_y, down_up_gap_ms)
+    finally:
+        _UD.SetCursorPos(orig_cur.x, orig_cur.y)
+    return True
 
 
 def is_foreground(hwnd: int) -> bool:

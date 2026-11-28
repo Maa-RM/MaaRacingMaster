@@ -257,6 +257,9 @@ class MaaRacingMasterController:
                     "切到游戏前台失败（Windows 前台锁定）——逻辑继续运行，点击需游戏在前台",
                     "WARNING",
                 )
+        elif self._click_mode == "bg_winpos" and is_window_valid(self._hwnd):
+            from maaracing_master.core.window_utils import send_window_to_bottom
+            send_window_to_bottom(self._hwnd)
 
     def end_run(self) -> None:
         """队列一轮结束：释放运行级全局性质（恢复用户原音量）。"""

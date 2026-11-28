@@ -20,6 +20,8 @@ import time
 
 from maaracing_master.core.logger import logger
 from maaracing_master.core.window_utils import (
+    bg_click_cursor_pos,
+    bg_click_window_pos,
     norm_to_screen,
     send_left_click,
     set_cursor_visible,
@@ -27,7 +29,7 @@ from maaracing_master.core.window_utils import (
 )
 
 # 合法点击方式（与 GUI 设置页 data-clickmode 保持一致）
-CLICK_MODES = ("real", "gamepad")
+CLICK_MODES = ("real", "bg_winpos", "bg_cursor", "gamepad")
 
 # 手柄点击容差比例：落点在目标框中心 70% 区域内即可按 A（ROI 本对标整个可交互
 # 区域，无需微调到中心像素级精确；防太宽松取 70% 而非全框）。
@@ -110,7 +112,10 @@ class Clicker:
         if self.mode == "gamepad":
             return self._submit_gamepad("click", cx, cy, intent=self.intent,
                                         box=box, tol_px=tol_px, label=label)
-        ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
+        if self.mode in ("bg_winpos", "bg_cursor"):
+            ok = self._click_bg(cx, cy, down_up_gap_ms)
+        else:
+            ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
         self._real_result = {"type": "click", "ok": ok, "intent": self.intent,
                              "label": label}
         return True
@@ -532,6 +537,25 @@ class Clicker:
         if not send_left_click(down_up_gap_ms):
             return False
         return True
+
+    def _click_bg(self, cx: float, cy: float, down_up_gap_ms: int) -> bool:
+        """后台消息点击：bg_winpos（游戏动、鼠标不动）或 bg_cursor（鼠标动、游戏不动）。"""
+        if not self.hwnd:
+            return False
+        size = window_client_size(self.hwnd)
+        if size is None or size[0] <= 0 or size[1] <= 0:
+            return False
+        cw, ch = size
+        px = min(cw - 1, max(0, round(cx * cw)))
+        py = min(ch - 1, max(0, round(cy * ch)))
+        pos = norm_to_screen(self.hwnd, cx, cy, cw, ch)
+        if pos is not None:
+            self._last_pos = pos
+        if self.intent:
+            return True
+        if self.mode == "bg_cursor":
+            return bg_click_cursor_pos(self.hwnd, px, py, down_up_gap_ms)
+        return bg_click_window_pos(self.hwnd, px, py, down_up_gap_ms)
 
     def _maybe_rebuild_gamepad(self) -> None:
         """光标连续丢失达阈值 → 触发重建虚拟手柄（自愈），带冷却防动画期反复拔插。
