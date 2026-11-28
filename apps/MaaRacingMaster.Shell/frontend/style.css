@@ -1269,15 +1269,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: 
   opacity: 1;
   transform: translate(-50%, 0) scale(1);
 }
-.clickmode-popover-title {
-  font-size: 11.5px; font-weight: 700; color: var(--maarm-foreground);
-  margin-bottom: 6px;
-}
 .mg-svg { width: 100%; height: auto; display: block; border-radius: 6px; }
-.clickmode-popover-desc {
-  font-size: 11px; color: var(--maarm-foreground-secondary);
-  margin: 6px 0 0; line-height: 1.45;
-}
 
 .mg-real-win { animation: maarm-mg-real-win 2.6s cubic-bezier(0.34, 1.56, 0.64, 1) infinite; }
 .mg-real-cursor { animation: maarm-mg-real-cursor 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
