@@ -1048,6 +1048,11 @@ class NavGraph:
         与基础设施故障（手柄未绑定）——后者不能靠 on_error 重试掩盖。
         """
         self._last_click_error = ""
+        if not self.ctx.lifecycle.running:
+            # 停止在途：投递前判停（与 run()/probe() 同口径）。停止受理完成后投出去的
+            # 点击等于「继续操作游戏」，会把收尾等待拖到超时，也会点掉不该点的东西。
+            self._last_click_error = "stopped"
+            return False
         clicker = self._ensure_clicker()
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
