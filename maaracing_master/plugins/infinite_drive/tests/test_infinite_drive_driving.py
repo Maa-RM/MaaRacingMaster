@@ -3,6 +3,41 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.parametrize(("ego", "target", "direction"), [(0.484, 0.2, -1), (0.502, 1.2, 1)])
+def test_selected_route_starts_with_full_stick(ego, target, direction) -> None:
+    from maaracing_master.plugins.infinite_drive.driving import HeadingControl
+
+    controller = HeadingControl(3.5)
+    assert controller.update(target - ego, 0.0, 1_000_000_000, lateral_x=ego) == direction
+
+
+def test_full_stick_pulse_ends_even_when_detector_reuses_the_same_frame() -> None:
+    from maaracing_master.plugins.infinite_drive.driving import HeadingControl
+
+    controller = HeadingControl(3.5)
+    t = 1_000_000_000
+    assert controller.update(0.7, 0.0, t, now_ns=t) == 1
+    assert controller.update(0.7, 0.0, t, now_ns=t + 200_000_000) == 0
+    assert controller.update(0.7, 0.0, t, now_ns=t + 500_000_000) == 0
+
+
+@pytest.mark.parametrize("side", [-1, 1])
+def test_countersteer_starts_before_crossing_and_releases_before_heading_crosses(side) -> None:
+    from maaracing_master.plugins.infinite_drive.driving import HeadingControl
+
+    controller = HeadingControl(3.5)
+    t = 1_000_000_000
+    # 横位还没过目标，但已在快速接近，车头也还朝向横移方向。
+    assert controller.update(side * 0.23, side * 0.066, t, lateral_x=side * 0.22) == 0
+    command = controller.update(side * 0.11, side * 0.085, t + 200_000_000,
+                                lateral_x=side * 0.34)
+    assert command == -side
+    # 反打已让车头朝路向回转。有剩余偏航率时要提前松杆。
+    command = controller.update(side * 0.10, side * 0.040, t + 300_000_000,
+                                lateral_x=side * 0.35)
+    assert command == 0
+
+
 def test_heading_control_turns_toward_target_and_damps_on_approach() -> None:
     from maaracing_master.plugins.infinite_drive.driving import HeadingControl
 
@@ -28,64 +63,54 @@ def test_heading_control_reuses_measurement_without_reintegrating() -> None:
     assert controller.update(0.02, 0.0, 2_000_000_000) == 0.0
 
 
-def test_steer_command_is_smoothed_by_lowpass_and_rate_limit() -> None:
-    """执行链平滑：首拍不给满、相邻拍变化不超过上限、随后逼近稳态。"""
-    from maaracing_master.plugins.infinite_drive import driving as d
+def test_rejected_line_angle_keeps_its_original_timestamp() -> None:
+    from maaracing_master.plugins.infinite_drive.lane_obs import LineTracker
 
-    controller = d.HeadingControl(3.5)
-    t = 1_000_000_000
-    first = controller.update(-0.5, 0.0, t, preview_m=12.0)
-    # 未滤波的命令饱和到 -0.45；首拍只出一部分。
-    assert -0.25 < first < 0.0
-    prev = first
-    for i in range(1, 25):
-        out = controller.update(-0.5, 0.0, t + i * 50_000_000, preview_m=12.0)
-        assert abs(out - prev) <= d._STEER_STEP_MAX + 1e-9
-        prev = out
-    assert prev == pytest.approx(-0.45, abs=0.02)
+    def lines(angle):
+        return [{"L": side * 0.5, "side": side, "theta": angle} for side in (-1, 1)]
+
+    tracker = LineTracker()
+    initial = tracker.update(lines(0.0), 1, 0.05, anchor=0.5, frame_ts_ns=1_000_000_000)
+    assert initial["theta_updated"]
+    rejected = tracker.update(lines(0.25), 2, 0.05, anchor=0.5, frame_ts_ns=1_050_000_000)
+    assert not rejected["theta_updated"]
+    assert rejected["theta_src_fid"] == initial["theta_src_fid"]
+    assert rejected["theta_src_ts_ns"] == initial["theta_src_ts_ns"]
 
 
-def test_sustain_boost_grows_on_persistent_error_and_decays() -> None:
-    """浅杆补偿：持续同向偏差抬升杆值，偏差消失后按时间常数衰减。"""
-    from maaracing_master.plugins.infinite_drive import driving as d
-
-    controller = d.HeadingControl(3.5)
-    t = 1_000_000_000
-    for i in range(30):
-        controller.update(0.4, 0.0, t + i * 50_000_000)
-    held = controller.boost
-    assert held == pytest.approx(d._BOOST_MAX, abs=1e-6)
-    for i in range(30, 60):
-        controller.update(0.0, 0.0, t + i * 50_000_000)
-    assert abs(controller.boost) < held * 0.5
-
-
-def test_lateral_speed_damps_same_direction_motion() -> None:
-    """横位速度阻尼：车已在同向横移时，位置环出力应回落。"""
+def test_larger_heading_error_produces_longer_full_stick_pulse() -> None:
     from maaracing_master.plugins.infinite_drive.driving import HeadingControl
 
-    still = HeadingControl(3.5)
-    moving = HeadingControl(3.5)
     t = 1_000_000_000
-    still.update(0.5, 0.0, t, preview_m=12.0, lateral_x=0.0)
-    moving.update(0.5, 0.0, t, preview_m=12.0, lateral_x=0.0)
-    quiet = still.update(0.5, 0.0, t + 100_000_000, preview_m=12.0, lateral_x=0.0)
-    fast = moving.update(0.5, 0.0, t + 100_000_000, preview_m=12.0, lateral_x=0.15)
-    assert 0.0 < fast < quiet
+    short = HeadingControl(3.5)
+    long = HeadingControl(3.5)
+    assert short.update(0.12, 0.0, t) == long.update(0.7, 0.0, t) == 1.0
+    assert short.update(0.12, 0.0, t + 50_000_000) == 0.0
+    assert long.update(0.7, 0.0, t + 50_000_000) == 1.0
+    assert long.update(0.7, 0.0, t + 150_000_000) == 0.0
 
 
-def test_plant_gain_adapts_toward_observed_response() -> None:
-    """换车/换速自适应：杆→横速增益按观测值收敛，而不是写死。"""
+@pytest.mark.parametrize(("yaw_gain", "delay_ticks", "speed"), [
+    (0.4, 4, 4.0), (0.4, 4, 8.0), (0.65, 2, 8.0), (0.65, 4, 12.0),
+])
+def test_pwm_lateral_control_settles_with_delayed_yaw_response(yaw_gain, delay_ticks, speed) -> None:
+    from collections import deque
+
     from maaracing_master.plugins.infinite_drive.driving import HeadingControl
 
     controller = HeadingControl(3.5)
-    t = 1_000_000_000
-    x = 0.0
-    for i in range(80):
-        out = controller.update(0.3, 0.0, t + i * 100_000_000,
-                                preview_m=12.0, lateral_x=x)
-        x += 1.2 * out * 0.1      # 模拟对象：满杆横速 1.2 道/s
-    assert 0.8 < controller.gain < 1.6
+    delayed_commands = deque([0.0] * delay_ticks)
+    position = heading = 0.0
+    positions = []
+    for tick in range(140):
+        command = controller.update(0.8 - position, heading, 1_000_000_000 + tick * 50_000_000,
+                                    lateral_x=position)
+        delayed_commands.append(command)
+        heading += 0.05 * (yaw_gain * delayed_commands.popleft() - heading)
+        position += 0.05 * speed * heading
+        positions.append(position)
+    assert max(positions) < 0.95
+    assert max(abs(0.8 - x) for x in positions[80:]) < 0.15
 
 
 def test_lane_drive_constructs_without_street_model(monkeypatch) -> None:
@@ -173,13 +198,160 @@ def _car_x(p: float, ego_x: float, z_m: float = 9.96):
     return Detection(round(640 + 100 * (p - ego_x)), bottom - 20, 44, 40, .9)
 
 
+@pytest.fixture
+def drive_tick(monkeypatch):
+    from types import SimpleNamespace
+
+    from maaracing_master.plugins.infinite_drive import driving as d
+    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
+
+    now = 1_000_000_000
+    fid = 0
+    heading_fid = heading_ns = 0
+    obs = {}
+    rows = []
+    driver = d.LaneDrive.__new__(d.LaneDrive)
+    driver._control = d.HeadingControl(3.5)
+    driver._camera_height = 1.25
+    driver._cal = SimpleNamespace(focal_px=880)
+    driver._traffic_enabled = True
+    driver._trace = SimpleNamespace(append=rows.append)
+    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
+    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
+    driver.begin()
+
+    def tick(x, cars=(), *, usable=True, hold=False, new_angle=True, elapsed_s=0.05):
+        nonlocal now, fid, heading_fid, heading_ns
+        now += round(elapsed_s * 1e9)
+        fid += 1
+        if new_angle:
+            heading_fid, heading_ns = fid, now
+        traffic = (None if cars is None else
+                   PerceptionResult(fid, now, cars=[_car_x(p, x, z) for p, z in cars]))
+        # 横位尺随自车平移，保持框和白线在同一个道路坐标系。
+        lines = _line_fits()
+        for line in lines:
+            line["L"] = line["k"] - x
+            line["fits"][0]["a"] = 640 + 100 * line["L"]
+        obs.update(x=x, theta=0.0, usable=usable, hold=hold, y_v=365., cam_h=1.25, lines=lines,
+                   det_fid=fid, det_ts_ns=now, theta_src_fid=heading_fid, theta_src_ts_ns=heading_ns,
+                   traffic=traffic)
+        driver.steer(None, fid, now)
+        return rows[-1]
+
+    return tick
+
+
+def test_immediate_threat_overrides_recent_target(drive_tick) -> None:
+    assert drive_tick(-0.4)["steer"] == 1
+    row = drive_tick(-0.4, [(0.0, 10)])
+    assert row["target_lane"] == -0.8
+    assert row["steer"] == 0  # 立即撤掉朝向障碍的脉冲，等转向反馈再发反向杆。
+    assert drive_tick(-0.4, [(0.0, 9)], elapsed_s=0.15)["steer"] == -1
+    assert drive_tick(-0.8)["target_lane"] == -0.8
+
+
+def test_clear_destination_does_not_justify_crossing_traffic(drive_tick) -> None:
+    assert drive_tick(0.8)["target_lane"] == 0.8
+    # 左侧 -1.2 是净点，但抵达前须横穿 -0.3 附近的车。
+    row = drive_tick(0.8, [(1.48, 10), (0.7, 12), (-0.3, 14)])
+    assert row["target_lane"] is None
+    assert row["steer"] == 0
+    assert row["walled"] is False
+
+
+def test_close_threat_can_use_escape_blocked_only_farther_ahead(drive_tick) -> None:
+    assert drive_tick(-0.4)["target_lane"] == -0.2
+    row = drive_tick(-0.4, [(0.0, 10), (-1.0, 30)])
+    assert row["target_lane"] == -0.8
+    assert row["steer"] <= 0
+
+
+def test_right_escape_stays_selected_when_same_lane_truck_projection_shifts(drive_tick) -> None:
+    # 22:45 第一阶段 #1337–#1350。右侧落点始终有净空，货车中心在自车附近抖动。
+    frames = [(0.500, 0.454, -0.352, 22.9), (0.470, 0.544, -0.346, 22.1),
+              (0.497, 0.554, -0.526, 17.4), (0.500, 0.483, -0.607, 15.6),
+              (0.462, 0.468, -0.597, 13.4), (0.497, 0.485, -0.488, 10.4)]
+    for ego, truck, other, distance in frames:
+        row = drive_tick(ego, [(truck, distance), (other, distance)])
+        assert row["target_lane"] == 1.2
+        assert row["steer"] >= 0
+    assert drive_tick(0.497, [(0.554, 10), (-0.526, 9), (1.2, 8)])["target_lane"] != 1.2
+
+
+def test_clear_escape_path_keeps_speed_when_traffic_is_still_ahead(drive_tick) -> None:
+    assert drive_tick(-0.4)["target_lane"] == -0.2
+    assert drive_tick(-0.4, [(0.0, 33)])["target_lane"] == -0.2
+    assert drive_tick(-0.4, [(0.0, 32)])["target_lane"] == -0.2
+    row = drive_tick(-0.4, [(0.0, 31)])
+    assert row["target_lane"] == -0.8
+    assert row["steer"] <= 0
+
+
+def test_far_car_coordinate_flips_do_not_flip_target(drive_tick) -> None:
+    assert drive_tick(1.36)["target_lane"] == 1.2
+    # 22:03 局第二阶段 #2722–#2729，同一辆货车的横位跳来跳去。
+    frames = [(0.902, 0.95, 32.3), (0.687, -0.02, 33.4), (0.604, 0.64, 34.6),
+              (0.544, 0.52, 34.8), (0.484, 0.50, 35.0)]
+    for ego_x, car_x, distance in frames:
+        assert drive_tick(ego_x, [(car_x, distance)])["target_lane"] == 1.2
+
+
+def test_clear_lane_center_keeps_speed_when_edge_points_are_blocked(drive_tick) -> None:
+    assert drive_tick(0.5)["target_lane"] == 0.2
+    row = drive_tick(0.5, [(-0.2, 10), (1.2, 10)])
+    assert row["target_lane"] == 0.5
+
+
+def test_road_lock_dropout_neutralizes_steering_until_recovery(drive_tick) -> None:
+    assert drive_tick(0.4)["steer"] < 0
+    assert drive_tick(0.4, usable=False)["steer"] == 0
+    assert drive_tick(0.4, usable=False, elapsed_s=0.30)["steer"] == 0
+    assert drive_tick(0.4)["steer"] < 0
+
+
+def test_fresh_position_can_use_recent_heading_but_not_expired_heading(drive_tick) -> None:
+    assert drive_tick(0.8)["steer"] == 0
+    steering = drive_tick(0.65, new_angle=False)
+    assert steering["usable"]
+    assert steering["steer"] == 1
+    expired = drive_tick(0.65, new_angle=False, elapsed_s=0.45)
+    assert not expired["usable"]
+    assert expired["steer"] == 0
+
+
+@pytest.mark.parametrize("side", [-1, 1])
+def test_at_road_edge_only_steers_inward_on_valid_observation(drive_tick, side) -> None:
+    drive_tick(side * 1.2)
+    assert drive_tick(side * 1.8, usable=False)["steer"] == 0
+    assert side * drive_tick(side * 1.8)["steer"] < 0
+
+
+def test_lane_tracking_can_start_and_continue_with_missing_traffic(drive_tick) -> None:
+    initial = drive_tick(0.6, None)
+    assert initial["target_lane"] == 0.8
+    assert initial["steer"] > 0
+    assert drive_tick(0.6, None, elapsed_s=0.1)["steer"] == 0
+    missing = drive_tick(0.6, None, elapsed_s=0.2)
+    assert missing["target_lane"] == 0.8
+    assert missing["steer"] == 1
+
+
+def test_missing_traffic_does_not_reselect_an_already_blocked_route(drive_tick) -> None:
+    assert drive_tick(0.8)["target_lane"] == 0.8
+    assert drive_tick(0.8, [(1.48, 10), (0.7, 12), (-0.3, 14)])["target_lane"] is None
+    missing = drive_tick(0.8, None)
+    assert missing["target_lane"] is None
+    assert missing["steer"] == 0
+
+
 def test_debug_snapshot_reports_why_points_are_missing() -> None:
     """调试图快照区分缺席原因：车道原点不可用 vs 同拍车账缺席 vs 有点位。"""
     from maaracing_master.plugins.infinite_drive import driving as d
 
     driver = d.LaneDrive.__new__(d.LaneDrive)
     base = {"lane": {}, "ego_x": 0.0, "target": 0.2, "cars": None,
-            "walled": False, "steer": 0.0, "throttle_scale": 1.0,
+            "walled": False, "steer": 0.0,
             "heading": 0.0, "target_heading": 0.0, "yaw_rate": 0.0,
             "usable": False, "fresh": True, "half_lanes": 2}
 
@@ -207,225 +379,45 @@ def test_edge_points_hug_each_white_line_on_both_sides() -> None:
     assert set(_EDGE_POINTS) == {-1.2, -0.8, -0.2, 0.2, 0.8, 1.2}
 
 
-def test_lane_holds_nearest_edge_point_and_steers_toward_it(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.6, "theta": 0.0, "usable": True}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    assert driver.steer(None, 8, now) > 0
-    assert rows[-1]["target_lane"] == 0.8          # 离 0.6 最近的擦边点
-    assert rows[-1]["edge_event"] == "pick"
-    assert driver.throttle_scale == 1.0
+def test_lane_holds_nearest_edge_point_and_steers_toward_it(drive_tick) -> None:
+    row = drive_tick(0.6)
+    assert row["steer"] > 0
+    assert row["target_lane"] == 0.8
+    assert row["edge_event"] == "pick"
 
 
-def test_rate_limited_position_still_steers(monkeypatch) -> None:
-    """限速跟随拍（hold）的横位是平滑后的原点，必须照常出杆。"""
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.6, "theta": 0.0, "usable": True, "hold": True}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    assert driver.steer(None, 8, now) != 0.0
-    assert rows[-1]["usable"] is True
-    assert rows[-1]["usable_reason"] == "ok"
-    assert rows[-1]["hold"] is True
+def test_rate_limited_position_still_steers(drive_tick) -> None:
+    """限速跟随拍（hold）的横位是平滑后的原点，可以继续转向。"""
+    row = drive_tick(0.6, hold=True)
+    assert row["steer"] > 0
+    assert row["usable"] is True
+    assert row["hold"] is True
 
 
-def test_blocked_point_switches_once_and_holds_after_clearing(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.8, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
-           "lines": _line_fits()}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    driver.steer(None, 8, now)
-    assert rows[-1]["target_lane"] == 0.8
-
-    # 前方 10m 一辆横位 0.7 的车：近车逼到本位，但承诺期内不换点。
-    now += 100_000_000
-    traffic = PerceptionResult(9, now, cars=[_car_x(0.7, 0.8)])
-    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now,
-               traffic=traffic)
-    driver.steer(None, 9, now)
-    assert rows[-1]["target_lane"] == 0.8
-    assert rows[-1]["edge_event"] is None
-
-    # 过承诺期后车仍在：相邻点 0.2/1.2 都被堵，跨道回退到最近的净点 −0.2。
-    events = []
-    for fid in range(10, 20):
-        now += 100_000_000
-        obs.update(det_fid=fid, det_ts_ns=now, theta_src_fid=fid, theta_src_ts_ns=now,
-                   traffic=PerceptionResult(fid, now, cars=[_car_x(0.7, 0.8)]))
-        driver.steer(None, fid, now)
-        events.append(rows[-1]["edge_event"])
-    assert "switch" in events
-    assert rows[-1]["target_lane"] == -0.2
-    assert driver.throttle_scale == 1.0
-
-    # 车还在：新点位净，保持不重估；车走了也不切回。
-    now += 100_000_000
-    obs.update(det_fid=20, det_ts_ns=now, theta_src_fid=20, theta_src_ts_ns=now)
-    driver.steer(None, 20, now)
-    assert rows[-1]["target_lane"] == -0.2
-    assert rows[-1]["edge_event"] is None
-    now += 100_000_000
-    obs.update(det_fid=21, det_ts_ns=now, theta_src_fid=21, theta_src_ts_ns=now,
-               traffic=PerceptionResult(21, now))
-    driver.steer(None, 21, now)
-    assert rows[-1]["target_lane"] == -0.2
-    assert driver.throttle_scale == 1.0
+def test_blocked_point_switches_once_and_holds_after_clearing(drive_tick) -> None:
+    assert drive_tick(0.8)["target_lane"] == 0.8
+    row = drive_tick(0.8, [(0.58, 9.96)])
+    assert row["target_lane"] == 1.2
+    assert row["edge_event"] == "switch"
+    row = drive_tick(0.8)
+    assert row["target_lane"] == 1.2
+    assert row["edge_event"] is None
 
 
-def test_near_car_switches_only_after_hold_window(monkeypatch) -> None:
-    """承诺期内近车逼到也不换；过窗后优先相邻净点。"""
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.8, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
-           "lines": _line_fits()}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now)
-    driver.steer(None, 8, now)
-    assert rows[-1]["target_lane"] == 0.8
-
-    # 车只堵 0.8 本身（横位 0.8），相邻 0.2/1.2 仍净：承诺期内保持。
-    now += 100_000_000
-    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now,
-               traffic=PerceptionResult(9, now, cars=[_car_x(0.8, 0.8)]))
-    driver.steer(None, 9, now)
-    assert rows[-1]["target_lane"] == 0.8
-
-    # 过承诺期后换到相邻点，且跨度为 1 个擦边点。
-    events = []
-    for fid in range(10, 20):
-        now += 100_000_000
-        obs.update(det_fid=fid, det_ts_ns=now, theta_src_fid=fid, theta_src_ts_ns=now,
-                   traffic=PerceptionResult(fid, now, cars=[_car_x(0.8, 0.8)]))
-        driver.steer(None, fid, now)
-        events.append(rows[-1]["edge_event"])
-    assert "switch" in events
-    assert rows[-1]["target_lane"] in (0.2, 1.2)
+def test_walled_road_keeps_steering_neutral_until_any_point_clears(drive_tick) -> None:
+    row = drive_tick(0.5, [(p, 9.96) for p in (-1.5, -0.5, 0.5, 1.5)])
+    assert row["target_lane"] is None
+    assert row["walled"] is True
+    assert row["steer"] == 0
+    recovered = drive_tick(0.5)
+    assert recovered["target_lane"] == 0.2
 
 
-def test_walled_road_cuts_throttle_until_any_point_clears(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.5, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
-           "lines": _line_fits()}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    # 四条车道各有居中车（z≈10m）：六个擦边点全堵 → 收油，无点可选。
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now,
-               traffic=PerceptionResult(8, now, cars=[_car_x(p, 0.5) for p in
-                                                      (-1.5, -0.5, 0.5, 1.5)]))
-    driver.steer(None, 8, now)
-    assert driver.throttle_scale == 0.0
-    assert rows[-1]["target_lane"] is None
-    assert rows[-1]["walled"] is True
-
-    # 车流散开：恢复油门，锁最近净点（0.5 与 0.2/0.8 等距，靠路中心优先）。
-    now += 100_000_000
-    obs.update(det_fid=9, det_ts_ns=now, theta_src_fid=9, theta_src_ts_ns=now,
-               traffic=PerceptionResult(9, now))
-    driver.steer(None, 9, now)
-    assert driver.throttle_scale == 1.0
-    assert rows[-1]["target_lane"] == 0.2
-
-
-def test_far_car_does_not_trigger_a_switch(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from maaracing_master.plugins.infinite_drive import driving as d
-    from maaracing_master.plugins.infinite_drive.perception import PerceptionResult
-
-    now = 1_100_000_000
-    monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
-    driver = d.LaneDrive.__new__(d.LaneDrive)
-    driver._control = d.HeadingControl(3.5)
-    driver._camera_height = 1.25
-    driver._cal = SimpleNamespace(focal_px=880)
-    rows = []
-    driver._trace = SimpleNamespace(append=rows.append)
-    obs = {"x": 0.8, "theta": 0.0, "usable": True, "y_v": 365., "cam_h": 1.25,
-           "lines": _line_fits()}
-    driver._lines = SimpleNamespace(latest=lambda: obs, push=lambda *a, **kw: None)
-    driver.begin()
-
-    # 45m 外同横位的车在换点视界（40m）之外：照常锁点、满油。
-    now += 100_000_000
-    obs.update(det_fid=8, det_ts_ns=now, theta_src_fid=8, theta_src_ts_ns=now,
-               traffic=PerceptionResult(8, now, cars=[_car_x(0.8, 0.8, z_m=45.2)]))
-    driver.steer(None, 8, now)
-    assert rows[-1]["target_lane"] == 0.8
-    assert rows[-1]["edge_event"] == "pick"
-    assert driver.throttle_scale == 1.0
+def test_far_car_does_not_trigger_a_switch(drive_tick) -> None:
+    assert drive_tick(0.8)["target_lane"] == 0.8
+    row = drive_tick(0.8, [(0.8, 45.2)])
+    assert row["target_lane"] == 0.8
+    assert row["edge_event"] is None
 
 
 def test_second_round_steers_when_road_recovers_without_camera_height(monkeypatch) -> None:
@@ -437,6 +429,7 @@ def test_second_round_steers_when_road_recovers_without_camera_height(monkeypatc
     monkeypatch.setattr(d.time, "perf_counter_ns", lambda: now)
     driver = d.LaneDrive.__new__(d.LaneDrive)
     driver._control = d.HeadingControl(3.5)
+    driver._traffic_enabled = False
     driver._camera_height = 1.25
     driver._cal = SimpleNamespace(focal_px=880)
     driver._trace = SimpleNamespace(append=lambda _: None)
@@ -454,11 +447,11 @@ def test_second_round_steers_when_road_recovers_without_camera_height(monkeypatc
 
     now += 100_000_000
     obs.update(det_fid=85, det_ts_ns=now, theta_src_fid=85, theta_src_ts_ns=now,
-               x=0.55, theta=0.09, usable=True, lines=[
+               x=0.55, theta=0.02, usable=True, lines=[
                    {"accepted": True, "k": 0, "side": -1},
                    {"accepted": True, "k": 1, "side": 1},
                ])
-    # 恢复首拍：位置环主导（车在 0.55、最近擦边点 0.8，向右修正）；车头角只作弱趋势。
+    # 恢复首拍：车头近似朝前，横位误差足以向右修正。
     assert driver.steer(None, 85, now) > 0.0
     now += 300_000_000
     assert driver.steer(None, 86, now) == 0.0
