@@ -22,8 +22,7 @@ import pytest
 # CI 轻依赖环境（只装 pytest+numpy+opencv-headless）下整文件跳过，不误红——
 # 口径同 test_nav_graph_runner.py。
 try:
-    from maaracing_master.core import clicker as clicker_mod
-    from maaracing_master.core.clicker import GAMEPAD_BOX_TOL_RATIO, Clicker
+    from maaracing_master.core.clicker import GAMEPAD_BOX_TOL_RATIO
     from maaracing_master.core.gamepad_cursor import GamepadClicker
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
