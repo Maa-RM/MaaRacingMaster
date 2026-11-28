@@ -76,6 +76,8 @@ from maaracing_master.plugins._archive.speedrush.lane_obs import LaneObsWorker  
 from maaracing_master.plugins._archive.speedrush.perception import StreetPerception  # noqa: E402
 from maaracing_master.plugins._archive.speedrush.world_model import load_calib  # noqa: E402
 
+# 帧源随实验区退役（2026-11-28）：speedrush_depthart_prod 的实验数据已删，
+# 复算需自备同构 1280×720 对局帧并改这里的路径。
 FRAMES_DIR = (REPO / "tools/experiments/speedrush_depthart_prod/frames"
               / "20261111_104222_p2_stable41")
 
