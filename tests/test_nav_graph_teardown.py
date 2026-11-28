@@ -84,8 +84,8 @@ def test_navgraph_skips_stop_request_when_task_finished(pure_maa):
     graph._tasker.post_stop.assert_not_called()
 
 
-def test_navgraph_stop_request_sent_once_per_run(pure_maa):
-    """停止会从模块停止路径与跑图线程两处触发，只能投递一次。"""
+def test_navgraph_stop_request_sent_once_per_task_generation(pure_maa):
+    """同一任务重复触发停止（模块停止路径与跑图线程两处并发）只投递一次。"""
     graph = ng.NavGraph(_Ctx())
     graph._tasker.post_stop.return_value = _FakeJob()
     graph._job = _FakeJob(done_after=1)
@@ -94,6 +94,24 @@ def test_navgraph_stop_request_sent_once_per_run(pure_maa):
     graph.stop()
 
     assert graph._tasker.post_stop.call_count == 1
+
+
+def test_navgraph_stop_request_rearmed_for_new_task_generation(pure_maa):
+    """停止后若又投出新任务（新代次），需要自己的停止请求。
+
+    post_stop 只覆盖投递时在跑的任务；去重判据是「当前任务是否已被上次停止
+    请求覆盖」，不是「本轮是否投过」——逐轮去重会把新代次任务饿死在停止外。
+    """
+    graph = ng.NavGraph(_Ctx())
+    graph._tasker.post_stop.return_value = _FakeJob()
+    graph._job = _FakeJob(done_after=1)
+
+    graph.stop()                      # 覆盖第一代任务
+
+    graph._job = _FakeJob(done_after=1)
+    graph.stop()                      # 新代次 → 必须再投
+
+    assert graph._tasker.post_stop.call_count == 2
 
 
 def test_navgraph_shutdown_waits_before_destroying(pure_maa):

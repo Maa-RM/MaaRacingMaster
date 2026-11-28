@@ -316,7 +316,7 @@ class _LateJob:
         return self
 
 
-def _nav_with_job(pure_maa, tmp_path, job):
+def _nav_with_job(pure_maa, tmp_path, job, lifecycle=None):
     nav = tmp_path / "nav"
     nav.mkdir()
     (nav / "t.json").write_text(
@@ -324,6 +324,8 @@ def _nav_with_job(pure_maa, tmp_path, job):
         encoding="utf-8")
     (tmp_path / "img").mkdir()
     ctx = MagicMock()
+    if lifecycle is not None:
+        ctx.lifecycle = lifecycle
     ctx.capture.frame_with_age = _FakeCapture().frame_with_age
     graph = ng.NavGraph(ctx)
     graph.add_plugin(nav, tmp_path / "img")
@@ -355,15 +357,61 @@ def test_run_still_completes_grader_that_takes_several_polls(pure_maa, tmp_path)
     assert elapsed < 1.0, f"慢图等待异常：{elapsed * 1000:.0f}ms"
 
 
+class _StopAfterEntryLifecycle:
+    """入口放行（第一次读 running=True），此后已停止——模拟停止在任务执行中被按下。
+
+    run() 现在在投递前判停：running 在入口就是 False 的调用走「拒绝起跑」门，
+    测「起跑后中断」必须让入口读到 True、轮询读到 False。
+    """
+
+    def __init__(self):
+        self._reads = 0
+
+    @property
+    def running(self) -> bool:
+        self._reads += 1
+        return self._reads <= 1
+
+
 def test_run_still_interrupts_on_lifecycle_stop(pure_maa, tmp_path):
     """中断语义不得被节拍改动破坏：未完成 + 已停止 → 发 post_stop 并返回假。"""
     job = _LateJob(5.0)
-    graph = _nav_with_job(pure_maa, tmp_path, job)
+    graph = _nav_with_job(pure_maa, tmp_path, job,
+                          lifecycle=_StopAfterEntryLifecycle())
     # 停止请求会让框架立即结束任务（真机实测毫秒级），桩要模拟这一点：否则测的是
     # 「中断后仍等图自然跑完」，与实际语义不符——中断路径等的是收摊，不是等图跑完。
     graph._tasker.post_stop.side_effect = lambda: job.status.finish_now()
-    graph.ctx.lifecycle.running = False
     t0 = time.monotonic()
     assert graph.run("t") is False
     assert time.monotonic() - t0 < 0.1, "中断路径也不该空等"
     assert graph._tasker.post_stop.called
+    assert graph.last_outcome == "stopped"
+
+
+def test_run_refuses_to_start_when_stop_pending(pure_maa, tmp_path):
+    """投递前判停：停止在途不起跑。
+
+    停止请求受理完成后框架收下的任何新任务都是全新正常任务（stopping 已归零），
+    会在用户叫停后继续操作游戏并把收尾等待拖到超时（20261127_230258 真机日志）。
+    """
+    graph = _nav_with_job(pure_maa, tmp_path, _LateJob(0.02))
+    graph.ctx.lifecycle.running = False
+    assert graph.run("t") is False
+    assert graph._tasker.post_task.called is False
+    assert graph.last_outcome == "stopped"
+
+
+def test_run_classifies_stopped_when_job_done_beats_poll(pure_maa, tmp_path):
+    """job.done 抢在轮询前退出：结果必须记 stopped 而不是 task_failed。
+
+    停止请求受理后句柄先变 done，完成轮询带着 interrupted=None 退出——没有
+    退出后的补判，会落到 ok=job.succeeded 把被停止的任务记成失败。
+    """
+    job = _LateJob(0.0)     # 构造即已完成：轮询循环一次都不进
+    job.succeeded = False   # 被停止的任务不成功；竞争漏判时就会落成 task_failed
+    graph = _nav_with_job(pure_maa, tmp_path, job,
+                          lifecycle=_StopAfterEntryLifecycle())
+    assert graph.run("t") is False
+    assert graph.last_outcome == "stopped"
+    # 句柄已结束：没有可停的东西，不补发停止请求
+    assert graph._tasker.post_stop.called is False

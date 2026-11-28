@@ -119,7 +119,9 @@ def test_start_opens_group_and_records_failure_terminal(tmp_path, monkeypatch):
             pass
 
     monkeypatch.setattr(imod, "NavGraph", _Graph)
-    ctx = SimpleNamespace(connect=lambda: True, check_window_aspect=lambda: True)
+    ctx = SimpleNamespace(connect=lambda: True, check_window_aspect=lambda: True,
+                          lifecycle=SimpleNamespace(running=True,
+                                                    sleep=lambda _s: True))
     m = imod.InfiniteDriveModule(ctx)
     assert m.start() is False
     recs = _recs(lg)

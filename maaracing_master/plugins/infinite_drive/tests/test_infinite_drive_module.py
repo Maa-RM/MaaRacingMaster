@@ -1217,6 +1217,7 @@ class _HallProbeGraph(_AllOkGraph):
 def test_flow_resumes_from_hall_within_same_round(monkeypatch) -> None:
     """回大厅 → 同一轮内从入口链续跑；不额外消耗连刷轮数。"""
     mod = _module()
+    mod.ctx = _StubCtx()
     mod._running = True
     mod._graph = _HallProbeGraph()
     mod._round_total = 2
@@ -1249,6 +1250,7 @@ def test_flow_stops_when_resume_exhausted(monkeypatch) -> None:
     from maaracing_master.plugins.infinite_drive import module as m
 
     mod = _module()
+    mod.ctx = _StubCtx()
     mod._running = True
     mod._graph = _AllOkGraph()
     mod._resume_attempts = m.RESUME_MAX
