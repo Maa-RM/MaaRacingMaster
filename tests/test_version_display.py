@@ -106,4 +106,25 @@ class TestCurrentCheckout:
         # 短 hash 而非版本串；这与「describe 完全不可用」同属环境限制，只跳过不断言。
         if described is None or not re.match(r"^v?\d+\.", described):
             pytest.skip("当前环境 git describe 取不到 tag（浅克隆/无 tag），跳过形状断言")
-        assert re.match(r"^\d+\.\d+\.\d+\.dev\d+(\+\d+)?$", described), described
+        assert re.match(r"^\d+\.\d+\.\d+(\.dev\d+)?(\+\d+)?$", described), described
+
+
+class TestNormalizeDescribe:
+    """tag 形状覆盖：预览 tag 与正式 tag 都要能归一，且不依赖当前 checkout 的 tag。
+
+    先前只断言 dev 形状，正式版 tag 一出现就必红（tag 流水线检出在 v0.32.5 上，
+    describe 出 0.32.5 而正则不认）。这里用纯函数把两种形状都锁住。
+    """
+
+    @pytest.mark.parametrize(
+        ("described", "expected"),
+        [
+            ("v0.13.0-dev.4-0-g0f5c5bf", "0.13.0.dev4"),
+            ("v0.13.0-dev.4-3-g0f5c5bf", "0.13.0.dev4+3"),
+            ("v0.32.5-0-g0f5c5bf", "0.32.5"),
+            ("v0.32.5-2-g0f5c5bf", "0.32.5+2"),
+            ("0f5c5bf", "0f5c5bf"),
+        ],
+    )
+    def test_describe_normalization(self, described, expected):
+        assert pkg._normalize_describe(described) == expected
