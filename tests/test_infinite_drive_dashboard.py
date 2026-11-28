@@ -154,114 +154,37 @@ def test_read_dashboard_classmethod_warns_on_store_error(tmp_path, monkeypatch) 
     assert payload["badge"]["text"] == "读取失败"
 
 
-def test_module_settlement_appends_record(tmp_path, monkeypatch) -> None:
-    """结算读数 → 落一条记录；记录失败不阻断流程。"""
-
-    class _FakeOcr:
-        def __init__(self, *a, **k) -> None:
-            pass
-
-        def recognize(self, _rgb, roi):
-            from maaracing_master.plugins.infinite_drive import flow_data
-
-            text = SCORE_OK if roi == flow_data.RESULT_SCORE_ROI else PROGRESS_OK
-            return type("R", (), {"text": text})()
-
-    class _Capture:
-        def frame_with_age(self):
-            return (object(), 1, 2, 0.0)
-
-    class _Ctx:
-        capture = _Capture()
-        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
-
-    from maaracing_master.plugins.infinite_drive import module as m
-
-    monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
-    mod = InfiniteDriveModule(None)
-    mod.ctx = _Ctx()
-    mod._graph = _FakeGraph()
-
-    mod._read_settlement()
-    assert mod._settlement_round == 1
-    assert mod.last_settlement["record"]["score"] == 16110
-    rows = json.loads((dashboard_store.store_path()).read_text(
-        encoding="utf-8").splitlines()[0] or "{}")
-    assert rows["level"] == 1
+@pytest.fixture
+def settlement_module(monkeypatch):
+    saved_config_ui = InfiniteDriveModule.CONFIG_UI
+    yield _settlement_module(monkeypatch, scores=[SCORE_OK], progresses=[PROGRESS_OK])
+    InfiniteDriveModule.CONFIG_UI = saved_config_ui
 
 
-def test_module_settlement_skips_record_in_record_mode(tmp_path, monkeypatch) -> None:
-    """录制局（人工驾驶语料局）不落战绩——只读读数，不写记录。"""
+def test_module_settlement_appends_record(settlement_module) -> None:
+    settlement_module._read_settlement()
 
-    class _FakeOcr:
-        def __init__(self, *a, **k) -> None:
-            pass
-
-        def recognize(self, _rgb, roi):
-            from maaracing_master.plugins.infinite_drive import flow_data
-
-            text = SCORE_OK if roi == flow_data.RESULT_SCORE_ROI else PROGRESS_OK
-            return type("R", (), {"text": text})()
-
-    class _Capture:
-        def frame_with_age(self):
-            return (object(), 1, 2, 0.0)
-
-    class _Ctx:
-        capture = _Capture()
-        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
-
-    from maaracing_master.plugins.infinite_drive import module as m
-
-    monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
-    mod = InfiniteDriveModule(None)
-    mod.ctx = _Ctx()
-    mod._graph = _FakeGraph()
-    mod._record_mode = True
-
-    mod._read_settlement()
-
-    assert mod._settlement_round == 0            # 不消耗局内序号
-    assert mod.last_settlement["score"] == SCORE_OK  # 读数照常留存
-    assert not dashboard_store.store_path().exists()  # 战绩库未落
+    assert settlement_module._settlement_round == 1
+    assert settlement_module.last_settlement["record"]["score"] == 16110
+    rows = dashboard_store.store_path().read_text(encoding="utf-8").splitlines()
+    assert json.loads(rows[0])["level"] == 1
 
 
-def test_module_settlement_refreshes_config_ui_estimate(monkeypatch) -> None:
-    """结算落库后重建表单声明：下一拍配置读取带最新轮均预计用时。"""
+def test_module_settlement_skips_record_in_record_mode(settlement_module) -> None:
+    settlement_module._record_mode = True
+    settlement_module._read_settlement()
 
-    class _FakeOcr:
-        def __init__(self, *a, **k) -> None:
-            pass
+    assert settlement_module._settlement_round == 0
+    assert settlement_module.last_settlement["score"] == SCORE_OK
+    assert not dashboard_store.store_path().exists()
 
-        def recognize(self, _rgb, roi):
-            from maaracing_master.plugins.infinite_drive import flow_data
 
-            text = SCORE_OK if roi == flow_data.RESULT_SCORE_ROI else PROGRESS_OK
-            return type("R", (), {"text": text})()
-
-    class _Capture:
-        def frame_with_age(self):
-            return (object(), 1, 2, 0.0)
-
-    class _Ctx:
-        capture = _Capture()
-        lifecycle = SimpleNamespace(running=True, sleep=lambda _seconds: True)
-
-    from maaracing_master.plugins.infinite_drive import module as m
-
-    monkeypatch.setattr(m, "RapidOcrEngine", _FakeOcr)
+def test_module_settlement_refreshes_config_ui_estimate(settlement_module, monkeypatch) -> None:
     monkeypatch.setattr(dashboard_store, "median_round_seconds", lambda: 150.0)
-    saved = m.InfiniteDriveModule.CONFIG_UI
-    try:
-        mod = m.InfiniteDriveModule(None)
-        mod.ctx = _Ctx()
-        mod._graph = _FakeGraph()
-        mod._read_settlement()
-        fields = {f["key"]: f for g in m.InfiniteDriveModule.CONFIG_UI["groups"]
-                  for f in g["fields"]}
-        assert fields["round_total"]["unit_seconds"] == 150
-    finally:
-        m.InfiniteDriveModule.CONFIG_UI = saved   # 重建落在类属性上，测完还原
+    settlement_module._read_settlement()
+
+    fields = {f["key"]: f for g in InfiniteDriveModule.CONFIG_UI["groups"] for f in g["fields"]}
+    assert fields["round_total"]["unit_seconds"] == 150
 
 
 def test_parse_progress_requires_level_but_tolerates_missing_total() -> None:

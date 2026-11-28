@@ -16,6 +16,8 @@ import pytest
 
 from maaracing_master.core import builtin_steps as bs
 
+pytestmark = pytest.mark.usefixtures("no_ambient_game_window")
+
 
 class _App:
     def __init__(self, intent: bool = False, mode: str = "gamepad"):
@@ -66,12 +68,6 @@ class _Session:
         self.seen["pipeline"] = Path(pipeline)
         self.seen["image"] = Path(image_dir)
         return _FakeGraph(self.run_ok, self.outcome, self.seen)
-
-
-@pytest.fixture(autouse=True)
-def _no_ambient_game_window(monkeypatch):
-    """默认不碰真实 Win32：测试未显式声明时，按进程名探测恒为 0。"""
-    monkeypatch.setattr(bs.game_process, "find_window_by_process", lambda: 0)
 
 
 @pytest.fixture()
