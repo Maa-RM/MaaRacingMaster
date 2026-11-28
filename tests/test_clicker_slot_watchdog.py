@@ -263,40 +263,10 @@ def test_healthy_navigation_completes_and_releases_slot(nav, recorder, monkeypat
 
 
 def test_clicker_dispatch_and_real_mode_opt_out(nav):
-    c = Clicker(hwnd=0, mode="gamepad")
-    c._gamepad = nav
-    _occupy(nav, occupied_s=8.0)
-    _age_progress(nav, gpc.SLOT_PROGRESS_STALL_S + 5.0)
-    assert c.watchdog_tick() is not None, "gamepad 模式应委派给导航器看门狗"
-    assert c.slot_diag()["task"] is not None
-
-    real = Clicker(hwnd=0, mode="real")
-    assert real.watchdog_tick() is None, "real 模式的槽是同步结果槽，不存在「导航卡住」"
-    assert real.slot_diag() is None
-
-
-def test_auto_shoo_submits_with_short_budget_and_label(monkeypatch):
-    """避让提交必须带短预算与 label：它不该与点击共用长预算（P1-5）。"""
-    c = Clicker(hwnd=0, mode="gamepad")
-    c._gamepad = _FakePad()
-    c._gamepad.last_pos = (601, 634)          # 压在 guard 区内
-    c._gamepad.miss_streak = 0
-    submitted: list[dict] = []
-
-    def _fake_submit_move(cx, cy, **kw):
-        submitted.append({"cx": cx, "cy": cy, **kw})
-        return True
-
-    monkeypatch.setattr(c, "submit_move", _fake_submit_move)
-    guard = [("bid_main_btn_label", (0.36, 0.795, 0.575, 0.905))]
-
-    r = c.auto_shoo(guard, radius_px=29.0, frame_size=(1280, 720))
-
-    assert r is not None, "光标压住识别区却没触发避让"
-    assert submitted, "避让未提交导航"
-    assert submitted[0]["budget_s"] == c.SHOO_BUDGET_S
-    assert submitted[0]["budget_s"] <= 2.0, "避让预算须显著短于点击（只需挪出识别区）"
-    assert submitted[0]["label"] == f"shoo:{r['key']}"
+    for mode in ("real", "bg_winpos", "bg_cursor"):
+        c = Clicker(hwnd=0, mode=mode)
+        assert c.watchdog_tick() is None, f"{mode} 模式的槽是同步结果槽，不存在「导航卡住」"
+        assert c.slot_diag() is None
 
 
 def test_gamepad_submit_propagates_budget_and_label(nav):

@@ -82,11 +82,43 @@ class _FakeUD:
 
 
 def test_click_modes_and_need_foreground():
-    assert set(clk.CLICK_MODES) == {"real", "bg_winpos", "bg_cursor", "gamepad"}
+    assert set(clk.CLICK_MODES) == {"real", "bg_winpos", "bg_cursor"}
     assert clk.Clicker(123, "real").need_foreground is True
     assert clk.Clicker(123, "bg_winpos").need_foreground is False
     assert clk.Clicker(123, "bg_cursor").need_foreground is False
-    assert clk.Clicker(123, "gamepad").need_foreground is False
+    with pytest.raises(ValueError):
+        clk.Clicker(123, "gamepad")
+
+
+def test_cursor_detector_decoupled_from_gamepad():
+    """纯视觉光标识别器不依赖手柄驱动即可识别圆盘光标。"""
+    import numpy as np
+    from maaracing_master.core import cursor_detector as cd
+
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    cy, cx = 100, 100
+    yy, xx = np.ogrid[:200, :200]
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    frame[dist <= 13] = (133, 133, 133)
+    frame[dist <= 9] = (255, 255, 255)
+
+    targets, sel = cd.detect_cursor(frame)
+    assert targets, "未识别到合成圆盘光标"
+    assert sel is not None
+    assert abs(sel.pos[0] - cx) <= 2 and abs(sel.pos[1] - cy) <= 2
+
+
+def test_legacy_gamepad_profile_migrates_to_bg_winpos(tmp_path, monkeypatch):
+    """历史 profile 中的 click_mode='gamepad' 恢复时自动迁移为 bg_winpos。"""
+    from maaracing_master.core import sidecar as sc
+
+    with mock.patch.object(ctl, "debug_dir", lambda: tmp_path):
+        c = ctl.MaaRacingMasterController()
+    srv = sc.SidecarService.__new__(sc.SidecarService)
+    srv._controller = c
+    monkeypatch.setattr(sc, "_load_profile", lambda: {"debug": {"click_mode": "gamepad"}})
+    srv._restore_profile()
+    assert c.click_mode == "bg_winpos"
 
 
 def test_bg_winpos_moves_and_immediately_restores(monkeypatch):

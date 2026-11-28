@@ -257,9 +257,9 @@ def test_session_start_failure_fails_without_running_graph(window_ready):
 
 
 def test_required_resources_follow_click_mode():
-    """资源需求只由点击方式与运行模式决定，配置面里没有能改它的项。"""
-    assert bs.LaunchGameStep(_App(mode="gamepad")).required_resources({}) == frozenset(
-        {"game_link", "wgc_capture", "gamepad"})
+    """资源需求只由运行模式决定，点击模式不再强绑虚拟手柄。"""
+    assert bs.LaunchGameStep(_App(mode="bg_winpos")).required_resources({}) == frozenset(
+        {"game_link", "wgc_capture"})
     assert bs.LaunchGameStep(_App(mode="real")).required_resources({}) == frozenset(
         {"game_link", "wgc_capture"})
     assert bs.LaunchGameStep(_App(intent=True)).required_resources({}) == frozenset()

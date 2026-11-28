@@ -28,8 +28,8 @@ from maaracing_master.core.window_utils import (
     window_client_size,
 )
 
-# 合法点击方式（与 GUI 设置页 data-clickmode 保持一致）
-CLICK_MODES = ("real", "bg_winpos", "bg_cursor", "gamepad")
+# 合法点击方式（与 GUI 设置页 data-clickmode 保持一致；手柄点击模式已下线）
+CLICK_MODES = ("real", "bg_winpos", "bg_cursor")
 
 # 手柄点击容差比例：落点在目标框中心 70% 区域内即可按 A（ROI 本对标整个可交互
 # 区域，无需微调到中心像素级精确；防太宽松取 70% 而非全框）。

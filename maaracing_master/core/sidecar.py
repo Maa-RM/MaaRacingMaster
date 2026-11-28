@@ -911,6 +911,9 @@ class SidecarService:
                 self._controller.set_debug_mode(dm)
             cm = dbg.get("click_mode")
             if isinstance(cm, str):
+                if cm == "gamepad":
+                    cm = "bg_winpos"
+                    logger.log("历史点击方式 gamepad 已下线，自动迁移为 bg_winpos")
                 try:
                     self._controller.set_click_mode(cm)
                 except ValueError:

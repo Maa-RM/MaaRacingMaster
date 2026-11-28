@@ -60,17 +60,18 @@ def test_real_mode_activates_on_every_run_start(monkeypatch):
     assert calls == [123, 123]
 
 
-def test_gamepad_mode_never_pulls_window_to_front(monkeypatch):
-    """后台(手柄)模式：运行边界和连接短路都不碰窗口。"""
-    c, calls, _ = _ctl(monkeypatch)
-    c.set_click_mode("gamepad")
-    c.adopt_window(123)
-    c.controller = object()
+def test_bg_modes_never_pull_window_to_front(monkeypatch):
+    """后台(消息)模式：运行边界和连接短路都不切前台。"""
+    for mode in ("bg_winpos", "bg_cursor"):
+        c, calls, _ = _ctl(monkeypatch)
+        c.set_click_mode(mode)
+        c.adopt_window(123)
+        c.controller = object()
 
-    c.begin_run()
-    assert c.connect() is True
+        c.begin_run()
+        assert c.connect() is True
 
-    assert calls == []
+        assert calls == []
 
 
 def test_no_extra_activation_during_a_run(monkeypatch):
