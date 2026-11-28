@@ -56,6 +56,7 @@ from pathlib import Path
 
 from maaracing_master import SOURCE_MODE
 from maaracing_master.core.base import ActivityContext, ActivityModule
+from maaracing_master.core.hall_return import return_to_hall
 from maaracing_master.core.logger import logger
 from maaracing_master.core.nav_graph import NavGraph, ProbeOutcome
 from maaracing_master.core.ocr import RapidOcrEngine
@@ -1215,6 +1216,10 @@ class InfiniteDriveModule(ActivityModule):
         停止在途不得续跑：停止造成的中断与页面异常共用这个入口，但契约相反——
         前者必须就地收束；路由回去会在停止受理完成后向框架投全新任务（继续操作
         游戏），并把收尾等待拖到超时。返回 None 交回调用方中止，不计恢复次数。
+
+        三层顺序：异常层先清一次挡住按钮的偶发弹窗（推进型文字兜底，语义是
+        「让原流程继续」），再按页面探针路由；崩溃层页面完全认不出时，用退出类
+        控件往回退，回到大厅就把流程重置到入口链重跑。
         """
         if not self._alive():
             return None
@@ -1223,11 +1228,22 @@ class InfiniteDriveModule(ActivityModule):
                        "停止运行", "ERROR")
             return None
         assert self._graph is not None
+        # 异常层：弹窗盖住按钮时探针看到的仍是弹窗，直接路由会误判「认不出页面」，
+        # 所以先清一次（推进型兜底点完是原流程继续，方向正确）。
+        self._sweep_transient_popup(force=True)
+        route: tuple[int, str] | None = None
         for node, index, label in _RESUME_ROUTES:
             if self._graph.probe(node) is ProbeOutcome.HIT:
+                route = (index, label)
                 break
-        else:
-            return None
+        if route is None:
+            # 崩溃层：页面已经认不出来，只能往回退；回到大厅等于重置流程。
+            if not return_to_hall(self._graph, _HALL_ANCHOR):
+                self._tlog(f"[无限驾驶] 「{stage}」中断，页面无法识别、退大厅失败，"
+                           "停止运行", "ERROR")
+                return None
+            route = (0, "大厅（退路）")
+        index, label = route
         self._resume_attempts += 1
         self._hall_reset = False
         self._next_hall_at = 0.0

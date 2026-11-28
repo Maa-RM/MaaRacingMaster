@@ -1411,7 +1411,7 @@ class _RouteGraph:
 
 
 def test_resume_routes_by_current_page(monkeypatch) -> None:
-    """四类页面各回各的阶段；认不出页面返回 None。"""
+    """四类页面各回各的阶段；认不出页面时交给崩溃层（退大厅）。"""
     from maaracing_master.plugins.infinite_drive import module as m
 
     cases = {
@@ -1426,6 +1426,12 @@ def test_resume_routes_by_current_page(monkeypatch) -> None:
         assert mod._resume_from("结算·下一关") == index
         assert mod._resume_attempts == 1
 
+    # 认不出页面 → 崩溃层用退出类控件往回退：回到大厅就重置到入口链，退不回去才中止。
+    monkeypatch.setattr(m, "return_to_hall", lambda *_a, **_k: True)
+    mod = _step_module(_RouteGraph("nowhere"))
+    assert mod._resume_from("结算·下一关") == 0
+
+    monkeypatch.setattr(m, "return_to_hall", lambda *_a, **_k: False)
     mod = _step_module(_RouteGraph("nowhere"))
     assert mod._resume_from("结算·下一关") is None
 
