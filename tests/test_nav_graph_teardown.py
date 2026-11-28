@@ -32,22 +32,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture()
-def pure_maa(monkeypatch):
-    """把 nav_graph 命名空间里的 maa 工厂替换为无 C 层的桩。"""
-
-    class _NoInit:
-        def __init__(self, *a, **k):
-            pass
-
-    monkeypatch.setattr(ng, "CustomController", _NoInit)
-    monkeypatch.setattr(ng, "CustomAction", _NoInit)
-    monkeypatch.setattr(ng, "CustomRecognition", _NoInit)
-    monkeypatch.setattr(ng, "PipelineLogger", _NoInit)
-    monkeypatch.setattr(ng, "Resource", lambda: MagicMock())
-    monkeypatch.setattr(ng, "Tasker", lambda: MagicMock())
-
-
 class _FakeJob:
     """只回答「结束了吗」的任务句柄桩：记录被探问次数。
 

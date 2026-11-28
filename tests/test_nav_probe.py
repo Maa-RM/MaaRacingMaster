@@ -29,20 +29,6 @@ pytestmark = pytest.mark.skipif(
     not _RUNTIME_OK, reason=f"需要完整运行时依赖（maa/…）：{_RUNTIME_ERR}"
 )
 
-@pytest.fixture()
-def pure_maa(monkeypatch):
-    class _NoInit:
-        def __init__(self, *a, **k):
-            pass
-
-    monkeypatch.setattr(ng, "CustomController", _NoInit)
-    monkeypatch.setattr(ng, "CustomAction", _NoInit)
-    monkeypatch.setattr(ng, "CustomRecognition", _NoInit)
-    monkeypatch.setattr(ng, "PipelineLogger", _NoInit)
-    monkeypatch.setattr(ng, "Resource", lambda: MagicMock())
-    monkeypatch.setattr(ng, "Tasker", lambda: MagicMock())
-
-
 class _Capture:
     """RGB 帧源桩：左上角像素固定为 (10, 20, 30)，便于验通道序。"""
 

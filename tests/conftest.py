@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -36,3 +37,18 @@ def _launcher_check_off(monkeypatch):
     game_process 的启动器交互函数。
     """
     monkeypatch.setenv("MAARM_APP_LAUNCHER_CHECK", "0")
+
+
+@pytest.fixture
+def pure_maa(monkeypatch):
+    """用 Python 桩替代导航图的 Maa 工厂，避免创建原生句柄。"""
+    from maaracing_master.core import nav_graph as ng
+
+    class _NoInit:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    for name in ("CustomController", "CustomAction", "CustomRecognition", "PipelineLogger"):
+        monkeypatch.setattr(ng, name, _NoInit)
+    monkeypatch.setattr(ng, "Resource", lambda: MagicMock())
+    monkeypatch.setattr(ng, "Tasker", lambda: MagicMock())

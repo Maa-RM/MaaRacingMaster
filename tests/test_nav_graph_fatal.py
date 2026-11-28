@@ -30,19 +30,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture()
-def pure_maa(monkeypatch):
-    class _NoInit:
-        def __init__(self, *a, **k):
-            pass
-
-    monkeypatch.setattr(ng, "CustomController", _NoInit)
-    monkeypatch.setattr(ng, "CustomAction", _NoInit)
-    monkeypatch.setattr(ng, "CustomRecognition", _NoInit)
-    monkeypatch.setattr(ng, "PipelineLogger", _NoInit)
-    monkeypatch.setattr(ng, "Resource", lambda: MagicMock())
-    monkeypatch.setattr(ng, "Tasker", lambda: MagicMock())
-    # 收摊等待有 10s 上限；桩里不需要真的等满
+@pytest.fixture
+def settled_maa(pure_maa, monkeypatch):
+    # 故障传播测试只关心结束原因，收尾超时由独立用例覆盖。
     monkeypatch.setattr(ng, "_wait_job_settled", lambda job, timeout_s=None: True)
 
 
@@ -75,7 +65,7 @@ def _graph(ctx: _Ctx, job: _Job) -> ng.NavGraph:
     return g
 
 
-def test_fatal_recorded_during_run_wins_over_job_success(pure_maa):
+def test_fatal_recorded_during_run_wins_over_job_success(settled_maa):
     ctx = _Ctx()
     g = _graph(ctx, _Job(done=True, succeeded=True))
     g._tasker.post_task.side_effect = lambda entry: (g.report_fatal("截图链路挂了"), g._tasker.post_task.return_value)[1]
@@ -84,7 +74,7 @@ def test_fatal_recorded_during_run_wins_over_job_success(pure_maa):
     assert g.last_outcome == "task_failed", "job 成功不得覆盖已记录的 fatal"
 
 
-def test_fatal_from_missing_frame_terminates_run(pure_maa):
+def test_fatal_from_missing_frame_terminates_run(settled_maa):
     ctx = _Ctx()
     ctx.capture.frame_with_age.return_value = (None, 0, 0, math.inf)
     g = _graph(ctx, _Job(done=False))
@@ -93,7 +83,7 @@ def test_fatal_from_missing_frame_terminates_run(pure_maa):
     assert g.last_outcome == "task_failed"
 
 
-def test_stale_frame_is_not_fatal(pure_maa):
+def test_stale_frame_is_not_fatal(settled_maa):
     """WGC 静止画面不出新帧：帧龄增长只告警、继续等，不判采集故障。"""
     ctx = _Ctx(frame_age_ms=ng.FRAME_STATIC_WARN_MS + 1000)
     g = _graph(ctx, _Job(done=False))
@@ -102,7 +92,7 @@ def test_stale_frame_is_not_fatal(pure_maa):
     assert g.last_outcome == "deadline"
 
 
-def test_deadline_stops_framework_and_reports(pure_maa):
+def test_deadline_stops_framework_and_reports(settled_maa):
     g = _graph(_Ctx(), _Job(done=False))
     t0 = time.perf_counter()
     assert g.run("startup.boot", deadline_s=0.05) is False
@@ -111,7 +101,7 @@ def test_deadline_stops_framework_and_reports(pure_maa):
     g._tasker.post_stop.assert_called_once()
 
 
-def test_reached_requires_terminal_node_completed(pure_maa):
+def test_reached_requires_terminal_node_completed(settled_maa):
     g = _graph(_Ctx(), _Job(done=True, succeeded=True))
     g._tasker.get_latest_node.return_value = MagicMock(completed=False)
     assert g.run("startup.boot", reached="startup.done") is False
