@@ -1056,16 +1056,6 @@ class NavGraph:
         clicker = self._ensure_clicker()
         clicker.set_mode(self.ctx.click_mode)
         clicker.set_intent(self.ctx.intent_mode)
-        if clicker.mode == "gamepad" and not clicker.gamepad_bound:
-            # v4 手柄租约只在模块启动时按当时模式绑定；运行中热切到 gamepad
-            # 不重绑——不拦会静默 submit False，这里给可诊断的告警。
-            self._last_click_error = "gamepad_unbound"
-            self._log("[v4] 点击方式已热切为 gamepad 但手柄未绑定：请重启模块生效", "WARNING")
-            return False
-        if clicker.mode == "gamepad" and gamepad_button:
-            if self.ctx.intent_mode:
-                return True  # 仅显示意图：只导航不确认，这里连导航都不需要
-            return self._press_key(str(gamepad_button), duration)
         if clicker.need_foreground and not is_foreground(self.ctx.hwnd):
             # 前台(鼠标)模式不抢前台护栏：游戏不在
             # 前台时 SendInput 会点到该屏幕位置最上的其他窗口（落点看似「完全
@@ -1075,7 +1065,7 @@ class NavGraph:
             if now - self._last_fg_warn >= self.FOREGROUND_WARN_S:
                 self._last_fg_warn = now
                 self._log("[v4] 游戏窗口非前台，取消本次点击（安全策略：不抢前台；"
-                          "可切后台(手柄)方式或把游戏带到前台）", "WARNING")
+                          "可切后台(消息)方式或把游戏带到前台）", "WARNING")
             return False
         if not clicker.submit_click(cx, cy, box=box_norm):
             self._last_click_error = "submit"
@@ -1280,11 +1270,6 @@ class NavGraph:
         # （销毁手柄复位）才不会被「有活跃租约禁止断开设备」这条不变量挡住。
         with ExitStack() as stack:
             stack.enter_context(self._debug_scope(entry, save=save))
-            if self.ctx.click_mode == "gamepad":
-                from maaracing_master.core.capabilities import BUTTON_A
-                gpad = stack.enter_context(self.ctx.gamepad.acquire())
-                self._ensure_clicker().bind_gamepad(
-                    self.ctx.capture, gpad, confirm_button=BUTTON_A)
             # 逐节点过程行只写文件、不上面板（面板降噪）：失败会转化成下方的
             # 终点确认 WARNING 或调用方的「步骤未到位」WARNING，面板不缺信号。
             self._log(f"[跳转图] 起跑「{entry}」", "DEBUG")

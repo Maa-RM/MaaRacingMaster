@@ -113,11 +113,7 @@ class LaunchGameStep(BuiltinStep):
     def required_resources(self, cfg: dict) -> frozenset[str]:
         if not self._hall_enabled():
             return frozenset()
-        need = {"game_link", "wgc_capture"}
-        if self.app.click_mode == "gamepad":
-            # 登录页要按手柄键：提前暴露 ViGEmBus 缺失，而不是按到一半才失败。
-            need.add("gamepad")
-        return frozenset(need)
+        return frozenset({"game_link", "wgc_capture"})
 
     def run(self, config: dict, stop_event, log, session) -> bool:
         cfg = {**self.DEFAULT_CONFIG, **(config or {})}

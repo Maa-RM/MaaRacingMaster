@@ -8,7 +8,7 @@
   const {
     maarm, $, state, showError, reportError, postWindowAction, escHtml,
     waitFor, twoFrames,
-    openModal, showGamepadNotice,
+    openModal,
     setPreviewPlayState, enterPreviewFullscreen, exitPreviewFullscreen,
   } = window.MaaRM;
 
@@ -279,30 +279,110 @@
         </div>
 
         <!-- 点击方式 -->
-        <div class="card">
+        <div class="card clickmode-card">
           <div class="card-head"><h3>点击方式</h3></div>
           <div class="card-body">
-            <div class="radio-grid">
+            <div class="radio-grid radio-grid--clickmode">
               <div class="maarm-radio-card maarm-radio-card--selected" data-clickmode="real">
                 <div class="radio-inner">
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
-                    <div class="radio-title"><strong>前台(鼠标)</strong><span class="badge-recommend">推荐</span></div>
+                    <div class="radio-title"><strong>前台(鼠标)</strong><span class="badge-recommend">稳定</span></div>
                     <p class="radio-desc">光标移到目标后 SendInput 点击；需游戏在前台</p>
                   </div>
                 </div>
+                <div class="clickmode-popover" role="tooltip">
+                  <div class="clickmode-popover-title">前台(鼠标) · 原理演示</div>
+                  <svg class="mg-svg" viewBox="0 0 280 124" aria-label="前台鼠标原理演示">
+                    <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
+                    <!-- 其他工作窗口 -->
+                    <rect x="18" y="18" width="136" height="72" rx="6" fill="#ffffff" stroke="#cbd5e1" stroke-dasharray="3 2" />
+                    <text x="26" y="32" font-size="8.5" fill="#64748b">其他窗口</text>
+                    <!-- 切到前台的游戏窗口 -->
+                    <g class="mg-real-win">
+                      <rect x="96" y="26" width="152" height="80" rx="7" fill="#ffffff" stroke="#e11d48" stroke-width="1.8" />
+                      <rect x="96" y="26" width="152" height="16" rx="7" fill="#ffe4e6" />
+                      <text x="105" y="37" font-size="8.5" font-weight="700" fill="#be123c">游戏窗口（切至前台）</text>
+                      <rect x="174" y="64" width="52" height="22" rx="5" fill="#e11d48" />
+                      <text x="200" y="78" text-anchor="middle" font-size="8.5" font-weight="600" fill="#ffffff">目标</text>
+                      <circle class="mg-pulse mg-pulse--real" cx="200" cy="75" r="9" fill="none" stroke="#fb7185" stroke-width="2.2" />
+                    </g>
+                    <!-- 移动的光标 -->
+                    <g class="mg-real-cursor">
+                      <path d="M0,0 L0,15 L4.2,11.8 L7.5,18 L9.8,16.8 L6.5,10.6 L11.2,10.6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="1.2" />
+                    </g>
+                  </svg>
+                  <p class="clickmode-popover-desc">自动把游戏切到最前，移动鼠标完成点击；兼容性最高。</p>
+                </div>
               </div>
-              <div class="maarm-radio-card maarm-radio-card--disabled" data-clickmode="gamepad">
+
+              <div class="maarm-radio-card" data-clickmode="bg_winpos">
                 <div class="radio-inner">
                   <div class="maarm-radio-dot"></div>
                   <div class="option-main">
-                    <div class="radio-title"><strong>后台(手柄)</strong><span class="badge-wip">开发中</span></div>
-                    <p class="radio-desc">手柄光标导航到目标后按 A 键确认，游戏可留在后台；需 ViGEmBus 虚拟手柄</p>
+                    <div class="radio-title"><strong>后台(游戏动·鼠标不动)</strong><span class="badge-recommend">推荐单屏</span></div>
+                    <p class="radio-desc">瞬移底层游戏窗口对齐鼠标后点击并立即复位；被遮挡时完全无感</p>
                   </div>
+                </div>
+                <div class="clickmode-popover" role="tooltip">
+                  <div class="clickmode-popover-title">游戏动、鼠标不动 · 原理演示</div>
+                  <svg class="mg-svg" viewBox="0 0 280 124" aria-label="游戏动鼠标不动原理演示">
+                    <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
+                    <!-- 底层瞬移的游戏窗口 -->
+                    <g class="mg-winpos-win">
+                      <rect x="18" y="30" width="124" height="76" rx="7" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.6" />
+                      <rect x="18" y="30" width="124" height="15" rx="7" fill="#dbeafe" />
+                      <text x="26" y="40.5" font-size="8.5" font-weight="700" fill="#1d4ed8">游戏（底层瞬移）</text>
+                      <rect x="86" y="66" width="44" height="20" rx="5" fill="#3b82f6" />
+                      <text x="108" y="79" text-anchor="middle" font-size="8.5" font-weight="600" fill="#ffffff">目标</text>
+                      <circle class="mg-pulse mg-pulse--winpos" cx="108" cy="76" r="9" fill="none" stroke="#60a5fa" stroke-width="2.2" />
+                    </g>
+                    <!-- 前台遮挡窗口 -->
+                    <rect x="114" y="18" width="148" height="90" rx="7" fill="rgba(255,255,255,0.78)" stroke="#94a3b8" stroke-dasharray="4 3" />
+                    <text x="122" y="31" font-size="8.5" fill="#475569">你的工作窗口（保持焦点）</text>
+                    <!-- 静止光标 -->
+                    <g transform="translate(202, 74)">
+                      <path d="M0,0 L0,15 L4.2,11.8 L7.5,18 L9.8,16.8 L6.5,10.6 L11.2,10.6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="1.2" />
+                      <text x="14" y="12" font-size="8" font-weight="700" fill="#0f172a">不动</text>
+                    </g>
+                  </svg>
+                  <p class="clickmode-popover-desc">鼠标全程不动；底层游戏窗口瞬移对齐（约 120ms）后立即复位。</p>
+                </div>
+              </div>
+
+              <div class="maarm-radio-card" data-clickmode="bg_cursor">
+                <div class="radio-inner">
+                  <div class="maarm-radio-dot"></div>
+                  <div class="option-main">
+                    <div class="radio-title"><strong>后台(鼠标动·游戏不动)</strong><span class="badge-recommend">推荐副屏/多屏</span></div>
+                    <p class="radio-desc">游戏窗口保持静止，光标瞬移点击后立即归位；防跨屏拉扯与缩放错位</p>
+                  </div>
+                </div>
+                <div class="clickmode-popover" role="tooltip">
+                  <div class="clickmode-popover-title">鼠标动、游戏不动 · 原理演示</div>
+                  <svg class="mg-svg" viewBox="0 0 280 124" aria-label="鼠标动游戏不动原理演示">
+                    <rect x="6" y="6" width="268" height="112" rx="8" fill="#f8fafc" stroke="#e2e8f0" />
+                    <!-- 静止的游戏窗口 -->
+                    <rect x="18" y="24" width="128" height="82" rx="7" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.6" />
+                    <rect x="18" y="24" width="128" height="15" rx="7" fill="#dbeafe" />
+                    <text x="26" y="34.5" font-size="8.5" font-weight="700" fill="#1d4ed8">游戏（纹丝不动）</text>
+                    <rect x="88" y="64" width="44" height="20" rx="5" fill="#3b82f6" />
+                    <text x="110" y="77" text-anchor="middle" font-size="8.5" font-weight="600" fill="#ffffff">目标</text>
+                    <circle class="mg-pulse mg-pulse--cursor" cx="110" cy="74" r="9" fill="none" stroke="#60a5fa" stroke-width="2.2" />
+                    <!-- 轨迹线 -->
+                    <line x1="112" y1="74" x2="224" y2="58" stroke="#93c5fd" stroke-width="1.5" stroke-dasharray="4 3" />
+                    <text x="172" y="52" text-anchor="middle" font-size="8" font-weight="600" fill="#2563eb">瞬移点击后归位</text>
+                    <!-- 瞬移光标 -->
+                    <g class="mg-cursor-pointer">
+                      <path d="M0,0 L0,15 L4.2,11.8 L7.5,18 L9.8,16.8 L6.5,10.6 L11.2,10.6 Z" fill="#0f172a" stroke="#ffffff" stroke-width="1.2" />
+                    </g>
+                  </svg>
+                  <p class="clickmode-popover-desc">游戏窗口全程静止，光标瞬移点击（约 130ms）后立刻归位。</p>
                 </div>
               </div>
             </div>
-            <p class="capture-note">切换后立即生效；开启「仅显示意图」时只导航到目标，由你自己按下</p>
+
+            <p class="capture-note">切换后立即生效；悬浮任意选项 1 秒可查看原理动画演示；开启「仅显示意图」时只导航不确认</p>
           </div>
         </div>
 
@@ -537,24 +617,35 @@
       });
     }
 
-    // 点击方式：每个 .radio-grid 是一组单选，组内互斥、组间独立
-    // （共用 .maarm-radio-card 样式，选中态不能全页互斥，否则点一组会清掉另一组的选中）
-    document.querySelectorAll('.radio-grid').forEach((grid) => {
-      grid.querySelectorAll('.maarm-radio-card').forEach((card) => {
-        card.addEventListener('click', async () => {
-          if (card.classList.contains('maarm-radio-card--disabled')) return; // 开发中选项不可切换
-          grid.querySelectorAll('.maarm-radio-card').forEach((c) => c.classList.remove('maarm-radio-card--selected'));
-          card.classList.add('maarm-radio-card--selected');
-          try {
-            if (card.dataset.clickmode) {
-              if (card.dataset.clickmode === 'gamepad') showGamepadNotice();
-              await maarm.call('set_click_mode', { mode: card.dataset.clickmode });
-            }
-          } catch (e) {
-            console.error(e);
-            showError(e.message);
-          }
-        });
+    // 点击方式：三选项直接平铺单选 + 悬浮 1 秒浮现 MG 演示气泡
+    const clickmodeCards = Array.from(document.querySelectorAll('.radio-grid--clickmode .maarm-radio-card[data-clickmode]'));
+    clickmodeCards.forEach((card) => {
+      let hoverTimer = null;
+      const closePopover = () => {
+        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+        card.classList.remove('is-popover-open');
+      };
+
+      card.addEventListener('mouseenter', () => {
+        closePopover();
+        hoverTimer = setTimeout(() => {
+          card.classList.add('is-popover-open');
+          hoverTimer = null;
+        }, 1000);
+      });
+      card.addEventListener('mouseleave', closePopover);
+
+      card.addEventListener('click', async () => {
+        closePopover();
+        const mode = card.dataset.clickmode;
+        if (!mode) return;
+        syncClickModeUI(moduleId, mode);
+        try {
+          await maarm.call('set_click_mode', { mode });
+        } catch (e) {
+          console.error(e);
+          showError(e.message);
+        }
       });
     });
 
@@ -567,6 +658,15 @@
         else if (btn.dataset.tool === 'achievements') MaaRM.achievements.open();
       });
     });
+  }
+
+  // 同步点击方式选中态
+  function syncClickModeUI(_mid, mode) {
+    const activeMode = mode || 'real';
+    document.querySelectorAll('.radio-grid--clickmode .maarm-radio-card[data-clickmode]').forEach((card) => {
+      card.classList.toggle('maarm-radio-card--selected', card.dataset.clickmode === activeMode);
+    });
+    return activeMode;
   }
 
   // 从后端回填当前模块的调试开关状态（切换模块后丢弃过期回填）
@@ -585,12 +685,7 @@
       safeToggle('toggle-mutegame', !!d.mute_game);
       safeToggle('toggle-boostprio', !!d.boost_priority);
       safeToggle('toggle-intent', !!d.intent_mode);
-      // 点击方式选中态
-      document.querySelectorAll('.maarm-radio-card').forEach((card) => {
-        if (card.dataset.clickmode) {
-          card.classList.toggle('maarm-radio-card--selected', card.dataset.clickmode === d.click_mode);
-        }
-      });
+      syncClickModeUI(mid, d.click_mode);
     } catch (e) {
       console.error(e);
       showError('读取调试状态失败: ' + e.message);

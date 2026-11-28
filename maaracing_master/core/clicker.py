@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""点击器：统一「前台(鼠标) / 后台(手柄)」两种点击方式。
+"""点击器：统一「前台(鼠标) / 后台(消息)」点击方式与「仅显示意图」开关。
 
-重构背景（2026-09-02 用户拍板，替代原 intent/real/background 三态）：
   - 前台(鼠标) real：SetCursorPos（可见移动）+ SendInput 左键。需游戏在前台。
-  - 后台(手柄) gamepad：手柄光标导航（签名剖面识别 + 闭环趋近到位）+ 按 A 键确认。
-    cursor_refactor 实现已沉淀进 core.gamepad_cursor（与鼠标逻辑同层）。
+  - 后台(游戏动·鼠标不动) bg_winpos：SendMessage 消息点击，点击瞬间把游戏窗口
+    瞬移对齐鼠标后立即复位（run 开始时由 controller.begin_run 把窗口压到 Z 序底部）。
+  - 后台(鼠标动·游戏不动) bg_cursor：SendMessage 消息点击，光标瞬移到目标后
+    立即归位，游戏窗口全程不动。
+  - 「后台(手柄)」gamepad 方式入口已下线（CLICK_MODES 不再收录，历史配置由
+    sidecar 迁移为 bg_winpos）；手柄光标引擎保留在 core.gamepad_cursor，
+    纯视觉识别已抽至 core.cursor_detector。
   - 意图开关（仅显示意图，独立于点击方式）：
       开启时程序只「导航到目标位置」，不执行确认点击——由用户自己按下/操作。
-      鼠标 → 只移光标到目标；手柄 → 只导航到位不按 A。同一开关两者共用。
+      鼠标 → 只移光标到目标。各方式共用同一意图语义。
 
 用法：模块在"首部"持有 Clicker 并同步当前模式，所有点击统一走 click()；
 切换只发生在设置页（sidecar set_click_mode → controller.click_mode → ctx.click_mode）。
@@ -20,14 +24,16 @@ import time
 
 from maaracing_master.core.logger import logger
 from maaracing_master.core.window_utils import (
+    bg_click_cursor_pos,
+    bg_click_window_pos,
     norm_to_screen,
     send_left_click,
     set_cursor_visible,
     window_client_size,
 )
 
-# 合法点击方式（与 GUI 设置页 data-clickmode 保持一致）
-CLICK_MODES = ("real", "gamepad")
+# 合法点击方式（与 GUI 设置页 data-clickmode 保持一致；手柄点击模式已下线）
+CLICK_MODES = ("real", "bg_winpos", "bg_cursor")
 
 # 手柄点击容差比例：落点在目标框中心 70% 区域内即可按 A（ROI 本对标整个可交互
 # 区域，无需微调到中心像素级精确；防太宽松取 70% 而非全框）。
@@ -49,9 +55,10 @@ CURSOR_POS_MAX_AGE_S = 2.0
 class Clicker:
     """统一点击执行器：按 mode 执行点击/光标意图。
 
-    mode：real（前台=鼠标 SendInput）/ gamepad（后台=手柄导航+A 键确认）。
+    mode：real（前台=鼠标 SendInput）/ bg_winpos / bg_cursor（后台=SendMessage 消息点击，
+    实现见 window_utils.bg_click_window_pos / bg_click_cursor_pos）。
     intent：意图开关（仅显示意图）。置位时只导航到目标、不确认点击，由用户自己按。
-            两种 mode 共用同一 intent 语义。
+            各 mode 共用同一 intent 语义。
     所有调用点共用同一个实例（模块持有），模式只在"首部"（构造/设置页）切换。
     """
 
@@ -110,7 +117,10 @@ class Clicker:
         if self.mode == "gamepad":
             return self._submit_gamepad("click", cx, cy, intent=self.intent,
                                         box=box, tol_px=tol_px, label=label)
-        ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
+        if self.mode in ("bg_winpos", "bg_cursor"):
+            ok = self._click_bg(cx, cy, down_up_gap_ms)
+        else:
+            ok = self._click_real(cx, cy, down_up_gap_ms, move_pause_s)
         self._real_result = {"type": "click", "ok": ok, "intent": self.intent,
                              "label": label}
         return True
@@ -532,6 +542,25 @@ class Clicker:
         if not send_left_click(down_up_gap_ms):
             return False
         return True
+
+    def _click_bg(self, cx: float, cy: float, down_up_gap_ms: int) -> bool:
+        """后台消息点击：bg_winpos（游戏动、鼠标不动）或 bg_cursor（鼠标动、游戏不动）。"""
+        if not self.hwnd:
+            return False
+        size = window_client_size(self.hwnd)
+        if size is None or size[0] <= 0 or size[1] <= 0:
+            return False
+        cw, ch = size
+        px = min(cw - 1, max(0, round(cx * cw)))
+        py = min(ch - 1, max(0, round(cy * ch)))
+        pos = norm_to_screen(self.hwnd, cx, cy, cw, ch)
+        if pos is not None:
+            self._last_pos = pos
+        if self.intent:
+            return True
+        if self.mode == "bg_cursor":
+            return bg_click_cursor_pos(self.hwnd, px, py, down_up_gap_ms)
+        return bg_click_window_pos(self.hwnd, px, py, down_up_gap_ms)
 
     def _maybe_rebuild_gamepad(self) -> None:
         """光标连续丢失达阈值 → 触发重建虚拟手柄（自愈），带冷却防动画期反复拔插。

@@ -344,6 +344,7 @@ SITES: list[LogSite] = [
     _s('core/sidecar.py', 'SidecarService.set_boost_priority', '性能优先({}): {}', '<dynamic>', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', 'SidecarService._send_event_best_effort', '[sidecar] 事件发送失败（已忽略）: {}', 'WARNING', 'state', 'cross', '壳侧已断开时的降级路径：WARNING 让「事件没送到」可见但不上抛；收尾线程无业务组可挂。'),
     _s('core/sidecar.py', 'SidecarService._migrate_legacy_shutdown', '<dynamic>', 'INFO', 'cross', 'cross', '启动期一次性迁移回显：旧「运行结束后」开关折成任务步骤，发生在构造阶段、无业务组。'),
+    _s('core/sidecar.py', 'SidecarService._restore_profile', '历史点击方式 gamepad 已下线，自动迁移为 bg_winpos', 'INFO', 'cross', 'cross', '启动期一次性迁移回显：旧「后台(手柄)」点击方式折成 bg_winpos，发生在偏好恢复阶段、无业务组。'),
     _s('core/sidecar.py', '_save_profile', '[sidecar] 偏好落盘失败: {}', 'WARNING', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
     _s('core/sidecar.py', '_normalize_module_config', '[模块配置] {} 配置归一失败，按原样继续: {}', 'WARNING', 'cross', 'cross', '配置面演进的降级回显：发生在启动回填/RPC 请求线程，无业务组。'),
     _s('core/sidecar.py', 'SidecarService.set_start_from', '断点模式: {} 将从「{}」开始运行', 'INFO', 'cross', 'cross', 'RPC 设置回显/派发异常：GUI 请求线程的跨切面事件，无业务组。'),
@@ -378,6 +379,9 @@ SITES: list[LogSite] = [
 
     # ---- core/window_utils.py ----
     _s('core/window_utils.py', 'verify_frame_client', '[坐标] 截图帧尺寸({}x{}) ≠ 客户区物理尺寸({}x{})，归一化→屏幕映射可能偏移（本链路应 1:1）', 'WARNING', 'state', 'cross', '状态跃迁/可恢复降级：WARNING 不静默；发生在组外线程，无归属可挂。'),
+    _s('core/window_utils.py', 'bg_click_window_pos', '[后台点击] 游戏窗口已最小化，跳过移窗口点击', 'WARNING', 'state', 'cross', '后台点击护栏：几何状态不允许瞬移窗口，跳过本轮点击；工具层无组可挂。'),
+    _s('core/window_utils.py', 'bg_click_window_pos', '[后台点击] 游戏窗口处于最大化状态，跳过移窗口点击', 'WARNING', 'state', 'cross', '后台点击护栏：最大化几何不可移动，跳过本轮点击；工具层无组可挂。'),
+    _s('core/window_utils.py', 'bg_click_window_pos', '[后台点击] 鼠标位于副屏或跨屏交界处，已拦截移窗口点击（多屏用户建议改用「鼠标动、游戏不动」）', 'WARNING', 'state', 'cross', '后台点击护栏：跨屏瞬移有异构 DPI 风险，拦截并提示替代方式；工具层无组可挂。'),
     _s('core/window_utils.py', 'find_game_hwnd._lg', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：测试桩/未开组路径才走到这里，归属与内容由调用方决定。'),
     _s('core/window_utils.py', 'resize_game_window_720p._lg', '<dynamic>', '<dynamic>', 'state', 'wrapper', '「有组走组」包装器的无组回退：未接组时回落散行，调用方决定内容。'),
 

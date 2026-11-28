@@ -10,7 +10,8 @@
 | 信息 | 真源 |
 |---|---|
 | 主控生命周期与能力门面 | [`core/controller.py`](./controller.py) |
-| 光标识别、趋近与速度模型 | [`core/gamepad_cursor.py`](./gamepad_cursor.py) + [`core/resources/stick_speed_model.json`](./resources/stick_speed_model.json) |
+| 光标识别（纯视觉签名剖面，不依赖设备） | [`core/cursor_detector.py`](./cursor_detector.py)（§1.2） |
+| 手柄光标趋近与速度模型 | [`core/gamepad_cursor.py`](./gamepad_cursor.py)（§1.2） + [`core/resources/stick_speed_model.json`](./resources/stick_speed_model.json) |
 | 帧采集（单生产者） | [`core/wgcap.py`](./wgcap.py)（拓扑为何如此见 [ADR-0003](../../docs/adr/0003-arch-core-运行时拓扑硬约束.md)） |
 | 日志级别、通道与落盘形态 | [`core/logger.py`](./logger.py) |
 | 能力窄接口与契约 | [`core/capabilities.py`](./capabilities.py) |
@@ -38,7 +39,7 @@
 
 - 模块生命周期（`start_module(module_id, start_from)` 分发到插件 `ActivityModule.start`）
 
-- 点击方式（`real` 前台鼠标 / `background` 后台手柄导航+A / `intent` 仅意图）与独立真实点击开关
+- 点击方式（`real` 前台鼠标 / `bg_winpos` 后台移窗口消息点击 / `bg_cursor` 后台光标瞬移消息点击）与「仅显示意图」开关；「后台(手柄)」方式入口已下线（历史配置迁移为 `bg_winpos`）
 
 - 运行时静音游戏（audio_volume）、急停循环；静音按**运行边界**获取与恢复：整轮只静音一次、记录用户原音量、结束统一恢复，内置步骤与活动模块之间不恢复/再静音。启动/关闭游戏与「关闭后退出程序」仍是任务列表里的内置步骤（见 §1.17），不在这里按开关收尾。**测试口径**：WASAPI 的 COM 会话枚举需要真实音频会话与游戏进程，不做自动化锁（2026-09-01 实测定稿）；控制器侧的重试、原音量记录与恢复有单测看护。
 
@@ -53,16 +54,16 @@
 | `controller`        | Win32Controller | 游戏窗口控制器（connect 时创建，幂等）                             |
 | `ctx`               | ActivityContext | 能力门面（模块经窄接口办事）                                      |
 | `active_module`     | ActivityModule  | 当前活动模块                                              |
-| `click_mode`        | str             | 点击方式：`real`（前台） / `background`（后台手柄）/ `intent`（仅意图） |
+| `click_mode`        | str             | 点击方式：`real`（前台） / `bg_winpos`（后台·游戏动）/ `bg_cursor`（后台·鼠标动） |
 | `intent_mode`       | bool            | 是否仅准星意图（不真实点击）                                      |
 | `gamepad_available` | bool            | vgamepad 驱动是否可用（ViGEmBus）                           |
 | `module_active`     | bool            | 模块是否在运行                                             |
 
 ***
 
-### 1.2 [gamepad_cursor.py](./gamepad_cursor.py) — 手柄光标导航引擎
+### 1.2 [cursor_detector.py](./cursor_detector.py) + [gamepad_cursor.py](./gamepad_cursor.py) — 光标识别与手柄趋近引擎
 
-**职责摘要**：签名剖面法识别游戏内白色圆盘光标（normal / interactive 两态）、摇杆-光标速度模型 + 闭环趋近导航、到位后确认点击（意图模式只导航不确认）；供 `core.clicker` 的「后台(手柄)」点击方式复用，与「前台(鼠标)」SendInput 同层。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。
+**职责摘要**：`cursor_detector` 用签名剖面法纯视觉识别游戏内白色圆盘光标（normal / interactive 两态），不依赖手柄设备；`gamepad_cursor` 在其上叠摇杆-光标速度模型与闭环趋近导航、到位后确认点击（意图模式只导航不确认）。底座与手柄均依赖注入（复用 controller 的 `_gpad` / 模块的 capture），本模块不自建，避免手柄/截图冲突。当前「后台(手柄)」点击方式的 GUI 与 RPC 入口已下线（CLICK_MODES 不再收录，历史配置迁移为 `bg_winpos`），趋近引擎整体保留待复用，识别层因此单独成模块、可独立演进。
 
 > **速度模型真源 = [`core/resources/stick_speed_model.json`](./resources/stick_speed_model.json)**；光标识别三态、连续 P 趋近与速度模型标定的参数均出自该文件。
 
@@ -200,6 +201,12 @@
 - `has_physical_controller()`: XInput API 检测物理手柄（xinput1\_4/1\_3/9\_1\_0）
 
 - `hwnd_from_pid()`: EnumWindows 回调按PID找窗口句柄
+
+- `send_window_to_bottom()`: 窗口压到 Z 序最底层（不移动 / 不改尺寸 / 不抢焦点）；`bg_winpos` 点击方式在 `begin_run` 时调用
+
+- `bg_click_window_pos()`: 后台消息点击（游戏动·鼠标不动）——窗口瞬移对齐鼠标 → SendMessage 点击 → finally 复位；最小化 / 最大化拒动，鼠标或落点中心跨屏时拦截
+
+- `bg_click_cursor_pos()`: 后台消息点击（鼠标动·游戏不动）——光标瞬移到目标 → SendMessage 点击 → finally 归位
 
 **窗口查找关键词**："巅峰极速"、"g112"、"Racing Master"
 
@@ -692,10 +699,10 @@ core/sidecar.py（MaaRacingMaster.Shell 托管）
 | `__init__()`                                   | 初始化能力门面、点击方式、急停等（截图通道唯一，无后端选择项）                                        |
 | `connect()`                                    | 幂等窗口连接：短路前先校验句柄仍有效（手动关游戏后旧句柄失效则重连）；仅创建 `Win32Controller(hWnd=...)`，连接超时 10s 保护 + 720p 窗口统一 + 屏幕内校验；前台(鼠标)模式在**首次建连**时切游戏前台 |
 | `clear_run_requests()`                         | 受理新一轮时清手动停止/停止信号/退出请求（侧车 `start` 锁内、worker 创建前调用）；worker 启动后不得再清 |
-| `begin_run()` / `end_run()`                    | 运行边界：获取/释放全局性质（静音按轮获取/恢复）；前台(鼠标)模式**每轮开始**把游戏切到前台——按下「开始」是用户明确意图，`connect()` 幂等短路时由这里兑现，后台(手柄)模式不动窗口；侧车按队列轮次调用 |
+| `begin_run()` / `end_run()`                    | 运行边界：获取/释放全局性质（静音按轮获取/恢复）；前台(鼠标)模式**每轮开始**把游戏切到前台——按下「开始」是用户明确意图，`connect()` 幂等短路时由这里兑现；`bg_winpos` 每轮把游戏窗口压到 Z 序底部（移窗口点击的前提）；`bg_cursor` 不动窗口；侧车按队列轮次调用 |
 | `start_module(module_id, start_from)`          | 分发到插件模块并启动（断点 `start_from` 由模块自己解析）；`start()` 返回 True 才记自然完成；启动段与执行段同一清理边界；收尾失败撤销自然完成、隔离模块并置污染态 |
 | `stop()`                                       | 停止模块、中断 Pipeline、销毁手柄                                                  |
-| `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台手柄 / 仅意图                                               |
+| `set_click_mode(mode)` / `intent_mode`         | 点击方式切换：前台鼠标 / 后台(游戏动 / 鼠标动) / 仅意图开关                                               |
 | `run_builtin_step(step_id, config)`            | 跑一个内置步骤；按 `required_resources(config)` 建会话（窗口连接 / 截图 / 手柄），`finally` 统一回收                         |
 | `execution_active` / `last_step_outcome`       | 「有执行体在跑」（模块或步骤，sleep 与急停的唯一判据）/ 上次步骤的业务结果                                      |
 | `release_step_session(grp)`                    | 回收步骤会话的宿主资源：Context → 按 owner 销毁手柄 → 停采集（窗口连接不在此列）                                  |

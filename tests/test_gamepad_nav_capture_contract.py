@@ -22,8 +22,7 @@ import pytest
 # CI 轻依赖环境（只装 pytest+numpy+opencv-headless）下整文件跳过，不误红——
 # 口径同 test_nav_graph_runner.py。
 try:
-    from maaracing_master.core import clicker as clicker_mod
-    from maaracing_master.core.clicker import GAMEPAD_BOX_TOL_RATIO, Clicker
+    from maaracing_master.core.clicker import GAMEPAD_BOX_TOL_RATIO
     from maaracing_master.core.gamepad_cursor import GamepadClicker
     _RUNTIME_OK, _RUNTIME_ERR = True, ""
 except Exception as exc:  # noqa: BLE001
@@ -141,21 +140,18 @@ def test_frame_source_capability_shape_readable(scene):
         nav.shutdown()
 
 
-def test_gamepad_click_through_clicker_drives_stick(scene, monkeypatch):
-    """端到端：Clicker(gamepad) 提交一次点击 → 摇杆真的推出、到位后按 A。"""
-    monkeypatch.setattr(clicker_mod, "window_client_size", lambda _hwnd: (W, H))
+def test_gamepad_nav_drives_stick(scene):
+    """端到端：GamepadClicker 直接提交一次导航 → 摇杆真的推出、到位后按 A。"""
     cap = CaptureStub(scene)
     gpad = GpadStub(scene)
-    click = Clicker(hwnd=0, mode="gamepad")
-    click.bind_gamepad(cap, gpad)  # 与 v4 装配一致：注入能力对象
+    nav = GamepadClicker(cap, gpad)
     tol_px = GAMEPAD_BOX_TOL_RATIO * min(BOX_PX)
     try:
-        assert click.submit_click(TARGET[0] / W, TARGET[1] / H,
-                                  box=(BOX_PX[0] / W, BOX_PX[1] / H)) is True
+        assert nav.submit(TARGET, tol_px=tol_px) is True
         deadline = time.monotonic() + 25.0
         res = None
         while res is None and time.monotonic() < deadline:
-            res = click.consume_result()
+            res = nav.consume_result()
             if res is None:
                 time.sleep(0.02)
         assert res is not None, "导航任务从未产出结果（线程未执行闭环）"
@@ -166,4 +162,4 @@ def test_gamepad_click_through_clicker_drives_stick(scene, monkeypatch):
         assert scene.dist_to_target() <= tol_px + 0.5, \
             f"光标未收敛到按 A 容差内：{scene.pos} 距离{scene.dist_to_target():.1f}px"
     finally:
-        click.shutdown()
+        nav.shutdown()
