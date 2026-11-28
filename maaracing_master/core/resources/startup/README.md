@@ -48,7 +48,7 @@
 
 `startup.advance` 的实现与参数说明住 `maaracing_master/core/advance.py`；它只在
 「已知弹窗、登录页、大厅确认全部不匹配」时才轮到，正常启动不付它的代价。候选表
-末尾挂的是节流门 `startup.advance.gate`：命中后先等 2.5 秒再跑一次文字检测，避免
+末尾挂的是节流门 `startup.advance.gate`：命中后先等 1.2 秒再跑一次文字检测，避免
 模板全 miss 时每轮全速 OCR（实测会把本进程烧到 6~7 核）。**门必须带回退出路**
 （未命中直接回 `startup.boot`，并配 `on_error`）——只写 advance 一条会让门等超时
 后以 `task_failed` 收场，把整张启动图带死（2026-11-23 真机复现）。检测先按 `zone`

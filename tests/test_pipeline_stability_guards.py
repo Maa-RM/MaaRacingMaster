@@ -47,7 +47,9 @@ def test_startup_advance_is_gated() -> None:
 def test_startup_gate_waits_and_timeout_covers_ocr() -> None:
     gate = _load(STARTUP)["startup.advance.gate"]
     assert gate["recognition"]["type"] == "DirectHit"
-    assert gate["post_delay"] >= 2000, "节流窗口太短，OCR 仍会接近全速"
+    # 节流窗口不是越长越好：未知页每轮还要付候选扫描（~600ms）与半屏 OCR（~500ms），
+    # 1.2 秒间隔下 OCR 占空比约两成，仍远低于「每轮全速」那条烧 CPU 的线。
+    assert gate["post_delay"] >= 1000, "节流窗口太短，OCR 会接近全速"
     assert gate["timeout"] >= 3000, "超时必须覆盖一次整帧/半屏 OCR 的耗时"
 
 
